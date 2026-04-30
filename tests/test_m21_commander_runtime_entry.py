@@ -207,6 +207,8 @@ def test_m31_runtime_entry_surfaces_commander_memory_policy_and_packets() -> Non
                 "recent_success_patterns": ["playbook:defensive"],
                 "playbook_performance_snapshot": {"defensive": {"usage_count": 7}},
             },
+            "weekly_strategy_memory": {"status": "empty", "active": False},
+            "monthly_strategy_memory": {"status": "empty", "active": False},
             "selected": {"symbol": "000660"},
             "selected_symbol_memory": {
                 "symbol": "000660",
@@ -227,13 +229,13 @@ def test_m31_runtime_entry_surfaces_commander_memory_policy_and_packets() -> Non
     assert packets["daily_strategy_memory"]["active"] is False
     assert packets["symbol_memory_packet"]["symbol"] == "000660"
     assert packets["symbol_memory_packet"]["override_eligible"] is True
-    assert policy["application_mode"] == "surface_only"
-    assert policy["active_layers"] == ["symbol"]
-    assert policy["priority_order"][:2] == ["daily", "symbol"]
-    assert policy["symbol_memory_override_enabled"] is True
-    assert captured["scanner_memory_bias"]["enabled"] is True
-    assert captured["monitor_memory_bias"]["enabled"] is True
-    assert captured["monitor_memory_bias_summary"]["entry_delta_keys"]
+    assert policy["application_mode"] == "disabled"
+    assert policy["disabled_reason"] == "memory_usage_disabled_by_commander"
+    assert policy["active_layers"] == []
+    assert policy["symbol_memory_override_enabled"] is False
+    assert captured["scanner_memory_bias"]["enabled"] is False
+    assert captured["monitor_memory_bias"]["enabled"] is False
+    assert captured["monitor_memory_bias_summary"]["entry_delta_keys"] == []
 
 
 def test_attach_commander_applied_policy_recomputes_memory_bias_instead_of_using_stale_commander_decision():
@@ -543,6 +545,21 @@ def test_m21_ensure_market_context_clock_fields_backfills_minutes_to_close_from_
 
     assert out["market_clock_source"] == "runtime_clock"
     assert str(out.get("market_clock_kst") or "").startswith("2026-04-17T15:25:00")
+    assert float(out["minutes_to_close"]) == 5.0
+    assert float((state.get("market_context") or {}).get("minutes_to_close")) == 5.0
+
+
+def test_m21_ensure_market_context_clock_fields_overrides_stale_minutes_to_close_from_tick_ts():
+    state = {
+        "tick_ts": 1776407100,  # 2026-04-17 15:25:00 KST
+        "market_context": {"minutes_to_close": 83.05, "market_clock_source": "stale_context"},
+    }
+
+    out = _ensure_market_context_clock_fields(state)
+
+    assert out["market_clock_source"] == "runtime_clock_override"
+    assert out["market_clock_previous_source"] == "stale_context"
+    assert float(out["market_clock_previous_minutes_to_close"]) == 83.05
     assert float(out["minutes_to_close"]) == 5.0
     assert float((state.get("market_context") or {}).get("minutes_to_close")) == 5.0
 
@@ -1624,6 +1641,92 @@ def test_commander_open_position_override_rate_limits_repeated_hold_refresh():
     assert second["override_suppressed_reason"] == "repeated_hold_monitor_only_refresh_cooldown"
     assert second["refresh_cooldown_symbol"] == "322000"
     assert second["refresh_cooldown_remaining_sec"] == 800
+
+
+def test_commander_open_position_override_refreshes_repeated_loss_after_cooldown():
+    state: Dict[str, Any] = {
+        "now_epoch": 2000,
+        "portfolio_snapshot": {
+            "positions": [
+                {
+                    "symbol": "322000",
+                    "qty": 1,
+                    "avg_price": 100.0,
+                    "current_price": 98.5,
+                    "unrealized_pnl": -1.5,
+                    "account_pnl_ratio": -0.015,
+                }
+            ]
+        },
+        "persisted_state": {
+            "monitor_last_state_by_symbol": {
+                "322000": {
+                    "posture": "hold",
+                    "reason": "below_vwap_reclaim_not_ready",
+                    "active_exit_axis": "vwap_relationship",
+                }
+            },
+            "commander_open_position_hold_repeat_by_symbol": {"322000": 5},
+            "commander_open_position_refresh_cooldown_until_by_symbol": {"322000": 1900},
+        },
+    }
+
+    out = _assess_open_position_commander_override(state)
+
+    assert out["override_triggered"] is True
+    assert out["override_action"] == "strategist_refresh"
+    assert out["override_reason"] == "loss_threshold_exceeded"
+    assert out["position_refresh_due"] is True
+    assert out["position_refresh_trigger"] == "loss_threshold_exceeded"
+    assert out["force_exit_review_pending"] is True
+    assert out["open_position_risk_review_reason"] == "loss_threshold_exceeded"
+    assert out["refresh_cooldown_symbol"] == "322000"
+    assert out["refresh_cooldown_remaining_sec"] == 900
+    assert state["persisted_state"]["commander_open_position_refresh_cooldown_until_by_symbol"]["322000"] == 2900
+
+    refresh_ctx = dict(out["strategist_refresh_context"] or {})
+    assert refresh_ctx["refresh_scope"] == "open_position_monitor_refresh"
+    assert refresh_ctx["refresh_trigger"] == "loss_threshold_exceeded"
+    assert refresh_ctx["force_exit_review_pending"] is True
+    assert refresh_ctx["open_position_risk_review_reason"] == "loss_threshold_exceeded"
+    assert refresh_ctx["selected_hold_repeat_count"] == 6
+
+
+def test_commander_open_position_override_keeps_loss_monitor_only_when_refresh_cooldown_active():
+    state: Dict[str, Any] = {
+        "now_epoch": 2000,
+        "portfolio_snapshot": {
+            "positions": [
+                {
+                    "symbol": "322000",
+                    "qty": 1,
+                    "avg_price": 100.0,
+                    "current_price": 98.5,
+                    "unrealized_pnl": -1.5,
+                    "account_pnl_ratio": -0.015,
+                }
+            ]
+        },
+        "persisted_state": {
+            "monitor_last_state_by_symbol": {"322000": {"posture": "hold"}},
+            "commander_open_position_hold_repeat_by_symbol": {"322000": 5},
+            "commander_open_position_refresh_cooldown_until_by_symbol": {"322000": 2500},
+        },
+    }
+
+    out = _assess_open_position_commander_override(state)
+
+    assert out["override_triggered"] is True
+    assert out["override_action"] == "force_exit_review"
+    assert out["override_reason"] == "loss_threshold_exceeded"
+    assert out["override_suppressed"] is True
+    assert out["override_suppressed_reason"] == "loss_threshold_refresh_cooldown"
+    assert out["position_refresh_due"] is False
+    assert out["position_refresh_trigger"] == "loss_threshold_exceeded"
+    assert out["force_exit_review_pending"] is True
+    assert out["refresh_cooldown_symbol"] == "322000"
+    assert out["refresh_cooldown_remaining_sec"] == 500
+    assert state["persisted_state"]["commander_open_position_refresh_cooldown_until_by_symbol"]["322000"] == 2500
 
 
 def test_commander_open_position_override_surfaces_overnight_carry_control():

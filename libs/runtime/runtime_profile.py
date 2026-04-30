@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List, Mapping
 
 _TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 _DISABLED_PROVIDERS = {"", "none", "off", "disabled"}
-_VALID_PROFILES = {"dev", "staging", "prod"}
+_VALID_PROFILES = {"dev", "staging", "mock_live", "prod"}
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -62,6 +62,29 @@ def runtime_profile_spec(profile: str) -> RuntimeProfileSpec:
             defaults=defaults,
             required_keys=required,
             expected_kiwoom_mode="real",
+        )
+
+    if p == "mock_live":
+        defaults = {
+            **common_defaults,
+            "APPROVAL_MODE": "auto",
+            "EXECUTION_ENABLED": "true",
+            "ALLOW_REAL_EXECUTION": "false",
+            "KIWOOM_MODE": "mock",
+            "DRY_RUN": "0",
+        }
+        required = [
+            "KIWOOM_APP_KEY",
+            "KIWOOM_APP_SECRET",
+            "KIWOOM_ACCOUNT_NO",
+            "EVENT_LOG_PATH",
+            "REPORT_DIR",
+        ]
+        return RuntimeProfileSpec(
+            name="mock_live",
+            defaults=defaults,
+            required_keys=required,
+            expected_kiwoom_mode="mock",
         )
 
     if p == "staging":
@@ -186,4 +209,4 @@ def validate_runtime_profile(
 
 
 def valid_runtime_profiles() -> Iterable[str]:
-    return ("dev", "staging", "prod")
+    return ("dev", "staging", "mock_live", "prod")

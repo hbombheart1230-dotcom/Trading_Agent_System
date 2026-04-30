@@ -12,7 +12,7 @@ _CASCADE_ELIGIBLE_REASONS = {
     "pullback_below_vwap_reclaim_not_ready",
 }
 
-_DEFAULT_MAX_PRIORITY_RANK = 5
+_DEFAULT_MAX_PRIORITY_RANK = 10
 
 
 def _quote_missing_symbols(scanner_output: Mapping[str, Any] | None) -> set[str]:

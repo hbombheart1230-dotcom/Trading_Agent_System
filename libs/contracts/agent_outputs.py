@@ -92,6 +92,18 @@ def _dict_list(value: Any, *, limit: int = 8) -> List[Dict[str, Any]]:
     return out
 
 
+def _scanner_candidate_visibility_limit(scanner_output: Dict[str, Any]) -> int:
+    policy = _dict(scanner_output.get("applied_scanner_policy"))
+    entry_control = _dict(policy.get("entry_control"))
+    raw = (
+        entry_control.get("max_priority_rank")
+        or policy.get("max_priority_rank")
+        or scanner_output.get("max_priority_rank")
+        or 5
+    )
+    return min(10, max(5, _safe_int(raw, 5)))
+
+
 def _dedupe_text(values: List[str], *, limit: int = 10, max_len: int = 180) -> List[str]:
     out: List[str] = []
     seen: set[str] = set()
@@ -1247,10 +1259,12 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     selected_candidate = _dict(selected.get("candidate"))
     selected_features = _dict(selected.get("features"))
     ranked = [row for row in list(state.get("ranked_candidates") or []) if isinstance(row, dict)]
-    top_ranked_symbols = [str(row.get("symbol") or "") for row in ranked[:5] if str(row.get("symbol") or "").strip()]
+    candidate_visibility_limit = _scanner_candidate_visibility_limit(scanner_output)
+    visible_ranked = ranked[:candidate_visibility_limit]
+    top_ranked_symbols = [str(row.get("symbol") or "") for row in visible_ranked if str(row.get("symbol") or "").strip()]
     pool_meta = _dict(state.get("scanner_candidate_pool"))
     candidate_preview: List[Dict[str, Any]] = []
-    for rank, row in enumerate(ranked[:5], start=1):
+    for rank, row in enumerate(visible_ranked, start=1):
         row_breakdown = _dict(row.get("score_breakdown"))
         row_sources = _dict((row.get("candidate") or {}).get("source_scores")) if isinstance(row.get("candidate"), dict) else {}
         compact_features = _dict((row.get("features") or row.get("feature_snapshot") or {}))
@@ -1354,7 +1368,7 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     candidate_bias_adjustments = _dict_list(
         scanner_output.get("candidate_bias_adjustments")
         or candidate_selection_reason.get("candidate_bias_adjustments"),
-        limit=5,
+        limit=candidate_visibility_limit,
     )
     scanner_memory_bias = _dict(
         scanner_output.get("scanner_memory_bias")
@@ -1372,7 +1386,7 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     candidate_memory_bias_adjustments = _dict_list(
         scanner_output.get("candidate_memory_bias_adjustments")
         or candidate_selection_reason.get("candidate_memory_bias_adjustments"),
-        limit=5,
+        limit=candidate_visibility_limit,
     )
     selected_memory_bias_result = {
         "bias_adjustment": selected.get("memory_bias_adjustment"),

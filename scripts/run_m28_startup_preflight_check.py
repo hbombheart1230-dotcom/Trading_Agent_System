@@ -93,7 +93,7 @@ def _build_markdown(out: Dict[str, Any]) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M28-4 startup preflight gate check.")
-    p.add_argument("--profile", choices=["dev", "staging", "prod"], default="dev")
+    p.add_argument("--profile", choices=["dev", "staging", "mock_live", "prod"], default="dev")
     p.add_argument("--env-path", default=".env")
     p.add_argument("--state-path", default="data/state/m28_startup_preflight/runtime_state.json")
     p.add_argument("--report-dir", default="reports/milestones/m28_startup_preflight")

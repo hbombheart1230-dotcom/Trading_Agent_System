@@ -290,6 +290,24 @@ Current strength drivers include:
 
 This is implemented, but still needs live validation before any broader widening.
 
+## Current Conservatism Risk
+
+The `2026-04-29` runtime review shows that current strategist/commander framing is heavily concentrated in defensive mode:
+
+- `playbook=defensive`
+- `scanner_bias=leader`
+- `require_vwap_reclaim=true`
+- `require_rebound=true`
+
+Monitor blocks after the last midday trade were mostly explainable by the active policy, not arbitrary monitor failure. The remaining risk is that memory-driven tightening can reinforce a losing low-frequency loop if it only reduces participation after losses without creating a measured alternate entry lane.
+
+Runtime memory should therefore support two separate outcomes:
+
+- preserve strict gating for normal-size entries when memory and market structure are weak
+- allow a separately labeled probe lane only when cost-adjusted edge, liquidity, and symbol-quality gates pass
+
+Do not use memory bias to loosen exits until cost-aware entry quality is visible in fresh artifacts.
+
 ## Next Live Validation
 
 On the next live session, verify all of the following on fresh artifacts:
@@ -325,3 +343,4 @@ Still not live-verified in the latest run:
 Cross-folder status:
 
 - `docs/runtime_entrypoint/current_validation_status_2026-04-28.md`
+- `docs/runtime_entrypoint/strategy_conservatism_review_2026-04-29.md`

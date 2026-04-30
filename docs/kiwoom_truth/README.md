@@ -26,6 +26,7 @@ Out of scope:
 2. Last-known broker snapshots may be used only when Kiwoom calls fail.
 3. Monitor/local calculations are fallback observations, not broker truth.
 4. Reports must expose the source of price, fill, PnL, fee, and tax fields.
+5. Cost drag and breakeven move should be derived from broker truth fields when available, not from monitor observations.
 
 ## Current Hot Path
 
@@ -82,6 +83,8 @@ Tests passed:
 2. Repeated same-symbol `ka10077` rows must select the correct row using symbol/quantity/price/time tie-breakers.
 3. Broker truth provenance must appear in `reports/trades/<day>/<trade_id>/reports/ai_trade_report.json`.
 4. Theme packet source must distinguish `ok`, unavailable, and fallback states in strategist/scanner artifacts.
+5. Weekly profitability diagnostics must flag days where event-log orders exist but Kiwoom/report PnL coverage is incomplete.
+6. Entry evaluation should consume broker-derived fee/tax assumptions for cost-aware filters before accepting high-cost intraday trades.
 
 ## Documents
 
@@ -91,3 +94,4 @@ Tests passed:
 - `kiwoom_role_inventory_2026-04-20.md`
 - `kiwoom_theme_strength_packet_2026-04-27.md`
 - `kiwoom_theme_api_strategy_selection_2026-04-28.md`
+- `../runtime_entrypoint/strategy_conservatism_review_2026-04-29.md`

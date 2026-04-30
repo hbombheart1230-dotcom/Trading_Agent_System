@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -19,7 +20,13 @@ _REMOVED_ENV_KEYS = [
     "AI_STRATEGIST_STRICT",
     "ALLOW_LEGACY_RULE_RUNTIME",
     "ALLOW_LEGACY_STRATEGY_V1_RUNTIME",
+    "COMMANDER_POST_SCANNER_REFRESH_ENABLED",
+    "MEMORY_BIAS_OBSERVATION_ONLY",
     "USE_STRATEGY_MEMORY_FEEDBACK",
+    "USE_STRATEGY_PERFORMANCE_MEMORY",
+    "COMMANDER_MEMORY_USAGE_DISABLED",
+    "STRATEGIST_MEMORY_USAGE_DISABLED",
+    "STRATEGY_MEMORY_PERSIST_ENABLED",
     "COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED",
     "COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED",
     "MONITOR_SCORING_ENABLED",
@@ -117,6 +124,18 @@ def test_trade_report_policy_reads_applied_policy_without_env() -> None:
 
 
 def test_commander_injects_behavior_policy_defaults_into_applied_policy(monkeypatch) -> None:
+    temporary_keys = {
+        "COMMANDER_POST_SCANNER_REFRESH_ENABLED",
+        "MEMORY_BIAS_OBSERVATION_ONLY",
+        "USE_STRATEGY_MEMORY_FEEDBACK",
+        "USE_STRATEGY_PERFORMANCE_MEMORY",
+        "COMMANDER_MEMORY_USAGE_DISABLED",
+        "STRATEGIST_MEMORY_USAGE_DISABLED",
+        "STRATEGY_MEMORY_PERSIST_ENABLED",
+    }
+    for key in temporary_keys:
+        monkeypatch.delenv(key, raising=False)
+
     def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
         state["portfolio_snapshot"] = {"cash": 1_000_000.0, "positions": [], "_health": {"reader_ok": True}}
         return state
@@ -156,7 +175,14 @@ def test_commander_injects_behavior_policy_defaults_into_applied_policy(monkeypa
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("strict_mode")) is True
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("allow_legacy_rule")) is False
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("allow_legacy_strategy_v1")) is False
-    assert (((applied.get("strategist") or {}).get("memory_feedback") or {}).get("enabled")) is True
+    assert (((applied.get("strategist") or {}).get("memory_feedback") or {}).get("enabled")) is False
+    assert (((applied.get("strategist") or {}).get("performance_memory") or {}).get("enabled")) is False
+    assert (((applied.get("strategist") or {}).get("performance_memory") or {}).get("persist_enabled")) is False
+    assert (((applied.get("strategist") or {}).get("memory_usage") or {}).get("disabled")) is True
+    assert (((applied.get("commander") or {}).get("memory_usage") or {}).get("disabled")) is True
+    assert (((applied.get("scanner") or {}).get("memory_bias") or {}).get("observation_only")) is True
+    assert (((applied.get("monitor") or {}).get("memory_bias") or {}).get("observation_only")) is True
+    assert (((applied.get("commander") or {}).get("route") or {}).get("post_scanner_refresh_enabled")) is True
     assert (((applied.get("commander") or {}).get("route") or {}).get("monitor_only_when_holding")) is True
     assert (((applied.get("commander") or {}).get("route") or {}).get("cached_strategist_when_flat")) is False
     assert (((applied.get("monitor") or {}).get("exit") or {}).get("enabled")) is True
@@ -165,6 +191,8 @@ def test_commander_injects_behavior_policy_defaults_into_applied_policy(monkeypa
     assert ((((applied.get("monitor") or {}).get("entry") or {}).get("scoring") or {}).get("enabled")) is False
     assert ((((applied.get("monitor") or {}).get("entry") or {}).get("scoring") or {}).get("shadow_mode")) is True
     assert "reporter.ai_review.enabled" in list(((applied.get("policy_sources") or {}).get("commander_owned_fields") or []))
+    for key in temporary_keys:
+        assert os.getenv(key) is None
     commander_decision = out.get("commander_decision") or {}
     assert (commander_decision.get("commander_applied_policy_summary") or {}).get("strategist_strict_mode") is True
     assert (commander_decision.get("policy_sources") or {}).get("commander_owned_fields")

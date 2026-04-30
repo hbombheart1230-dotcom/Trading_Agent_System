@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -575,6 +576,162 @@ def _should_block_duplicate_mock_buy(state: Dict[str, Any], order: Dict[str, Any
     if not sym:
         return False
     return sym in _extract_open_symbols_from_state(state)
+
+
+_RECENT_BUY_GUARD_DEFAULT_TTL_SEC = 600
+_RECENT_BUY_GUARD_DEFAULT_PATH = Path("data/state/execution_recent_buy_guard.json")
+
+
+def _recent_buy_guard_enabled(state: Dict[str, Any]) -> bool:
+    if str(state.get("recent_buy_guard_path") or "").strip():
+        return True
+    details = _execution_mode_details()
+    if str(details.get("effective_mode") or "") not in ("mock_broker_http", "real_broker_http"):
+        return False
+    return any(str(state.get(key) or "").strip() for key in ("runtime_mode", "runtime_phase", "phase", "tick_ts"))
+
+
+def _recent_buy_guard_path(state: Dict[str, Any]) -> Path:
+    raw = str(state.get("recent_buy_guard_path") or "").strip()
+    return Path(raw) if raw else _RECENT_BUY_GUARD_DEFAULT_PATH
+
+
+def _recent_buy_guard_now_epoch(state: Dict[str, Any]) -> int:
+    for key in ("tick_ts", "now_epoch"):
+        epoch = _coerce_int(state.get(key), 0)
+        if epoch > 0:
+            return int(epoch)
+    return int(time.time())
+
+
+def _recent_buy_guard_ttl_sec(state: Dict[str, Any]) -> int:
+    raw = state.get("recent_buy_guard_ttl_sec")
+    ttl = _coerce_int(raw, _RECENT_BUY_GUARD_DEFAULT_TTL_SEC)
+    return int(ttl if ttl > 0 else _RECENT_BUY_GUARD_DEFAULT_TTL_SEC)
+
+
+def _read_recent_buy_guard(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {"schema_version": "execution_recent_buy_guard.v1", "orders": {}}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            orders = data.get("orders")
+            if not isinstance(orders, dict):
+                data["orders"] = {}
+            return data
+    except Exception:
+        pass
+    return {"schema_version": "execution_recent_buy_guard.v1", "orders": {}}
+
+
+def _write_recent_buy_guard(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _evaluate_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    details: Dict[str, Any] = {
+        "enabled": bool(_recent_buy_guard_enabled(state)),
+        "action": action,
+        "guard_applied": False,
+    }
+    if action != "BUY" or not details["enabled"]:
+        return True, "", details
+
+    symbol = _extract_order_symbol(order)
+    details["symbol"] = symbol
+    details["guard_applied"] = True
+    if not symbol:
+        details["symbol_evaluable"] = False
+        return True, "", details
+
+    path = _recent_buy_guard_path(state)
+    now_epoch = _recent_buy_guard_now_epoch(state)
+    ttl_sec = _recent_buy_guard_ttl_sec(state)
+    data = _read_recent_buy_guard(path)
+    orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
+    record = orders.get(symbol) if isinstance(orders.get(symbol), dict) else {}
+    expires_epoch = _coerce_int(record.get("expires_epoch"), 0)
+    last_buy_epoch = _coerce_int(record.get("last_buy_epoch"), 0)
+
+    details.update(
+        {
+            "path": str(path),
+            "now_epoch": int(now_epoch),
+            "ttl_sec": int(ttl_sec),
+            "last_buy_epoch": int(last_buy_epoch),
+            "expires_epoch": int(expires_epoch),
+            "recent_order_found": bool(record),
+        }
+    )
+    if record and expires_epoch > 0 and now_epoch <= expires_epoch:
+        details["remaining_sec"] = int(max(0, expires_epoch - now_epoch))
+        details["order_id"] = str(record.get("order_id") or "")
+        details["run_id"] = str(record.get("run_id") or "")
+        return False, "duplicate_buy_recent_order_exists", details
+    return True, "", details
+
+
+def _update_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(order.get("action") or "").strip().upper()
+    if action not in ("BUY", "SELL") or not _recent_buy_guard_enabled(state):
+        return {"enabled": False, "action": action, "updated": False}
+    if not bool(execution.get("execution_ok", execution.get("ok"))):
+        return {"enabled": True, "action": action, "updated": False, "reason": "execution_not_ok"}
+
+    symbol = _extract_order_symbol(order)
+    if not symbol:
+        return {"enabled": True, "action": action, "updated": False, "reason": "symbol_missing"}
+
+    path = _recent_buy_guard_path(state)
+    now_epoch = _recent_buy_guard_now_epoch(state)
+    ttl_sec = _recent_buy_guard_ttl_sec(state)
+    data = _read_recent_buy_guard(path)
+    data["schema_version"] = "execution_recent_buy_guard.v1"
+    orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
+    data["orders"] = orders
+
+    for sym, record in list(orders.items()):
+        if not isinstance(record, dict) or _coerce_int(record.get("expires_epoch"), 0) <= now_epoch:
+            orders.pop(sym, None)
+
+    if action == "SELL":
+        removed = bool(orders.pop(symbol, None))
+        _write_recent_buy_guard(path, data)
+        return {
+            "enabled": True,
+            "action": action,
+            "symbol": symbol,
+            "updated": bool(removed),
+            "cleared": bool(removed),
+            "path": str(path),
+        }
+
+    payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
+    orders[symbol] = {
+        "symbol": symbol,
+        "last_buy_epoch": int(now_epoch),
+        "expires_epoch": int(now_epoch + ttl_sec),
+        "ttl_sec": int(ttl_sec),
+        "order_id": str(execution.get("order_id") or execution.get("ord_no") or payload.get("order_id") or ""),
+        "run_id": str(state.get("run_id") or ""),
+        "qty": _coerce_int(order.get("qty"), 0),
+        "effective_mode": str(_execution_mode_details().get("effective_mode") or ""),
+    }
+    _write_recent_buy_guard(path, data)
+    return {
+        "enabled": True,
+        "action": action,
+        "symbol": symbol,
+        "updated": True,
+        "expires_epoch": int(now_epoch + ttl_sec),
+        "ttl_sec": int(ttl_sec),
+        "path": str(path),
+    }
 
 
 def _resolve_mock_cash_available(state: Dict[str, Any]) -> float:
@@ -1682,6 +1839,35 @@ def execute_from_packet(state: dict) -> dict:
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
+        recent_buy_allowed, recent_buy_reason, recent_buy_details = _evaluate_recent_buy_order_guard(state, order)
+        if not recent_buy_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=recent_buy_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["portfolio_guard"] = portfolio_details
+            state["execution"]["recent_buy_order_guard"] = recent_buy_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="recent_buy_order_guard_block",
+                payload={"allowed": False, "reason": recent_buy_reason, "portfolio_guard": portfolio_details, **recent_buy_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=recent_buy_reason,
+                supervisor_details={**dict(portfolio_details or {}), **dict(recent_buy_details or {})},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
         cash_allowed, cash_reason, cash_details = _evaluate_mock_cash_guard(state, order)
         if not cash_allowed:
             state["execution"] = _normalize_execution(
@@ -1796,6 +1982,9 @@ def execute_from_packet(state: dict) -> dict:
         allow_details = getattr(allow_result, "details", {})
         if isinstance(allow_details, dict) and allow_details:
             state["execution"]["supervisor_guard"] = dict(allow_details)
+        recent_buy_guard_update = _update_recent_buy_order_guard(state, order, state["execution"])
+        if bool(recent_buy_guard_update.get("enabled")):
+            state["execution"]["recent_buy_order_guard"] = recent_buy_guard_update
 
         _append_execution_trace_entries(
             state,

@@ -183,6 +183,11 @@ def build_monitor_no_trade_surface(
     confidence_score = _to_float(condition_scores.get("confidence_score"))
     confidence_threshold = _to_float(condition_scores.get("confidence_threshold"))
     confidence_gap = max(0.0, confidence_threshold - confidence_score) if confidence_threshold > 0.0 else 0.0
+    entry_quality_score = _to_float(
+        condition_scores.get("entry_quality_score")
+        if condition_scores.get("entry_quality_score") not in (None, "")
+        else row.get("entry_quality_score")
+    )
     reclaim_distance = row.get("reclaim_distance_to_ready")
     volume_distance = row.get("volume_distance_to_ready")
     breakout_distance = row.get("breakout_distance_to_ready")
@@ -197,6 +202,7 @@ def build_monitor_no_trade_surface(
         "volume_margin": volume_distance,
         "confidence_margin": round(confidence_score - confidence_threshold, 4) if confidence_threshold > 0.0 else None,
         "transition_readiness_score": transition_readiness_score if transition_readiness_score > 0.0 else None,
+        "entry_quality_score": round(entry_quality_score, 4) if entry_quality_score > 0.0 else None,
     }
     blocker_metrics = {k: v for k, v in blocker_metrics.items() if v not in (None, "")}
 
@@ -242,6 +248,10 @@ def build_monitor_no_trade_surface(
         "policy_alignment_state": str(summary.get("alignment_state") or ""),
         "primary_failure_axis": str(row.get("primary_failure_axis") or ""),
         "transition_readiness_score": round(transition_readiness_score, 4) if transition_readiness_score > 0.0 else None,
+        "entry_quality_score": round(entry_quality_score, 4) if entry_quality_score > 0.0 else None,
+        "entry_quality_tier": (
+            str(condition_scores.get("entry_quality_tier") or row.get("entry_quality_tier") or "").strip()
+        ),
         "policy_aware_gating_applied": bool(policy_gating.get("applied")),
         "chart_structure_hint_applied": bool(chart_hint.get("applied")),
         "confidence_score": round(confidence_score, 4) if confidence_score > 0.0 else None,
@@ -454,6 +464,12 @@ def build_entry_blocker_surface(
         "entry_style": str(policy_interpretation.get("entry_style") or "").strip(),
         "confidence_score": metrics.get("confidence_score", condition_scores.get("confidence_score")),
         "confidence_threshold": metrics.get("confidence_threshold", condition_scores.get("confidence_threshold")),
+        "entry_quality_score": metrics.get("entry_quality_score", condition_scores.get("entry_quality_score")),
+        "entry_quality_tier": metrics.get("entry_quality_tier", condition_scores.get("entry_quality_tier")),
+        "entry_quality_path": metrics.get("entry_quality_path", condition_scores.get("entry_quality_path")),
+        "entry_quality_observability_only": bool(
+            metrics.get("entry_quality_observability_only", condition_scores.get("entry_quality_observability_only"))
+        ),
         "rebound_ok": rebound_ok,
         "rebound_progress": metrics.get("rebound_progress"),
         "pullback_ok": pullback_ok,
@@ -464,6 +480,13 @@ def build_entry_blocker_surface(
         "volume_ok": volume_ok,
         "volume_ratio": metrics.get("volume_ratio"),
         "volume_confirmation_missing": bool(volume_missing),
+        "previous_close": metrics.get("previous_close"),
+        "session_open": metrics.get("session_open"),
+        "open_gap_pct": metrics.get("open_gap_pct"),
+        "prev_close_distance_pct": metrics.get("prev_close_distance_pct"),
+        "minutes_since_session_open": metrics.get("minutes_since_session_open"),
+        "opening_gap_chase_observed": bool(metrics.get("opening_gap_chase_observed")),
+        "opening_gap_context_observation_only": bool(metrics.get("opening_gap_context_observation_only")),
         "structure_hh_hl": structure_state,
         "breakout_ok": _resolve_check_state(
             name="breakout_ok",

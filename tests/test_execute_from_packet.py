@@ -321,6 +321,79 @@ def test_execute_from_packet_blocks_duplicate_buy_in_mock(tmp_path, monkeypatch)
     assert out["execution"]["reason"] == "duplicate_buy_position_exists"
 
 
+def test_execute_from_packet_blocks_recent_same_symbol_buy_before_position_reflects(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "true")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "allowed"
+
+            return R()
+
+    called = {"execute": 0}
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            called["execute"] += 1
+
+            class Result:
+                response = ApiResponse.from_http(200, '{"ord_no":"A000123","msg_cd":"0000","msg1":"accepted"}')
+                meta = {"executor": "real"}
+
+            return Result()
+
+    base_state = {
+        "catalog_path": str(cat),
+        "supervisor": AllowSupervisor(),
+        "executor": CaptureExecutor(),
+        "recent_buy_guard_path": str(tmp_path / "recent_buy_guard.json"),
+        "recent_buy_guard_ttl_sec": 600,
+        "runtime_mode": "integrated_chain",
+        "runtime_phase": "session",
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [],
+            "_health": {
+                "reader_ok": True,
+                "source": "reader",
+                "positions_source": "reader_positions_authoritative_empty",
+                "reconciliation_status": "reader_aligned",
+                "reader_positions_authoritative": True,
+                "positions_mismatch_detected": False,
+                "reconciliation_applied": False,
+                "reader_positions_count": 0,
+                "persisted_positions_count": 0,
+            },
+        },
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out1 = execute_from_packet({**base_state, "now_epoch": 1000})
+    assert out1["execution"]["allowed"] is True
+    assert out1["execution"]["execution_ok"] is True
+    assert out1["execution"]["recent_buy_order_guard"]["updated"] is True
+
+    out2 = execute_from_packet({**base_state, "now_epoch": 1060})
+    assert out2["execution"]["allowed"] is False
+    assert out2["execution"]["reason"] == "duplicate_buy_recent_order_exists"
+    assert out2["execution"]["recent_buy_order_guard"]["remaining_sec"] == 540
+    assert called["execute"] == 1
+
+
 def test_execute_from_packet_blocks_buy_when_mock_cash_insufficient(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_MODE", "mock")
 

@@ -109,6 +109,37 @@ def test_write_scanner_artifact_overwrites_after_post_scanner_refresh(tmp_path: 
     assert second_payload["top_ranked_symbols"][:2] == ["CCC", "DDD"]
 
 
+def test_write_scanner_artifact_keeps_commander_visible_candidate_scope(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    symbols = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+    ranked = [
+        {"symbol": symbol, "score_total": 1.0 - (idx * 0.01), "score_breakdown": {"rank": idx}}
+        for idx, symbol in enumerate(symbols)
+    ]
+    state = {
+        "run_id": "run-scanner-visible-scope",
+        "started_at": "2026-03-18T01:02:03+00:00",
+        "runtime_phase": "session",
+        "reports_root": str(reports_root),
+        "selected": dict(ranked[0]),
+        "ranked_candidates": ranked,
+        "scanner_output": {
+            "top_stock": "AAA",
+            "selection_summary": "visible_scope",
+            "applied_scanner_policy": {
+                "entry_control": {"max_priority_rank": 10, "max_runner_ups": 9}
+            },
+        },
+    }
+
+    path = Path(write_scanner_artifact(state))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["top_ranked_symbols"] == symbols
+    assert [row["symbol"] for row in payload["ranked_candidates"]] == symbols
+    assert [row["symbol"] for row in payload["candidate_ranking_table"]["rows"]] == symbols
+
+
 def test_llm_bundle_writes_to_normalized_reports_llm_path(tmp_path: Path) -> None:
     reports_root = tmp_path / "reports"
     state = {
@@ -120,8 +151,8 @@ def test_llm_bundle_writes_to_normalized_reports_llm_path(tmp_path: Path) -> Non
         state,
         artifact_name="strategist",
         prompt_payload={"prompt_text": "hello"},
-        response_payload={"response_text": "{\"ok\":true}"},
-        meta_payload={"llm_status": "ok", "model": "minimax/minimax-m2.5"},
+        response_payload={"response_text": "{\"playbook\":\"defensive\",\"selected_themes\":[\"semiconductor\"]}"},
+        meta_payload={"component": "strategist", "llm_status": "ok", "model": "minimax/minimax-m2.5"},
     )
 
     paths = llm_run_artifact_paths("run-llm-1", day="2026-03-18", reports_root=reports_root, artifact_name="strategist")
@@ -134,3 +165,8 @@ def test_llm_bundle_writes_to_normalized_reports_llm_path(tmp_path: Path) -> Non
     meta_payload = json.loads(paths["meta"].read_text(encoding="utf-8"))
     assert str(meta_payload.get("prompt_hash") or "").strip()
     assert str(meta_payload.get("response_hash") or "").strip()
+    assert Path(refs["strategist_summary_md_ref"]) == paths["base_dir"] / "strategist_summary.md"
+    assert Path(refs["strategist_summary_json_ref"]) == paths["base_dir"] / "strategist_summary.json"
+    assert (paths["base_dir"] / "strategist_summary.md").exists()
+    assert (paths["base_dir"] / "strategist_summary.json").exists()
+    assert meta_payload["strategist_summary_md_ref"].endswith("strategist_summary.md")

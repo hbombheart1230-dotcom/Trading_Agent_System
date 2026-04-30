@@ -33,6 +33,8 @@ Those remain in:
 - `monitor_memory_bias_2026-04-21.md`
 - `entry_participation_control_2026-04-27.md`
 - `market_representative_guard_2026-04-28.md`
+- `duplicate_buy_and_closeout_guard_2026-04-29.md`
+- `../runtime_entrypoint/strategy_conservatism_review_2026-04-29.md`
 
 Commander-specific memory control in this folder assumes the packet schema defined in:
 
@@ -106,6 +108,13 @@ Now implemented:
 - session closeout buy-block now backfills `minutes_to_close` from runtime KST clock
   - Commander closeout fast-path no longer depends on prepopulated `market_context.minutes_to_close`
   - Monitor closeout window guard uses the same runtime-clock fallback, so post-15:20 BUYs are blocked even when market context is sparse
+- session closeout clock now overrides stale `market_context.minutes_to_close` when a reliable runtime clock is present
+  - stale upstream values are retained only when no `tick_ts`/runtime clock is available
+  - corrected values record the previous value/source for later audit
+- execution now has a recent same-symbol BUY guard
+  - accepted BUY orders are recorded before portfolio reflection catches up
+  - repeated same-symbol BUYs are blocked during the reflection window with `duplicate_buy_recent_order_exists`
+  - accepted SELLs clear the same-symbol recent BUY guard record
 
 ## Entry Participation Control
 
@@ -115,6 +124,8 @@ Commander owns the entry participation decision when repeated monitor blocks occ
 - `expand_when_market_ok` expands monitor runner-up search beyond the default Top-5 and raises scanner scan aggressiveness; for repeated VWAP overextension it can also allow a bounded dynamic VWAP entry band.
 - If the market is defensive, blocked, degraded, or an open position is active, Commander emits a preserve mode such as `preserve_defensive_no_trade_ok`, `blocked_no_entry_expansion`, or `position_management_no_entry_expansion`.
 - Monitor still owns the final entry gate. Commander expansion only broadens the reviewed pool and, when explicitly allowed, widens the dynamic band; it does not force a BUY.
+- A future probe-entry lane should remain Commander-owned. It may allow minimum-size participation under repeated expandable blockers only when cost-adjusted edge, volume, and runtime health are acceptable.
+- Probe entry is not a relaxation of hard safety rules. It must be explicitly surfaced as `entry_lane=probe` or equivalent in Commander and Monitor artifacts.
 
 Detailed contract:
 

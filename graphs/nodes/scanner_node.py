@@ -61,6 +61,18 @@ def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _memory_bias_observation_only(state: Dict[str, Any] | None = None) -> bool:
+    if isinstance(state, dict):
+        for key in ("memory_bias_observation_only", "commander_memory_bias_observation_only"):
+            if state.get(key) not in (None, ""):
+                return _is_trueish(state.get(key))
+    for name in ("MEMORY_BIAS_OBSERVATION_ONLY", "COMMANDER_MEMORY_BIAS_OBSERVATION_ONLY"):
+        raw = str(os.getenv(name, "") or "").strip()
+        if raw:
+            return _is_trueish(raw)
+    return False
+
+
 def _to_int(v: Any, default: int) -> int:
     try:
         return int(float(v))
@@ -513,7 +525,14 @@ def _compact_selected_snapshot(selected: Dict[str, Any] | None) -> Dict[str, Any
 def _feature_coverage_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     features = row.get("features") if isinstance(row.get("features"), dict) else {}
     if not isinstance(features, dict):
-        return {"present": 0, "total": 0}
+        return {
+            "present": 0,
+            "total": 0,
+            "coverage_ratio": 0.0,
+            "quality": "missing",
+            "present_keys": [],
+            "missing_keys": [],
+        }
     interesting_keys = [
         "engine_ma20_gap",
         "engine_ma60",
@@ -529,8 +548,25 @@ def _feature_coverage_summary(row: Dict[str, Any]) -> Dict[str, Any]:
         "engine_regime",
         "engine_signal_score",
     ]
-    present = sum(1 for key in interesting_keys if features.get(key) not in (None, ""))
-    return {"present": int(present), "total": int(len(interesting_keys))}
+    present_keys = [key for key in interesting_keys if features.get(key) not in (None, "")]
+    missing_keys = [key for key in interesting_keys if features.get(key) in (None, "")]
+    total = len(interesting_keys)
+    present = len(present_keys)
+    ratio = float(present) / float(total) if total else 0.0
+    if ratio >= 0.75:
+        quality = "strong"
+    elif ratio >= 0.5:
+        quality = "partial"
+    else:
+        quality = "weak"
+    return {
+        "present": int(present),
+        "total": int(total),
+        "coverage_ratio": float(ratio),
+        "quality": quality,
+        "present_keys": present_keys,
+        "missing_keys": missing_keys,
+    }
 
 
 def _compact_feature_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -554,8 +590,11 @@ def _compact_feature_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
         "compat_volume_ratio": features.get("compat_volume_ratio"),
         "compat_breakout_gap_pct": features.get("compat_breakout_gap_pct"),
         "engine_ma20_gap": features.get("engine_ma20_gap"),
+        "engine_ma60": features.get("engine_ma60"),
+        "engine_ma120": features.get("engine_ma120"),
         "engine_adx14": features.get("engine_adx14"),
         "engine_trend_strength": features.get("engine_trend_strength"),
+        "engine_atr14": features.get("engine_atr14"),
         "engine_volume_spike20": features.get("engine_volume_spike20"),
         "engine_volatility20": features.get("engine_volatility20"),
         "engine_vwap_distance": features.get("engine_vwap_distance"),
@@ -887,6 +926,13 @@ def _ranking_table_rows(rows: List[Dict[str, Any]], *, max_rows: int = 5) -> Lis
             }
         )
     return out
+
+
+def _candidate_visibility_limit(policy: Dict[str, Any]) -> int:
+    entry_control = policy.get("entry_control") if isinstance(policy.get("entry_control"), dict) else {}
+    raw = entry_control.get("max_priority_rank") or policy.get("max_priority_rank") or 10
+    value = int(_to_float(raw) or 10)
+    return int(min(10, max(5, value)))
 
 
 def _log_scanner_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -3515,7 +3561,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             candidate_sources=list(candidate_meta.get("sources") or []),
             memory_bias=scanner_memory_bias,
         )
-        scanner_memory_bias_adjustment = float(memory_bias_result.get("bias_adjustment") or 0.0)
+        scanner_memory_bias_observed_adjustment = float(memory_bias_result.get("bias_adjustment") or 0.0)
+        scanner_memory_bias_observation_only = _memory_bias_observation_only(state)
+        scanner_memory_bias_adjustment = 0.0 if scanner_memory_bias_observation_only else scanner_memory_bias_observed_adjustment
         candidate_rows = []
         raw_minute_rows = minute_rows_by_symbol.get(_norm_symbol(symbol)) if isinstance(minute_rows_by_symbol, dict) else None
         if isinstance(raw_minute_rows, list) and raw_minute_rows:
@@ -3625,6 +3673,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "repeat_blocker_penalty": float(-repeat_blocker_penalty),
             "scanner_bias": float(scanner_bias_adjustment),
             "scanner_memory_bias": float(scanner_memory_bias_adjustment),
+            "scanner_memory_bias_observed": float(scanner_memory_bias_observed_adjustment),
             "symbol_prior": float(symbol_prior_adjustment),
             "entry_compatibility_bias": float(compatibility_bias),
             "risk_penalty": float(-risk_penalty_score),
@@ -3638,6 +3687,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["bias_adjustments"] = list(bias_result.get("bias_adjustments") or [])
         row["bias_summary"] = dict(bias_result.get("bias_summary") or {})
         row["memory_bias_adjustment"] = float(scanner_memory_bias_adjustment)
+        row["memory_bias_observed_adjustment"] = float(scanner_memory_bias_observed_adjustment)
+        row["memory_bias_observation_only"] = bool(scanner_memory_bias_observation_only)
         row["memory_bias_source_delta"] = float(memory_bias_result.get("source_delta") or 0.0)
         row["memory_bias_symbol_delta"] = float(memory_bias_result.get("symbol_delta") or 0.0)
         row["memory_bias_adjustments"] = list(memory_bias_result.get("adjustments") or [])
@@ -3979,6 +4030,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         for r in scan_results_sorted
         if isinstance(r, dict)
     ]
+    candidate_visibility_limit = _candidate_visibility_limit(commander_scanner_policy)
+    visible_ranked_candidates = list(state.get("ranked_candidates") or [])[:candidate_visibility_limit]
     state["selected"] = selected
     state["top_stock"] = str(selected.get("symbol") or "") if isinstance(selected, dict) else ""
     top_score = (
@@ -4013,8 +4066,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "candidate_count": int(len(scan_results_sorted)),
         "candidate_pool_size": int(len(scan_results_sorted)),
-        "ranked_candidates": list(state.get("ranked_candidates") or [])[:5],
-        "watch_candidates": list(state.get("ranked_candidates") or [])[:5],
+        "ranked_candidates": visible_ranked_candidates,
+        "watch_candidates": visible_ranked_candidates,
         "candidate_source": str(pool_meta.get("candidate_source") or ""),
         "scanner_candidate_source": str(pool_meta.get("scanner_candidate_source") or ""),
         "scanner_policy_source": str(pool_meta.get("scanner_policy_source") or ""),
@@ -4183,7 +4236,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "fallback_reasons": list(feature_errors),
         "error_count": len(feature_errors),
     }
-    ranking_table = _ranking_table_rows(scan_results_sorted, max_rows=5)
+    ranking_table = _ranking_table_rows(scan_results_sorted, max_rows=candidate_visibility_limit)
     selected_snapshot = _compact_selected_snapshot(selected if isinstance(selected, dict) else None)
     selected_symbol = str((selected or {}).get("symbol") or "") if isinstance(selected, dict) else ""
     selected_rank = 0
@@ -4208,19 +4261,21 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "bias_adjustment": float(_to_float(row.get("bias_adjustment"))),
             "bias_adjustments": list(row.get("bias_adjustments") or []),
         }
-        for row in list(scan_results_sorted)[:5]
+        for row in list(scan_results_sorted)[:candidate_visibility_limit]
         if isinstance(row, dict) and str(row.get("symbol") or "").strip()
     ]
     candidate_memory_bias_adjustments = [
         {
             "symbol": str(row.get("symbol") or ""),
             "memory_bias_adjustment": float(_to_float(row.get("memory_bias_adjustment"))),
+            "memory_bias_observed_adjustment": float(_to_float(row.get("memory_bias_observed_adjustment"))),
+            "memory_bias_observation_only": bool(row.get("memory_bias_observation_only")),
             "memory_bias_source_delta": float(_to_float(row.get("memory_bias_source_delta"))),
             "memory_bias_symbol_delta": float(_to_float(row.get("memory_bias_symbol_delta"))),
             "memory_bias_adjustments": list(row.get("memory_bias_adjustments") or []),
             "memory_bias_summary": dict(row.get("memory_bias_summary") or {}),
         }
-        for row in list(scan_results_sorted)[:5]
+        for row in list(scan_results_sorted)[:candidate_visibility_limit]
         if isinstance(row, dict) and str(row.get("symbol") or "").strip()
     ]
     candidate_symbol_prior_adjustments = [
@@ -4230,7 +4285,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "symbol_prior_reasons": list(row.get("symbol_prior_reasons") or []),
             "symbol_prior_summary": dict(row.get("symbol_prior_summary") or {}),
         }
-        for row in list(scan_results_sorted)[:5]
+        for row in list(scan_results_sorted)[:candidate_visibility_limit]
         if isinstance(row, dict) and str(row.get("symbol") or "").strip()
     ]
     scanner_bias_applied = any(abs(float(_to_float(row.get("bias_adjustment")))) > 1e-9 for row in list(scan_results_sorted))
@@ -4239,6 +4294,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     selected_memory_bias_result = {
         "bias_adjustment": float(_to_float((selected or {}).get("memory_bias_adjustment"))) if isinstance(selected, dict) else 0.0,
+        "observed_bias_adjustment": float(_to_float((selected or {}).get("memory_bias_observed_adjustment"))) if isinstance(selected, dict) else 0.0,
+        "observation_only": bool((selected or {}).get("memory_bias_observation_only")) if isinstance(selected, dict) else False,
         "source_delta": float(_to_float((selected or {}).get("memory_bias_source_delta"))) if isinstance(selected, dict) else 0.0,
         "symbol_delta": float(_to_float((selected or {}).get("memory_bias_symbol_delta"))) if isinstance(selected, dict) else 0.0,
         "adjustments": list((selected or {}).get("memory_bias_adjustments") or []) if isinstance(selected, dict) else [],
@@ -4659,7 +4716,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_score_total": float(selected_score_total),
             "scanner_score_breakdown": dict((selected or {}).get("score_breakdown") or {}) if isinstance(selected, dict) else {},
             "scanner_top_candidates": ranking_table[:3],
-            "top_ranked_symbols": [str(x.get("symbol") or "") for x in list(state.get("ranked_candidates") or [])[:5]],
+            "top_ranked_symbols": [str(x.get("symbol") or "") for x in visible_ranked_candidates],
             "strategist_scanner_priority": list(scanner_priority),
             "strategist_scanner_source_policy": dict(pool_meta.get("scanner_source_policy") or {}),
             "condition_search_status": str(pool_meta.get("condition_search_status") or ""),
@@ -4770,7 +4827,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             parsed_output={
                 "selected_symbol": state.get("top_stock") or None,
                 "top_score": float(_to_float(top_score) if top_score is not None else 0.0),
-                "ranked_candidates": list(state.get("ranked_candidates") or [])[:5],
+                "ranked_candidates": visible_ranked_candidates,
                 "selected_candidate": _compact_selected_snapshot(selected if isinstance(selected, dict) else None),
             },
             decision_link={

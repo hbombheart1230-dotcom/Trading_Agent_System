@@ -78,6 +78,38 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in ("1", "true", "yes", "y", "on")
 
 
+def _strategy_memory_usage_disabled(policy_or_payload: Any | None = None) -> bool:
+    obj = dict(policy_or_payload or {}) if isinstance(policy_or_payload, dict) else {}
+    commander_policy = (
+        dict(obj.get("commander_memory_policy") or {})
+        if isinstance(obj.get("commander_memory_policy"), dict)
+        else obj
+    )
+    applied_policy = obj.get("applied_policy") if isinstance(obj.get("applied_policy"), dict) else {}
+    commander_applied = applied_policy.get("commander") if isinstance(applied_policy.get("commander"), dict) else {}
+    strategist_applied = applied_policy.get("strategist") if isinstance(applied_policy.get("strategist"), dict) else {}
+    commander_memory_usage = (
+        commander_applied.get("memory_usage")
+        if isinstance(commander_applied.get("memory_usage"), dict)
+        else {}
+    )
+    strategist_memory_usage = (
+        strategist_applied.get("memory_usage")
+        if isinstance(strategist_applied.get("memory_usage"), dict)
+        else {}
+    )
+    return bool(
+        _env_bool("STRATEGIST_MEMORY_USAGE_DISABLED")
+        or _env_bool("COMMANDER_MEMORY_USAGE_DISABLED")
+        or bool(obj.get("strategist_memory_usage_disabled"))
+        or bool(obj.get("commander_memory_usage_disabled"))
+        or bool(strategist_memory_usage.get("disabled"))
+        or bool(commander_memory_usage.get("disabled"))
+        or str(commander_policy.get("application_mode") or "").strip().lower() == "disabled"
+        or bool(commander_policy.get("disabled"))
+    )
+
+
 def _to_int(v: Any, default: int) -> int:
     try:
         return int(float(v))
@@ -958,6 +990,10 @@ def _normalize_strategy_adjustment_directives(
     selected_symbol_memory: Dict[str, Any],
 ) -> Dict[str, Any]:
     raw = dict(raw_directives or {}) if isinstance(raw_directives, dict) else {}
+    memory_usage_disabled = _strategy_memory_usage_disabled(commander_context.get("commander_memory_policy"))
+    if memory_usage_disabled:
+        strategy_memory = {}
+        selected_symbol_memory = {}
     refresh_context = (
         dict((commander_context.get("strategist_refresh_context") or {}))
         if isinstance(commander_context.get("strategist_refresh_context"), dict)
@@ -1113,12 +1149,31 @@ def _normalize_strategy_adjustment_directives(
 
 
 def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    memory_usage_disabled = _strategy_memory_usage_disabled(payload)
+    memory_system_instruction = (
+        "Memory packets are temporarily disabled by Commander policy. "
+        "Treat read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, and commander_memory_policy as audit-only surfaces. "
+        "Do not use memory fields to adjust playbook, selected themes, monitor_entry_policy, scanner guidance, monitor focus, or selected_symbol_bias_action. "
+        "strategy_adjustment_directives must be based on current market, scanner, monitor, refresh, and risk evidence only. "
+        if memory_usage_disabled
+        else (
+            "You MUST use the provided deterministic memory packets as primary constraints: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
+            "You MUST convert those inputs into explicit strategy adjustment directives. "
+        )
+    )
+    memory_user_instruction = (
+        "Memory usage is temporarily disabled. Do not use any memory packet as a reason to change strategy, thresholds, themes, or symbol bias; mention memory only as disabled/audit-only if needed. "
+        if memory_usage_disabled
+        else (
+            "The memory packets are not optional background. They are the main basis for strategic adjustment. "
+            "Input packets: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
+        )
+    )
     system = (
         "You are the Strategist agent for an automated trading system. "
         "You must output a strategic frame only. "
         "Do not select final stock and do not produce order instructions. "
-        "You MUST use the provided deterministic memory packets as primary constraints: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
-        "You MUST convert those inputs into explicit strategy adjustment directives. "
+        f"{memory_system_instruction}"
         "Do not merely summarize, restate, or lightly reference the inputs. "
         "Your role is to choose exactly ONE playbook, provide a short rationale, produce a realistic and bounded monitor_entry_policy, and produce explicit strategy_adjustment_directives that indicate what should change, what should be maintained, and why. "
         "Return exactly one minified JSON object only. "
@@ -1229,9 +1284,12 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         },
     }
     user = (
-        "Use the provided market context, candidate hints, and deterministic memory packets. "
-        "The memory packets are not optional background. They are the main basis for strategic adjustment. "
-        "Input packets: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
+        (
+            "Use the provided market context and candidate hints. "
+            if memory_usage_disabled
+            else "Use the provided market context, candidate hints, and deterministic memory packets. "
+        )
+        + f"{memory_user_instruction}"
         "Decision requirements: choose exactly ONE playbook, provide a short but concrete rationale, produce a realistic and bounded monitor_entry_policy, and produce strategy_adjustment_directives that clearly state whether to maintain, tighten, relax, rebalance, deprioritize, prefer, or switch, which fields, axes, or playbooks are affected, and why this action is justified by deterministic evidence. "
         "Prefer changing strategy only when deterministic evidence supports it. "
         "Prefer maintaining current baseline when evidence is weak or mixed. "
@@ -2883,7 +2941,8 @@ def _merge_theme_symbol_map(
         if not name:
             continue
         bucket = list(out.get(name) or [])
-        if protect_existing_themes and bucket:
+        if protect_existing_themes:
+            out[name] = bucket
             continue
         seen = set(bucket)
         for sym in candidate_symbols:
@@ -2894,6 +2953,12 @@ def _merge_theme_symbol_map(
             bucket.append(s)
         out[name] = bucket
     return out
+
+
+def _theme_packet_symbol_map_is_authoritative(packet: Dict[str, Any]) -> bool:
+    if not isinstance(packet, dict):
+        return False
+    return str(packet.get("status") or "").strip().lower() == "ok" and not bool(packet.get("fallback_used"))
 
 
 def _merge_theme_packet_into_state(state: Dict[str, Any], packet: Dict[str, Any]) -> None:
@@ -2934,7 +2999,27 @@ def _merge_theme_packet_into_state(state: Dict[str, Any], packet: Dict[str, Any]
         state["theme_scores"] = scores
 
     packet_map = packet.get("theme_map") if isinstance(packet.get("theme_map"), dict) else {}
-    if packet_map:
+    packet_map_authoritative = _theme_packet_symbol_map_is_authoritative(packet)
+    if packet_map or packet_map_authoritative:
+        top_theme_keys = {str(name or "").strip().lower() for name in top_theme_names if str(name or "").strip()}
+
+        def packet_symbols_for(theme_key: str) -> List[str]:
+            for key, symbols in packet_map.items():
+                name = str(key or "").strip().lower()
+                if name != theme_key:
+                    continue
+                out_symbols: List[str] = []
+                seen_symbols: set[str] = set()
+                if isinstance(symbols, list):
+                    for sym in symbols:
+                        s = str(sym or "").strip().upper()
+                        if not s or s in seen_symbols:
+                            continue
+                        seen_symbols.add(s)
+                        out_symbols.append(s)
+                return out_symbols
+            return []
+
         def merge_map(existing: Any) -> Dict[str, List[str]]:
             out: Dict[str, List[str]] = {}
             if isinstance(existing, dict):
@@ -2952,6 +3037,11 @@ def _merge_theme_packet_into_state(state: Dict[str, Any], packet: Dict[str, Any]
                             seen.add(s)
                             bucket.append(s)
                     out[name] = bucket
+            if packet_map_authoritative:
+                for name in top_theme_keys:
+                    # A Kiwoom theme with no returned component list must stay
+                    # empty. Do not backfill it with broad scanner candidates.
+                    out[name] = packet_symbols_for(name)
             for key, symbols in packet_map.items():
                 name = str(key or "").strip().lower()
                 if not name:
@@ -4143,6 +4233,7 @@ def _build_commander_context_summary(
         commander_memory_policy = build_commander_memory_policy(
             session_bias=str(raw.get("session_bias") or runtime_phase or "session"),
             memory_packets=memory_packets,
+            usage_disabled=_strategy_memory_usage_disabled(state),
         )
         scanner_memory_bias = build_scanner_memory_bias(
             commander_memory_policy=commander_memory_policy,
@@ -5169,19 +5260,13 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state.get("theme_map"),
         themes=list(themes),
         candidate_symbols=list(candidate_symbols),
-        protect_existing_themes=(
-            str(theme_strength_packet.get("status") or "").strip().lower() == "ok"
-            and bool(theme_strength_packet.get("theme_map"))
-        ),
+        protect_existing_themes=_theme_packet_symbol_map_is_authoritative(theme_strength_packet),
     )
     state["sector_map"] = _merge_theme_symbol_map(
         state.get("sector_map"),
         themes=list(themes),
         candidate_symbols=list(candidate_symbols),
-        protect_existing_themes=(
-            str(theme_strength_packet.get("status") or "").strip().lower() == "ok"
-            and bool(theme_strength_packet.get("theme_map"))
-        ),
+        protect_existing_themes=_theme_packet_symbol_map_is_authoritative(theme_strength_packet),
     )
 
     regime_score = _compose_regime_score(
@@ -5561,19 +5646,13 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             state.get("theme_map"),
             themes=list(themes),
             candidate_symbols=list(state.get("candidate_symbols") or []),
-            protect_existing_themes=(
-                str(theme_strength_packet.get("status") or "").strip().lower() == "ok"
-                and bool(theme_strength_packet.get("theme_map"))
-            ),
+            protect_existing_themes=_theme_packet_symbol_map_is_authoritative(theme_strength_packet),
         )
         state["sector_map"] = _merge_theme_symbol_map(
             state.get("sector_map"),
             themes=list(themes),
             candidate_symbols=list(state.get("candidate_symbols") or []),
-            protect_existing_themes=(
-                str(theme_strength_packet.get("status") or "").strip().lower() == "ok"
-                and bool(theme_strength_packet.get("theme_map"))
-            ),
+            protect_existing_themes=_theme_packet_symbol_map_is_authoritative(theme_strength_packet),
         )
 
     theme_strategy = _build_theme_strategy_surface(

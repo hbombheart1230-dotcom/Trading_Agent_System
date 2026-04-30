@@ -116,6 +116,13 @@ def test_entry_blocker_read_model_aggregates_rows_symbols_and_time_buckets(tmp_p
                 "confidence_threshold": 0.55,
                 "pullback_depth_pct": 0.0014,
                 "volume_ratio": 1.05,
+                "previous_close": 226000.0,
+                "session_open": 229000.0,
+                "open_gap_pct": 0.01327,
+                "prev_close_distance_pct": 0.01769,
+                "minutes_since_session_open": 5.0,
+                "opening_gap_chase_observed": True,
+                "opening_gap_context_observation_only": True,
             },
             "scanner_rank": 1,
             "scanner_score_total": 0.91,
@@ -239,6 +246,13 @@ def test_entry_blocker_read_model_aggregates_rows_symbols_and_time_buckets(tmp_p
     assert rows[1]["time_bucket"] == "mid_session"
     assert rows[2]["time_bucket"] == "late_session"
     assert rows[0]["scanner_selected_summary"]["why"] == "leader with reclaim setup"
+    assert rows[0]["previous_close"] == 226000.0
+    assert rows[0]["session_open"] == 229000.0
+    assert rows[0]["open_gap_pct"] == 0.01327
+    assert rows[0]["prev_close_distance_pct"] == 0.01769
+    assert rows[0]["minutes_since_session_open"] == 5.0
+    assert rows[0]["opening_gap_chase_observed"] is True
+    assert rows[0]["opening_gap_context_observation_only"] is True
     assert rows[1]["volume_confirmation_missing"] is True
     assert "pullback_timing" in rows[0]["blocker_families"]
     assert "volume_confirmation" in rows[1]["blocker_families"]

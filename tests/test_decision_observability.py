@@ -56,6 +56,13 @@ def test_build_entry_blocker_surface_normalizes_entry_evidence_and_blocks() -> N
                 "pullback_depth_pct": 0.0015,
                 "volume_ok": False,
                 "volume_ratio": 0.72,
+                "previous_close": 226000.0,
+                "session_open": 229000.0,
+                "open_gap_pct": 0.01327,
+                "prev_close_distance_pct": 0.01769,
+                "minutes_since_session_open": 3.0,
+                "opening_gap_chase_observed": True,
+                "opening_gap_context_observation_only": True,
                 "confidence_score": 0.51,
                 "confidence_threshold": 0.55,
                 "rebound_progress": 0.33,
@@ -83,6 +90,13 @@ def test_build_entry_blocker_surface_normalizes_entry_evidence_and_blocks() -> N
     assert surface["pullback_ok"] is False
     assert surface["pullback_not_mature"] is True
     assert surface["volume_confirmation_missing"] is False
+    assert surface["previous_close"] == 226000.0
+    assert surface["session_open"] == 229000.0
+    assert surface["open_gap_pct"] == 0.01327
+    assert surface["prev_close_distance_pct"] == 0.01769
+    assert surface["minutes_since_session_open"] == 3.0
+    assert surface["opening_gap_chase_observed"] is True
+    assert surface["opening_gap_context_observation_only"] is True
     assert surface["cooldown_blocked"] is True
     assert surface["post_exit_cooldown_remaining_sec"] == 120
     assert surface["structure_hh_hl"] == "weakening"

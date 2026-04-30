@@ -393,6 +393,48 @@ def test_m31_17_kiwoom_theme_packet_drives_themes_and_sector_candidates(monkeypa
     assert out.get("top_stock") in {"005930", "000660", "373220"}
 
 
+def test_m31_17_kiwoom_theme_without_components_does_not_backfill_all_candidates(monkeypatch):
+    monkeypatch.delenv("KIWOOM_THEME_LIVE_FETCH", raising=False)
+    out = strategist_node(
+        {
+            "candidate_symbols": ["000660", "005930", "373220"],
+            "mock_theme_groups": [
+                {
+                    "thema_grp_cd": "140",
+                    "thema_nm": "battery",
+                    "stk_num": "3",
+                    "flu_rt": "+4.9",
+                    "rising_stk_num": "3",
+                    "fall_stk_num": "0",
+                    "dt_prft_rt": "+27.5",
+                },
+                {
+                    "thema_grp_cd": "319",
+                    "thema_nm": "semiconductor",
+                    "stk_num": "4",
+                    "flu_rt": "+1.0",
+                    "rising_stk_num": "2",
+                    "fall_stk_num": "2",
+                    "dt_prft_rt": "+10.0",
+                },
+            ],
+            "mock_theme_component_map": {
+                "semiconductor": ["005930"],
+            },
+            "policy": {
+                "use_global_sentiment": False,
+                "use_news_analysis": False,
+                "use_universe_builder": False,
+            },
+        }
+    )
+
+    theme_map = out.get("theme_map") or {}
+    assert theme_map.get("semiconductor") == ["005930"]
+    assert theme_map.get("battery") == []
+    assert "000660" not in theme_map.get("battery", [])
+
+
 def test_m31_17_commander_scanner_live_fetch_drives_strategist_theme_packet(monkeypatch):
     monkeypatch.delenv("KIWOOM_THEME_LIVE_FETCH", raising=False)
     monkeypatch.delenv("KIWOOM_THEME_FETCH_COMPONENTS", raising=False)

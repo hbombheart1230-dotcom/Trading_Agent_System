@@ -23,6 +23,21 @@ Operator summaries are supplemental:
 
 The two surfaces overlap through underlying trade artifacts, but they are not identical. Do not remove the performance memory source until the operator summary pipeline explicitly becomes the canonical strategy-memory producer.
 
+## Live Refresh Contract
+
+After each live trade bundle is persisted, the operator summary surface must be refreshed best-effort:
+
+- symbol: refresh the current trade symbol under `reports/operator_summary/symbols/<SYMBOL>/`.
+- daily: refresh `reports/operator_summary/daily/<YYYY-MM-DD>/daily_summary.json|md`.
+- weekly: refresh the ISO week summary for the trade day.
+- monthly: refresh the calendar month summary for the trade day.
+
+This refresh is deterministic and must not call an LLM. Refresh failures are observability issues only and must not block execution, trade artifact persistence, or AI trade report generation.
+
+The live runner writes a per-trade refresh receipt at:
+
+- `reports/trades/<YYYY-MM-DD>/<TRADE_ID>/operator_summary_refresh.json`
+
 ## Runtime Contract
 
 Each memory packet may include:

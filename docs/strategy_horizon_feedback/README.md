@@ -37,6 +37,8 @@ The first implementation should be observability-only.
 
 Strategist may propose a horizon, but Commander owns the operational horizon that Monitor and Reporter should consume. Monitor may continue to exit as it does today, but every exit should record whether it aligned with the Commander horizon policy and should retain the original strategist proposal for comparison. Actual hold-extension behavior should only be enabled after enough post-exit shadow data has been collected.
 
+Exit loosening must not be used as the first fix for low trade quality. As of the `2026-04-29` conservatism review, recent closed trades show that fee/tax drag and breakeven distance can turn flat gross exits into meaningful net losses. Any wider stop, delayed peak-drawdown exit, or hold-extension rule should be gated behind a cost-aware entry filter and reported as `cost_adjusted_edge_ok=true`.
+
 ## Current Validation Status
 
 As of `2026-04-28 12:38 KST`, the latest live monitor artifact verifies the observability-only path:
@@ -55,3 +57,4 @@ Current limitation:
 Cross-folder status:
 
 - `docs/runtime_entrypoint/current_validation_status_2026-04-28.md`
+- `docs/runtime_entrypoint/strategy_conservatism_review_2026-04-29.md`

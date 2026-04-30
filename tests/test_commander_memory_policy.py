@@ -287,3 +287,24 @@ def test_symbol_memory_packet_blocks_override_when_memory_is_stale() -> None:
     assert packet["override_eligible"] is False
     assert packet["override_gate_reason"] == "stale_symbol_memory"
     assert "symbol_memory_gate:stale_symbol_memory" in policy["rationale"]
+
+
+def test_commander_memory_policy_can_disable_all_memory_usage_by_env(monkeypatch) -> None:
+    monkeypatch.setenv("COMMANDER_MEMORY_USAGE_DISABLED", "true")
+
+    policy = build_commander_memory_policy(
+        session_bias="active_selection",
+        memory_packets={
+            "daily_strategy_memory": {"status": "ok", "active": True},
+            "weekly_strategy_memory": {"status": "ok", "active": True, "sample_day_count": 5},
+            "monthly_strategy_memory": {"status": "ok", "active": True, "sample_day_count": 10},
+            "symbol_memory_packet": {"status": "ok", "override_eligible": True},
+        },
+    )
+
+    assert policy["application_mode"] == "disabled"
+    assert policy["active_layers"] == []
+    assert policy["scanner_bias_enabled"] is False
+    assert policy["monitor_bias_enabled"] is False
+    assert policy["symbol_memory_override_enabled"] is False
+    assert policy["disabled_reason"] == "memory_usage_disabled_by_env"

@@ -5,6 +5,7 @@ import time
 from typing import Any, Dict, List
 
 import libs.reporting.trade_report_ai as mod
+from libs.reporting.report_truth_surface import build_trade_report_truth_surface
 
 
 class _Route:
@@ -2237,7 +2238,8 @@ def test_ai_trade_report_fallback_enriches_scanner_summary_and_basis() -> None:
     assert any("총 4개 후보를 비교했고 000660이 1위로 선정됐습니다." in row for row in why_bullets)
     assert any("주요 점수 기여는 모멘텀 0.209, 거래대금 0.200, 추세 0.184였습니다." in row for row in why_bullets)
     assert any("상위 후보는 #1 000660(1.286) / #2 005930(1.223) / #3 047040(1.201) 순이었습니다." in row for row in why_bullets)
-    assert any("차트 피처 커버리지는 12/13였습니다. 누락된 항목은 60일선, 120일선이었습니다." in row for row in why_bullets)
+    assert any("차트 피처 커버리지는 12/13였습니다." in row for row in why_bullets)
+    assert not any("누락된 항목은 60일선, 120일선" in row for row in why_bullets)
     assert "000660이 스캐너 1위 후보로 올라온 뒤 매수로 이어졌습니다." in entry_summary
 
 
@@ -2275,6 +2277,9 @@ def test_build_entry_decision_summary_and_bullets_surface_monitor_path_and_polic
             "entry_condition_scores": {
                 "confidence_score": 0.55,
                 "confidence_threshold": 0.55,
+                "entry_quality_score": 0.8123,
+                "entry_quality_tier": "strong",
+                "entry_quality_path": "breakout_path",
             },
         },
         "BUY",
@@ -2307,6 +2312,9 @@ def test_build_entry_decision_summary_and_bullets_surface_monitor_path_and_polic
             "entry_condition_scores": {
                 "confidence_score": 0.55,
                 "confidence_threshold": 0.55,
+                "entry_quality_score": 0.8123,
+                "entry_quality_tier": "strong",
+                "entry_quality_path": "breakout_path",
             },
             "entry_thresholds": {
                 "timeframe_minutes": 1,
@@ -2322,12 +2330,147 @@ def test_build_entry_decision_summary_and_bullets_surface_monitor_path_and_polic
     assert "진입은 직전 고점 돌파와 VWAP 구조 확인 조건에서 실행됐습니다." in summary
     assert "000660이 스캐너 1위 후보로 올라온 뒤 매수로 이어졌습니다." in summary
     assert "전략가 플레이북은 눌림목이었지만 실제 엔트리는 돌파 경로에서 확정됐습니다." in summary
-    assert "진입 신뢰도 점수는 0.55로 기준 0.55와 동일했습니다." in summary
+    assert "진입 게이트 점수는 0.5500이며 기준 0.5500과 동일했습니다." in summary
+    assert "확률형 신뢰도가 아니라 모니터 진입 조건의 경로 점수입니다." in summary
+    assert "진입 품질 점수는 0.8123 / 등급 strong / 우세 경로 돌파 경로였습니다." in summary
+    assert "관측용이며 매수 허용 기준으로 쓰지 않습니다." in summary
     assert any("진입 사유는 직전 고점 돌파와 VWAP 구조 확인이었습니다." in row for row in bullets)
     assert any("진입 시점 스캐너에서는 000660이 1위, 종합 점수 1.286였습니다." in row for row in bullets)
     assert any("실제 진입 경로는 돌파 경로였습니다. 통과 경로는 돌파 경로였습니다." in row for row in bullets)
     assert any("진입 게이트 상태는 VWAP 재회복 통과, 과확장 점검 통과, 신뢰도 게이트 통과였습니다." in row for row in bullets)
+    assert any("진입 품질 점수는 0.8123, 등급은 strong, 우세 경로는 돌파 경로였습니다." in row for row in bullets)
     assert any("적용 정책은 1분봉, 돌파 확인 기준 봉 수 4, 최소 거래량 비율 0.73, VWAP 재회복 필수, 반등 확인 필수였습니다." in row for row in bullets)
+
+
+def test_fallback_entry_decision_uses_buy_detail_before_later_monitor_gate() -> None:
+    story_input = _story_input()
+    story_input.update(
+        {
+            "symbol": "050890",
+            "action": "SELL",
+            "status": "closed",
+            "entry_summary": {
+                "run_id": "run-entry",
+                "ts": "2026-04-30T00:57:31+00:00",
+                "action": "BUY",
+                "reason_human": "breakout_above_recent_high_with_vwap_structure_confirmation",
+            },
+            "scanner_reason_human": {
+                "selected_symbol": "050890",
+                "selected_rank": 4,
+                "selected_score": 0.799,
+            },
+            "market_context_human": {"playbook": "defensive"},
+            "monitor_reason_human": {
+                "posture": "SELL",
+                "trigger_type": "hard_stop",
+                "entry_condition_path": "",
+                "entry_condition_scores": {
+                    "confidence_score": 0.5488,
+                    "confidence_threshold": 0.55,
+                    "confidence_gate_ok": False,
+                    "entry_quality_score": 0.7423,
+                    "entry_quality_tier": "watch",
+                    "entry_quality_path": "breakout_path",
+                },
+                "entry_grouped_logic_trace": {
+                    "reclaim_gate_ok": False,
+                    "extension_ok": True,
+                    "confidence_gate_ok": False,
+                    "triggered_path": "",
+                    "paths_passed": [],
+                },
+            },
+            "monitor_timeline": {
+                "entry_decision_details": [
+                    {
+                        "run_id": "run-entry",
+                        "ts": "2026-04-30T00:59:21+00:00",
+                        "payload": {
+                            "decision": "BUY",
+                            "entry_triggered": True,
+                            "buy_submitted": True,
+                            "entry_reason": "breakout_above_recent_high_with_vwap_structure_confirmation",
+                            "entry_condition_path": "breakout_path",
+                            "entry_condition_paths_passed": ["breakout_path"],
+                            "condition_scores": {
+                                "confidence_score": 0.55,
+                                "confidence_threshold": 0.55,
+                                "confidence_gate_ok": True,
+                                "entry_quality_score": 0.8647,
+                                "entry_quality_tier": "strong",
+                                "entry_quality_path": "breakout_path",
+                            },
+                            "grouped_logic_trace": {
+                                "triggered_path": "breakout_path",
+                                "paths_passed": ["breakout_path"],
+                                "reclaim_gate_ok": True,
+                                "extension_ok": True,
+                                "confidence_gate_ok": True,
+                            },
+                            "applied_policy": {
+                                "timeframe_minutes": 1,
+                                "breakout_lookback": 5,
+                                "volume_ratio_min": 0.79,
+                                "require_vwap_reclaim": True,
+                                "require_rebound": True,
+                            },
+                        },
+                    }
+                ]
+            },
+        }
+    )
+
+    report = mod._fallback_report(
+        story_input,
+        status="salvaged",
+        mode="ai",
+        model="openrouter/free",
+        reason="partial",
+    )
+
+    summary = report["entry_decision"]["summary"]
+    bullets = report["entry_decision"]["bullets"]
+    assert "진입 게이트 점수는 0.5500이며 기준 0.5500과 동일했습니다." in summary
+    assert "0.5488" not in summary
+    assert any("진입 게이트 상태는 VWAP 재회복 통과, 과확장 점검 통과, 신뢰도 게이트 통과였습니다." in row for row in bullets)
+    assert not any("진입 게이트 상태는 VWAP 재회복 미통과" in row for row in bullets)
+    assert any("사후 모니터 재평가 게이트는 VWAP 재회복 미통과, 과확장 점검 통과, 신뢰도 게이트 미통과였습니다." in row for row in bullets)
+    assert any("점수는 0.5488 / 기준 0.5500" in row for row in bullets)
+
+
+def test_entry_decision_detail_can_be_read_from_monitor_evidence_artifact(tmp_path) -> None:
+    evidence_path = tmp_path / "monitor_evidence.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "entry_decision_details": [
+                    {
+                        "run_id": "run-entry",
+                        "payload": {
+                            "decision": "BUY",
+                            "entry_triggered": True,
+                            "entry_condition_path": "breakout_path",
+                            "condition_scores": {"confidence_score": 0.55},
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    detail = mod._select_entry_decision_detail(
+        {
+            "monitor_timeline": {},
+            "artifacts": {"monitor_evidence_json": str(evidence_path)},
+        },
+        {"run_id": "run-entry"},
+    )
+
+    assert detail["run_id"] == "run-entry"
+    assert detail["payload"]["condition_scores"]["confidence_score"] == 0.55
 
 
 def test_prefer_fallback_summary_for_entry_decision_when_ai_summary_stays_english() -> None:
@@ -2821,7 +2964,7 @@ def test_render_trade_summary_markdown_creates_operator_summary_without_replacin
         "entry_decision": {
             "bullets": [
                 "진입 사유는 직전 고점 돌파와 VWAP 구조 확인이었습니다.",
-                "진입 신뢰도 점수는 0.55, 기준은 0.55였습니다.",
+                "진입 게이트 점수는 0.5500이며 기준 0.5500과 동일했습니다. 표시 목적은 확률형 신뢰도보다 진입 조건 통과 여부 확인입니다.",
             ]
         },
         "exit_decision": {
@@ -2931,6 +3074,96 @@ def test_render_trade_summary_markdown_creates_operator_summary_without_replacin
     prompt = "\n".join(message["content"] for message in messages)
     assert "exit_observation은 모니터 신호 판단용 스냅샷" in prompt
     assert "Truth Surface 기준과 모니터 관측값 기준을 반드시 구분" in prompt
+
+
+def test_render_trade_summary_markdown_filters_symbol_news_to_trade_symbol() -> None:
+    report = {
+        "trade_id": "TRD_20260429_098460_01",
+        "symbol": "098460",
+        "status": "closed",
+        "story_type": "live trade report",
+        "execution_mode_label": "real broker",
+        "action": "SELL",
+        "shared_facts": {
+            "symbol": "098460",
+            "status": "closed",
+            "action": "SELL",
+            "broker_buy_price": 10000,
+            "broker_fill_price": 10100,
+            "pnl": 1000,
+            "pnl_pct": 0.01,
+        },
+        "market_context_at_entry": {
+            "summary": "시장 요약",
+            "playbook": "defensive",
+            "risk_mode": "balanced",
+            "themes": ["반도체_시스템반도체", "휴대폰_RF부품"],
+            "preferred_themes": ["반도체_시스템반도체", "휴대폰_RF부품"],
+            "theme_source": "kiwoom_live",
+            "theme_source_status": "ok",
+            "market_news_titles": ["코스피: 시장 뉴스"],
+            "candidate_news_titles": [
+                "006340: 대우건설 투자경고 공시",
+                "098460: 고영 어닝서프라이즈 전망",
+            ],
+        },
+        "why_this_symbol_was_chosen": {
+            "symbol": "098460",
+            "selected_rank": 1,
+            "score_total": 1.234,
+            "basis": "거래대금, 감성 지원",
+        },
+        "entry_decision": {"summary": "진입", "bullets": []},
+        "exit_decision": {"summary": "청산", "bullets": []},
+        "final_operator_conclusion": {"summary": "최종", "current_action": "SELL"},
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    symbol_news_section = summary.split("### 종목 뉴스 (098460)", 1)[1].split("## ", 1)[0]
+    summary_input = mod.build_trade_summary_input(report)
+
+    assert "098460: 고영 어닝서프라이즈 전망" in symbol_news_section
+    assert "006340:" not in symbol_news_section
+    assert summary_input["market_and_strategy"]["symbol_news_titles"] == ["098460: 고영 어닝서프라이즈 전망"]
+    assert "* 핵심 테마: 반도체_시스템반도체, 휴대폰_RF부품" in summary
+    assert "* 테마 출처: kiwoom_live / ok" in summary
+    assert summary_input["market_and_strategy"]["themes"] == ["반도체_시스템반도체", "휴대폰_RF부품"]
+    assert summary_input["market_and_strategy"]["theme_source"] == "kiwoom_live"
+
+
+def test_render_trade_summary_markdown_explains_missing_news_sample_location() -> None:
+    report = {
+        "trade_id": "TRD_20260430_005930_01",
+        "symbol": "005930",
+        "status": "closed",
+        "story_type": "live trade report",
+        "execution_mode_label": "real broker",
+        "action": "SELL",
+        "market_context_at_entry": {
+            "summary": "시장 요약",
+            "playbook": "defensive",
+            "risk_mode": "balanced",
+            "market_news_titles": [],
+            "candidate_news_titles": [],
+        },
+        "why_this_symbol_was_chosen": {
+            "symbol": "005930",
+            "selected_rank": 1,
+            "score_total": 1.0,
+        },
+        "entry_decision": {"summary": "진입", "bullets": []},
+        "exit_decision": {"summary": "청산", "bullets": []},
+        "final_operator_conclusion": {"summary": "최종", "current_action": "SELL"},
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    news_section = summary.split("## 📰 뉴스 및 컨텍스트", 1)[1].split("---", 1)[0]
+
+    assert "상세 리포트에서 확인 필요" not in news_section
+    assert "ai_trade_report_input.json" in news_section
+    assert "market_context_at_entry.market_news_titles" in news_section
+    assert "market_context_at_entry.candidate_news_titles" in news_section
+    assert "005930 항목" in news_section
 
 
 def test_render_trade_report_markdown_translates_fixed_english_report_phrases() -> None:
@@ -3249,6 +3482,52 @@ def test_build_execution_quality_section_surfaces_broker_truth_fields() -> None:
     assert "손익 truth 소스는 키움 당일 실현손익 기준(ka10077)으로 확인했습니다." in bullets
 
 
+def test_execution_quality_does_not_treat_position_avg_as_exit_fill() -> None:
+    section = mod._build_execution_quality_section(
+        {
+            "symbol": "178320",
+            "action": "SELL",
+            "execution_mode_label": "simulation (mock broker)",
+            "execution_details": {
+                "filled_qty": 1,
+                "filled_price": None,
+                "avg_price": 56800.0,
+                "order_status": "recorded",
+                "order_id": "OID-EXIT",
+                "execution_mode": "real",
+                "broker_env": "mock",
+                "broker_truth_source": None,
+            },
+        },
+        {"outcome": "recorded", "quantity": 1},
+        {},
+    )
+
+    text = " ".join([section.get("summary") or "", *list(section.get("bullets") or [])])
+    assert "체결 기준 가격은 56800.00였습니다." not in text
+    assert "브로커 체결가는 직접 확보되지 않았습니다." in text
+
+
+def test_truth_surface_hides_fallback_pct_from_realized_pnl_when_truth_unavailable() -> None:
+    truth = build_trade_report_truth_surface(
+        {
+            "pnl": "unavailable",
+            "pnl_pct": -0.0035,
+            "pnl_truth_source": "unavailable",
+            "broker_fill_price": None,
+            "broker_buy_price": 56800.0,
+            "monitor_mark_price": 56700.0,
+            "price_truth_source": "monitor_mark",
+            "data_source": {"pnl_pct": "fallback"},
+        }
+    )
+
+    assert truth["pnl"]["pct"] is None
+    assert truth["pnl"]["pct_display"] == -0.0035
+    assert truth["pnl"]["pct_display_role"] == "fallback_mark_only"
+    assert truth["availability"]["broker_pnl_present"] is False
+
+
 def test_render_trade_report_markdown_surfaces_execution_truth_fields() -> None:
     report = {
         "trade_id": "TRD_20260320_005930_101",
@@ -3372,6 +3651,82 @@ def test_render_trade_report_markdown_clarifies_closed_trade_monitor_sections_ag
     assert "청산 직전 모니터 판단은 매도입니다." in markdown
     assert "청산 직전 모니터 관측값(현재/평균/고점)은 3230.00 / 3320.00 / 3435.00입니다." in markdown
     assert "청산 직전 모니터 기준 손익 변동/고점 대비 하락폭은 -5.97% / -입니다." in markdown
+
+
+def test_trade_summary_separates_broker_pct_from_notional_return_and_mock_cost_drag() -> None:
+    report = {
+        "trade_id": "TRD_20260429_098460_01",
+        "symbol": "098460",
+        "action": "SELL",
+        "status": "closed",
+        "story_type": "simulation",
+        "execution_mode_label": "mock broker",
+        "shared_facts": {
+            "symbol": "098460",
+            "trade_id": "TRD_20260429_098460_01",
+            "action": "SELL",
+            "status": "closed",
+            "pnl": 562.0,
+            "pnl_pct": 0.000131,
+            "broker_fee": 300,
+            "broker_tax": 88,
+            "broker_buy_price": 43050.0,
+            "broker_fill_price": 44000.0,
+            "pnl_truth_source": "kiwoom.ka10077",
+            "price_truth_source": "broker_fill",
+        },
+        "fact_payload": {
+            "trade": {
+                "execution_details": {
+                    "filled_qty": 1,
+                },
+            },
+        },
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    full = mod.render_trade_report_markdown(report)
+    summary_input = mod.build_trade_summary_input(report)
+    cost = summary_input["truth_surface"]["cost_analysis"]
+
+    assert "* 키움 제공 손익률: 0.01%" in summary
+    assert "* 거래금액 기준 순수익률: **1.31%**" in summary
+    assert "* 비용 드래그: 388 (0.90%)" in summary
+    assert "* 손익분기 필요 상승률: 약 0.90%" in summary
+    assert "* 모의투자 비용 주의:" in summary
+    assert "- 거래금액 기준 순수익률: 1.31%" in full
+    assert cost["quantity"] == 1
+    assert round(cost["net_return_pct_on_buy_notional"], 4) == 0.0131
+    assert round(cost["cost_drag_pct"], 4) == 0.0090
+    assert cost["broker_pct_display_warning"] is True
+    assert cost["mock_cost_warning"] is True
+
+
+def test_build_deterministic_trade_report_prefers_holding_summary_duration_over_zero_read_model(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mod,
+        "_load_trade_read_model_hint",
+        lambda story_input: {"facts": {"hold_duration_sec": 0}},
+    )
+    story_input = {
+        "trade_id": "TRD_20260429_098460_01",
+        "symbol": "098460",
+        "status": "closed",
+        "action": "SELL",
+        "holding_summary": {
+            "hold_duration": "16.0m",
+            "hold_duration_sec": 958,
+        },
+        "entry_summary": {"action": "BUY"},
+        "exit_summary": {"action": "SELL", "reason_human": "take_profit"},
+        "monitor_reason_human": {"posture": "SELL", "exit_reason": "take_profit"},
+    }
+
+    report = mod.build_deterministic_trade_report(story_input)
+
+    assert report["shared_facts"]["holding_duration"] == "16.0m"
+    assert report["shared_facts"]["data_source"]["holding_duration"] == "trade_artifact"
+    assert "보유 시간은 16분였습니다." in report["holding_monitoring_story"]["bullets"][0]
 
 
 def test_render_trade_report_markdown_partial_sell_uses_structured_fallbacks_and_suppresses_zero_candidate_claims() -> None:
@@ -4108,8 +4463,8 @@ def test_render_trade_report_markdown_restores_news_from_market_context_human() 
     assert "- 뉴스 입력은 7개 관찰 대상에서 60개 headline을 검토했습니다." in markdown
     assert "- 참고한 시장 뉴스는 코스피: 코스피 6000 탈환 기대감 / 코스피: 외인·기관 동반 매수세였습니다." in markdown
     assert "## 전략가 요약" in markdown
-    assert "- 전략가는 시장 뉴스 2건과 후보 뉴스 2건을 함께 확인했습니다." in markdown
-    assert "- 전략가가 후보군 판단에 참고한 뉴스는 005930: 삼성전자 실적 개선 기대 / 000660: SK하이닉스 수요 회복 기대였습니다." in markdown
+    assert "005930: 삼성전자 실적 개선 기대" not in markdown
+    assert "전략가가 후보군 판단에 참고한 뉴스는" not in markdown
     assert "선택 종목 098460과 차순위 000660에 직접 연결된 뉴스는 모두 없어 시장 톤 확인용으로만 활용했습니다." in markdown
 
 
@@ -4167,8 +4522,9 @@ def test_render_trade_report_markdown_restores_news_from_nested_market_context_f
     markdown = mod.render_trade_report_markdown(report)
 
     assert "- 참고한 시장 뉴스는 코스피: 코스피 6000 탈환 기대감 / 코스피: 외인·기관 동반 매수세였습니다." in markdown
-    assert "- 전략가는 시장 뉴스 2건과 후보 뉴스 2건을 함께 확인했습니다." in markdown
-    assert "- 전략가는 뉴스 입력을 시장 톤 확인과 후보군 보조 비교에 사용했습니다." in markdown
+    assert "후보 뉴스 2건" not in markdown
+    assert "005930: 삼성전자 실적 개선 기대" not in markdown
+    assert "000660: SK하이닉스 수요 회복 기대" not in markdown
 
 
 def test_build_market_scanner_linkage_bullet_surfaces_numeric_trace() -> None:

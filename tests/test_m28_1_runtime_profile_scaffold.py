@@ -51,6 +51,28 @@ def test_m28_1_validate_runtime_profile_staging_allows_mock_broker_http_path():
     assert out["violations"] == []
 
 
+def test_m28_1_validate_runtime_profile_mock_live_allows_mock_auto_execution():
+    env = {
+        "KIWOOM_MODE": "mock",
+        "DRY_RUN": "0",
+        "EXECUTION_ENABLED": "true",
+        "APPROVAL_MODE": "auto",
+        "ALLOW_REAL_EXECUTION": "false",
+        "EVENT_LOG_PATH": "./data/logs/mock_live_events.jsonl",
+        "REPORT_DIR": "./reports",
+        "KIWOOM_APP_KEY": "demo_key",
+        "KIWOOM_APP_SECRET": "demo_secret",
+        "KIWOOM_ACCOUNT_NO": "12345678",
+    }
+    out = validate_runtime_profile("mock_live", env, strict=True)
+    assert out["ok"] is True
+    assert out["required_missing"] == []
+    assert out["violations"] == []
+    assert out["warnings"] == []
+    assert out["effective"]["EXECUTION_ENABLED"] == "true"
+    assert out["effective"]["KIWOOM_MODE"] == "mock"
+
+
 def test_m28_1_check_runtime_profile_fails_when_prod_secret_missing(tmp_path: Path, capsys):
     env_path = tmp_path / "prod.env"
     _write_env(

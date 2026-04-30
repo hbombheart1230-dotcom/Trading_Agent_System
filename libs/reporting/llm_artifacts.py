@@ -428,6 +428,18 @@ def persist_llm_artifact_refs(
     write_json(paths["prompt_json"], prompt_payload)
     write_json(paths["response_json"], response_payload)
     write_json(paths["meta_json"], meta_payload)
+    summary_refs: Dict[str, str] = {}
+    if str(component or "").strip() == "strategist":
+        try:
+            from libs.reporting.strategist_llm_summary import generate_strategist_llm_summary
+
+            summary_md, summary_json, _summary_payload = generate_strategist_llm_summary(paths["response_json"])
+            summary_refs = {
+                "strategist_summary_md_ref": str(summary_md),
+                "strategist_summary_json_ref": str(summary_json),
+            }
+        except Exception:
+            summary_refs = {}
 
     compact = dict(src)
     compact.pop("system_prompt", None)
@@ -449,6 +461,7 @@ def persist_llm_artifact_refs(
     compact["prompt_ref"] = str(paths["prompt_json"])
     compact["response_ref"] = str(paths["response_json"])
     compact["llm_meta_ref"] = str(paths["meta_json"])
+    compact.update(summary_refs)
     compact["prompt_hash"] = prompt_hash
     compact["response_hash"] = response_hash
     compact["status"] = str(src.get("status") or "")

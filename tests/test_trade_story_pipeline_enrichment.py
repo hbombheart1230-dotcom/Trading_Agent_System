@@ -1057,8 +1057,8 @@ def test_enrich_scanner_reason_from_evidence_normalizes_chart_coverage_from_rank
     )
 
     assert out["feature_coverage"]["present"] == 10
-    assert out["top_reasons"][1] == "chart feature coverage 10/12"
-    assert any("Chart / feature coverage: 10/12" == row for row in out["bullets"])
+    assert out["top_reasons"][1] == "chart feature coverage 10/13"
+    assert any("Chart / feature coverage: 10/13" == row for row in out["bullets"])
 
 
 def test_enrich_scanner_reason_from_evidence_prefers_reported_feature_coverage_and_updates_reason() -> None:
@@ -1082,6 +1082,21 @@ def test_enrich_scanner_reason_from_evidence_prefers_reported_feature_coverage_a
                                     "total": 13,
                                     "coverage_ratio": 12.0 / 13.0,
                                     "quality": "strong",
+                                    "present_keys": [
+                                        "engine_ma20_gap",
+                                        "engine_ma60",
+                                        "engine_ma120",
+                                        "engine_adx14",
+                                        "engine_trend_strength",
+                                        "engine_volume_spike20",
+                                        "engine_volatility20",
+                                        "engine_vwap_distance",
+                                        "engine_sector_relative_strength",
+                                        "engine_cross_section_rank",
+                                        "engine_regime",
+                                        "engine_signal_score",
+                                    ],
+                                    "missing_keys": ["engine_atr14"],
                                 },
                                 "compact_feature_snapshot": {
                                     "engine_ma20_gap": 0.03,

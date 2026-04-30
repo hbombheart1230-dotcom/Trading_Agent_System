@@ -54,6 +54,7 @@ from libs.reporting.trade_bundle_state import (
 import libs.reporting.live_execution_bundle_runner as runner_mod
 import libs.reporting.trade_story_pipeline as story_pipeline
 import scripts.run_live_execution_bundle_report as mod
+from libs.reporting.trade_report_ai import build_deterministic_trade_report
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -107,6 +108,28 @@ def test_live_execution_bundle_report_reuses_trade_bundle_persistence_helper() -
 
 def test_live_execution_bundle_report_reuses_trade_bundle_state_helper() -> None:
     assert mod.build_live_trade_bundle_payloads is shared_build_live_trade_bundle_payloads
+
+
+def test_live_execution_bundle_event_logger_accepts_level(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyLogger:
+        def log(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+
+    monkeypatch.setattr(runner_mod, "_make_bundle_event_logger", lambda _path: DummyLogger())
+
+    runner_mod._log_bundle_event(
+        tmp_path / "events.jsonl",
+        role="intraday_trade_report_bundle",
+        event="operator_summary_refresh_finished",
+        level="warning",
+        run_id="run-1",
+        symbol="005930",
+    )
+
+    assert captured["level"] == "warning"
+    assert captured["event"] == "operator_summary_refresh_finished"
 
 
 def test_live_execution_bundle_report_reuses_trade_bundle_assembly_helpers() -> None:
@@ -398,6 +421,115 @@ def test_flatten_news_titles_handles_count_sample_mapping_with_string_rows() -> 
         "KOSPI: Foreign and institutional selling eases",
         "000660: SK hynix volatility expands ahead of earnings",
     ]
+
+
+def test_flatten_news_titles_keeps_later_candidate_groups_by_default() -> None:
+    sample = {
+        f"{idx:06d}": {
+            "count": 1,
+            "sample": [f"NewsItem(title='candidate {idx}', url='https://example.com/{idx}')"],
+        }
+        for idx in range(1, 7)
+    }
+
+    titles = mod._flatten_news_titles(sample, max_titles_per_group=1)
+
+    assert "000006: candidate 6" in titles
+
+
+def test_strategist_evidence_trace_filters_fallback_candidate_news_to_selected_symbol() -> None:
+    trace = story_pipeline._build_strategist_evidence_trace(
+        {},
+        selected_symbol="098460",
+        fallback_candidate_titles=[
+            "006340: unrelated disclosure",
+            "098460: selected symbol earnings surprise",
+        ],
+    )
+    missing_trace = story_pipeline._build_strategist_evidence_trace(
+        {},
+        selected_symbol="098460",
+        fallback_candidate_titles=["006340: unrelated disclosure"],
+    )
+
+    assert trace["symbol_headlines"] == ["098460: selected symbol earnings surprise"]
+    assert missing_trace["symbol_headlines"] == []
+
+
+def test_strategist_evidence_trace_prefers_direct_symbol_title_over_indirect_theme_title() -> None:
+    trace = story_pipeline._build_strategist_evidence_trace(
+        {
+            "news_evidence_ranked": [
+                {
+                    "payload": {
+                        "candidate_news_ranked": [
+                            {
+                                "target": "006340",
+                                "sample_titles": [
+                                    "NewsItem(title='LS일렉, 美 데이터센터 3200억 수주 5%↑…전력주 강세[핫종목]', url='https://example.com/a', source='naver', published_at='Wed, 29 Apr 2026 10:04:00 +0900', symbol='006340', summary='HD현대일렉트릭 등을 비롯해 대원전선(<b>006340</b>)(21.85%) 등 다른 전력 관련 종목들도 동반 강세다.', raw=None)",
+                                    "NewsItem(title='대원전선 주가 장초반 급등세…19%↑', url='https://example.com/b', source='naver', published_at='Wed, 29 Apr 2026 09:24:00 +0900', symbol='006340', summary='대원전선(<b>006340</b>) 주가가 장초반 급등세를 보이고 있다.', raw=None)",
+                                ],
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        selected_symbol="006340",
+    )
+
+    assert trace["symbol_headlines"] == ["006340: 대원전선 주가 장초반 급등세…19%↑"]
+    assert "LS일렉" not in " ".join(trace["symbol_headlines"])
+
+
+def test_trade_story_rebuild_overrides_stale_candidate_news_with_raw_symbol_evidence() -> None:
+    raw_news = [
+        {
+            "payload": {
+                "candidate_news_ranked": [
+                    {
+                        "target": "006340",
+                        "sample_titles": [
+                            "NewsItem(title='LS일렉, 美 데이터센터 3200억 수주 5%↑…전력주 강세[핫종목]', symbol='006340', summary='대원전선(<b>006340</b>) 등 다른 전력 관련 종목들도 동반 강세다.')",
+                            "NewsItem(title='대원전선 주가 장초반 급등세…19%↑', symbol='006340', summary='대원전선(<b>006340</b>) 주가가 장초반 급등세를 보이고 있다.')",
+                        ],
+                    }
+                ]
+            }
+        }
+    ]
+    story = story_pipeline.build_trade_story_input_from_bundle(
+        {
+            "day": "2026-04-29",
+            "trade_id": "TRD_20260429_006340_01",
+            "execution": {"symbol": "006340", "action": "BUY"},
+            "trade_lifecycle": {
+                "symbol": "006340",
+                "status": "open",
+                "entry": {"action": "BUY"},
+                "holding": {},
+                "exit": {},
+                "summary": {},
+                "reporter": {},
+            },
+            "market_context_human": {
+                "regime": "neutral",
+                "market_sentiment": "neutral",
+                "playbook": "defensive",
+                "candidate_news_titles": ["006340: LS일렉, 美 데이터센터 3200억 수주 5%↑…전력주 강세[핫종목]"],
+            },
+            "scanner_reason_human": {"selected_symbol": "006340"},
+            "strategist": {"playbook": "defensive", "news_query_targets": ["KOSPI"]},
+            "strategist_evidence": {"news_evidence_ranked": raw_news},
+        }
+    )
+
+    assert story["market_context_human"]["candidate_news_titles"] == ["006340: 대원전선 주가 장초반 급등세…19%↑"]
+    report = build_deterministic_trade_report(story)
+    market_bullets = " ".join(report["market_context_at_entry"]["bullets"])
+
+    assert "대원전선 주가 장초반 급등세" in market_bullets
+    assert "LS일렉" not in market_bullets
 
 
 def test_build_strategist_input_summary_surfaces_news_titles_from_sample_mapping() -> None:

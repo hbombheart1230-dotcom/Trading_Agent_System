@@ -99,6 +99,12 @@ def test_intraday_entry_triggers_on_breakout_vwap_hold_and_volume_confirmation()
     assert float((out.get("metrics") or {}).get("volume_ratio") or 0.0) >= 1.15
     scores = out.get("condition_scores") or {}
     assert float(scores.get("confidence_score") or 0.0) >= float(scores.get("confidence_threshold") or 0.0)
+    assert float(scores.get("entry_quality_score") or 0.0) > 0.0
+    assert scores.get("entry_quality_tier") in {"strong", "watch", "weak"}
+    assert scores.get("entry_quality_path") in {"breakout_path", "pullback_volume_path"}
+    assert scores.get("entry_quality_observability_only") is True
+    assert (out.get("grouped_logic_trace") or {}).get("entry_quality_observability_only") is True
+    assert ((out.get("signal_evidence") or {}).get("derived") or {}).get("entry_quality_observability_only") is True
 
 
 def test_intraday_entry_triggers_on_pullback_rebound_setup() -> None:
@@ -172,6 +178,37 @@ def test_intraday_entry_allows_breakout_path_without_strict_volume_confirmation(
         "breakout_above_recent_high_with_vwap_reclaim_confirmation",
         "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation",
     }
+
+
+def test_intraday_entry_observes_opening_gap_chase_without_hard_gate() -> None:
+    rows = [
+        {"ts": 1777444440, "open": 225800.0, "high": 226000.0, "low": 225500.0, "close": 225800.0, "volume": 120000.0},
+        {"ts": 1777444500, "open": 226000.0, "high": 226000.0, "low": 226000.0, "close": 226000.0, "volume": 100000.0},
+        {"ts": 1777507200, "open": 229000.0, "high": 229500.0, "low": 228000.0, "close": 228500.0, "volume": 1359877.0},
+        {"ts": 1777507260, "open": 228500.0, "high": 229000.0, "low": 228000.0, "close": 228500.0, "volume": 199243.0},
+        {"ts": 1777507320, "open": 228500.0, "high": 229000.0, "low": 228000.0, "close": 229000.0, "volume": 300823.0},
+        {"ts": 1777507380, "open": 228750.0, "high": 230000.0, "low": 228500.0, "close": 230000.0, "volume": 100000.0},
+    ]
+    out = evaluate_intraday_entry_signal(rows, policy={"entry_volume_ratio_min": 0.75})
+
+    assert out["evaluated"] is True
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["reason"] == "breakout_above_recent_high_with_vwap_structure_confirmation"
+    assert out.get("primary_failure_axis") == "confirmed_entry"
+    assert "opening_gap_chase_observed" in list(out.get("signal_chain") or [])
+    assert "opening_gap_chase_volume_observed_missing" in list(out.get("signal_chain") or [])
+    metrics = out.get("metrics") or {}
+    assert metrics.get("previous_close") == 226000.0
+    assert metrics.get("session_open") == 229000.0
+    assert float(metrics.get("open_gap_pct") or 0.0) >= 0.01
+    assert float(metrics.get("minutes_since_session_open") or -1.0) == 3.0
+    assert metrics.get("opening_gap_chase_observed") is True
+    assert metrics.get("opening_gap_context_observation_only") is True
+    grouped = out.get("grouped_logic_trace") or {}
+    assert grouped.get("opening_gap_chase_observed") is True
+    assert grouped.get("opening_gap_context_observation_only") is True
+    assert grouped.get("breakout_volume_gate_required") is False
 
 
 def test_intraday_entry_pullback_playbook_blocks_breakout_without_volume_confirmation() -> None:

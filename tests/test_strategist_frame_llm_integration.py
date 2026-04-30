@@ -1270,6 +1270,24 @@ def test_build_strategist_llm_messages_enforces_read_model_facts_and_policy_adju
     assert "1st/base frame" in system
 
 
+def test_build_strategist_llm_messages_disables_memory_usage_when_policy_disabled() -> None:
+    messages = _build_strategist_llm_messages(
+        {
+            "read_model_facts": {},
+            "commander_refresh_context": {},
+            "commander_memory_policy": {"application_mode": "disabled", "disabled": True},
+        }
+    )
+
+    system = str(messages[0]["content"])
+    user = str(messages[1]["content"])
+
+    assert "Memory packets are temporarily disabled by Commander policy" in system
+    assert "Do not use memory fields to adjust playbook" in system
+    assert "Memory usage is temporarily disabled" in user
+    assert "The memory packets are not optional background" not in user
+
+
 def test_strategist_llm_payload_includes_commander_refresh_context(monkeypatch):
     captured = {}
 

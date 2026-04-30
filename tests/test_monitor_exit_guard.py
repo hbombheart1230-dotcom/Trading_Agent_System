@@ -395,6 +395,58 @@ def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monke
     assert monitor.get("entry_evaluated") is True
     assert monitor.get("entry_triggered") is True
     assert monitor.get("entry_pattern") == "breakout_vwap_hold"
+    assert monitor.get("cost_adjusted_edge_ok") is True
+    assert isinstance(monitor.get("entry_cost_filter"), dict)
+    assert intents[0]["meta"]["cost_adjusted_edge_ok"] is True
+    assert isinstance(intents[0]["meta"]["entry_cost_filter"], dict)
+
+
+def test_monitor_blocks_buy_when_cost_adjusted_edge_is_not_enough(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "minute_ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+                {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+                {"open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+                {"open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+                {"open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                {"open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 2500, "vwap": 101.2},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(
+            0,
+            base={
+                "entry_cost_filter": {
+                    "enabled": True,
+                    "min_buy_fee": 1000,
+                    "min_sell_fee": 1000,
+                    "max_cost_drag_pct": 0.006,
+                    "min_cost_adjusted_edge_pct": 0.001,
+                }
+            },
+        ),
+    }
+
+    out = monitor_node(state)
+
+    assert out.get("intents") == []
+    monitor = out.get("monitor") or {}
+    assert monitor.get("entry_triggered") is True
+    assert monitor.get("entry_guard_blocked") is True
+    assert monitor.get("entry_guard_reason") == "cost_adjusted_edge_not_ready"
+    assert monitor.get("cost_adjusted_edge_ok") is False
+    assert "cost_adjusted_edge_ok" in list(monitor.get("entry_failed_checks") or [])
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "cost_adjusted_edge_not_ready"
 
 
 def test_monitor_skips_buy_when_intraday_entry_signal_not_confirmed(monkeypatch):
@@ -1061,6 +1113,39 @@ def test_monitor_blocks_new_buy_inside_closeout_window_when_market_context_missi
     assert mon.get("eod_flat_cutoff_min") == 10
     assert mon.get("closeout_window_active") is True
     assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "buy_blocked_closeout_window"
+
+
+def test_monitor_overrides_stale_minutes_to_close_before_entry_closeout_guard(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+
+    state = {
+        "tick_ts": 1776407100,  # 2026-04-17 15:25:00 KST
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": _entry_breakout_rows()},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {
+            **_policy_with_entry_cooldown(0),
+            "exit_policy": {"use_eod_flat": True, "eod_flat_cutoff_min": 10},
+        },
+        "market_context": {"minutes_to_close": 83.05, "market_clock_source": "stale_context"},
+    }
+
+    out = monitor_node(state)
+    mon = out.get("monitor") or {}
+    market_context = out.get("market_context") or {}
+
+    assert out.get("intents") == []
+    assert mon.get("buy_blocked_closeout_window") is True
+    assert mon.get("entry_guard_reason") == "buy_blocked_closeout_window"
+    assert float(mon.get("minutes_to_close") or 0.0) == 5.0
+    assert market_context.get("market_clock_source") == "runtime_clock_override"
+    assert float(market_context.get("market_clock_previous_minutes_to_close") or 0.0) == 83.05
 
 
 def test_monitor_entry_intent_cooldown_suppresses_duplicate_buy_intents(monkeypatch):
@@ -2823,6 +2908,7 @@ def test_monitor_peak_drawdown_exit_uses_persisted_peak(monkeypatch):
     state["policy"] = {
         "use_exit_policy": True,
         "peak_drawdown_exit_pct": 0.05,
+        "confirm_required_for_peak_drawdown": 1,
         "take_profit_pct": 0.0,
     }
 
@@ -2853,7 +2939,7 @@ def test_monitor_peak_drawdown_requires_confirmation_and_does_not_bypass_guard(m
         _base_state(),
         min_hold_seconds=0,
         sell_sec=0,
-        confirm_ticks=2,
+        confirm_ticks=1,
     )
     state["selected"]["price"] = 104.0
     state["portfolio_snapshot"] = {
@@ -2867,6 +2953,7 @@ def test_monitor_peak_drawdown_requires_confirmation_and_does_not_bypass_guard(m
         "use_exit_policy": True,
         "peak_drawdown_exit_pct": 0.05,
         "profit_protection_activation_pct": 0.08,
+        "confirm_required_for_peak_drawdown": 2,
         "take_profit_pct": 0.0,
     }
 
@@ -3181,8 +3268,8 @@ def test_monitor_entry_candidate_cascade_reaches_fifth_priority_candidate(monkey
     assert intents[0]["symbol"] == "EEE"
     cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
     assert cascade.get("attempted") is True
-    assert cascade.get("max_priority_rank") == 5
-    assert cascade.get("max_runner_ups") == 4
+    assert cascade.get("max_priority_rank") == 10
+    assert cascade.get("max_runner_ups") == 9
     assert cascade.get("runner_up_symbols") == ["BBB", "CCC", "DDD", "EEE"]
     assert cascade.get("fallback_to_symbol") == "EEE"
     fallback_trace = list(cascade.get("fallback_trace") or [])

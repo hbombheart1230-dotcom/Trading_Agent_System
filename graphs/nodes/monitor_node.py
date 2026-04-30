@@ -70,6 +70,18 @@ def _normalize_status(v: Any) -> str:
     return str(v or "").strip().upper()
 
 
+def _memory_bias_observation_only(state: Dict[str, Any] | None = None) -> bool:
+    if isinstance(state, dict):
+        for key in ("memory_bias_observation_only", "commander_memory_bias_observation_only"):
+            if state.get(key) not in (None, ""):
+                return _is_trueish(state.get(key))
+    for name in ("MEMORY_BIAS_OBSERVATION_ONLY", "COMMANDER_MEMORY_BIAS_OBSERVATION_ONLY"):
+        raw = str(os.getenv(name, "") or "").strip()
+        if raw:
+            return _is_trueish(raw)
+    return False
+
+
 def _to_float(v: Any) -> float:
     try:
         return float(v)
@@ -118,6 +130,12 @@ def _monitor_runtime_dt_kst(
     return datetime.now(tz=mh.tz)
 
 
+def _monitor_runtime_clock_input_present(state: Dict[str, Any]) -> bool:
+    if _to_int(state.get("tick_ts")) > 0:
+        return True
+    return any(str(state.get(key) or "").strip() for key in ("tick_ts_iso", "ts", "now_iso", "started_at"))
+
+
 def _ensure_entry_market_context_clock_fields(
     state: Dict[str, Any],
     *,
@@ -126,7 +144,9 @@ def _ensure_entry_market_context_clock_fields(
     mh = market_hours or MarketHours()
     market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
     out = dict(market_context or {})
-    if out.get("minutes_to_close") not in (None, ""):
+    existing_minutes = _optional_float(out.get("minutes_to_close"))
+    has_reliable_runtime_clock = _monitor_runtime_clock_input_present(state)
+    if existing_minutes is not None and not has_reliable_runtime_clock:
         state["market_context"] = out
         return out
     dt_kst = _monitor_runtime_dt_kst(state, market_hours=mh)
@@ -139,9 +159,28 @@ def _ensure_entry_market_context_clock_fields(
             microsecond=0,
         )
         minutes_to_close = max(0.0, (close_dt - dt_kst).total_seconds() / 60.0)
+    if minutes_to_close is None and existing_minutes is not None:
+        state["market_context"] = out
+        return out
+
+    previous_source = str(out.get("market_clock_source") or "")
+    if existing_minutes is not None and minutes_to_close is not None:
+        drift = abs(float(existing_minutes) - float(minutes_to_close))
+        if drift <= 1.0:
+            out["minutes_to_close"] = float(existing_minutes)
+            out.setdefault("market_clock_source", previous_source or "runtime_clock_verified")
+            out.setdefault("market_clock_kst", dt_kst.isoformat())
+            out["market_clock_verified_minutes_to_close"] = float(minutes_to_close)
+            state["market_context"] = out
+            return out
+        out["market_clock_previous_minutes_to_close"] = float(existing_minutes)
+        if previous_source:
+            out["market_clock_previous_source"] = previous_source
+        out["market_clock_source"] = "runtime_clock_override"
+    else:
+        out.setdefault("market_clock_source", "runtime_clock")
     out["minutes_to_close"] = minutes_to_close
-    out.setdefault("market_clock_source", "runtime_clock")
-    out.setdefault("market_clock_kst", dt_kst.isoformat())
+    out["market_clock_kst"] = dt_kst.isoformat()
     state["market_context"] = out
     return out
 
@@ -215,7 +254,7 @@ def _resolve_entry_candidate_cascade_config(entry_control: Dict[str, Any]) -> Di
     elif raw_runner_ups not in (None, ""):
         max_priority_rank = int(_clamp(_to_float(raw_runner_ups) + 1, 1, 10))
     else:
-        max_priority_rank = 5
+        max_priority_rank = 10
     return {
         "max_priority_rank": int(max_priority_rank),
         "max_runner_ups": int(max(0, max_priority_rank - 1)),
@@ -1120,6 +1159,146 @@ def _resolve_entry_closeout_window_guard(
     }
 
 
+def _first_mapping(*values: Any) -> Dict[str, Any]:
+    for value in values:
+        if isinstance(value, dict) and value:
+            return dict(value)
+    return {}
+
+
+def _config_float(config: Dict[str, Any], key: str, env_key: str, default: float) -> float:
+    if isinstance(config, dict) and config.get(key) not in (None, ""):
+        return _to_float(config.get(key))
+    raw = str(os.getenv(env_key, "") or "").strip()
+    if raw:
+        return _to_float(raw, default)
+    return float(default)
+
+
+def _config_bool(config: Dict[str, Any], key: str, env_key: str, default: bool) -> bool:
+    if isinstance(config, dict) and config.get(key) not in (None, ""):
+        return _is_trueish(config.get(key))
+    raw = str(os.getenv(env_key, "") or "").strip()
+    if raw:
+        return _is_trueish(raw)
+    return bool(default)
+
+
+def _resolve_entry_cost_filter_config(
+    *,
+    state: Dict[str, Any],
+    policy: Dict[str, Any],
+    monitor_policy: Dict[str, Any],
+    strategy_monitor_policy: Dict[str, Any],
+    entry_policy_input: Dict[str, Any],
+    commander_entry_control: Dict[str, Any],
+) -> Dict[str, Any]:
+    policy_monitor = policy.get("monitor_policy") if isinstance(policy.get("monitor_policy"), dict) else {}
+    config = _first_mapping(
+        state.get("entry_cost_filter"),
+        state.get("cost_filter"),
+        commander_entry_control.get("cost_filter") if isinstance(commander_entry_control, dict) else {},
+        entry_policy_input.get("cost_filter") if isinstance(entry_policy_input, dict) else {},
+        strategy_monitor_policy.get("entry_cost_filter") if isinstance(strategy_monitor_policy, dict) else {},
+        monitor_policy.get("entry_cost_filter") if isinstance(monitor_policy, dict) else {},
+        policy_monitor.get("entry_cost_filter") if isinstance(policy_monitor, dict) else {},
+        policy.get("entry_cost_filter") if isinstance(policy, dict) else {},
+    )
+    return {
+        "schema_version": "entry_cost_filter.v1",
+        "enabled": _config_bool(config, "enabled", "MONITOR_ENTRY_COST_FILTER_ENABLED", True),
+        "buy_fee_rate": _config_float(config, "buy_fee_rate", "MONITOR_ENTRY_BUY_FEE_RATE", 0.00015),
+        "sell_fee_rate": _config_float(config, "sell_fee_rate", "MONITOR_ENTRY_SELL_FEE_RATE", 0.00015),
+        "sell_tax_rate": _config_float(config, "sell_tax_rate", "MONITOR_ENTRY_SELL_TAX_RATE", 0.0018),
+        "min_buy_fee": _config_float(config, "min_buy_fee", "MONITOR_ENTRY_MIN_BUY_FEE", 0.0),
+        "min_sell_fee": _config_float(config, "min_sell_fee", "MONITOR_ENTRY_MIN_SELL_FEE", 0.0),
+        "max_cost_drag_pct": _config_float(config, "max_cost_drag_pct", "MONITOR_ENTRY_MAX_COST_DRAG_PCT", 0.006),
+        "min_cost_adjusted_edge_pct": _config_float(
+            config,
+            "min_cost_adjusted_edge_pct",
+            "MONITOR_ENTRY_MIN_COST_ADJUSTED_EDGE_PCT",
+            0.001,
+        ),
+        "edge_scale_pct": _config_float(config, "edge_scale_pct", "MONITOR_ENTRY_EDGE_SCALE_PCT", 0.035),
+        "min_estimated_gross_edge_pct": _config_float(
+            config,
+            "min_estimated_gross_edge_pct",
+            "MONITOR_ENTRY_MIN_ESTIMATED_GROSS_EDGE_PCT",
+            0.0,
+        ),
+    }
+
+
+def _evaluate_entry_cost_filter(
+    *,
+    entry_info: Dict[str, Any],
+    selected: Dict[str, Any],
+    qty: int,
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    enabled = bool(config.get("enabled"))
+    metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
+    scores = entry_info.get("condition_scores") if isinstance(entry_info.get("condition_scores"), dict) else {}
+    price = _to_float(selected.get("price") or metrics.get("current_price") or metrics.get("price"))
+    quantity = max(0, int(qty))
+    notional = float(price * quantity) if price > 0.0 and quantity > 0 else 0.0
+    raw_quality = scores.get("entry_quality_score")
+    if raw_quality in (None, ""):
+        raw_quality = metrics.get("entry_quality_score")
+    quality_available = raw_quality not in (None, "")
+    quality_score = _clamp(_to_float(raw_quality), 0.0, 1.0) if quality_available else 0.0
+
+    buy_fee = max(float(notional) * _to_float(config.get("buy_fee_rate")), _to_float(config.get("min_buy_fee"))) if notional > 0.0 else 0.0
+    sell_fee = max(float(notional) * _to_float(config.get("sell_fee_rate")), _to_float(config.get("min_sell_fee"))) if notional > 0.0 else 0.0
+    sell_tax = float(notional) * _to_float(config.get("sell_tax_rate")) if notional > 0.0 else 0.0
+    total_cost = float(buy_fee + sell_fee + sell_tax)
+    cost_drag_pct = float(total_cost / notional) if notional > 0.0 else None
+    estimated_gross_edge_pct = (
+        max(
+            _to_float(config.get("min_estimated_gross_edge_pct")),
+            max(0.0, quality_score - 0.50) * _to_float(config.get("edge_scale_pct")),
+        )
+        if quality_available
+        else None
+    )
+    cost_adjusted_edge_pct = (
+        float(estimated_gross_edge_pct - float(cost_drag_pct))
+        if estimated_gross_edge_pct is not None and cost_drag_pct is not None
+        else None
+    )
+    fail_reasons = []
+    if enabled:
+        if notional <= 0.0:
+            fail_reasons.append("cost_filter_price_or_qty_missing")
+        if cost_drag_pct is not None and cost_drag_pct > _to_float(config.get("max_cost_drag_pct")):
+            fail_reasons.append("cost_drag_too_high")
+        if cost_adjusted_edge_pct is not None and cost_adjusted_edge_pct < _to_float(config.get("min_cost_adjusted_edge_pct")):
+            fail_reasons.append("cost_adjusted_edge_below_min")
+
+    passed = (not enabled) or not fail_reasons
+    return {
+        "schema_version": "entry_cost_filter_result.v1",
+        "enabled": bool(enabled),
+        "passed": bool(passed),
+        "cost_adjusted_edge_ok": bool(passed),
+        "fail_reasons": fail_reasons,
+        "price": price if price > 0.0 else None,
+        "qty": int(quantity),
+        "notional": round(notional, 4),
+        "buy_fee_est": round(buy_fee, 4),
+        "sell_fee_est": round(sell_fee, 4),
+        "sell_tax_est": round(sell_tax, 4),
+        "round_trip_cost_est": round(total_cost, 4),
+        "cost_drag_pct": round(float(cost_drag_pct), 6) if cost_drag_pct is not None else None,
+        "entry_quality_available": bool(quality_available),
+        "entry_quality_score": round(float(quality_score), 4),
+        "estimated_gross_edge_pct": round(float(estimated_gross_edge_pct), 6) if estimated_gross_edge_pct is not None else None,
+        "cost_adjusted_edge_pct": round(float(cost_adjusted_edge_pct), 6) if cost_adjusted_edge_pct is not None else None,
+        "max_cost_drag_pct": float(config.get("max_cost_drag_pct") or 0.0),
+        "min_cost_adjusted_edge_pct": float(config.get("min_cost_adjusted_edge_pct") or 0.0),
+    }
+
+
 def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
     cfg = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else {}
     out = dict(cfg or {})
@@ -1152,6 +1331,7 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         "peak_drawdown_exit_pct": "peak_drawdown_exit_pct",
         "profit_protection_activation_pct": "profit_protection_activation_pct",
         "peak_drawdown_mode": "peak_drawdown_mode",
+        "confirm_required_for_peak_drawdown": "confirm_required_for_peak_drawdown",
         "vwap_breakdown_pct": "vwap_breakdown_pct",
         "vwap_break_requires_profit": "vwap_break_requires_profit",
         "intraday_low_break_pct": "intraday_low_break_pct",
@@ -1662,6 +1842,9 @@ def _apply_exit_policy_strategy_frame(
             "vol_expansion_ratio",
             "news_shock_threshold",
             "peak_drawdown_exit_pct",
+            "profit_protection_activation_pct",
+            "peak_drawdown_mode",
+            "confirm_required_for_peak_drawdown",
             "vwap_breakdown_pct",
             "intraday_low_break_pct",
             "trend_strength_floor",
@@ -3052,6 +3235,16 @@ def _evaluate_monitor_entry_candidate(
         entry_policy=entry_policy_input or monitor_policy,
         monitor_memory_bias=monitor_memory_bias,
     )
+    monitor_memory_bias_observation_only = _memory_bias_observation_only(state)
+    monitor_memory_bias_observed_entry_result = dict(monitor_memory_bias_result)
+    if monitor_memory_bias_observation_only:
+        monitor_memory_bias_result = {
+            "policy": MonitorEntryPolicy.from_mapping(entry_policy_input or monitor_policy).to_dict(),
+            "applied": False,
+            "deltas": [],
+            "observation_only": True,
+            "observed_deltas": list(monitor_memory_bias_observed_entry_result.get("deltas") or []),
+        }
     entry_policy_input = dict(monitor_memory_bias_result.get("policy") or {})
     if commander_entry_control:
         entry_policy_input["commander_entry_control"] = dict(commander_entry_control)
@@ -3130,9 +3323,13 @@ def _evaluate_monitor_entry_candidate(
     entry_info["policy_adjustment_reasoning"] = str(effective_policy_trace.get("policy_adjustment_reasoning") or "")
     entry_info["effective_policy_deltas"] = list(effective_policy_trace.get("effective_policy_deltas") or [])
     entry_info["monitor_memory_bias_applied"] = bool(monitor_memory_bias_result.get("applied"))
+    entry_info["monitor_memory_bias_observation_only"] = bool(monitor_memory_bias_observation_only)
     entry_info["monitor_memory_bias"] = dict(monitor_memory_bias)
     entry_info["monitor_memory_bias_summary"] = dict(monitor_memory_bias_summary)
     entry_info["monitor_memory_bias_deltas"] = list(monitor_memory_bias_result.get("deltas") or [])
+    entry_info["monitor_memory_bias_observed_deltas"] = list(
+        monitor_memory_bias_observed_entry_result.get("deltas") or []
+    )
     entry_memory_application_trace = build_monitor_commander_memory_application_trace(
         monitor_memory_bias=monitor_memory_bias,
         entry_result=monitor_memory_bias_result,
@@ -3168,6 +3365,25 @@ def _evaluate_monitor_entry_candidate(
     entry_info["metrics"] = entry_metrics
     entry_info["minute_source_meta"] = dict(minute_ohlcv_meta or {})
     entry_info["minute_fetch_meta"] = minute_fetch_meta
+    entry_cost_filter_config = _resolve_entry_cost_filter_config(
+        state=state,
+        policy=policy,
+        monitor_policy=monitor_policy,
+        strategy_monitor_policy=strategy_monitor_policy,
+        entry_policy_input=entry_policy_input,
+        commander_entry_control=commander_entry_control,
+    )
+    entry_cost_filter = _evaluate_entry_cost_filter(
+        entry_info=entry_info,
+        selected=selected,
+        qty=int(qty),
+        config=entry_cost_filter_config,
+    )
+    entry_info["entry_cost_filter"] = dict(entry_cost_filter)
+    entry_info["cost_adjusted_edge_ok"] = bool(entry_cost_filter.get("cost_adjusted_edge_ok"))
+    entry_info["cost_adjusted_edge_pct"] = entry_cost_filter.get("cost_adjusted_edge_pct")
+    entry_info["cost_drag_pct"] = entry_cost_filter.get("cost_drag_pct")
+    entry_info["entry_lane"] = "strict"
     entry_info["scoring_mode"] = str(entry_info.get("scoring_mode") or "disabled")
     entry_intent_cooldown_sec = max(0, _to_int((entry_info.get("thresholds") or {}).get("intent_cooldown_sec")))
     cooldown_until = max(0, _to_int(entry_cooldown_map.get(symbol)))
@@ -3198,6 +3414,14 @@ def _evaluate_monitor_entry_candidate(
     elif entry_intent_cooldown_sec > 0 and cooldown_until > now_epoch_for_entry:
         entry_guard_blocked = True
         entry_guard_reason = f"entry_guard_cooldown:{max(0, cooldown_until - now_epoch_for_entry)}s_remaining"
+    elif bool(entry_info.get("triggered")) and not bool(entry_cost_filter.get("passed")):
+        entry_guard_blocked = True
+        entry_guard_reason = "cost_adjusted_edge_not_ready"
+        failed_checks = list(entry_info.get("failed_checks") or [])
+        if "cost_adjusted_edge_ok" not in failed_checks:
+            failed_checks.append("cost_adjusted_edge_ok")
+        entry_info["failed_checks"] = failed_checks
+        entry_info["primary_failure_axis"] = "cost_adjusted_edge"
 
     entry_info["guard_blocked"] = bool(entry_guard_blocked)
     entry_info["guard_reason"] = str(entry_guard_reason)
@@ -3296,6 +3520,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state=state,
     )
     monitor_memory_bias_summary = summarize_monitor_memory_bias(monitor_memory_bias)
+    monitor_memory_bias_observation_only = _memory_bias_observation_only(state)
     strategist_plan = (
         dict(strategy_frame.get("strategist_plan") or {})
         if isinstance(strategy_frame.get("strategist_plan"), dict)
@@ -3447,8 +3672,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "eligible": False,
         "reason": "",
         "top_pick_symbol": "",
-        "max_priority_rank": int(entry_cascade_config.get("max_priority_rank") or 5),
-        "max_runner_ups": int(entry_cascade_config.get("max_runner_ups") or 4),
+        "max_priority_rank": int(entry_cascade_config.get("max_priority_rank") or 10),
+        "max_runner_ups": int(entry_cascade_config.get("max_runner_ups") or 9),
         "control_source": str(entry_cascade_config.get("source") or "default"),
         "control_mode": str(entry_cascade_config.get("mode") or "default"),
         "runner_up_symbols": [],
@@ -3504,7 +3729,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             entry_guard_blocked=entry_guard_blocked,
             entry_triggered=bool(entry_info.get("triggered")),
             entry_reason=str(entry_info.get("reason") or ""),
-            max_runner_ups=int(entry_cascade_config.get("max_runner_ups") or 4),
+            max_runner_ups=int(entry_cascade_config.get("max_runner_ups") or 9),
         )
         entry_candidate_cascade.update(dict(cascade_plan))
         fallback_trace = list(entry_candidate_cascade.get("fallback_trace") or [])
@@ -3629,6 +3854,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "entry_policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
                     "entry_policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
                     "entry_chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
+                    "entry_lane": str(entry_info.get("entry_lane") or "strict"),
+                    "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+                    "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
+                    "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
+                    "cost_drag_pct": entry_info.get("cost_drag_pct"),
                     "entry_scoring": {
                         "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
                         "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
@@ -3722,6 +3952,19 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             confirm_ticks=confirm_ticks,
             monitor_memory_bias=monitor_memory_bias,
         )
+        hold_bias_observed_result = dict(hold_bias_result)
+        if monitor_memory_bias_observation_only:
+            hold_bias_result = {
+                "controls": {
+                    "min_hold_sec": int(min_hold_sec),
+                    "sell_cooldown_sec": int(sell_cooldown_sec),
+                    "confirm_ticks": int(confirm_ticks),
+                },
+                "applied": False,
+                "deltas": [],
+                "observation_only": True,
+                "observed_deltas": list(hold_bias_observed_result.get("deltas") or []),
+            }
         hold_controls = dict(hold_bias_result.get("controls") or {})
         min_hold_sec = int(hold_controls.get("min_hold_sec") or min_hold_sec)
         sell_cooldown_sec = int(hold_controls.get("sell_cooldown_sec") or sell_cooldown_sec)
@@ -3765,6 +4008,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             exit_policy=effective_exit_policy_base,
             monitor_memory_bias=monitor_memory_bias,
         )
+        exit_bias_observed_result = dict(exit_bias_result)
+        if monitor_memory_bias_observation_only:
+            exit_bias_result = {
+                "policy": dict(effective_exit_policy_base),
+                "applied": False,
+                "deltas": [],
+                "observation_only": True,
+                "observed_deltas": list(exit_bias_observed_result.get("deltas") or []),
+            }
         effective_exit_policy_base = dict(exit_bias_result.get("policy") or effective_exit_policy_base)
         if bool(hold_bias_result.get("applied")):
             for row in list(hold_bias_result.get("deltas") or [])[:6]:
@@ -3876,6 +4128,20 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         exit_signal_detected = bool(decision.get("triggered"))
         emergency_exit = _is_emergency_exit_reason(str(decision.get("reason") or ""))
         hard_exit = _is_hard_exit_reason(str(decision.get("reason") or ""))
+        decision_reason = str(decision.get("reason") or "").strip()
+        decision_thresholds = (
+            decision.get("thresholds")
+            if isinstance(decision.get("thresholds"), dict)
+            else {}
+        )
+        effective_confirm_ticks = max(1, int(confirm_ticks))
+        peak_drawdown_confirm_ticks = 0
+        if decision_reason == "peak_drawdown":
+            peak_drawdown_confirm_ticks = max(
+                1,
+                _to_int(decision_thresholds.get("confirm_required_for_peak_drawdown") or 2),
+            )
+            effective_confirm_ticks = max(effective_confirm_ticks, peak_drawdown_confirm_ticks)
 
         if exit_signal_detected:
             if qty <= 0:
@@ -3907,12 +4173,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 sell_guard_reason = f"sell_guard_cooldown:{max(0, cooldown_until - now_epoch)}s_remaining"
                 monitor_reason = "cooldown_active"
                 hold_block_reason = f"{str(decision.get('reason') or 'exit_signal')}:{sell_guard_reason}"
-            elif not emergency_exit and not hard_exit and confirm_ticks > 1:
+            elif not emergency_exit and not hard_exit and effective_confirm_ticks > 1:
                 confirm_count = _to_int(confirm_map.get(confirm_key)) + 1
                 confirm_map[confirm_key] = int(confirm_count)
-                if confirm_count < int(confirm_ticks):
+                if confirm_count < int(effective_confirm_ticks):
                     sell_guard_blocked = True
-                    sell_guard_reason = f"exit_confirmation_pending:{confirm_count}/{confirm_ticks}"
+                    sell_guard_reason = f"exit_confirmation_pending:{confirm_count}/{effective_confirm_ticks}"
                     monitor_reason = "exit_signal_pending_confirmation"
                     hold_block_reason = f"{str(decision.get('reason') or 'exit_signal')}:{sell_guard_reason}"
             if not sell_guard_blocked and not monitor_reason:
@@ -3931,6 +4197,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 monitor_reason = "hold" if qty > 0 else "no_position"
 
         if not sell_guard_blocked and exit_signal_detected:
+            if not emergency_exit and not hard_exit and confirm_count <= 0:
+                confirm_count = max(1, int(effective_confirm_ticks))
             _clear_symbol_confirm_keys(confirm_map, symbol)
             lock_sec = max(30, int(sell_cooldown_sec))
             pending_exit_lock[symbol] = int(now_epoch + lock_sec)
@@ -4018,8 +4286,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "minutes_to_close": decision.get("minutes_to_close"),
             "min_hold_sec": int(min_hold_sec),
             "sell_cooldown_sec": int(sell_cooldown_sec),
-            "exit_confirm_ticks": int(confirm_ticks),
+            "exit_confirm_ticks": int(effective_confirm_ticks),
             "exit_confirm_count": int(confirm_count),
+            "peak_drawdown_confirm_ticks": int(peak_drawdown_confirm_ticks),
             "sell_guard_blocked": bool(sell_guard_blocked),
             "sell_guard_reason": str(sell_guard_reason),
             "position_age_seconds": hold_sec if hold_sec > 0 else None,
@@ -4039,10 +4308,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
             "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
             "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
+            "monitor_memory_bias_observation_only": bool(monitor_memory_bias_observation_only),
             "monitor_memory_bias_hold_applied": bool(hold_bias_result.get("applied")),
             "monitor_memory_bias_hold_deltas": list(hold_bias_result.get("deltas") or []),
+            "monitor_memory_bias_hold_observed_deltas": list(hold_bias_observed_result.get("deltas") or []),
             "monitor_memory_bias_exit_applied": bool(exit_bias_result.get("applied")),
             "monitor_memory_bias_exit_deltas": list(exit_bias_result.get("deltas") or []),
+            "monitor_memory_bias_exit_observed_deltas": list(exit_bias_observed_result.get("deltas") or []),
             "active_exit_axis": _friendly_exit_axis(str(decision.get("reason") or monitor_reason or "hold")),
             "watch_axes": _monitor_watch_axes(decision.get("thresholds") if isinstance(decision.get("thresholds"), dict) else {}),
             "eod_carry_evaluated": bool(eod_carry.get("evaluated")),
@@ -4244,9 +4516,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_policy_adjustment_summary": str(entry_info.get("policy_adjustment_summary") or ""),
         "entry_effective_policy_deltas": list(entry_info.get("effective_policy_deltas") or []),
         "monitor_memory_bias_applied": bool(entry_info.get("monitor_memory_bias_applied")),
+        "monitor_memory_bias_observation_only": bool(entry_info.get("monitor_memory_bias_observation_only")),
         "monitor_memory_bias": dict(entry_info.get("monitor_memory_bias") or {}),
         "monitor_memory_bias_summary": dict(entry_info.get("monitor_memory_bias_summary") or {}),
         "monitor_memory_bias_deltas": list(entry_info.get("monitor_memory_bias_deltas") or []),
+        "monitor_memory_bias_observed_deltas": list(entry_info.get("monitor_memory_bias_observed_deltas") or []),
         "monitor_memory_bias_hold_applied": bool(exit_info.get("monitor_memory_bias_hold_applied")),
         "monitor_memory_bias_hold_deltas": list(exit_info.get("monitor_memory_bias_hold_deltas") or []),
         "monitor_memory_bias_exit_applied": bool(exit_info.get("monitor_memory_bias_exit_applied")),
@@ -4269,6 +4543,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
         "entry_policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "entry_chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
+        "entry_lane": str(entry_info.get("entry_lane") or "strict"),
+        "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+        "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
+        "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
+        "cost_drag_pct": entry_info.get("cost_drag_pct"),
         "entry_score_threshold": entry_info.get("entry_threshold"),
         "entry_score_passed": bool(entry_info.get("score_passed")),
         "entry_scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
@@ -4310,6 +4589,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
         ),
         "entry_candidate_cascade": dict(entry_candidate_cascade),
+        "entry_lane": str(entry_info.get("entry_lane") or "strict"),
+        "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+        "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
+        "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
+        "cost_drag_pct": entry_info.get("cost_drag_pct"),
         "exit_vs_strategy_intent": dict(exit_info.get("exit_vs_strategy_intent") or {}),
     }
     state["monitor_entry"] = dict(entry_info)
@@ -4379,9 +4663,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     policy_ref["policy_adjustment_reasoning"] = str(entry_info.get("policy_adjustment_reasoning") or "")
     policy_ref["effective_policy_deltas"] = list(entry_info.get("effective_policy_deltas") or [])
     policy_ref["monitor_memory_bias_applied"] = bool(entry_info.get("monitor_memory_bias_applied"))
+    policy_ref["monitor_memory_bias_observation_only"] = bool(entry_info.get("monitor_memory_bias_observation_only"))
     policy_ref["monitor_memory_bias"] = dict(entry_info.get("monitor_memory_bias") or {})
     policy_ref["monitor_memory_bias_summary"] = dict(entry_info.get("monitor_memory_bias_summary") or {})
     policy_ref["monitor_memory_bias_deltas"] = list(entry_info.get("monitor_memory_bias_deltas") or [])
+    policy_ref["monitor_memory_bias_observed_deltas"] = list(entry_info.get("monitor_memory_bias_observed_deltas") or [])
     policy_ref["monitor_memory_bias_hold_applied"] = bool(exit_info.get("monitor_memory_bias_hold_applied"))
     policy_ref["monitor_memory_bias_hold_deltas"] = list(exit_info.get("monitor_memory_bias_hold_deltas") or [])
     policy_ref["monitor_memory_bias_exit_applied"] = bool(exit_info.get("monitor_memory_bias_exit_applied"))
@@ -4442,6 +4728,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_volume_ratio": entry_metrics.get("volume_ratio"),
         "entry_extended_from_vwap_pct": entry_metrics.get("extended_from_vwap_pct"),
         "entry_pullback_depth_pct": entry_metrics.get("pullback_depth_pct"),
+        "entry_previous_close": entry_metrics.get("previous_close"),
+        "entry_session_open": entry_metrics.get("session_open"),
+        "entry_open_gap_pct": entry_metrics.get("open_gap_pct"),
+        "entry_prev_close_distance_pct": entry_metrics.get("prev_close_distance_pct"),
+        "entry_minutes_since_session_open": entry_metrics.get("minutes_since_session_open"),
+        "entry_opening_gap_chase_observed": bool(entry_metrics.get("opening_gap_chase_observed")),
+        "entry_opening_gap_context_observation_only": bool(entry_metrics.get("opening_gap_context_observation_only")),
         "received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
         "received_policy_source": str(entry_info.get("received_policy_source") or entry_policy_origin or ""),
         "policy_contract": dict(entry_info.get("policy_contract") or entry_policy_contract or {}),
@@ -4605,6 +4898,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "guard_reason": str(entry_info.get("guard_reason") or ""),
         "buy_submitted": bool(buy_submitted),
         "buy_skipped_reason": buy_skipped_reason,
+        "previous_close": entry_event_metrics.get("previous_close"),
+        "session_open": entry_event_metrics.get("session_open"),
+        "open_gap_pct": entry_event_metrics.get("open_gap_pct"),
+        "prev_close_distance_pct": entry_event_metrics.get("prev_close_distance_pct"),
+        "minutes_since_session_open": entry_event_metrics.get("minutes_since_session_open"),
+        "opening_gap_chase_observed": bool(entry_event_metrics.get("opening_gap_chase_observed")),
+        "opening_gap_context_observation_only": bool(entry_event_metrics.get("opening_gap_context_observation_only")),
         "metrics": entry_event_metrics,
         "applied_policy": dict(entry_applied_policy),
         "policy_contract": dict(entry_info.get("policy_contract") or entry_policy_contract or {}),
@@ -4625,10 +4925,18 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
         "policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
+        "entry_lane": str(entry_info.get("entry_lane") or "strict"),
+        "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+        "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
+        "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
+        "cost_drag_pct": entry_info.get("cost_drag_pct"),
+        "monitor_memory_bias_observation_only": bool(entry_info.get("monitor_memory_bias_observation_only")),
+        "monitor_memory_bias_observed_deltas": list(entry_info.get("monitor_memory_bias_observed_deltas") or []),
         "minute_source_meta": dict(entry_info.get("minute_source_meta") or {}),
         "minute_fetch_meta": dict(entry_info.get("minute_fetch_meta") or {}),
         "no_trade_surface": dict(monitor_no_trade_surface),
         "scanner_monitor_handoff": dict(scanner_monitor_handoff),
+        "entry_candidate_cascade": dict(entry_candidate_cascade),
         "entry_blocker_surface": dict(entry_blocker_surface),
         "entry_threshold": entry_info.get("entry_threshold"),
         "score_passed": bool(entry_info.get("score_passed")),
@@ -4808,9 +5116,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["policy_adjustment_reasoning"] = str(entry_info.get("policy_adjustment_reasoning") or "")
         state["monitor_output"]["effective_policy_deltas"] = list(entry_info.get("effective_policy_deltas") or [])
         state["monitor_output"]["monitor_memory_bias_applied"] = bool(entry_info.get("monitor_memory_bias_applied"))
+        state["monitor_output"]["monitor_memory_bias_observation_only"] = bool(entry_info.get("monitor_memory_bias_observation_only"))
         state["monitor_output"]["monitor_memory_bias"] = dict(entry_info.get("monitor_memory_bias") or {})
         state["monitor_output"]["monitor_memory_bias_summary"] = dict(entry_info.get("monitor_memory_bias_summary") or {})
         state["monitor_output"]["monitor_memory_bias_deltas"] = list(entry_info.get("monitor_memory_bias_deltas") or [])
+        state["monitor_output"]["monitor_memory_bias_observed_deltas"] = list(entry_info.get("monitor_memory_bias_observed_deltas") or [])
         state["monitor_output"]["monitor_memory_bias_hold_applied"] = bool(exit_info.get("monitor_memory_bias_hold_applied"))
         state["monitor_output"]["monitor_memory_bias_hold_deltas"] = list(exit_info.get("monitor_memory_bias_hold_deltas") or [])
         state["monitor_output"]["monitor_memory_bias_exit_applied"] = bool(exit_info.get("monitor_memory_bias_exit_applied"))
@@ -4860,6 +5170,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_failed_checks": list(entry_info.get("failed_checks") or []),
         "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
         "entry_transition_trace": dict(entry_info.get("entry_transition_trace") or {}),
+        "entry_lane": str(entry_info.get("entry_lane") or "strict"),
+        "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+        "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
+        "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
+        "cost_drag_pct": entry_info.get("cost_drag_pct"),
         "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
         "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
         "total_score": entry_info.get("total_score"),
@@ -4872,6 +5187,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "chart_structure_features": dict(entry_info.get("chart_structure_features") or {}),
         "policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
+        "entry_lane": str(entry_info.get("entry_lane") or "strict"),
+        "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+        "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
+        "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
+        "cost_drag_pct": entry_info.get("cost_drag_pct"),
         "no_trade_surface": dict(monitor_no_trade_surface),
         "scanner_monitor_handoff": dict(scanner_monitor_handoff),
         "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
@@ -5024,6 +5344,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
             "entry_metrics": dict(entry_info.get("metrics") or {}),
             "entry_thresholds": dict(entry_info.get("thresholds") or {}),
+            "entry_lane": str(entry_info.get("entry_lane") or "strict"),
+            "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+            "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
+            "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
+            "cost_drag_pct": entry_info.get("cost_drag_pct"),
             "decision_outcome": str(monitor_no_trade_surface.get("decision_outcome") or final_entry_decision),
             "pre_intent_decision": str(monitor_no_trade_surface.get("pre_intent_decision") or ""),
             "no_trade_stage": str(monitor_no_trade_surface.get("no_trade_stage") or ""),

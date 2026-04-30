@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import statistics
+from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -20,6 +21,11 @@ _RECLAIM_TUNING_VERSION = "small_relaxation_v1"
 _RECLAIM_TUNING_SCOPE = "below_vwap_reclaim_not_ready_only"
 _RECLAIM_NEAR_READY_DISTANCE_MIN_BASE = -0.0015
 _RECLAIM_NEAR_READY_DISTANCE_MIN_TUNED = -0.0018
+_KST = timezone(timedelta(hours=9))
+_MARKET_OPEN_MINUTE = 9 * 60
+_OPENING_GAP_CHASE_WINDOW_MINUTES = 10.0
+_OPENING_GAP_CHASE_MIN_PCT = 0.01
+_BREAKOUT_CHASE_VOLUME_GATE_MIN_EXTENDED_PCT = 0.02
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -73,6 +79,15 @@ def _range_threshold_score(actual: float, minimum: float, maximum: float) -> flo
     if actual_value <= 0.0:
         return 0.0
     return _clamp_score(maximum_value / actual_value if maximum_value > 0.0 else 0.0)
+
+
+def _entry_quality_tier(score: float) -> str:
+    value = _clamp_score(score)
+    if value >= 0.80:
+        return "strong"
+    if value >= 0.65:
+        return "watch"
+    return "weak"
 
 
 def _empty_entry_transition_trace() -> Dict[str, Any]:
@@ -146,6 +161,10 @@ def _build_monitor_signal_evidence(
     breakout_score: float,
     confidence_score: float,
     confidence_threshold: float,
+    entry_quality_score: float,
+    breakout_quality_score: float,
+    pullback_quality_score: float,
+    entry_quality_path: str,
     reclaim_ok: bool,
     volume_ok: bool,
     pullback_ok: bool,
@@ -175,6 +194,9 @@ def _build_monitor_signal_evidence(
             "pullback_score": round(_clamp_score(pullback_score), 4),
             "breakout_score": round(_clamp_score(breakout_score), 4),
             "confidence_score": round(_clamp_score(confidence_score), 4),
+            "entry_quality_score": round(_clamp_score(entry_quality_score), 4),
+            "breakout_quality_score": round(_clamp_score(breakout_quality_score), 4),
+            "pullback_quality_score": round(_clamp_score(pullback_quality_score), 4),
         },
         "checks": {
             "reclaim_ok": bool(reclaim_ok),
@@ -197,6 +219,9 @@ def _build_monitor_signal_evidence(
             "volume_distance_to_ready": volume_distance_to_ready,
             "breakout_distance_to_ready": breakout_distance_to_ready,
             "confidence_threshold": round(float(confidence_threshold), 4),
+            "entry_quality_tier": _entry_quality_tier(entry_quality_score),
+            "entry_quality_path": str(entry_quality_path or ""),
+            "entry_quality_observability_only": True,
             "weighted_score_total": total_weighted_score,
             "weighted_score_threshold": threshold_value,
             "weighted_score_passed": bool(total_weighted_score >= threshold_value),
@@ -213,6 +238,10 @@ def _empty_monitor_signal_evidence(*, score_threshold: float = 3.0) -> Dict[str,
         breakout_score=0.0,
         confidence_score=0.0,
         confidence_threshold=0.55,
+        entry_quality_score=0.0,
+        breakout_quality_score=0.0,
+        pullback_quality_score=0.0,
+        entry_quality_path="",
         reclaim_ok=False,
         volume_ok=False,
         pullback_ok=False,
@@ -1337,10 +1366,48 @@ def _compress_candles(rows: Sequence[Mapping[str, Any]], timeframe_minutes: int)
     return out
 
 
+def _kst_session_key_and_minute(ts_value: Any) -> tuple[Any | None, float | None]:
+    epoch = _to_int(ts_value, 0)
+    if epoch <= 0:
+        return None, None
+    try:
+        dt = datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone(_KST)
+    except Exception:
+        return None, None
+    minute_of_day = float((dt.hour * 60) + dt.minute) + (float(dt.second) / 60.0)
+    return dt.date(), minute_of_day
+
+
+def _current_kst_session_anchor(candles: Sequence[Mapping[str, Any]]) -> tuple[Any | None, int | None, float | None]:
+    if not candles:
+        return None, None, None
+    latest_key, latest_minute = _kst_session_key_and_minute(candles[-1].get("ts"))
+    if latest_key is None:
+        return None, None, None
+    for idx, row in enumerate(candles):
+        row_key, row_minute = _kst_session_key_and_minute(row.get("ts"))
+        if row_key == latest_key and row_minute is not None and row_minute >= float(_MARKET_OPEN_MINUTE):
+            return latest_key, idx, latest_minute
+    return latest_key, None, latest_minute
+
+
+def _current_kst_session_rows(candles: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+    latest_key, start_idx, _latest_minute = _current_kst_session_anchor(candles)
+    if latest_key is None or start_idx is None:
+        return []
+    out: List[Mapping[str, Any]] = []
+    for row in candles[start_idx:]:
+        row_key, row_minute = _kst_session_key_and_minute(row.get("ts"))
+        if row_key == latest_key and row_minute is not None and row_minute >= float(_MARKET_OPEN_MINUTE):
+            out.append(row)
+    return out
+
+
 def _session_vwap(candles: Sequence[Mapping[str, Any]]) -> float | None:
+    source_rows = _current_kst_session_rows(candles) or list(candles or [])
     weighted_num = 0.0
     weighted_den = 0.0
-    for row in candles:
+    for row in source_rows:
         volume = max(0.0, _to_float(row.get("volume")))
         if volume <= 0.0:
             continue
@@ -1357,6 +1424,46 @@ def _session_vwap(candles: Sequence[Mapping[str, Any]]) -> float | None:
     if weighted_den <= 0.0:
         return None
     return weighted_num / weighted_den
+
+
+def _session_gap_context(candles: Sequence[Mapping[str, Any]], current_close: float) -> Dict[str, Any]:
+    context: Dict[str, Any] = {
+        "session_context_available": False,
+        "session_open": None,
+        "previous_close": None,
+        "open_gap_pct": None,
+        "prev_close_distance_pct": None,
+        "minutes_since_session_open": None,
+    }
+    _latest_key, start_idx, _latest_minute = _current_kst_session_anchor(candles)
+    if start_idx is None:
+        return context
+    first = candles[start_idx]
+    prior = candles[start_idx - 1] if start_idx > 0 else {}
+    session_open = _to_float(first.get("open"), _to_float(first.get("close")))
+    previous_close = _to_float(prior.get("close"))
+    first_ts = _to_int(first.get("ts"), 0)
+    last_ts = _to_int(candles[-1].get("ts"), 0)
+    minutes_since_open = None
+    if first_ts > 0 and last_ts >= first_ts:
+        minutes_since_open = round(float(last_ts - first_ts) / 60.0, 3)
+    open_gap_pct = None
+    if previous_close > 0.0 and session_open > 0.0:
+        open_gap_pct = (session_open / previous_close) - 1.0
+    prev_close_distance_pct = None
+    if previous_close > 0.0 and current_close > 0.0:
+        prev_close_distance_pct = (current_close / previous_close) - 1.0
+    context.update(
+        {
+            "session_context_available": bool(previous_close > 0.0 and session_open > 0.0),
+            "session_open": session_open if session_open > 0.0 else None,
+            "previous_close": previous_close if previous_close > 0.0 else None,
+            "open_gap_pct": open_gap_pct,
+            "prev_close_distance_pct": prev_close_distance_pct,
+            "minutes_since_session_open": minutes_since_open,
+        }
+    )
+    return context
 
 
 def _infer_spacing_seconds(candles: Sequence[Mapping[str, Any]]) -> float | None:
@@ -1780,6 +1887,28 @@ def evaluate_intraday_entry_signal(
     reclaim_gate_ok = bool(vwap_structure_ok) if bool(resolved_policy.require_vwap_reclaim) else True
     breakout_path_ok = bool(breakout_ok)
     pullback_volume_path_ok = bool(pullback_ok and volume_ok)
+    session_gap_context = _session_gap_context(candles, current_close)
+    minutes_since_session_open = session_gap_context.get("minutes_since_session_open")
+    open_gap_pct = session_gap_context.get("open_gap_pct")
+    prev_close_distance_pct = session_gap_context.get("prev_close_distance_pct")
+    opening_gap_chase_observed = bool(
+        breakout_path_ok
+        and not pullback_volume_path_ok
+        and not volume_ok
+        and bool(session_gap_context.get("session_context_available"))
+        and minutes_since_session_open is not None
+        and 0.0 <= _to_float(minutes_since_session_open) <= _OPENING_GAP_CHASE_WINDOW_MINUTES
+        and open_gap_pct is not None
+        and _to_float(open_gap_pct) >= _OPENING_GAP_CHASE_MIN_PCT
+        and prev_close_distance_pct is not None
+        and _to_float(prev_close_distance_pct) >= _to_float(open_gap_pct)
+    )
+    breakout_chase_extension_observed = bool(
+        breakout_path_ok
+        and not pullback_volume_path_ok
+        and not volume_ok
+        and extended_from_vwap_pct >= _BREAKOUT_CHASE_VOLUME_GATE_MIN_EXTENDED_PCT
+    )
     breakout_volume_gate_required = False
     breakout_volume_gate_ok = True
     breakout_score = 1.0 if breakout_ok else _clamp_score((current_close / breakout_level) if breakout_level > 0.0 and current_close > 0.0 else 0.0)
@@ -1807,6 +1936,38 @@ def evaluate_intraday_entry_signal(
     rebound_high_progress = _clamp_score((current_close / prior_bar_high) if prior_bar_high > 0.0 and current_close > 0.0 else 0.0)
     rebound_close_progress = _clamp_score((current_close / prior_close) if prior_close > 0.0 and current_close > 0.0 else 0.0)
     rebound_progress = round(min(rebound_high_progress, rebound_close_progress), 4)
+    extension_score = _range_threshold_score(
+        extended_from_vwap_pct,
+        min_extended_from_vwap_pct,
+        max_extended_from_vwap_pct,
+    )
+    vwap_structure_score = max(
+        1.0 if bool(vwap_hold_ok) else 0.0,
+        1.0 if bool(vwap_reclaim_ok) else 0.0,
+    )
+    confirmation_score = max(volume_score, rebound_progress)
+    breakout_quality_score = round(
+        _clamp_score(
+            (0.35 * breakout_score)
+            + (0.20 * volume_score)
+            + (0.20 * vwap_structure_score)
+            + (0.15 * extension_score)
+            + (0.10 * confirmation_score)
+        ),
+        4,
+    )
+    pullback_quality_score = round(
+        _clamp_score(
+            (0.30 * pullback_score)
+            + (0.25 * volume_score)
+            + (0.20 * vwap_structure_score)
+            + (0.15 * confirmation_score)
+            + (0.10 * extension_score)
+        ),
+        4,
+    )
+    entry_quality_score = round(max(breakout_quality_score, pullback_quality_score), 4)
+    entry_quality_path = "breakout_path" if breakout_quality_score >= pullback_quality_score else "pullback_volume_path"
     volume_distance_to_ready = volume_ratio - _to_float(resolved_policy.volume_ratio_min)
     breakout_distance_to_ready = (
         breakout_gap_pct - breakout_buffer_pct
@@ -1871,6 +2032,14 @@ def evaluate_intraday_entry_signal(
         signal_chain.append("breakout_path_ready")
     if pullback_volume_path_ok:
         signal_chain.append("pullback_volume_path_ready")
+    if opening_gap_chase_observed:
+        signal_chain.append("opening_gap_chase_observed")
+        if not volume_ok:
+            signal_chain.append("opening_gap_chase_volume_observed_missing")
+    if breakout_chase_extension_observed:
+        signal_chain.append("breakout_chase_extension_observed")
+        if not volume_ok:
+            signal_chain.append("breakout_chase_extension_volume_observed_missing")
 
     playbook = str((frame or {}).get("playbook") or "").strip().lower()
     if playbook in ("pullback", "reversal"):
@@ -1883,6 +2052,8 @@ def evaluate_intraday_entry_signal(
         "vwap_structure_ok": bool(vwap_structure_ok),
         "reclaim_gate_ok": bool(reclaim_gate_ok),
         "breakout_volume_gate_ok": bool(breakout_volume_gate_ok),
+        "opening_gap_chase_observed": bool(opening_gap_chase_observed),
+        "breakout_chase_extension_observed": bool(breakout_chase_extension_observed),
         "volume_ok": bool(volume_ok),
         "rebound_ok": bool(rebound_ok),
         "confirmation_ok": bool(confirmation_ok),
@@ -1951,6 +2122,25 @@ def evaluate_intraday_entry_signal(
             "min": breakout_buffer_pct,
             "distance_to_breakout": (current_close - breakout_level) if breakout_level > 0.0 else None,
         },
+        "opening_gap_chase": {
+            "open_gap_pct": open_gap_pct,
+            "prev_close_distance_pct": prev_close_distance_pct,
+            "min_open_gap_pct": _OPENING_GAP_CHASE_MIN_PCT,
+            "minutes_since_session_open": minutes_since_session_open,
+            "window_minutes": _OPENING_GAP_CHASE_WINDOW_MINUTES,
+            "observed": bool(opening_gap_chase_observed),
+            "observation_only": True,
+            "volume_gate_required": False,
+            "volume_ok": bool(volume_ok),
+        },
+        "breakout_chase_extension": {
+            "actual": extended_from_vwap_pct,
+            "min_without_volume": _BREAKOUT_CHASE_VOLUME_GATE_MIN_EXTENDED_PCT,
+            "observed": bool(breakout_chase_extension_observed),
+            "observation_only": True,
+            "volume_gate_required": False,
+            "volume_ok": bool(volume_ok),
+        },
     }
 
     pattern = ""
@@ -1969,6 +2159,12 @@ def evaluate_intraday_entry_signal(
         "reclaim_gate_ok": bool(reclaim_gate_ok),
         "breakout_volume_gate_required": bool(breakout_volume_gate_required),
         "breakout_volume_gate_ok": bool(breakout_volume_gate_ok),
+        "opening_gap_chase_observed": bool(opening_gap_chase_observed),
+        "breakout_chase_extension_observed": bool(breakout_chase_extension_observed),
+        "opening_gap_context_observation_only": True,
+        "opening_gap_chase_window_minutes": _OPENING_GAP_CHASE_WINDOW_MINUTES,
+        "opening_gap_chase_min_pct": _OPENING_GAP_CHASE_MIN_PCT,
+        "breakout_chase_volume_gate_min_extended_from_vwap_pct": _BREAKOUT_CHASE_VOLUME_GATE_MIN_EXTENDED_PCT,
         "extension_required": True,
         "extension_ok": bool(extension_ok),
         "breakout_path_ok": bool(breakout_path_ok),
@@ -2108,6 +2304,10 @@ def evaluate_intraday_entry_signal(
         breakout_score=breakout_score,
         confidence_score=confidence_score,
         confidence_threshold=confidence_threshold,
+        entry_quality_score=entry_quality_score,
+        breakout_quality_score=breakout_quality_score,
+        pullback_quality_score=pullback_quality_score,
+        entry_quality_path=entry_quality_path,
         reclaim_ok=vwap_reclaim_ok,
         volume_ok=volume_ok,
         pullback_ok=pullback_ok,
@@ -2226,7 +2426,27 @@ def evaluate_intraday_entry_signal(
         "volume_distance_to_ready": volume_distance_to_ready,
         "breakout_gap_pct": breakout_gap_pct,
         "breakout_distance_to_ready": breakout_distance_to_ready,
+        "session_context_available": bool(session_gap_context.get("session_context_available")),
+        "session_open": session_gap_context.get("session_open"),
+        "previous_close": session_gap_context.get("previous_close"),
+        "open_gap_pct": open_gap_pct,
+        "prev_close_distance_pct": prev_close_distance_pct,
+        "minutes_since_session_open": minutes_since_session_open,
+        "opening_gap_chase_observed": bool(opening_gap_chase_observed),
+        "breakout_chase_extension_observed": bool(breakout_chase_extension_observed),
+        "opening_gap_context_observation_only": True,
+        "breakout_volume_gate_required": bool(breakout_volume_gate_required),
+        "breakout_volume_gate_ok": bool(breakout_volume_gate_ok),
         "transition_readiness_score": transition_readiness_score,
+        "entry_quality_score": entry_quality_score,
+        "entry_quality_tier": _entry_quality_tier(entry_quality_score),
+        "entry_quality_path": entry_quality_path,
+        "entry_quality_observability_only": True,
+        "breakout_quality_score": breakout_quality_score,
+        "pullback_quality_score": pullback_quality_score,
+        "extension_score": round(_clamp_score(extension_score), 4),
+        "vwap_structure_score": round(_clamp_score(vwap_structure_score), 4),
+        "confirmation_score": round(_clamp_score(confirmation_score), 4),
         "breakout_ok": bool(breakout_ok),
         "vwap_hold_ok": bool(vwap_hold_ok),
         "vwap_reclaim_ok": bool(vwap_reclaim_ok),
@@ -2284,6 +2504,10 @@ def evaluate_intraday_entry_signal(
     grouped_logic_trace["chart_structure_decision_hint_applied"] = bool(chart_structure_decision_hint.get("applied"))
     grouped_logic_trace["chart_structure_decision_hint_mode"] = str(chart_structure_decision_hint.get("mode") or "none")
     grouped_logic_trace["chart_structure_decision_hint_blocking_features"] = list(chart_structure_decision_hint.get("blocking_features") or [])
+    grouped_logic_trace["entry_quality_score"] = entry_quality_score
+    grouped_logic_trace["entry_quality_tier"] = _entry_quality_tier(entry_quality_score)
+    grouped_logic_trace["entry_quality_path"] = entry_quality_path
+    grouped_logic_trace["entry_quality_observability_only"] = True
     _apply_monitor_scoring_fields(
         out,
         scoring_settings=scoring_settings,
@@ -2317,6 +2541,15 @@ def evaluate_intraday_entry_signal(
                 "confidence_threshold": confidence_threshold,
                 "confidence_gate_ok": bool(confidence_gate_ok),
                 "transition_readiness_score": transition_readiness_score,
+                "entry_quality_score": entry_quality_score,
+                "entry_quality_tier": _entry_quality_tier(entry_quality_score),
+                "entry_quality_path": entry_quality_path,
+                "entry_quality_observability_only": True,
+                "breakout_quality_score": breakout_quality_score,
+                "pullback_quality_score": pullback_quality_score,
+                "extension_score": round(_clamp_score(extension_score), 4),
+                "vwap_structure_score": round(_clamp_score(vwap_structure_score), 4),
+                "confirmation_score": round(_clamp_score(confirmation_score), 4),
             },
             "grouped_logic_trace": grouped_logic_trace,
             "legacy_entry_reason": legacy_reason,

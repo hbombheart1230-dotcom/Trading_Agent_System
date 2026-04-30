@@ -10,6 +10,23 @@ def build_trade_report_truth_surface(shared_facts: Dict[str, Any] | None) -> Dic
     account_mark_price = facts.get("account_mark_price")
     monitor_mark_price = facts.get("monitor_mark_price")
     pnl_truth_source = str(facts.get("pnl_truth_source") or "").strip() or "unavailable"
+    pnl_value = facts.get("pnl")
+    raw_pnl_pct = facts.get("pnl_pct")
+    pnl_data_source = facts.get("data_source") if isinstance(facts.get("data_source"), dict) else {}
+    broker_pnl_present = pnl_truth_source not in {"", "unavailable", "not_available"}
+    pnl_pct_is_fallback = str(pnl_data_source.get("pnl_pct") or "").strip().lower() == "fallback"
+    if (
+        not broker_pnl_present
+        and str(pnl_value or "").strip().lower() in {"", "unavailable", "not_available", "none", "-"}
+        and pnl_pct_is_fallback
+    ):
+        pnl_pct = None
+        pnl_pct_display = raw_pnl_pct
+        pnl_pct_display_role = "fallback_mark_only"
+    else:
+        pnl_pct = raw_pnl_pct
+        pnl_pct_display = raw_pnl_pct
+        pnl_pct_display_role = "truth"
 
     return {
         "status": {
@@ -29,8 +46,10 @@ def build_trade_report_truth_surface(shared_facts: Dict[str, Any] | None) -> Dic
             "monitor_price_source": facts.get("monitor_price_source"),
         },
         "pnl": {
-            "value": facts.get("pnl"),
-            "pct": facts.get("pnl_pct"),
+            "value": pnl_value,
+            "pct": pnl_pct,
+            "pct_display": pnl_pct_display,
+            "pct_display_role": pnl_pct_display_role,
             "broker_fee": facts.get("broker_fee"),
             "broker_tax": facts.get("broker_tax"),
             "pnl_truth_source": pnl_truth_source,
@@ -46,7 +65,7 @@ def build_trade_report_truth_surface(shared_facts: Dict[str, Any] | None) -> Dic
             "broker_buy_present": broker_buy_price not in (None, ""),
             "account_mark_present": account_mark_price not in (None, ""),
             "monitor_mark_present": monitor_mark_price not in (None, ""),
-            "broker_pnl_present": pnl_truth_source not in {"", "unavailable", "not_available"},
+            "broker_pnl_present": broker_pnl_present,
             "broker_day_authoritative": bool(facts.get("broker_day_authoritative")),
             "broker_truth_attempted": bool(facts.get("broker_truth_attempted")),
             "broker_day_truth_attempted": bool(facts.get("broker_day_truth_attempted")),

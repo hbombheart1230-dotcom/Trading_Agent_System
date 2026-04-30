@@ -52,6 +52,16 @@ def _write_bundle(
     return path
 
 
+def test_write_strategy_memory_respects_persist_disable_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("STRATEGY_MEMORY_PERSIST_ENABLED", "false")
+
+    out = write_strategy_memory(tmp_path, day="2026-04-30")
+
+    assert out["status"] == "disabled"
+    assert out["disabled_reason"] == "strategy_memory_persist_disabled_by_env"
+    assert not (tmp_path / "performance" / "2026-04-30" / "strategy_memory.json").exists()
+
+
 def test_performance_aggregation_correctness(tmp_path: Path) -> None:
     reports_root = tmp_path / "reports"
     day = "2026-03-20"

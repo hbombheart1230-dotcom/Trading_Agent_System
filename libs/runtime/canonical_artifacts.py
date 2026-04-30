@@ -203,12 +203,30 @@ def write_llm_artifact_bundle(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    summary_refs: Dict[str, str] = {}
+    summary_error = ""
+    if str(artifact_name or "").strip() == "strategist" or str(meta_obj.get("component") or "").strip() == "strategist":
+        try:
+            from libs.reporting.strategist_llm_summary import generate_strategist_llm_summary
+
+            summary_md, summary_json, _summary_payload = generate_strategist_llm_summary(paths["response"])
+            summary_refs = {
+                "strategist_summary_md_ref": str(summary_md),
+                "strategist_summary_json_ref": str(summary_json),
+            }
+            meta_obj.update(summary_refs)
+        except Exception as exc:
+            summary_error = f"{type(exc).__name__}: {exc}"[:500]
+            meta_obj["strategist_summary_error"] = summary_error
+        if summary_refs or summary_error:
+            paths["meta"].write_text(json.dumps(meta_obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
     llm_map = state.get("llm_artifacts") if isinstance(state.get("llm_artifacts"), dict) else {}
     llm_map = dict(llm_map)
     llm_map[str(artifact_name or "").strip()] = str(paths["meta"])
     state["llm_artifacts"] = llm_map
 
-    return {
+    refs = {
         "base_dir": str(paths["base_dir"]),
         "prompt_ref": str(paths["prompt"]),
         "response_ref": str(paths["response"]),
@@ -217,6 +235,10 @@ def write_llm_artifact_bundle(
         "response_hash": response_hash,
         "llm_status": str(meta_obj.get("llm_status") or meta_obj.get("status") or "").strip(),
     }
+    refs.update(summary_refs)
+    if summary_error:
+        refs["strategist_summary_error"] = summary_error
+    return refs
 
 
 def write_strategist_artifact(state: Dict[str, Any]) -> str:

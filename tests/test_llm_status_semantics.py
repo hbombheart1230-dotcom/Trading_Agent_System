@@ -84,3 +84,37 @@ def test_persist_llm_artifact_refs_moves_raw_payload_out_of_trade_surface(tmp_pa
     assert "raw_response_text" not in compact
     assert "system_prompt" not in compact
     assert "user_prompt" not in compact
+
+
+def test_persist_llm_artifact_refs_generates_strategist_summary(tmp_path: Path) -> None:
+    compact = persist_llm_artifact_refs(
+        artifact=build_llm_response_artifact(
+            component="strategist",
+            run_id="run-s1",
+            day="2026-04-29",
+            status="ok",
+            attempts=[
+                {
+                    "step": "first_attempt",
+                    "system_prompt": "sys",
+                    "user_prompt": "user",
+                    "raw_response_text": '{"playbook":"defensive","selected_themes":["semiconductor"]}',
+                    "status": "ok",
+                    "latency_ms": 11,
+                }
+            ],
+            parsed_output={"playbook": "defensive", "selected_themes": ["semiconductor"]},
+            model_info={"provider": "OpenRouter", "model": "test-model"},
+        ),
+        reports_root=tmp_path / "reports",
+        day="2026-04-29",
+        run_id="run-s1",
+        component="strategist",
+    )
+
+    md_path = tmp_path / "reports" / "llm" / "2026-04-29" / "run-s1" / "strategist" / "strategist_summary.md"
+    json_path = tmp_path / "reports" / "llm" / "2026-04-29" / "run-s1" / "strategist" / "strategist_summary.json"
+    assert md_path.exists()
+    assert json_path.exists()
+    assert compact["strategist_summary_md_ref"].endswith("strategist_summary.md")
+    assert compact["strategist_summary_json_ref"].endswith("strategist_summary.json")

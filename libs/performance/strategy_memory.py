@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -359,6 +360,29 @@ def write_strategy_memory(
     summary: Optional[Dict[str, Any]] = None,
     playbook_stats: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if str(os.getenv("STRATEGY_MEMORY_PERSIST_ENABLED", "true") or "").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "n",
+        "off",
+    }:
+        return {
+            "schema_version": "strategy_memory.v1",
+            "generated_at": _utc_now_iso(),
+            "day": str(day or "").strip(),
+            "status": "disabled",
+            "disabled_reason": "strategy_memory_persist_disabled_by_env",
+            "best_playbooks": [],
+            "worst_playbooks": [],
+            "market_condition_bias": {},
+            "recent_failures": [],
+            "recent_success_patterns": [],
+            "playbook_performance_snapshot": {},
+            "pattern_performance_snapshot": {},
+            "reporter_analysis_digest": {},
+            "advisory_only": True,
+        }
     root = Path(reports_root)
     target_day = str(day or "").strip()
     summary_obj = dict(summary) if isinstance(summary, dict) else aggregate_performance_from_reports_root(root, day=target_day)
@@ -385,6 +409,21 @@ def sync_strategy_memory_artifacts(
     day: str,
     source: str = "operator_daily_summary",
 ) -> Dict[str, Any]:
+    if str(os.getenv("STRATEGY_MEMORY_PERSIST_ENABLED", "true") or "").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "n",
+        "off",
+    }:
+        return {
+            "schema_version": "strategy_memory_sync.v1",
+            "status": "skipped",
+            "reason": "strategy_memory_persist_disabled_by_env",
+            "day": str(day or "").strip(),
+            "source": str(source or ""),
+            "generated_at": _utc_now_iso(),
+        }
     root = Path(reports_root)
     target_day = str(day or "").strip()
     if not target_day:

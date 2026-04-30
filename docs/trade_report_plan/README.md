@@ -33,6 +33,8 @@ Out of scope:
 - Memory should be derived from deterministic artifacts and explicit memory/application traces, not from prose in `ai_trade_report.md`.
 - The summary LLM uses `ai_trade_summary_input.json`, not the full `ai_trade_report.md` prose.
 - When the report LLM is used, it should consume structured strategist output directly instead of reconstructing strategy rationale from prose.
+- Weekly or multi-day profitability summaries must distinguish order-event coverage from closed-trade PnL-report coverage.
+- Cost drag, breakeven move, and cost-adjusted edge should be exposed wherever a trade is evaluated for profitability or future memory feedback.
 
 Primary policy document:
 
@@ -79,7 +81,10 @@ Remaining live checks:
 4. deterministic regeneration should continue to write skip markers for no-LLM mode
 5. `ai_trade_report.md` should remain the detailed report and should not absorb the summary surface
 6. next live closed trade should confirm `exit_observation.basis = monitor_signal_snapshot` and Truth Surface price/PnL separation on first write
+7. weekly diagnostics should warn when order events exist but closed-trade PnL summaries are incomplete
+8. trade summaries should expose whether losses were mostly price movement, cost drag, or exit timing
 
 Cross-folder status:
 
 - `docs/runtime_entrypoint/current_validation_status_2026-04-28.md`
+- `docs/runtime_entrypoint/strategy_conservatism_review_2026-04-29.md`

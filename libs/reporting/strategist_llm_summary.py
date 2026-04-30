@@ -55,9 +55,104 @@ def _parse_response_body(raw: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _canonical_strategist_path_for_response(source_path: Path) -> Path | None:
+    if source_path.name != "response.json" or source_path.parent.name != "strategist":
+        return None
+    run_dir = source_path.parent.parent
+    day_dir = run_dir.parent
+    llm_dir = day_dir.parent
+    if llm_dir.name != "llm":
+        return None
+    reports_root = llm_dir.parent
+    return reports_root / "canonical" / day_dir.name / run_dir.name / "strategist.json"
+
+
+def _load_canonical_strategist(source_path: Path) -> Tuple[Path | None, Dict[str, Any]]:
+    canonical_path = _canonical_strategist_path_for_response(source_path)
+    if canonical_path is None or not canonical_path.exists():
+        return canonical_path, {}
+    try:
+        raw = json.loads(canonical_path.read_text(encoding="utf-8"))
+    except Exception:
+        return canonical_path, {}
+    return canonical_path, dict(raw) if isinstance(raw, dict) else {}
+
+
 def _directive(payload: Dict[str, Any], key: str) -> Dict[str, Any]:
     directives = _as_dict(payload.get("strategy_adjustment_directives"))
     return _as_dict(directives.get(key))
+
+
+def _compact_operator_summary(value: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "available": bool(value.get("available")),
+        "status": _text(value.get("status"), ""),
+        "artifact_path": _text(value.get("artifact_path"), ""),
+        "trade_count": value.get("trade_count"),
+        "closed_trade_count": value.get("closed_trade_count"),
+        "win_rate": value.get("win_rate"),
+        "avg_return_pct": value.get("avg_return_pct"),
+    }
+
+
+def _memory_usage_from_canonical(canonical: Dict[str, Any]) -> Dict[str, Any]:
+    trace = _as_dict(canonical.get("memory_usage_trace"))
+    visibility = _as_dict(canonical.get("memory_packet_visibility"))
+    layer_decisions = _as_dict(trace.get("layer_decisions"))
+    compact_layers: Dict[str, Any] = {}
+    for layer in ("daily", "weekly", "monthly", "symbol"):
+        row = _as_dict(layer_decisions.get(layer))
+        if not row:
+            continue
+        compact_layers[layer] = {
+            "status": _text(row.get("status"), ""),
+            "active": bool(row.get("active")),
+            "used": bool(row.get("used")),
+            "confidence": row.get("confidence"),
+            "effect": _text(row.get("effect"), ""),
+            "reason": _text(row.get("reason"), ""),
+            "gate_reason": _text(row.get("gate_reason"), ""),
+            "operator_summary": _compact_operator_summary(_as_dict(row.get("operator_summary"))),
+        }
+
+    return {
+        "available": bool(trace or visibility),
+        "active_layers": _as_list(trace.get("active_layers")),
+        "priority_order": _as_list(trace.get("priority_order")),
+        "human_summary": _text(trace.get("human_summary"), ""),
+        "applied_to_strategy": _as_dict(trace.get("applied_to_strategy")),
+        "scanner_application": _as_dict(trace.get("scanner_application")),
+        "monitor_application": _as_dict(trace.get("monitor_application")),
+        "layer_decisions": compact_layers,
+        "memory_packet_visibility": {
+            "reporter_feedback_packet": _as_dict(visibility.get("reporter_feedback_packet")),
+            "selected_symbol_memory": _as_dict(visibility.get("selected_symbol_memory")),
+            "commander_refresh_context": _as_dict(visibility.get("commander_refresh_context")),
+        },
+    }
+
+
+def _news_usage_from_canonical(canonical: Dict[str, Any]) -> Dict[str, Any]:
+    trace = _as_dict(canonical.get("news_usage_trace"))
+    query_targets = _as_list(trace.get("query_targets")) or _as_list(canonical.get("news_query_targets"))
+    market_headlines = _as_list(trace.get("market_headlines_used"))
+    candidate_headlines = _as_list(trace.get("candidate_headlines_used"))
+    return {
+        "available": bool(trace or canonical.get("news_evidence_summary") or query_targets),
+        "query_targets": query_targets,
+        "human_summary": _text(trace.get("human_summary"), ""),
+        "market_effect": _text(trace.get("market_effect"), ""),
+        "playbook_effect": _text(trace.get("playbook_effect"), ""),
+        "scanner_guidance_effect": _text(trace.get("scanner_guidance_effect"), ""),
+        "monitor_policy_effect": _text(trace.get("monitor_policy_effect"), ""),
+        "confidence": _text(trace.get("confidence"), ""),
+        "news_evidence_summary": _text(canonical.get("news_evidence_summary"), ""),
+        "news_query_reasoning": _text(canonical.get("news_query_reasoning"), ""),
+        "market_headline_count": len(market_headlines),
+        "candidate_headline_count": len(candidate_headlines),
+        "market_headlines_sample": market_headlines[:3],
+        "candidate_headlines_sample": candidate_headlines[:3],
+    }
 
 
 def _operator_readout(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -126,6 +221,7 @@ def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, 
     source_path = Path(response_json_path)
     raw = json.loads(source_path.read_text(encoding="utf-8"))
     payload = _parse_response_body(raw)
+    canonical_path, canonical = _load_canonical_strategist(source_path)
     theme_strategy = _as_dict(payload.get("theme_strategy"))
     refresh_trace = _as_dict(payload.get("strategy_refresh_trace"))
     horizon = _as_dict(payload.get("strategy_horizon_feedback"))
@@ -134,6 +230,7 @@ def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, 
         "schema_version": "strategist_llm_summary.v1",
         "artifact_type": "strategist_llm_summary",
         "source_response_json": str(source_path),
+        "source_canonical_strategist_json": str(canonical_path) if canonical_path else "",
         "generated_at": _utc_now_iso(),
         "llm_meta": {
             "stage": _text(raw.get("stage"), ""),
@@ -164,6 +261,8 @@ def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, 
             "refresh_action": _directive(payload, "refresh_action"),
         },
         "monitor_entry_policy": _as_dict(payload.get("monitor_entry_policy")),
+        "memory_usage": _memory_usage_from_canonical(canonical),
+        "news_usage": _news_usage_from_canonical(canonical),
         "strategy_refresh_trace": {
             "summary": _text(refresh_trace.get("summary"), ""),
             "bullets": _as_list(refresh_trace.get("bullets")),
@@ -196,12 +295,66 @@ def _directive_line(label: str, value: Dict[str, Any]) -> str:
     return f"- {label}: **{action}**"
 
 
+def _memory_usage_lines(memory: Dict[str, Any]) -> List[str]:
+    if not bool(memory.get("available")):
+        return ["- 메모리 사용 trace: -"]
+    lines = [
+        f"- 활성 레이어: {', '.join(str(x) for x in _as_list(memory.get('active_layers'))) or '-'}",
+        f"- 우선순위: {' -> '.join(str(x) for x in _as_list(memory.get('priority_order'))) or '-'}",
+        f"- 요약: {_text(memory.get('human_summary'))}",
+    ]
+    applied = _as_dict(memory.get("applied_to_strategy"))
+    if applied:
+        lines.append(f"- 전략 반영: playbook={_text(applied.get('playbook_effect'))}, risk={_text(applied.get('risk_posture_effect'))}")
+        lines.append(
+            f"- scanner/monitor 반영: scanner={_text(applied.get('scanner_guidance_effect'))}, "
+            f"monitor={_text(applied.get('monitor_policy_effect'))}"
+        )
+    layer_decisions = _as_dict(memory.get("layer_decisions"))
+    for layer in ("daily", "weekly", "monthly", "symbol"):
+        row = _as_dict(layer_decisions.get(layer))
+        if not row:
+            continue
+        summary = _as_dict(row.get("operator_summary"))
+        metrics = []
+        if summary.get("trade_count") is not None:
+            metrics.append(f"trades={summary.get('trade_count')}")
+        if summary.get("win_rate") is not None:
+            metrics.append(f"win_rate={summary.get('win_rate')}")
+        if summary.get("avg_return_pct") is not None:
+            metrics.append(f"avg_return_pct={summary.get('avg_return_pct')}")
+        metric_text = f" ({', '.join(metrics)})" if metrics else ""
+        lines.append(
+            f"- {layer}: used={row.get('used')} status={_text(row.get('status'), '')} "
+            f"effect={_text(row.get('effect'), '')}{metric_text}"
+        )
+    return lines
+
+
+def _news_usage_lines(news: Dict[str, Any]) -> List[str]:
+    if not bool(news.get("available")):
+        return ["- 뉴스 사용 trace: -"]
+    query_targets = ", ".join(str(x) for x in _as_list(news.get("query_targets"))[:10]) or "-"
+    return [
+        f"- 검색/수집 타깃: {query_targets}",
+        f"- 사용 요약: {_text(news.get('human_summary'))}",
+        f"- 시장 효과: {_text(news.get('market_effect'))}",
+        f"- 플레이북 효과: {_text(news.get('playbook_effect'))}",
+        f"- 스캐너 반영: {_text(news.get('scanner_guidance_effect'))}",
+        f"- 모니터 반영: {_text(news.get('monitor_policy_effect'))}",
+        f"- 근거 헤드라인 수: market={news.get('market_headline_count')}, candidate={news.get('candidate_headline_count')}",
+        f"- query reasoning: {_text(news.get('news_query_reasoning'))}",
+    ]
+
+
 def render_strategist_llm_summary_markdown(payload: Dict[str, Any]) -> str:
     meta = _as_dict(payload.get("llm_meta"))
     readout = _as_dict(payload.get("operator_readout"))
     frame = _as_dict(payload.get("strategy_frame"))
     changes = _as_dict(payload.get("policy_changes"))
     entry = _as_dict(payload.get("monitor_entry_policy"))
+    memory = _as_dict(payload.get("memory_usage"))
+    news = _as_dict(payload.get("news_usage"))
     refresh = _as_dict(payload.get("strategy_refresh_trace"))
     horizon = _as_dict(payload.get("strategy_horizon_feedback"))
     hold = _as_dict(horizon.get("expected_hold_window"))
@@ -232,6 +385,14 @@ def render_strategist_llm_summary_markdown(payload: Dict[str, Any]) -> str:
         "**전략가 rationale**",
         "",
         _text(frame.get("rationale")),
+        "",
+        "### 메모리 사용",
+        "",
+        *_memory_usage_lines(memory),
+        "",
+        "### 뉴스 사용",
+        "",
+        *_news_usage_lines(news),
         "",
         "### 정책 조정",
         "",
@@ -318,6 +479,7 @@ def render_strategist_llm_summary_markdown(payload: Dict[str, Any]) -> str:
         "## 근거",
         "",
         f"- source_response_json: `{payload.get('source_response_json')}`",
+        f"- source_canonical_strategist_json: `{payload.get('source_canonical_strategist_json')}`",
         f"- run_id: `{_text(meta.get('run_id'), '')}`",
         f"- saved_at: `{_text(meta.get('saved_at'), '')}`",
         f"- generated_at: `{_text(payload.get('generated_at'), '')}`",

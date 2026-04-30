@@ -22,6 +22,13 @@ runtime ownership into libs/graphs modules.
 - `live_validation_checklist_2026-04-28.md`
   - preopen live/mock readiness checks
   - first 30-minute validation criteria across runtime, commander, memory, strategist, Kiwoom truth, horizon, and trade report
+- `preopen_readiness_2026-04-29.md`
+  - mock-live preopen readiness result
+  - active loop/watch status before market open
+- `strategy_conservatism_review_2026-04-29.md`
+  - week-to-date trade and blocker review
+  - strategist conservatism diagnosis
+  - cost-aware entry, probe-lane, and watchdog improvement plan
 - `current_validation_status_2026-04-28.md`
   - current live artifact validation matrix
   - code/document matching map
@@ -43,6 +50,7 @@ runtime ownership into libs/graphs modules.
   - `libs/runtime/live_loop_config.py`
 - live-loop orchestration now lives in:
   - `libs/runtime/live_loop_runner.py`
+- runtime profile validation supports `mock_live` for Kiwoom mock broker HTTP with auto execution enabled and real-account execution disabled.
 - run-session implementation dispatch now lives in:
   - `libs/runtime/session_entry_dispatch.py`
 - off-hours validation loop helpers now live in:
@@ -59,3 +67,4 @@ runtime ownership into libs/graphs modules.
 3. keep `run_m13_live_loop.py` as parse + delegate only
 4. keep new runtime helper ownership in `libs/runtime/*` and prevent hot-path script-to-script regressions
 5. move lower-priority wrapper/process helpers out of non-hot-path scripts as needed
+6. add watchdog behavior for missing lock owners, stale event logs, and canonical-run gaps during market session

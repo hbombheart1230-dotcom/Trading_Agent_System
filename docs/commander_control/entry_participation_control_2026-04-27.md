@@ -91,6 +91,10 @@ An open position exists. Commander keeps focus on position management rather tha
 
 A repeated blocker is observed, but conditions are insufficient for expansion.
 
+`probe_lane_candidate`
+
+Planned mode. Market context is supportive, repeated expandable blockers exist, and the strict lane is too narrow, but the setup has enough volume, extension, and cost-adjusted edge to justify minimum-size participation. This mode is distinct from `expand_when_market_ok`: expansion broadens review, while probe lane may permit a smaller entry after Monitor confirms a bounded near-ready setup.
+
 ## Decision Rules
 
 Commander treats market as supportive only when:
@@ -137,6 +141,29 @@ For VWAP overextension blockers only:
 - cap remains bounded by `max_extended_from_vwap_pct_cap=0.10`
 
 This is widening a Commander-approved entry participation band. It is not a forced buy.
+
+## Probe Lane Requirements
+
+Probe lane is not enabled in the current baseline, but the required contract is:
+
+- no open position is active
+- runtime watch is healthy
+- market regime is `neutral` or `risk_on`
+- repeated blocker is expandable
+- candidate has `volume_ok=true`
+- candidate has `extension_ok=true`
+- candidate rank is within Commander-expanded review range
+- `cost_filter_passed=true`
+- VWAP/reclaim shortfall, if any, is inside a bounded near-ready tolerance
+- size is minimum-size or explicitly reduced
+
+Probe lane must remain disabled when:
+
+- closeout window is active
+- post-exit hard cooldown is active
+- runtime is degraded
+- broker/preflight is blocked
+- cost-adjusted edge is negative
 
 ## Handoff Path
 
@@ -219,3 +246,4 @@ Next live session should verify:
 - dynamic VWAP band appears in effective policy adjustments only when Commander authorizes it.
 - no expansion occurs during `post_exit_cooldown`, closeout window, preflight blocked state, or open-position management.
 - no-trade traces distinguish expected defensive inactivity from unexpected repeated candidate rejection.
+- probe lane, when implemented, records `entry_lane=probe`, cost-adjusted edge fields, reduced size, and the strict-lane blocker it is intentionally testing.

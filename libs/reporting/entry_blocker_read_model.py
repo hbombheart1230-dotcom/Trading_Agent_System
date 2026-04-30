@@ -393,6 +393,21 @@ def build_entry_blocker_row(
     pullback_depth_pct = blocker_surface.get("pullback_depth_pct")
     if pullback_depth_pct in (None, ""):
         pullback_depth_pct = _resolve_threshold_actual(threshold_snapshot, "entry_pullback_depth_pct")
+    previous_close = blocker_surface.get("previous_close", monitor.get("previous_close"))
+    if previous_close in (None, ""):
+        previous_close = threshold_snapshot.get("entry_previous_close")
+    session_open = blocker_surface.get("session_open", monitor.get("session_open"))
+    if session_open in (None, ""):
+        session_open = threshold_snapshot.get("entry_session_open")
+    open_gap_pct = blocker_surface.get("open_gap_pct", monitor.get("open_gap_pct"))
+    if open_gap_pct in (None, ""):
+        open_gap_pct = threshold_snapshot.get("entry_open_gap_pct")
+    prev_close_distance_pct = blocker_surface.get("prev_close_distance_pct", monitor.get("prev_close_distance_pct"))
+    if prev_close_distance_pct in (None, ""):
+        prev_close_distance_pct = threshold_snapshot.get("entry_prev_close_distance_pct")
+    minutes_since_session_open = blocker_surface.get("minutes_since_session_open", monitor.get("minutes_since_session_open"))
+    if minutes_since_session_open in (None, ""):
+        minutes_since_session_open = threshold_snapshot.get("entry_minutes_since_session_open")
 
     selected_summary = {
         "symbol": _text(scanner_selected.get("symbol") or symbol),
@@ -450,6 +465,21 @@ def build_entry_blocker_row(
         "volume_ok": blocker_surface.get("volume_ok"),
         "volume_ratio": _to_float(volume_ratio),
         "volume_confirmation_missing": bool(blocker_surface.get("volume_confirmation_missing") or no_trade_code == "volume_confirmation_missing"),
+        "previous_close": _to_float(previous_close),
+        "session_open": _to_float(session_open),
+        "open_gap_pct": _to_float(open_gap_pct),
+        "prev_close_distance_pct": _to_float(prev_close_distance_pct),
+        "minutes_since_session_open": _to_float(minutes_since_session_open),
+        "opening_gap_chase_observed": bool(
+            blocker_surface.get("opening_gap_chase_observed")
+            or monitor.get("opening_gap_chase_observed")
+            or threshold_snapshot.get("entry_opening_gap_chase_observed")
+        ),
+        "opening_gap_context_observation_only": bool(
+            blocker_surface.get("opening_gap_context_observation_only")
+            or monitor.get("opening_gap_context_observation_only")
+            or threshold_snapshot.get("entry_opening_gap_context_observation_only")
+        ),
         "structure_hh_hl": _resolve_structure_state(monitor, blocker_surface),
         "below_vwap_reclaim_not_ready": bool(blocker_surface.get("below_vwap_reclaim_not_ready") or no_trade_code == "below_vwap_reclaim_not_ready"),
         "reclaim_gate_ok": blocker_surface.get("reclaim_gate_ok"),

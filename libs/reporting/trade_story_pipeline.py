@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import html
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -273,8 +274,131 @@ def _headline_text(row: Any) -> str:
     return ""
 
 
+def _clean_news_fragment(value: Any, *, max_len: int = 180) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return clip(text, max_len=max_len)
+
+
+def _news_item_field(raw: Any, field: str) -> str:
+    text = str(raw or "")
+    for quote in ("'", '"'):
+        marker = f"{field}={quote}"
+        start = text.find(marker)
+        if start < 0:
+            continue
+        start += len(marker)
+        end = text.find(f"{quote}, ", start)
+        if end < 0:
+            end = text.find(quote, start)
+        if end > start:
+            return _clean_news_fragment(text[start:end])
+    return ""
+
+
+def _news_sample_parts(raw: Any) -> Dict[str, str]:
+    if isinstance(raw, dict):
+        return {
+            "title": _clean_news_fragment(
+                raw.get("title") or raw.get("headline") or raw.get("news_title")
+            ),
+            "summary": _clean_news_fragment(
+                raw.get("summary") or raw.get("description") or raw.get("text"),
+                max_len=260,
+            ),
+            "symbol": _norm_symbol_text(raw.get("symbol") or raw.get("code") or raw.get("ticker")),
+        }
+    return {
+        "title": _news_item_field(raw, "title") or _clean_news_fragment(raw),
+        "summary": _news_item_field(raw, "summary"),
+        "symbol": _norm_symbol_text(_news_item_field(raw, "symbol")),
+    }
+
+
 def _norm_symbol_text(value: Any) -> str:
     return normalize_symbol(value, allow_test_symbols=True).strip().upper()
+
+
+def _symbol_name_from_text(text: Any, symbol: str) -> str:
+    target = _norm_symbol_text(symbol)
+    if not target:
+        return ""
+    cleaned = _clean_news_fragment(text, max_len=320)
+    pattern = rf"([A-Za-z0-9가-힣&·.\-\s]{{1,40}})\(\s*{re.escape(target)}\s*\)"
+    match = re.search(pattern, cleaned)
+    if not match:
+        return ""
+    name = re.sub(r"\s+", " ", str(match.group(1) or "")).strip(" ,;:·-")
+    if not name:
+        return ""
+    # Keep the nearest token phrase; news snippets often have a long prefix.
+    pieces = re.split(r"[,\s]+", name)
+    return pieces[-1].strip() if pieces else name
+
+
+def _sample_title_directly_matches_symbol(parts: Dict[str, str], symbol: str) -> bool:
+    target = _norm_symbol_text(symbol)
+    title = str(parts.get("title") or "")
+    if not target or not title:
+        return False
+    if target in title:
+        return True
+    symbol_name = _symbol_name_from_text(parts.get("summary"), target)
+    return bool(symbol_name and symbol_name in title)
+
+
+def _format_symbol_news_headline(symbol: str, title: str, *, indirect: bool = False) -> str:
+    target = _norm_symbol_text(symbol)
+    cleaned = _clean_news_fragment(title)
+    if not cleaned:
+        return ""
+    if re.match(r"\s*\d{6}\s*:", cleaned):
+        return cleaned
+    if indirect:
+        return f"{target}: 관련 테마 뉴스 - {cleaned}" if target else f"관련 테마 뉴스 - {cleaned}"
+    return f"{target}: {cleaned}" if target else cleaned
+
+
+def _collect_symbol_headlines_from_ranked_rows(rows: Any, *, symbol: str, limit: int = 3) -> List[str]:
+    if not isinstance(rows, list):
+        return []
+    target = _norm_symbol_text(symbol)
+    if not target:
+        return []
+    direct: List[str] = []
+    indirect: List[str] = []
+    for row in rows:
+        item = row if isinstance(row, dict) else {}
+        row_target = _norm_symbol_text(
+            item.get("target")
+            or item.get("symbol")
+            or item.get("code")
+            or item.get("ticker")
+        )
+        if row_target and row_target != target:
+            continue
+        samples = item.get("sample_titles") or item.get("sample") or item.get("headlines") or []
+        if not isinstance(samples, list):
+            samples = [samples]
+        if not samples:
+            samples = [item]
+        for sample in samples:
+            parts = _news_sample_parts(sample)
+            title = parts.get("title") or ""
+            if not title:
+                continue
+            sample_symbol = _norm_symbol_text(parts.get("symbol"))
+            summary_has_target = bool(target in str(parts.get("summary") or ""))
+            title_is_direct = _sample_title_directly_matches_symbol(parts, target)
+            if sample_symbol and sample_symbol != target and not summary_has_target:
+                continue
+            bucket = direct if title_is_direct else indirect
+            headline = _format_symbol_news_headline(target, title, indirect=not title_is_direct)
+            if headline and headline not in bucket:
+                bucket.append(headline)
+    picked = direct if direct else indirect
+    return picked[: max(1, int(limit))]
 
 
 def _headline_matches_symbol(row: Any, symbol: str) -> bool:
@@ -327,8 +451,60 @@ def _collect_top_headlines(rows: Any, *, limit: int = 3, symbol: str = "") -> Li
             fallback.append(text)
         if symbol and _headline_matches_symbol(row, symbol) and text not in filtered:
             filtered.append(text)
-    picked = filtered or fallback
+    picked = filtered if symbol else fallback
     return picked[: max(1, int(limit))]
+
+
+def _raw_strategist_evidence(bundle_out: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(bundle_out.get("strategist_evidence"), dict):
+        return dict(bundle_out.get("strategist_evidence") or {})
+    evidence = bundle_out.get("evidence") if isinstance(bundle_out.get("evidence"), dict) else {}
+    if isinstance(evidence.get("strategist"), dict):
+        return dict(evidence.get("strategist") or {})
+    return {}
+
+
+def _strategist_trace_source(
+    canonical_strategist: Dict[str, Any],
+    raw_strategist_evidence: Dict[str, Any],
+) -> Dict[str, Any]:
+    source = dict(canonical_strategist or {})
+    raw = raw_strategist_evidence if isinstance(raw_strategist_evidence, dict) else {}
+    # Raw evidence carries the structured news rows. Prefer those over stale
+    # flattened market_context headlines when rebuilding reports.
+    if raw.get("news_evidence_ranked") is not None:
+        source["news_evidence_ranked"] = raw.get("news_evidence_ranked")
+    if raw.get("market_context_snapshots") is not None and source.get("market_context_snapshots") is None:
+        source["market_context_snapshots"] = raw.get("market_context_snapshots")
+    return source
+
+
+def _title_prefixed_symbol(value: Any) -> str:
+    match = re.match(r"\s*(\d{6})\s*:", str(value or ""))
+    return match.group(1) if match else ""
+
+
+def _list_text_for_symbol(values: Any, *, symbol: str, limit: int = 3, max_len: int = 180) -> List[str]:
+    target = _norm_symbol_text(symbol)
+    rows = _list_text(values, limit=50, max_len=max_len)
+    if not target:
+        return rows[: max(1, int(limit))]
+    matched: List[str] = []
+    untagged: List[str] = []
+    has_detectable_symbol = False
+    for row in rows:
+        row_symbol = _title_prefixed_symbol(row)
+        if row_symbol:
+            has_detectable_symbol = True
+        if row_symbol == target and row not in matched:
+            matched.append(row)
+        elif not row_symbol and row not in untagged:
+            untagged.append(row)
+    if matched:
+        return matched[: max(1, int(limit))]
+    if not has_detectable_symbol:
+        return untagged[: max(1, int(limit))]
+    return []
 
 
 def _top_numeric_drivers(values: Any, *, limit: int = 4) -> Dict[str, float]:
@@ -358,7 +534,17 @@ def _build_strategist_evidence_trace(
     fallback_candidate_titles: Any = None,
 ) -> Dict[str, Any]:
     data = strategist if isinstance(strategist, dict) else {}
-    news_ranked = data.get("news_evidence_ranked") if isinstance(data.get("news_evidence_ranked"), dict) else {}
+    news_ranked_raw = data.get("news_evidence_ranked")
+    news_ranked = news_ranked_raw if isinstance(news_ranked_raw, dict) else {}
+    if not news_ranked and isinstance(news_ranked_raw, list):
+        for event in news_ranked_raw:
+            payload = event.get("payload") if isinstance(event, dict) else {}
+            if isinstance(payload, dict) and (
+                payload.get("candidate_news_ranked") is not None
+                or payload.get("market_news_ranked") is not None
+            ):
+                news_ranked = dict(payload)
+                break
     global_signal = data.get("global_sentiment_signal") if isinstance(data.get("global_sentiment_signal"), dict) else {}
     fear_index = data.get("fear_index") if isinstance(data.get("fear_index"), dict) else {}
     if not fear_index and isinstance(global_signal.get("fear_index"), dict):
@@ -366,11 +552,20 @@ def _build_strategist_evidence_trace(
     market_rows = list(news_ranked.get("market_news_ranked") or [])
     candidate_rows = list(news_ranked.get("candidate_news_ranked") or [])
     market_headlines = _collect_top_headlines(market_rows, limit=3)
-    symbol_headlines = _collect_top_headlines(candidate_rows, limit=3, symbol=selected_symbol)
+    symbol_headlines = _collect_symbol_headlines_from_ranked_rows(
+        candidate_rows,
+        symbol=selected_symbol,
+        limit=3,
+    ) or _collect_top_headlines(candidate_rows, limit=3, symbol=selected_symbol)
     if not market_headlines:
         market_headlines = _list_text(fallback_market_titles, limit=3, max_len=180)
     if not symbol_headlines:
-        symbol_headlines = _list_text(fallback_candidate_titles, limit=3, max_len=180)
+        symbol_headlines = _list_text_for_symbol(
+            fallback_candidate_titles,
+            symbol=selected_symbol,
+            limit=3,
+            max_len=180,
+        )
     candidate_hints = _list_text(
         data.get("candidate_symbols_hint"),
         limit=8,
@@ -1296,6 +1491,7 @@ def feature_coverage(selected_candidate: Dict[str, Any]) -> Dict[str, Any]:
         "engine_ma120",
         "engine_adx14",
         "engine_trend_strength",
+        "engine_atr14",
         "engine_volume_spike20",
         "engine_volatility20",
         "engine_vwap_distance",
@@ -1338,8 +1534,24 @@ def normalized_feature_coverage(scanner: Dict[str, Any], selected_candidate: Dic
             quality = "partial"
         else:
             quality = "weak"
-    present_keys = [str(x or "") for x in list(reported.get("present_keys") or computed.get("present_keys") or []) if str(x or "").strip()]
-    missing_keys = [str(x or "") for x in list(reported.get("missing_keys") or computed.get("missing_keys") or []) if str(x or "").strip()]
+    reported_present_keys = [str(x or "") for x in list(reported.get("present_keys") or []) if str(x or "").strip()]
+    reported_missing_keys = [str(x or "") for x in list(reported.get("missing_keys") or []) if str(x or "").strip()]
+    computed_present = safe_int(computed.get("present"), 0)
+    computed_total = safe_int(computed.get("total"), 0)
+    reported_key_counts_match = bool(
+        reported_present_keys
+        and len(reported_present_keys) == present
+        and len(reported_present_keys) + len(reported_missing_keys) == total
+    )
+    computed_key_counts_match = computed_present == present and computed_total == total
+    computed_present_keys = [
+        str(x or "") for x in list(computed.get("present_keys") or []) if str(x or "").strip()
+    ]
+    computed_missing_keys = [
+        str(x or "") for x in list(computed.get("missing_keys") or []) if str(x or "").strip()
+    ]
+    present_keys = reported_present_keys if reported_key_counts_match else (computed_present_keys if computed_key_counts_match else [])
+    missing_keys = reported_missing_keys if reported_key_counts_match else (computed_missing_keys if computed_key_counts_match else [])
     return {
         "present": present,
         "total": total,
@@ -2022,6 +2234,7 @@ def _normalized_feature_coverage_from_scanner_evidence(
         "engine_ma120",
         "engine_adx14",
         "engine_trend_strength",
+        "engine_atr14",
         "engine_volume_spike20",
         "engine_volatility20",
         "engine_vwap_distance",
@@ -2045,8 +2258,16 @@ def _normalized_feature_coverage_from_scanner_evidence(
             quality = "partial"
         else:
             quality = "weak"
-    present_keys = [str(x or "") for x in list(reported.get("present_keys") or computed_present_keys) if str(x or "").strip()]
-    missing_keys = [str(x or "") for x in list(reported.get("missing_keys") or computed_missing_keys) if str(x or "").strip()]
+    reported_present_keys = [str(x or "") for x in list(reported.get("present_keys") or []) if str(x or "").strip()]
+    reported_missing_keys = [str(x or "") for x in list(reported.get("missing_keys") or []) if str(x or "").strip()]
+    reported_key_counts_match = bool(
+        reported_present_keys
+        and len(reported_present_keys) == present
+        and len(reported_present_keys) + len(reported_missing_keys) == total
+    )
+    computed_key_counts_match = computed_present == present and computed_total == total
+    present_keys = reported_present_keys if reported_key_counts_match else (computed_present_keys if computed_key_counts_match else [])
+    missing_keys = reported_missing_keys if reported_key_counts_match else (computed_missing_keys if computed_key_counts_match else [])
     coverage_source = "feature_coverage_reported" if reported else "snapshot_derived"
     return {
         "present": present,
@@ -3311,8 +3532,9 @@ def build_trade_story_input(
             monitor_artifact=selection_monitor,
             trade_symbol=symbol or str((bundle_out.get("execution") or {}).get("symbol") or ""),
         )
+        raw_strategist_evidence = _raw_strategist_evidence(bundle_out)
         strategist_evidence_trace = _build_strategist_evidence_trace(
-            canonical_strategist,
+            _strategist_trace_source(canonical_strategist, raw_strategist_evidence),
             selected_symbol=selected_symbol,
             fallback_market_titles=market_context_human.get("market_news_titles"),
             fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
@@ -3331,7 +3553,7 @@ def build_trade_story_input(
         ]
         news_symbol_linkage = build_news_symbol_linkage_view(
             strategist_summary=canonical_strategist,
-            strategist_raw_input=dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
+            strategist_raw_input=raw_strategist_evidence,
             strategist_parsed_output=dict((bundle_out.get("strategist_summary") or {}).get("llm_parsed_output") or {}),
             selected_symbol=selected_symbol,
             top_ranked_symbols=ranked_symbols or canonical_scanner.get("top_ranked_symbols") or [],
@@ -3352,9 +3574,12 @@ def build_trade_story_input(
         monitor_blocker_trace = _build_monitor_blocker_trace(monitor_reason_human)
         market_context_human.setdefault("candidate_hints", strategist_evidence_trace.get("candidate_hints") or [])
         market_context_human.setdefault("market_headlines", strategist_evidence_trace.get("market_headlines") or [])
-        market_context_human.setdefault("symbol_headlines", strategist_evidence_trace.get("symbol_headlines") or [])
-        market_context_human.setdefault("strategist_evidence_trace", dict(strategist_evidence_trace))
-        market_context_human.setdefault("news_symbol_linkage", dict(news_symbol_linkage))
+        selected_symbol_headlines = list(strategist_evidence_trace.get("symbol_headlines") or [])
+        market_context_human["symbol_headlines"] = selected_symbol_headlines
+        market_context_human["symbol_news_titles"] = selected_symbol_headlines
+        market_context_human["candidate_news_titles"] = selected_symbol_headlines
+        market_context_human["strategist_evidence_trace"] = dict(strategist_evidence_trace)
+        market_context_human["news_symbol_linkage"] = dict(news_symbol_linkage)
         _set_or_replace_placeholder(
             scanner_reason_human,
             "scanner_selection_trace",
@@ -3563,7 +3788,7 @@ def build_trade_story_input(
             "timeline": [dict(x) for x in list(lifecycle.get("timeline") or bundle_out.get("timeline") or []) if isinstance(x, dict)][:40],
             "warnings": [str(x or "") for x in list(bundle_out.get("warnings") or lifecycle.get("warnings") or []) if str(x or "").strip()][:20],
             "improvement_points": [str(x or "") for x in list(reporter.get("improvement_points") or []) if str(x or "").strip()][:12],
-            "strategist_evidence": dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
+            "strategist_evidence": raw_strategist_evidence,
             "strategist_candidate_hints": list(strategist_evidence_trace.get("candidate_hints") or [])[:8],
             "strategist_market_headlines": list(strategist_evidence_trace.get("market_headlines") or [])[:3],
             "strategist_symbol_headlines": list(strategist_evidence_trace.get("symbol_headlines") or [])[:3],
@@ -3733,8 +3958,9 @@ def build_trade_story_input(
         monitor_artifact=selection_monitor,
         trade_symbol=str((bundle_out.get("execution") or {}).get("symbol") or bundle_out.get("symbol") or ""),
     )
+    raw_strategist_evidence = _raw_strategist_evidence(bundle_out)
     strategist_evidence_trace = _build_strategist_evidence_trace(
-        canonical_strategist,
+        _strategist_trace_source(canonical_strategist, raw_strategist_evidence),
         selected_symbol=selected_symbol,
         fallback_market_titles=market_context_human.get("market_news_titles"),
         fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
@@ -3753,7 +3979,7 @@ def build_trade_story_input(
     ]
     news_symbol_linkage = build_news_symbol_linkage_view(
         strategist_summary=canonical_strategist,
-        strategist_raw_input=dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
+        strategist_raw_input=raw_strategist_evidence,
         strategist_parsed_output=dict((bundle_out.get("strategist_summary") or {}).get("llm_parsed_output") or {}),
         selected_symbol=selected_symbol,
         top_ranked_symbols=ranked_symbols or canonical_scanner.get("top_ranked_symbols") or [],
@@ -3774,9 +4000,12 @@ def build_trade_story_input(
     monitor_blocker_trace = _build_monitor_blocker_trace(monitor_reason_human)
     market_context_human.setdefault("candidate_hints", strategist_evidence_trace.get("candidate_hints") or [])
     market_context_human.setdefault("market_headlines", strategist_evidence_trace.get("market_headlines") or [])
-    market_context_human.setdefault("symbol_headlines", strategist_evidence_trace.get("symbol_headlines") or [])
-    market_context_human.setdefault("strategist_evidence_trace", dict(strategist_evidence_trace))
-    market_context_human.setdefault("news_symbol_linkage", dict(news_symbol_linkage))
+    selected_symbol_headlines = list(strategist_evidence_trace.get("symbol_headlines") or [])
+    market_context_human["symbol_headlines"] = selected_symbol_headlines
+    market_context_human["symbol_news_titles"] = selected_symbol_headlines
+    market_context_human["candidate_news_titles"] = selected_symbol_headlines
+    market_context_human["strategist_evidence_trace"] = dict(strategist_evidence_trace)
+    market_context_human["news_symbol_linkage"] = dict(news_symbol_linkage)
     _set_or_replace_placeholder(
         scanner_reason_human,
         "scanner_selection_trace",
@@ -3835,7 +4064,7 @@ def build_trade_story_input(
         "operator_conclusion_human": dict(bundle_out.get("operator_conclusion_human") or {}),
         "timeline": list(bundle_out.get("timeline") or []),
         "warnings": list(bundle_out.get("warnings") or []),
-        "strategist_evidence": dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
+        "strategist_evidence": raw_strategist_evidence,
         "strategist_candidate_hints": list(strategist_evidence_trace.get("candidate_hints") or [])[:8],
         "strategist_market_headlines": list(strategist_evidence_trace.get("market_headlines") or [])[:3],
         "strategist_symbol_headlines": list(strategist_evidence_trace.get("symbol_headlines") or [])[:3],

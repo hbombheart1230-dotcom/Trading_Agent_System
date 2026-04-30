@@ -31,6 +31,7 @@ _REASON_LABELS: Dict[str, str] = {
     "noop_intent_skipped": "NOOP intent skipped (no order sent)",
     "denied_by_test": "Blocked by supervisor test rule",
     "duplicate_buy_position_exists": "Blocked duplicate buy (position already open)",
+    "duplicate_buy_recent_order_exists": "Blocked duplicate buy (recent same-symbol order still pending reflection)",
     "insufficient_mock_cash": "Insufficient mock cash",
     "position_already_open": "Position already open",
     "model_no_signal": "Model returned no trade signal",

@@ -431,6 +431,15 @@ def evaluate_exit_policy(
                 )
             ),
             "peak_drawdown_mode": str(p.get("peak_drawdown_mode") or "profit_protection").strip().lower(),
+            "confirm_required_for_peak_drawdown": max(
+                1,
+                int(
+                    _to_float(
+                        p.get("confirm_required_for_peak_drawdown"),
+                        2.0,
+                    )
+                ),
+            ),
             "vwap_breakdown_pct": _clamp_non_negative(_to_float(p.get("vwap_breakdown_pct"), 0.0)),
             "intraday_low_break_pct": _clamp_non_negative(_to_float(p.get("intraday_low_break_pct"), 0.0)),
             "trend_strength_floor": _to_float(p.get("trend_strength_floor"), 0.0),

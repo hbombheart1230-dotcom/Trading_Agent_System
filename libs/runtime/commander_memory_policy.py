@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List
 
 
@@ -31,6 +32,17 @@ def _list_text(values: Any, *, limit: int) -> List[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0") or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _memory_usage_disabled() -> bool:
+    return _env_bool("COMMANDER_MEMORY_USAGE_DISABLED") or _env_bool("STRATEGIST_MEMORY_USAGE_DISABLED")
 
 
 def _packet_quality(packet: Dict[str, Any]) -> Dict[str, Any]:
@@ -143,6 +155,7 @@ def build_commander_memory_policy(
     *,
     session_bias: str,
     memory_packets: Dict[str, Dict[str, Any]],
+    usage_disabled: bool = False,
 ) -> Dict[str, Any]:
     daily = dict(memory_packets.get("daily_strategy_memory") or {})
     weekly = dict(memory_packets.get("weekly_strategy_memory") or {})
@@ -156,6 +169,39 @@ def build_commander_memory_policy(
         "monthly": _packet_quality(monthly),
         "symbol": _packet_quality(symbol),
     }
+    if bool(usage_disabled) or _memory_usage_disabled():
+        disabled_reason = (
+            "memory_usage_disabled_by_commander"
+            if bool(usage_disabled)
+            else "memory_usage_disabled_by_env"
+        )
+        policy_signals = _build_policy_signals(layer_quality, [])
+        return {
+            "schema_version": "commander.memory_policy.v1",
+            "owner": "commander",
+            "application_mode": "disabled",
+            "disabled": True,
+            "disabled_reason": disabled_reason,
+            "active_layers": [],
+            "priority_order": priority_order,
+            "symbol_memory_override_enabled": False,
+            "symbol_memory_min_trade_count": 5,
+            "symbol_memory_min_closed_trade_count": 3,
+            "symbol_memory_max_age_days": 20,
+            "scanner_bias_enabled": False,
+            "scanner_bias_application_mode": "disabled",
+            "monitor_bias_enabled": False,
+            "monitor_bias_application_mode": "disabled",
+            "layer_status": {
+                "daily": str(daily.get("status") or ""),
+                "weekly": str(weekly.get("status") or ""),
+                "monthly": str(monthly.get("status") or ""),
+                "symbol": str(symbol.get("status") or ""),
+            },
+            "layer_quality": layer_quality,
+            "policy_signals": policy_signals,
+            "rationale": [disabled_reason],
+        }
     active_layers: List[str] = []
     for name, packet in [("daily", daily), ("weekly", weekly), ("monthly", monthly)]:
         quality = dict(layer_quality.get(name) or {})

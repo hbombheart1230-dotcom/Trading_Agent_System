@@ -600,6 +600,8 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
     for candidate in (
         _clip(hold_summary.get("holding_duration"), max_len=80),
         _clip(hold_summary.get("holding_time"), max_len=80),
+        _clip(hold_summary.get("hold_duration"), max_len=80),
+        _humanize_duration_text("", fallback_seconds=hold_summary.get("hold_duration_sec")),
     ):
         _set_fact_if_missing(
             resolved=resolved,
@@ -761,8 +763,10 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
     trade_model_hold_duration_sec = trade_read_model_facts.get("hold_duration_sec")
     if resolved_facts.get("holding_duration") in (None, "", "unavailable") and trade_model_hold_duration_sec not in (None, ""):
         try:
-            resolved_facts["holding_duration"] = str(int(float(trade_model_hold_duration_sec)))
-            (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"holding_duration": "trade_read_model"})
+            hold_seconds = int(float(trade_model_hold_duration_sec))
+            if hold_seconds > 0:
+                resolved_facts["holding_duration"] = str(hold_seconds)
+                (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"holding_duration": "trade_read_model"})
         except Exception:
             pass
     if resolved_facts.get("exit_reason") in (None, "", "unavailable") and str(trade_read_model_facts.get("exit_reason") or "").strip():
@@ -1957,7 +1961,7 @@ def _format_pct_points(value: Any) -> str:
 
 
 def _select_symbol_headline(headlines: Any, symbol: str = "") -> str:
-    cleaned_rows = [_clean_news_title(row) for row in _listify(headlines, max_items=6, max_len=240)]
+    cleaned_rows = [_clean_news_title(row) for row in _listify(headlines, max_items=20, max_len=240)]
     cleaned_rows = [row for row in cleaned_rows if row]
     if not cleaned_rows:
         return ""
@@ -2057,7 +2061,10 @@ def _build_market_context_bullets(section: Any, *, scanner_reason: Dict[str, Any
     us_indices = _extract_us_indices_snapshot(data.get("key_events") or data.get("key_events_hint"))
     market_titles = _join_headlines(data.get("market_news_titles") or data.get("market_headlines"), max_items=2, max_len=180)
     symbol_title = _select_symbol_headline(
-        data.get("candidate_news_titles") or data.get("symbol_headlines"),
+        data.get("symbol_news_titles")
+        or data.get("symbol_headlines")
+        or data.get("strategist_symbol_headlines")
+        or data.get("candidate_news_titles"),
         _clip(scanner.get("selected_symbol"), max_len=24),
     )
     targets = ", ".join(_listify(data.get("news_query_targets"), max_items=7, max_len=40))
@@ -2156,7 +2163,10 @@ def _build_strategist_summary_section(
     theme_boost = _core_value_opt("theme_boost")
     market_titles = _join_headlines(market_context.get("market_news_titles") or market_context.get("market_headlines"), max_items=1, max_len=110)
     symbol_title = _select_symbol_headline(
-        market_context.get("candidate_news_titles") or market_context.get("symbol_headlines"),
+        market_context.get("symbol_news_titles")
+        or market_context.get("symbol_headlines")
+        or market_context.get("strategist_symbol_headlines")
+        or market_context.get("candidate_news_titles"),
         selected_symbol,
     )
     theme_linkage = _theme_linkage_label(market_context.get("themes") or market_context.get("preferred_themes"))
@@ -2420,6 +2430,7 @@ def _scanner_chart_feature_label(value: Any) -> str:
         "engine_ma120": "120일선",
         "engine_adx14": "ADX14",
         "engine_trend_strength": "추세 강도",
+        "engine_atr14": "ATR14",
         "engine_volume_spike20": "20봉 거래량 스파이크",
         "engine_volatility20": "20봉 변동성",
         "engine_vwap_distance": "VWAP 이격",
@@ -2482,7 +2493,19 @@ def _scanner_monitor_fallback_context(scanner_reason: Dict[str, Any]) -> Dict[st
 def _scanner_chart_feature_coverage(scanner_reason: Dict[str, Any]) -> Dict[str, Any]:
     trace = scanner_reason.get("scanner_selection_trace") if isinstance(scanner_reason.get("scanner_selection_trace"), dict) else {}
     row = trace.get("chart_feature_coverage") if isinstance(trace.get("chart_feature_coverage"), dict) else {}
-    return dict(row)
+    out = dict(row)
+    present = int(float(out.get("present") or 0)) if _num_opt(out.get("present")) is not None else 0
+    total = int(float(out.get("total") or 0)) if _num_opt(out.get("total")) is not None else 0
+    present_keys = [str(x or "") for x in list(out.get("present_keys") or []) if str(x or "").strip()]
+    missing_keys = [str(x or "") for x in list(out.get("missing_keys") or []) if str(x or "").strip()]
+    if (present_keys or missing_keys) and not (
+        present_keys
+        and len(present_keys) == present
+        and len(present_keys) + len(missing_keys) == total
+    ):
+        out["present_keys"] = []
+        out["missing_keys"] = []
+    return out
 
 
 def _build_scanner_driver_summary(scanner_reason: Dict[str, Any]) -> str:
@@ -2891,6 +2914,9 @@ def _build_entry_decision_summary(
     playbook = _market_token_label(market_context.get("playbook")) or _clip(market_context.get("playbook"), max_len=32)
     confidence_score = _num_opt(entry_scores.get("confidence_score"))
     confidence_threshold = _num_opt(entry_scores.get("confidence_threshold"))
+    entry_quality_score = _num_opt(entry_scores.get("entry_quality_score"))
+    entry_quality_tier = _clip(entry_scores.get("entry_quality_tier"), max_len=24)
+    entry_quality_path = _entry_path_label(entry_scores.get("entry_quality_path"))
     fallback_ctx = _scanner_monitor_fallback_context(scanner_reason)
 
     summary_parts: List[str] = []
@@ -2922,15 +2948,19 @@ def _build_entry_decision_summary(
     elif triggered_path:
         summary_parts.append(f"실제 엔트리 경로는 {triggered_path}였습니다.")
     if confidence_score is not None and confidence_threshold is not None:
-        if abs(confidence_score - confidence_threshold) <= 1e-6:
-            summary_parts.append(
-                f"진입 신뢰도 점수는 {confidence_score:.2f}로 기준 {confidence_threshold:.2f}와 동일했습니다."
-            )
-        else:
-            relation = "상회했습니다" if confidence_score > confidence_threshold else "하회했습니다"
-            summary_parts.append(
-                f"진입 신뢰도 점수는 {confidence_score:.2f}로 기준 {confidence_threshold:.2f}를 {relation}."
-            )
+        relation = _entry_gate_score_relation(confidence_score, confidence_threshold)
+        particle = "과" if relation == "동일했습니다" else "을"
+        summary_parts.append(
+            f"진입 게이트 점수는 {confidence_score:.4f}이며 기준 {confidence_threshold:.4f}{particle} {relation}. "
+            "이 값은 확률형 신뢰도가 아니라 모니터 진입 조건의 경로 점수입니다."
+        )
+    if entry_quality_score is not None:
+        quality_bits = [f"진입 품질 점수는 {entry_quality_score:.4f}"]
+        if entry_quality_tier:
+            quality_bits.append(f"등급 {entry_quality_tier}")
+        if entry_quality_path:
+            quality_bits.append(f"우세 경로 {entry_quality_path}")
+        summary_parts.append(" / ".join(quality_bits) + "였습니다. 이 값은 관측용이며 매수 허용 기준으로 쓰지 않습니다.")
     if summary_parts:
         return " ".join(summary_parts)
     scanner_summary = _build_scanner_choice_summary(scanner_reason, market_context)
@@ -3085,6 +3115,146 @@ def _entry_gate_name_label(value: str) -> str:
     return mapping.get(value, value)
 
 
+def _entry_gate_score_relation(score: float, threshold: float) -> str:
+    if abs(float(score) - float(threshold)) <= 1e-6:
+        return "동일했습니다"
+    return "상회했습니다" if float(score) > float(threshold) else "하회했습니다"
+
+
+def _entry_gate_bits(grouped_trace: Dict[str, Any], entry_scores: Dict[str, Any] | None = None) -> List[str]:
+    scores = entry_scores if isinstance(entry_scores, dict) else {}
+    gate_bits: List[str] = []
+    if "reclaim_gate_ok" in grouped_trace:
+        gate_bits.append(f"{_entry_gate_name_label('reclaim')} {_entry_gate_state_label(grouped_trace.get('reclaim_gate_ok'))}")
+    if "extension_ok" in grouped_trace:
+        gate_bits.append(f"{_entry_gate_name_label('extension')} {_entry_gate_state_label(grouped_trace.get('extension_ok'))}")
+    if "confidence_gate_ok" in grouped_trace:
+        gate_bits.append(f"{_entry_gate_name_label('confidence gate')} {_entry_gate_state_label(grouped_trace.get('confidence_gate_ok'))}")
+    elif "confidence_gate_ok" in scores:
+        gate_bits.append(f"{_entry_gate_name_label('confidence gate')} {_entry_gate_state_label(scores.get('confidence_gate_ok'))}")
+    return gate_bits
+
+
+def _entry_gate_signature(source: Dict[str, Any]) -> tuple[Any, ...]:
+    grouped_trace = _as_dict(source.get("entry_grouped_logic_trace"))
+    entry_scores = _as_dict(source.get("entry_condition_scores"))
+    return (
+        grouped_trace.get("reclaim_gate_ok"),
+        grouped_trace.get("extension_ok"),
+        grouped_trace.get("confidence_gate_ok", entry_scores.get("confidence_gate_ok")),
+        grouped_trace.get("triggered_path") or source.get("entry_condition_path"),
+        entry_scores.get("confidence_score"),
+        entry_scores.get("confidence_threshold"),
+    )
+
+
+def _compact_entry_gate_snapshot(source: Dict[str, Any]) -> Dict[str, Any]:
+    grouped_trace = _as_dict(source.get("entry_grouped_logic_trace"))
+    entry_scores = _as_dict(source.get("entry_condition_scores"))
+    out: Dict[str, Any] = {}
+    if grouped_trace:
+        out["entry_grouped_logic_trace"] = grouped_trace
+    if entry_scores:
+        out["entry_condition_scores"] = entry_scores
+    if source.get("entry_condition_path") not in (None, ""):
+        out["entry_condition_path"] = source.get("entry_condition_path")
+    if source.get("entry_reason") not in (None, ""):
+        out["entry_reason"] = source.get("entry_reason")
+    return out
+
+
+def _select_entry_decision_detail(story_input: Dict[str, Any], entry_summary: Dict[str, Any]) -> Dict[str, Any]:
+    monitor_timeline = _as_dict(story_input.get("monitor_timeline"))
+    rows = monitor_timeline.get("entry_decision_details")
+    if not isinstance(rows, list) or not rows:
+        artifacts = _as_dict(story_input.get("artifacts"))
+        monitor_evidence_path = _clip(artifacts.get("monitor_evidence_json"), max_len=500)
+        if monitor_evidence_path:
+            try:
+                from pathlib import Path
+
+                path = Path(monitor_evidence_path)
+                if path.exists():
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict):
+                        rows = payload.get("entry_decision_details")
+            except Exception:
+                rows = rows if isinstance(rows, list) else []
+    if not isinstance(rows, list):
+        return {}
+    entry_run_id = _clip(entry_summary.get("run_id"), max_len=120)
+    best: Dict[str, Any] = {}
+    best_score = -1
+    for row in rows:
+        event = _as_dict(row)
+        payload = _as_dict(event.get("payload"))
+        if not payload:
+            continue
+        decision = _clip(payload.get("decision"), max_len=24).upper()
+        entry_triggered = bool(payload.get("entry_triggered"))
+        buy_submitted = bool(payload.get("buy_submitted"))
+        if decision != "BUY" and not entry_triggered and not buy_submitted:
+            continue
+        score = 0
+        if entry_run_id and _clip(event.get("run_id"), max_len=120) == entry_run_id:
+            score += 100
+        if decision == "BUY":
+            score += 40
+        if entry_triggered:
+            score += 30
+        if buy_submitted:
+            score += 20
+        if payload.get("entry_condition_path") or _as_dict(payload.get("grouped_logic_trace")).get("triggered_path"):
+            score += 10
+        if score > best_score:
+            best_score = score
+            best = event
+    return best
+
+
+def _resolve_entry_monitor_reason(
+    story_input: Dict[str, Any],
+    monitor_reason: Dict[str, Any],
+    entry_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    entry_detail = _select_entry_decision_detail(story_input, entry_summary)
+    payload = _as_dict(entry_detail.get("payload"))
+    if not payload:
+        return monitor_reason
+
+    resolved = dict(monitor_reason or {})
+    post_entry_snapshot = _compact_entry_gate_snapshot(monitor_reason)
+
+    grouped_trace = _as_dict(payload.get("grouped_logic_trace"))
+    condition_scores = _as_dict(payload.get("condition_scores"))
+    entry_thresholds = (
+        _as_dict(payload.get("applied_policy"))
+        or _as_dict(payload.get("effective_policy"))
+        or _as_dict(payload.get("received_policy"))
+    )
+    if grouped_trace:
+        resolved["entry_grouped_logic_trace"] = grouped_trace
+    if condition_scores:
+        resolved["entry_condition_scores"] = condition_scores
+    if payload.get("entry_condition_path") not in (None, ""):
+        resolved["entry_condition_path"] = payload.get("entry_condition_path")
+    if isinstance(payload.get("entry_condition_paths_passed"), list):
+        resolved["entry_condition_paths_passed"] = list(payload.get("entry_condition_paths_passed") or [])
+    if entry_thresholds:
+        resolved["entry_thresholds"] = entry_thresholds
+    if payload.get("entry_reason") not in (None, ""):
+        resolved["entry_reason"] = payload.get("entry_reason")
+    resolved["entry_gate_snapshot_source"] = "entry_decision_detail"
+    if entry_detail.get("ts") not in (None, ""):
+        resolved["entry_gate_snapshot_ts"] = entry_detail.get("ts")
+    if entry_detail.get("run_id") not in (None, ""):
+        resolved["entry_gate_snapshot_run_id"] = entry_detail.get("run_id")
+
+    if post_entry_snapshot and _entry_gate_signature(post_entry_snapshot) != _entry_gate_signature(resolved):
+        resolved["post_entry_gate_observation"] = post_entry_snapshot
+    return resolved
+
+
 def _korean_predicate(value: str, *, noun_suffix: str = "입니다.") -> str:
     text = str(value or "").strip()
     if not text:
@@ -3158,13 +3328,7 @@ def _build_entry_decision_bullets(
             parts.append(f"통과 경로는 {', '.join(paths_passed)}였습니다")
         bullets.append(". ".join(parts) + ".")
 
-    gate_bits: List[str] = []
-    if "reclaim_gate_ok" in grouped_trace:
-        gate_bits.append(f"{_entry_gate_name_label('reclaim')} {_entry_gate_state_label(grouped_trace.get('reclaim_gate_ok'))}")
-    if "extension_ok" in grouped_trace:
-        gate_bits.append(f"{_entry_gate_name_label('extension')} {_entry_gate_state_label(grouped_trace.get('extension_ok'))}")
-    if "confidence_gate_ok" in grouped_trace:
-        gate_bits.append(f"{_entry_gate_name_label('confidence gate')} {_entry_gate_state_label(grouped_trace.get('confidence_gate_ok'))}")
+    gate_bits = _entry_gate_bits(grouped_trace)
     if gate_bits:
         bullets.append("진입 게이트 상태는 " + ", ".join(gate_bits) + "였습니다.")
 
@@ -3176,7 +3340,36 @@ def _build_entry_decision_bullets(
     confidence_score = _num_opt(entry_scores.get("confidence_score"))
     confidence_threshold = _num_opt(entry_scores.get("confidence_threshold"))
     if confidence_score is not None and confidence_threshold is not None:
-        bullets.append(f"진입 신뢰도 점수는 {confidence_score:.2f}, 기준은 {confidence_threshold:.2f}였습니다.")
+        relation = _entry_gate_score_relation(confidence_score, confidence_threshold)
+        particle = "과" if relation == "동일했습니다" else "을"
+        bullets.append(
+            f"진입 게이트 점수는 {confidence_score:.4f}이며 기준 {confidence_threshold:.4f}{particle} {relation}. "
+            "표시 목적은 확률형 신뢰도보다 진입 조건 통과 여부 확인입니다."
+        )
+    entry_quality_score = _num_opt(entry_scores.get("entry_quality_score"))
+    if entry_quality_score is not None:
+        entry_quality_tier = _clip(entry_scores.get("entry_quality_tier"), max_len=24) or "-"
+        entry_quality_path = _entry_path_label(entry_scores.get("entry_quality_path")) or "-"
+        bullets.append(
+            f"진입 품질 점수는 {entry_quality_score:.4f}, 등급은 {entry_quality_tier}, 우세 경로는 {entry_quality_path}였습니다. "
+            "이 점수는 관측용이며 매수 허용 여부를 직접 바꾸지 않습니다."
+        )
+
+    post_entry_observation = _as_dict(monitor_reason.get("post_entry_gate_observation"))
+    post_grouped_trace = _as_dict(post_entry_observation.get("entry_grouped_logic_trace"))
+    post_entry_scores = _as_dict(post_entry_observation.get("entry_condition_scores"))
+    post_gate_bits = _entry_gate_bits(post_grouped_trace, post_entry_scores)
+    if post_gate_bits:
+        post_score = _num_opt(post_entry_scores.get("confidence_score"))
+        post_threshold = _num_opt(post_entry_scores.get("confidence_threshold"))
+        score_text = ""
+        if post_score is not None and post_threshold is not None:
+            score_text = f" 점수는 {post_score:.4f} / 기준 {post_threshold:.4f}였습니다."
+        bullets.append(
+            "사후 모니터 재평가 게이트는 "
+            + ", ".join(post_gate_bits)
+            + f"였습니다.{score_text} 이는 매수 후 보유·청산 구간의 재평가 상태입니다."
+        )
 
     entry_thresholds = (
         monitor_reason.get("entry_thresholds")
@@ -3206,7 +3399,7 @@ def _build_entry_decision_bullets(
     if playbook and triggered_path:
         bullets.append(f"전략가 플레이북은 {playbook}, 실제 진입 경로는 {triggered_path}였습니다.")
 
-    return _dedupe_list(bullets, max_items=10, max_len=260)
+    return _dedupe_list(bullets, max_items=12, max_len=260)
 
 
 def _build_holding_story_summary(hold_count: int, monitor_reason: Dict[str, Any], status_text: str) -> str:
@@ -3493,6 +3686,7 @@ def _build_execution_quality_section(
     symbol = _clip(story_input.get("symbol"), max_len=24) or "종목"
     action = _operator_action_label(_clip(story_input.get("action"), max_len=24) or "WAIT")
     filled_qty = execution_details.get("filled_qty")
+    filled_price = _fmt_price(execution_details.get("filled_price"))
     avg_price = _fmt_price(execution_details.get("avg_price"))
     order_status = _clip(execution_details.get("order_status"), max_len=80)
     order_id = _clip(execution_details.get("order_id"), max_len=120)
@@ -3525,8 +3719,8 @@ def _build_execution_quality_section(
         summary_parts.append(_operatorize_report_text(lifecycle_summary.get("lifecycle_summary_human")))
     else:
         summary_parts.append("실행 품질 세부 정보는 제한적으로만 확인됩니다.")
-    if avg_price != "-":
-        summary_parts.append(f"체결 기준 가격은 {avg_price}였습니다.")
+    if filled_price != "-":
+        summary_parts.append(f"체결 기준 가격은 {filled_price}였습니다.")
     summary = " ".join(summary_parts)
 
     bullets: List[str] = []
@@ -3551,8 +3745,10 @@ def _build_execution_quality_section(
         bullets.append(f"주문 번호는 {order_id}였습니다.")
     else:
         bullets.append("주문 번호는 별도로 기록되지 않았습니다.")
-    if avg_price != "-":
-        bullets.append(f"평균 체결가는 {avg_price}였습니다.")
+    if filled_price != "-":
+        bullets.append(f"평균 체결가는 {filled_price}였습니다.")
+    elif avg_price != "-":
+        bullets.append(f"평균/포지션 기준가는 {avg_price}였지만 브로커 체결가는 직접 확보되지 않았습니다.")
     for bullet in build_execution_truth_bullets(execution_details=execution_details):
         if bullet not in bullets:
             bullets.append(bullet)
@@ -6043,6 +6239,7 @@ def _fallback_report(
         "price_source_policy": _clip(monitor_reason.get("price_source_policy"), max_len=260) or "",
     }
     entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
+    entry_monitor_reason = _resolve_entry_monitor_reason(story_input, monitor_reason, entry_summary)
     holding_summary = story_input.get("holding_summary") if isinstance(story_input.get("holding_summary"), dict) else {}
     exit_summary = story_input.get("exit_summary") if isinstance(story_input.get("exit_summary"), dict) else {}
     lifecycle_summary = story_input.get("lifecycle_summary") if isinstance(story_input.get("lifecycle_summary"), dict) else {}
@@ -6060,6 +6257,10 @@ def _fallback_report(
         or entry_scanner_context.get("news_scanner_contribution")
     )
     effective_scanner_selection_trace = _as_dict(scanner_selection_trace) or _as_dict(shared_selection_trace)
+    if isinstance(effective_scanner_selection_trace.get("chart_feature_coverage"), dict):
+        effective_scanner_selection_trace["chart_feature_coverage"] = _scanner_chart_feature_coverage(
+            {"scanner_selection_trace": effective_scanner_selection_trace}
+        )
     why_symbol_bullets = _build_scanner_choice_bullets(scanner_reason, market_context)
     if news_scanner_contribution:
         core = news_scanner_contribution.get("core_score_contributions") if isinstance(news_scanner_contribution.get("core_score_contributions"), dict) else {}
@@ -6184,11 +6385,11 @@ def _fallback_report(
 
     entry_decision = {
         "summary": (
-            _build_entry_decision_summary(entry_summary, scanner_reason, market_context, monitor_reason, action)
+            _build_entry_decision_summary(entry_summary, scanner_reason, market_context, entry_monitor_reason, action)
             if bool(shared_seed.get("entry_exists"))
             else "Entry evidence was insufficient, so entry timing is marked as unavailable."
         ),
-        "bullets": _build_entry_decision_bullets(entry_summary, scanner_reason, market_context, monitor_reason, action),
+        "bullets": _build_entry_decision_bullets(entry_summary, scanner_reason, market_context, entry_monitor_reason, action),
     }
     if (
         not has_runtime_scanner_reason

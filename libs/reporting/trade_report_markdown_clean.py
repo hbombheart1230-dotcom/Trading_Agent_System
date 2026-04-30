@@ -4,6 +4,8 @@ import html
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+from libs.reporting.report_truth_surface import build_trade_report_truth_surface
+
 
 def render_trade_report_markdown_clean(report: Dict[str, Any]) -> str:
     lines: List[str] = []
@@ -201,8 +203,10 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     execution_mode = _execution_mode_label(report.get("execution_mode_label"))
     action = _action_label(_pick(final.get("current_action"), report.get("action"), shared.get("action")))
 
-    pnl = _pick(shared.get("pnl"), truth_pnl.get("value"))
-    pnl_pct = _pick(shared.get("pnl_pct"), truth_pnl.get("pct"))
+    pnl = _pick(truth_pnl.get("value"), shared.get("pnl"))
+    pnl_pct = truth_pnl.get("pct")
+    if pnl_pct in (None, "") and truth_pnl.get("pct_display_role") != "fallback_mark_only":
+        pnl_pct = shared.get("pnl_pct")
     pnl_num = _num_opt(pnl)
     result_label = "보합"
     if pnl_num is not None and pnl_num > 0:
@@ -214,13 +218,32 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     same_day = _same_day_summary(reporter_eval)
     combined_texts = _section_texts(market, strategist, selection, entry, holding, exit_decision, reporter_eval)
     combined_blob = "\n".join(combined_texts).lower()
+    entry_blob = "\n".join(_section_texts(selection, entry)).lower()
+    exit_blob = "\n".join(_section_texts(exit_decision, holding)).lower()
+    cost_analysis = _build_trade_cost_analysis(report)
+    cost_drag_pct = _num_opt(cost_analysis.get("cost_drag_pct"))
+    holding_duration_summary = _pick(shared.get("holding_duration"), report.get("hold_duration"), "")
+    rank_num = _num_opt(_selected_rank(selection))
+    selection_fallback_summary = _selection_fallback_context(selection, symbol)
+    scanner_top_pick = _metadata_value(selection_fallback_summary.get("scanner_top_pick_symbol"))
+    actual_take_profit = "take_profit" in exit_blob or "목표 수익" in exit_blob
+    actual_peak_exit = (
+        "peak_drawdown" in exit_blob
+        or "고점 대비 하락폭 기준" in exit_blob
+        or "고점 대비 하락폭으로 청산" in exit_blob
+        or "고점 대비 하락폭 축" in exit_blob
+    ) and not actual_take_profit
 
     positives = []
     if truth_price.get("broker_fill_price") not in (None, "") or truth_pnl.get("value") not in (None, ""):
-        positives.append("브로커 체결 및 손익 데이터 정상 확보")
-    if strategist or selection or entry or exit_decision:
-        positives.append("전략 → 스캐너 → 모니터 흐름 기록 확보")
-    if entry or exit_decision or memory_app:
+        positives.append("키움 체결가와 당일 실현손익 확보")
+    if rank_num is not None:
+        positives.append(f"스캐너 순위 {int(rank_num)}위와 모니터 재평가 경로 기록")
+    elif strategist or selection or entry or exit_decision:
+        positives.append("전략 → 스캐너 → 모니터 판단 흐름 기록")
+    if holding_duration_summary:
+        positives.append(f"보유 시간 {holding_duration_summary}와 청산 트리거 기록")
+    elif entry or exit_decision or memory_app:
         positives.append("진입/청산 근거 및 정책 추적 가능")
     if not positives:
         positives.append("핵심 거래 아티팩트가 보존됨")
@@ -228,50 +251,71 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     problems: List[str] = []
     monitor_line = _first_matching_line(combined_texts, ["monitor_only", "monitor-only", "monitor 단독"])
     if monitor_line:
-        problems.append("Monitor 단독 경로 비중 높음")
-    if "pullback_not_mature" in combined_blob or "pullback" in combined_blob:
-        problems.append("pullback 조건 반복으로 진입 실패/보류 구조 확인")
-    if "peak_drawdown" in combined_blob or "고점 대비 하락폭" in combined_blob:
-        problems.append("peak_drawdown 발동 조건 점검 필요")
-    rank_num = _num_opt(_selected_rank(selection))
-    if rank_num is not None and rank_num > 1:
-        problems.append("1순위 탈락 후 차순위 재평가 진입 구조")
+        problems.append("당일 monitor_only 경로 비중 높음")
+    if cost_analysis.get("mock_cost_warning") and cost_drag_pct is not None:
+        problems.append(f"모의투자 비용 드래그 {_fmt_pct(cost_drag_pct)} 별도 해석 필요")
+    if selection_fallback_summary.get("used") or (rank_num is not None and rank_num > 1):
+        if scanner_top_pick and scanner_top_pick != "-":
+            problems.append(f"1순위 {scanner_top_pick} 보류 후 {symbol} {int(rank_num) if rank_num else '-'}위 재평가 진입")
+        else:
+            problems.append("1순위 탈락 후 차순위 재평가 진입 구조")
+    if "pullback_not_mature" in entry_blob:
+        problems.append("pullback 성숙도 부족으로 진입 보류 발생")
+    if actual_peak_exit:
+        problems.append("이번 청산이 peak_drawdown 축이라 confirm 조건 점검 필요")
     if not problems:
-        problems.append("반복 패턴 판단을 위한 당일 집계 보강 필요")
+        problems.append("거래별 반복 패턴 판단을 위한 추가 표본 필요")
 
     monitor_memory = _as_dict(memory_app.get("monitor_memory_bias"))
     cause_lines: List[str] = []
     for row in _listify(monitor_memory.get("applied_deltas")):
         row_obj = _as_dict(row)
         if str(row_obj.get("field") or "") == "breakout_buffer_pct" and (_num_opt(row_obj.get("delta")) or 0.0) > 0:
-            cause_lines.append("진입은 더 보수적으로 제한됨 (breakout buffer 강화)")
+            cause_lines.append(
+                "진입 정책은 breakout_buffer "
+                f"{_compact_number(row_obj.get('from'))} → {_compact_number(row_obj.get('to'))}로 보수화됨"
+            )
             break
-    for row in _listify(monitor_memory.get("exit_deltas")):
-        row_obj = _as_dict(row)
-        if "peak_drawdown" in str(row_obj.get("field") or "") and (_num_opt(row_obj.get("delta")) or 0.0) < 0:
-            cause_lines.append("청산은 더 빠르게 실행됨 (peak drawdown 기준 타이트)")
-            break
-    if rank_num is not None and rank_num > 1:
-        cause_lines.append("상위 후보 탈락 후 차순위 후보에서 진입이 성립됨")
+    if actual_take_profit:
+        cause_lines.append("청산은 목표 수익 실현 기준으로 실행됨")
+    elif actual_peak_exit:
+        cause_lines.append("청산은 peak_drawdown 축으로 실행됨")
+    if selection_fallback_summary.get("used") or (rank_num is not None and rank_num > 1):
+        if scanner_top_pick and scanner_top_pick != "-":
+            cause_lines.append(f"{scanner_top_pick} 보류 후 {symbol}에서 진입 조건이 충족됨")
+        else:
+            cause_lines.append("상위 후보 탈락 후 차순위 후보에서 진입이 성립됨")
+    if cost_analysis.get("mock_cost_warning") and cost_drag_pct is not None:
+        cause_lines.append(f"1주 모의투자 수수료/세금이 손익률을 {_fmt_pct(cost_drag_pct)} 압박")
     if not cause_lines:
         cause_lines.append("진입/청산 구조의 반복성은 당일 패턴 섹션에서 추가 확인 필요")
 
     recommendations: List[str] = []
-    if any("peak_drawdown" in item or "고점 대비" in item for item in problems + cause_lines):
+    if cost_analysis.get("mock_cost_warning"):
+        recommendations.append("모의투자 비용 기준과 실계좌 추정 비용 기준 분리 확인")
+    if actual_peak_exit:
         recommendations.append("peak_drawdown activation/confirm 조건 점검")
-    if "pullback" in combined_blob:
+    if "pullback_not_mature" in entry_blob:
         recommendations.append("pullback 조건 완화 또는 성숙도 판정 재검토")
-    if rank_num is not None and rank_num > 1:
-        recommendations.append("scanner → monitor 정합성 점검")
-    recommendations.append("보유 구간 모니터 스냅샷 보강")
+    if selection_fallback_summary.get("used") or (rank_num is not None and rank_num > 1):
+        recommendations.append("1순위 보류 사유와 차순위 진입 기대값 비교")
+    if monitor_line:
+        recommendations.append("monitor_only 비중이 높은 당일 route mix 점검")
+    if not holding_duration_summary or str(holding_duration_summary).strip() in {"0", "0s", "0초"}:
+        recommendations.append("보유 구간 모니터 스냅샷 보강")
+    if not recommendations:
+        recommendations.append("동일 패턴 3건 이상 누적 후 정책 조정 여부 판단")
     recommendations = _dedupe([item for item in recommendations if item])[:4]
 
     market_news = _sample_news_titles(
         market.get("market_news_titles") or report.get("strategist_market_headlines"),
         limit=2,
     )
-    symbol_news = _sample_news_titles(
-        market.get("candidate_news_titles") or report.get("strategist_symbol_headlines"),
+    symbol_news = _sample_news_titles_for_symbol(
+        symbol,
+        market.get("symbol_news_titles"),
+        report.get("strategist_symbol_headlines"),
+        market.get("candidate_news_titles"),
         limit=2,
     )
     market_summary = _translate_text(market.get("summary")) or "시장 요약은 상세 리포트에서 확인 필요"
@@ -324,7 +368,8 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.extend(f"* {item}" for item in cause_lines[:4])
     lines.append("")
-    lines.append(f"👉 **{cause_lines[0]} → {result_label} 구조 점검 필요**")
+    headline_focus = recommendations[0] if recommendations else problems[0]
+    lines.append(f"👉 **{result_label} 거래; 핵심 점검: {headline_focus}**")
     lines.append("")
     lines.append("### 🛠 권고 액션 (우선순위)")
     lines.append("")
@@ -344,8 +389,12 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     lines.append("## 📊 실행 결과 (Truth Surface)")
     lines.append("")
     lines.append(f"* 매수가 / 매도가: {_money(buy_price)} / {_money(exit_price)}")
-    lines.append(f"* 실현 손익: **{_money(pnl)} ({_fmt_pct(pnl_pct)})**")
+    pnl_line = _money(pnl)
+    if pnl_pct not in (None, ""):
+        pnl_line = f"{pnl_line} ({_fmt_pct(pnl_pct)})"
+    lines.append(f"* 실현 손익: **{pnl_line}**")
     lines.append(f"* 수수료 / 세금: {_money(_pick(shared.get('broker_fee'), truth_pnl.get('broker_fee')))} / {_money(_pick(shared.get('broker_tax'), truth_pnl.get('broker_tax')))}")
+    lines.extend(_trade_cost_analysis_lines(report))
     lines.append(f"* 손익 기준: {_truth_source_label(_pick(shared.get('pnl_truth_source'), truth_pnl.get('pnl_truth_source')))}")
     lines.append("")
     lines.append("---")
@@ -364,6 +413,16 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.append(f"* 플레이북: **{playbook or '-'}**")
     lines.append(f"* 리스크 톤: {risk_tone or '-'}")
+    themes = [_theme_label(x) for x in _listify(market.get("themes") or market.get("preferred_themes")) if not _is_not_captured(x)]
+    if themes:
+        lines.append(f"* 핵심 테마: {', '.join(themes[:4])}")
+    theme_source = _metadata_value(market.get("theme_source"))
+    theme_status = _metadata_value(market.get("theme_source_status"))
+    if theme_source and theme_source != "-":
+        source_text = theme_source
+        if theme_status and theme_status != "-":
+            source_text += f" / {theme_status}"
+        lines.append(f"* 테마 출처: {source_text}")
     if monitor_guide:
         lines.append(f"* 모니터 가이드: {monitor_guide}")
     lines.append("* 뉴스 활용: 컨텍스트 참고 수준")
@@ -379,14 +438,14 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     if market_news:
         lines.extend(f"* {item}" for item in market_news)
     else:
-        lines.append("* 시장 뉴스 표본은 상세 리포트에서 확인 필요")
+        lines.append("* 요약 리포트에 포함된 시장 뉴스 표본이 없습니다. 원문 확인 위치: `reports/ai_trade_report.md`의 전략가 요약/뉴스 근거, 또는 `ai_trade_report_input.json`의 `market_context_at_entry.market_news_titles`.")
     lines.append("")
     lines.append(f"### 종목 뉴스 ({symbol})")
     lines.append("")
     if symbol_news:
         lines.extend(f"* {item}" for item in symbol_news)
     else:
-        lines.append("* 종목 뉴스 표본은 상세 리포트에서 확인 필요")
+        lines.append(f"* 요약 리포트에 포함된 {symbol} 종목 뉴스 표본이 없습니다. 원문 확인 위치: `reports/ai_trade_report.md`의 선택 종목 상세 분석/뉴스 근거, 또는 `ai_trade_report_input.json`의 `market_context_at_entry.candidate_news_titles` 중 {symbol} 항목.")
     lines.append("")
     lines.append("👉 해석:")
     lines.append("")
@@ -610,6 +669,7 @@ def build_trade_summary_input_clean(report: Dict[str, Any]) -> Dict[str, Any]:
     monitor_memory = _as_dict(memory_app.get("monitor_memory_bias"))
     final = _as_dict(report.get("final_operator_conclusion"))
     trade_id = _clip(report.get("trade_id") or report.get("story_id"), 80)
+    symbol = _clip(_pick(report.get("symbol"), shared.get("symbol")), 32)
     day = _clip(report.get("day") or shared.get("day"), 32)
     if not day:
         match = re.search(r"TRD_(\d{4})(\d{2})(\d{2})", trade_id)
@@ -713,6 +773,7 @@ def build_trade_summary_input_clean(report: Dict[str, Any]) -> Dict[str, Any]:
             "sell_price": _pick(truth_price.get("broker_fill_price"), shared.get("broker_fill_price")),
             "fee": _pick(shared.get("broker_fee"), truth_pnl.get("broker_fee")),
             "tax": _pick(shared.get("broker_tax"), truth_pnl.get("broker_tax")),
+            "cost_analysis": _build_trade_cost_analysis(report),
             "truth_source": _truth_source_label(_pick(shared.get("pnl_truth_source"), truth_pnl.get("pnl_truth_source"))),
         },
         "same_day_context": {
@@ -726,8 +787,19 @@ def build_trade_summary_input_clean(report: Dict[str, Any]) -> Dict[str, Any]:
             "playbook": _playbook_label(_pick(market.get("playbook"), market.get("selected_playbook"))),
             "risk_tone": _risk_mode_label(_pick(market.get("risk_mode"), trace_summary.get("risk_tone"))),
             "monitor_guidance": _metadata_value(trace_summary.get("monitor_guidance")),
+            "themes": [_theme_label(x) for x in _listify(market.get("themes")) if not _is_not_captured(x)],
+            "preferred_themes": [_theme_label(x) for x in _listify(market.get("preferred_themes")) if not _is_not_captured(x)],
+            "theme_source": _metadata_value(market.get("theme_source")),
+            "theme_source_status": _metadata_value(market.get("theme_source_status")),
+            "theme_strength_top_themes": [_theme_label(x) for x in _listify(market.get("theme_strength_top_themes")) if not _is_not_captured(x)],
             "market_news_titles": _sample_news_titles(market.get("market_news_titles") or report.get("strategist_market_headlines"), limit=4),
-            "symbol_news_titles": _sample_news_titles(market.get("candidate_news_titles") or report.get("strategist_symbol_headlines"), limit=4),
+            "symbol_news_titles": _sample_news_titles_for_symbol(
+                symbol,
+                market.get("symbol_news_titles"),
+                report.get("strategist_symbol_headlines"),
+                market.get("candidate_news_titles"),
+                limit=4,
+            ),
         },
         "decision_flow": {
             "scanner_rank": selection_rank,
@@ -1049,6 +1121,181 @@ def _fmt_pct(value: Any) -> str:
     return f"{num * 100.0:.2f}%"
 
 
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _extract_trade_quantity(report: Dict[str, Any]) -> Optional[float]:
+    shared = _as_dict(report.get("shared_facts"))
+    resolved = _as_dict(shared.get("resolved_trade_facts"))
+    fact_payload = _as_dict(report.get("fact_payload"))
+    fact_trade = _as_dict(fact_payload.get("trade"))
+    execution_details = _as_dict(fact_trade.get("execution_details"))
+    entry_execution_details = _as_dict(fact_trade.get("entry_execution_details"))
+    exit_execution_details = _as_dict(fact_trade.get("exit_execution_details"))
+    execution_outcome = _as_dict(fact_trade.get("execution_outcome_human"))
+    exit_summary = _as_dict(fact_trade.get("exit_summary"))
+    execution_context = _as_dict(exit_summary.get("execution_context"))
+    canonical = _as_dict(fact_trade.get("canonical_agent_artifacts"))
+    monitor_snapshot = _as_dict(_as_dict(canonical.get("monitor")).get("position_snapshot"))
+    supervisor_order = _as_dict(_as_dict(canonical.get("supervisor")).get("order_request_summary"))
+    executor = _as_dict(canonical.get("executor"))
+    executor_order = _as_dict(executor.get("order_request_summary"))
+
+    candidates = (
+        shared.get("filled_qty"),
+        shared.get("quantity"),
+        shared.get("qty"),
+        resolved.get("filled_qty"),
+        resolved.get("quantity"),
+        resolved.get("qty"),
+        execution_details.get("filled_qty"),
+        execution_details.get("quantity"),
+        execution_details.get("qty"),
+        entry_execution_details.get("filled_qty"),
+        exit_execution_details.get("filled_qty"),
+        execution_outcome.get("quantity"),
+        execution_context.get("quantity"),
+        execution_context.get("qty"),
+        monitor_snapshot.get("qty"),
+        supervisor_order.get("qty"),
+        executor.get("filled_qty"),
+        executor.get("qty"),
+        executor_order.get("qty"),
+    )
+    for candidate in candidates:
+        qty = _num_opt(candidate)
+        if qty is not None and qty > 0:
+            return qty
+    return None
+
+
+def _infer_trade_quantity_from_costs(
+    *,
+    buy_price: Any,
+    sell_price: Any,
+    pnl: Any,
+    fee: Any,
+    tax: Any,
+) -> Optional[float]:
+    buy = _num_opt(buy_price)
+    sell = _num_opt(sell_price)
+    pnl_num = _num_opt(pnl)
+    fee_num = _num_opt(fee) or 0.0
+    tax_num = _num_opt(tax) or 0.0
+    if buy is None or sell is None or pnl_num is None:
+        return None
+    price_delta = sell - buy
+    if abs(price_delta) < 1e-9:
+        return None
+    gross_price_pnl = pnl_num + fee_num + tax_num
+    qty = gross_price_pnl / price_delta
+    if qty <= 0:
+        return None
+    rounded = round(qty)
+    if rounded > 0 and abs(qty - rounded) <= 0.05:
+        return float(rounded)
+    return qty if qty < 1_000_000 else None
+
+
+def _build_trade_cost_analysis(report: Dict[str, Any]) -> Dict[str, Any]:
+    shared = _as_dict(report.get("shared_facts"))
+    truth = _get_truth_surface(report)
+    truth_price = _as_dict(truth.get("price"))
+    truth_pnl = _as_dict(truth.get("pnl"))
+
+    buy = _num_opt(_first_present(truth_price.get("broker_buy_price"), shared.get("broker_buy_price")))
+    sell = _num_opt(_first_present(truth_price.get("broker_fill_price"), shared.get("broker_fill_price")))
+    pnl = _num_opt(_first_present(shared.get("pnl"), truth_pnl.get("value")))
+    broker_pct = _num_opt(_first_present(shared.get("pnl_pct"), truth_pnl.get("pct")))
+    fee = _num_opt(_first_present(shared.get("broker_fee"), truth_pnl.get("broker_fee"))) or 0.0
+    tax = _num_opt(_first_present(shared.get("broker_tax"), truth_pnl.get("broker_tax"))) or 0.0
+    if buy is None or buy <= 0:
+        return {}
+
+    qty = _extract_trade_quantity(report)
+    qty_source = "artifact"
+    if qty is None:
+        qty = _infer_trade_quantity_from_costs(
+            buy_price=buy,
+            sell_price=sell,
+            pnl=pnl,
+            fee=fee,
+            tax=tax,
+        )
+        qty_source = "inferred_from_pnl_fee_tax"
+    if qty is None or qty <= 0:
+        return {}
+
+    buy_notional = buy * qty
+    sell_notional = sell * qty if sell is not None else None
+    if buy_notional <= 0:
+        return {}
+
+    total_cost = fee + tax
+    out: Dict[str, Any] = {
+        "quantity": qty,
+        "quantity_source": qty_source,
+        "buy_notional": buy_notional,
+        "sell_notional": sell_notional,
+        "fee": fee,
+        "tax": tax,
+        "total_cost": total_cost,
+        "cost_drag_pct": total_cost / buy_notional if total_cost else 0.0,
+        "breakeven_move_pct": total_cost / buy_notional if total_cost else 0.0,
+        "broker_reported_pnl_pct": broker_pct,
+    }
+    if sell is not None:
+        out["gross_price_pnl"] = (sell - buy) * qty
+        out["price_move_pct"] = (sell - buy) / buy
+    if pnl is not None:
+        out["net_return_pct_on_buy_notional"] = pnl / buy_notional
+        if broker_pct is not None:
+            out["broker_pct_diff_abs"] = abs((pnl / buy_notional) - broker_pct)
+    if fee:
+        out["fee_drag_pct_on_buy_notional"] = fee / buy_notional
+    if tax and sell_notional:
+        out["tax_rate_on_sell_notional"] = tax / sell_notional
+
+    fee_drag = _num_opt(out.get("fee_drag_pct_on_buy_notional")) or 0.0
+    broker_diff = _num_opt(out.get("broker_pct_diff_abs")) or 0.0
+    out["mock_cost_warning"] = fee_drag >= 0.002
+    out["broker_pct_display_warning"] = broker_diff >= 0.002
+    return out
+
+
+def _trade_cost_analysis_lines(report: Dict[str, Any], *, bullet: str = "*") -> List[str]:
+    cost = _build_trade_cost_analysis(report)
+    if not cost:
+        return []
+    lines: List[str] = []
+    broker_pct = cost.get("broker_reported_pnl_pct")
+    net_pct = cost.get("net_return_pct_on_buy_notional")
+    total_cost = cost.get("total_cost")
+    cost_drag = cost.get("cost_drag_pct")
+    breakeven = cost.get("breakeven_move_pct")
+    price_move = cost.get("price_move_pct")
+
+    if broker_pct not in (None, ""):
+        lines.append(f"{bullet} 키움 제공 손익률: {_fmt_pct(broker_pct)}")
+    if net_pct not in (None, ""):
+        lines.append(f"{bullet} 거래금액 기준 순수익률: **{_fmt_pct(net_pct)}**")
+    if price_move not in (None, ""):
+        lines.append(f"{bullet} 가격 변동률: {_fmt_pct(price_move)}")
+    if total_cost not in (None, "") and cost_drag not in (None, ""):
+        lines.append(f"{bullet} 비용 드래그: {_summary_money(total_cost)} ({_fmt_pct(cost_drag)})")
+    if breakeven not in (None, ""):
+        lines.append(f"{bullet} 손익분기 필요 상승률: 약 {_fmt_pct(breakeven)}")
+    if cost.get("broker_pct_display_warning"):
+        lines.append(f"{bullet} 표시 주의: 키움 제공 손익률은 거래금액 기준 순수익률과 다를 수 있습니다.")
+    if cost.get("mock_cost_warning"):
+        lines.append(f"{bullet} 모의투자 비용 주의: 현재 수수료는 실계좌 OpenAPI 기본 수수료보다 크게 반영될 수 있습니다.")
+    return lines
+
+
 def _post_exit_shadow_surface(report: Dict[str, Any]) -> Dict[str, Any]:
     fact_payload = _as_dict(report.get("fact_payload"))
     fact_trade = _as_dict(fact_payload.get("trade"))
@@ -1353,6 +1600,66 @@ def _sample_news_titles(values: Any, limit: int = 2) -> List[str]:
     return out
 
 
+def _normalize_news_symbol(value: Any) -> str:
+    if value is None:
+        return ""
+    match = re.search(r"\b(\d{6})\b", str(value))
+    return match.group(1) if match else ""
+
+
+def _news_symbol_from_item(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("symbol", "code", "stock_code", "ticker"):
+            symbol = _normalize_news_symbol(value.get(key))
+            if symbol:
+                return symbol
+        return ""
+    raw = str(value or "")
+    match = re.match(r"\s*(\d{6})\s*:", raw)
+    if match:
+        return match.group(1)
+    match = re.search(r"\bsymbol=['\"]?(\d{6})['\"]?", raw)
+    return match.group(1) if match else ""
+
+
+def _sample_news_titles_for_symbol(symbol: Any, *sources: Any, limit: int = 2) -> List[str]:
+    target = _normalize_news_symbol(symbol)
+    untagged_fallback: List[Any] = []
+    for source in sources:
+        rows = _listify(source)
+        if not rows:
+            continue
+        if not target:
+            return _sample_news_titles(rows, limit=limit)
+        matched: List[Any] = []
+        has_detectable_symbol = False
+        for row in rows:
+            row_symbol = _news_symbol_from_item(row)
+            if row_symbol:
+                has_detectable_symbol = True
+            if row_symbol == target:
+                matched.append(row)
+        if matched:
+            return _sample_news_titles(matched, limit=limit)
+        if not has_detectable_symbol and not untagged_fallback:
+            # Curated symbol-only headline lists may omit the code prefix.
+            untagged_fallback = rows
+    if untagged_fallback:
+        return _sample_news_titles(untagged_fallback, limit=limit)
+    return []
+
+
+def _mismatched_symbol_news_bullet(text: Any, symbol: Any) -> bool:
+    target = _normalize_news_symbol(symbol)
+    if not target:
+        return False
+    raw = str(text or "")
+    if "대표 종목/섹터 뉴스" not in raw and "종목 뉴스" not in raw:
+        return False
+    symbols = set(re.findall(r"\b(\d{6})\s*:", raw))
+    return bool(symbols and target not in symbols)
+
+
 def _news_linkage_strength_label(value: Any) -> str:
     lowered = _clip(value, 40).lower()
     return {
@@ -1553,7 +1860,7 @@ def _translate_text(text: Any) -> str:
     replaced = replaced.replace("입니다..", "입니다.")
     replaced = replaced.replace(
         "진입 신뢰도 점수는 0.55로 기준 0.55를 하회했습니다.",
-        "진입 신뢰도 점수는 기준선 0.55와 같은 수준이었습니다.",
+        "진입 게이트 점수는 기준 0.55와 같은 수준이었습니다.",
     )
     if m := re.fullmatch(
         r"News input:\s*(\d+)\s+headlines were considered across\s*(\d+)\s+targets\s*\((\d+)\s+market\s*/\s*(\d+)\s+candidate signals\)\.?",
@@ -1664,34 +1971,7 @@ def _get_truth_surface(report: Dict[str, Any]) -> Dict[str, Any]:
     if truth:
         return truth
     shared = _as_dict(report.get("shared_facts"))
-    return {
-        "status": {},
-        "price": {
-            "broker_buy_price": shared.get("broker_buy_price"),
-            "broker_fill_price": shared.get("broker_fill_price"),
-            "account_mark_price": shared.get("account_mark_price"),
-            "monitor_mark_price": shared.get("monitor_mark_price"),
-            "price_truth_source": shared.get("price_truth_source"),
-            "monitor_price_source": shared.get("monitor_price_source"),
-        },
-        "pnl": {
-            "value": shared.get("pnl"),
-            "pct": shared.get("pnl_pct"),
-            "broker_fee": shared.get("broker_fee"),
-            "broker_tax": shared.get("broker_tax"),
-            "pnl_truth_source": shared.get("pnl_truth_source"),
-            "broker_day_truth_source": shared.get("broker_day_truth_source"),
-            "broker_day_match_mode": shared.get("broker_day_match_mode"),
-            "broker_day_authoritative": shared.get("broker_day_authoritative"),
-        },
-        "availability": {
-            "broker_fill_present": shared.get("broker_fill_price") not in (None, ""),
-            "broker_buy_present": shared.get("broker_buy_price") not in (None, ""),
-            "account_mark_present": shared.get("account_mark_price") not in (None, ""),
-            "monitor_mark_present": shared.get("monitor_mark_price") not in (None, ""),
-            "broker_pnl_present": shared.get("pnl") not in (None, "", "unavailable"),
-        },
-    }
+    return build_trade_report_truth_surface(shared)
 
 
 def _truth_source_label(value: Any) -> str:
@@ -1839,6 +2119,9 @@ def _build_truth_surface(report: Dict[str, Any]) -> List[str]:
             f"- 브로커 수수료/세금은 {broker_fee if broker_fee not in (None, '') else '-'} / "
             f"{broker_tax if broker_tax not in (None, '') else '-'}입니다."
         )
+    cost_lines = _trade_cost_analysis_lines(report, bullet="-")
+    for cost_line in cost_lines:
+        lines.append(cost_line.replace("**", ""))
 
     price_truth_source = _truth_source_label(price.get("price_truth_source"))
     pnl_truth_source = _truth_source_label(pnl.get("pnl_truth_source"))
@@ -2541,6 +2824,8 @@ def _build_market_context(report: Dict[str, Any]) -> List[str]:
             continue
         if _looks_corrupted(text):
             continue
+        if _mismatched_symbol_news_bullet(text, report.get("symbol")):
+            continue
         raw_text = _clip(raw, 240)
         lowered = raw_text.lower()
         if lowered.startswith("global sentiment ") or lowered.startswith("global_sentiment score="):
@@ -2612,6 +2897,8 @@ def _build_strategist_summary(report: Dict[str, Any]) -> List[str]:
     for raw in _listify(strategist.get("bullets")):
         text = _translate_text(raw)
         if text and not _looks_corrupted(text):
+            if _mismatched_symbol_news_bullet(text, report.get("symbol")):
+                continue
             lines.append(f"- {text}")
     context_bullets = [_translate_text(x) for x in _listify(context.get("bullets")) if _translate_text(x)]
     for text in context_bullets:
@@ -2642,13 +2929,18 @@ def _build_strategist_summary(report: Dict[str, Any]) -> List[str]:
             lines.append(f"- 경계 신호는 {', '.join(blockers[:2])}였습니다.")
         if not lines:
             lines.append("- 전략가 요약 직접 캡처가 충분하지 않아, 저장된 지휘관 정책과 실행 기록 기준으로만 정리했습니다.")
-    market_titles = _sample_news_titles(context.get("market_news_titles"))
-    candidate_titles = _sample_news_titles(context.get("candidate_news_titles"))
     linkage = _as_dict(context.get("news_symbol_linkage"))
     linkage_strength = _news_linkage_strength_label(linkage.get("linkage_strength"))
     selected_vs_runner = _as_dict(linkage.get("selected_vs_runner_up"))
-    selected_symbol = _metadata_value(
-        selected_vs_runner.get("selected_symbol") or linkage.get("selected_symbol") or report.get("symbol")
+    selected_symbol_raw = selected_vs_runner.get("selected_symbol") or linkage.get("selected_symbol") or report.get("symbol")
+    selected_symbol = _metadata_value(selected_symbol_raw)
+    market_titles = _sample_news_titles(context.get("market_news_titles"))
+    candidate_titles = _sample_news_titles_for_symbol(
+        selected_symbol_raw,
+        context.get("symbol_news_titles"),
+        context.get("symbol_headlines"),
+        context.get("strategist_symbol_headlines"),
+        context.get("candidate_news_titles"),
     )
     runner_up_symbol = _metadata_value(
         selected_vs_runner.get("runner_up_symbol") or linkage.get("runner_up_symbol")
@@ -3529,7 +3821,7 @@ def _humanize_reporter_recommendation(text: Any) -> str:
     if raw == "Cached strategist reuse is elevated; compare refresh cadence against fresh full-cycle opportunities.":
         return "기존 전략가 재사용 비중이 높아, 새 전체 재평가 경로를 얼마나 자주 허용할지 다시 점검해야 합니다."
     if raw == "Top blocker is confidence_ok; inspect whether this gate is dominating no-trade outcomes.":
-        return "no-trade를 가장 많이 막은 축이 confidence gate였으니, 이 gate가 과도하게 지배적인지 다시 점검해야 합니다."
+        return "no-trade를 가장 많이 막은 축이 진입 게이트였으니, 이 gate가 과도하게 지배적인지 다시 점검해야 합니다."
     if raw == "Monitor-only share is high; review hold-management concentration before widening entry tuning.":
         return "모니터 단독 경로 비중이 높으니, 진입 조건을 넓히기 전에 보유 관리가 한쪽에 과도하게 쏠리지 않았는지 먼저 점검해야 합니다."
     return _translate_text(raw)

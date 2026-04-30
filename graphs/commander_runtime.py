@@ -74,14 +74,21 @@ _COMMANDER_OWNED_POLICY_FIELDS = [
     "strategist.runtime.allow_legacy_rule",
     "strategist.runtime.allow_legacy_strategy_v1",
     "strategist.memory_feedback.enabled",
+    "strategist.performance_memory.enabled",
+    "strategist.performance_memory.persist_enabled",
+    "strategist.memory_usage.disabled",
     "strategist.reporter_feedback_mode",
     "commander.route.monitor_only_when_holding",
     "commander.route.cached_strategist_when_flat",
+    "commander.route.post_scanner_refresh_enabled",
+    "commander.memory_usage.disabled",
     "monitor.exit.enabled",
     "monitor.exit.eod_flat.enabled",
     "monitor.entry.block_buy_when_open_position",
+    "monitor.memory_bias.observation_only",
     "monitor.entry.scoring.enabled",
     "monitor.entry.scoring.shadow_mode",
+    "scanner.memory_bias.observation_only",
 ]
 _COMMANDER_OWNED_UNIVERSE_POLICY_FIELDS = [
     "universe.asset_type",
@@ -150,6 +157,86 @@ _ENTRY_CONTROL_DYNAMIC_BAND_BLOCKERS = frozenset(
         "still_overextended_after_pullback",
     }
 )
+
+_COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS = {
+    "COMMANDER_POST_SCANNER_REFRESH_ENABLED": "true",
+    "MEMORY_BIAS_OBSERVATION_ONLY": "true",
+    "USE_STRATEGY_MEMORY_FEEDBACK": "false",
+    "USE_STRATEGY_PERFORMANCE_MEMORY": "false",
+    "COMMANDER_MEMORY_USAGE_DISABLED": "true",
+    "STRATEGIST_MEMORY_USAGE_DISABLED": "true",
+    "STRATEGY_MEMORY_PERSIST_ENABLED": "false",
+}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "") or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _commander_default_bool(name: str, default: bool) -> bool:
+    raw = str(_COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS.get(name, "") or "").strip()
+    if raw:
+        return _is_trueish(raw)
+    return bool(default)
+
+
+def _apply_commander_temporary_runtime_defaults(state: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    previous = {key: os.environ.get(key) for key in _COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS}
+    for key, value in _COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS.items():
+        if os.environ.get(key) in (None, ""):
+            os.environ[key] = str(value)
+
+    policy = dict(state.get("policy") or {}) if isinstance(state.get("policy"), dict) else {}
+    policy.setdefault("use_strategy_memory_feedback", _env_bool("USE_STRATEGY_MEMORY_FEEDBACK", False))
+    policy.setdefault("use_strategy_performance_memory", _env_bool("USE_STRATEGY_PERFORMANCE_MEMORY", False))
+    state["policy"] = policy
+    state.setdefault("commander_post_scanner_refresh_enabled", _env_bool("COMMANDER_POST_SCANNER_REFRESH_ENABLED", True))
+    state.setdefault("memory_bias_observation_only", _env_bool("MEMORY_BIAS_OBSERVATION_ONLY", True))
+    state.setdefault("commander_memory_bias_observation_only", _env_bool("MEMORY_BIAS_OBSERVATION_ONLY", True))
+    state.setdefault("commander_memory_usage_disabled", _env_bool("COMMANDER_MEMORY_USAGE_DISABLED", True))
+    state.setdefault("strategist_memory_usage_disabled", _env_bool("STRATEGIST_MEMORY_USAGE_DISABLED", True))
+    state.setdefault("strategy_memory_persist_enabled", _env_bool("STRATEGY_MEMORY_PERSIST_ENABLED", False))
+    state["commander_temporary_runtime_defaults"] = {
+        "source": "commander_runtime_code_default",
+        "values": dict(_COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS),
+        "env_transport": True,
+    }
+    return previous
+
+
+def _restore_commander_temporary_runtime_env(previous: Dict[str, Optional[str]]) -> None:
+    for key, value in dict(previous or {}).items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def _commander_post_scanner_refresh_enabled(state: Dict[str, Any]) -> bool:
+    if isinstance(state, dict) and state.get("commander_post_scanner_refresh_enabled") not in (None, ""):
+        return _is_trueish(state.get("commander_post_scanner_refresh_enabled"))
+    return _env_bool(
+        "COMMANDER_POST_SCANNER_REFRESH_ENABLED",
+        _commander_default_bool("COMMANDER_POST_SCANNER_REFRESH_ENABLED", True),
+    )
+
+
+def _commander_memory_usage_disabled(state: Dict[str, Any]) -> bool:
+    if isinstance(state, dict):
+        if state.get("commander_memory_usage_disabled") not in (None, ""):
+            return _is_trueish(state.get("commander_memory_usage_disabled"))
+        applied = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+        commander = applied.get("commander") if isinstance(applied.get("commander"), dict) else {}
+        memory_usage = commander.get("memory_usage") if isinstance(commander.get("memory_usage"), dict) else {}
+        if memory_usage.get("disabled") not in (None, ""):
+            return _is_trueish(memory_usage.get("disabled"))
+    return _env_bool(
+        "COMMANDER_MEMORY_USAGE_DISABLED",
+        _commander_default_bool("COMMANDER_MEMORY_USAGE_DISABLED", True),
+    )
 
 
 def _merge_nested_policy_dict(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -229,6 +316,10 @@ def _runtime_clock_dt_kst(state: Dict[str, Any], *, market_hours: MarketHours | 
     return datetime.fromtimestamp(epoch, tz=mh.tz)
 
 
+def _runtime_clock_input_present(state: Dict[str, Any]) -> bool:
+    return _coerce_int(state.get("tick_ts"), 0) > 0 or _coerce_int(state.get("now_epoch"), 0) > 0
+
+
 def _ensure_market_context_clock_fields(
     state: Dict[str, Any],
     *,
@@ -237,7 +328,9 @@ def _ensure_market_context_clock_fields(
     mh = market_hours or MarketHours()
     market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
     out = dict(market_context or {})
-    if out.get("minutes_to_close") not in (None, ""):
+    existing_minutes = None if out.get("minutes_to_close") in (None, "") else float(_runtime_float(out.get("minutes_to_close"), 0.0))
+    has_reliable_runtime_clock = _runtime_clock_input_present(state)
+    if existing_minutes is not None and not has_reliable_runtime_clock:
         state["market_context"] = out
         return out
     dt_kst = _runtime_clock_dt_kst(state, market_hours=mh)
@@ -250,9 +343,28 @@ def _ensure_market_context_clock_fields(
             microsecond=0,
         )
         minutes_to_close = max(0.0, (close_dt - dt_kst).total_seconds() / 60.0)
+    if minutes_to_close is None and existing_minutes is not None:
+        state["market_context"] = out
+        return out
+
+    previous_source = str(out.get("market_clock_source") or "")
+    if existing_minutes is not None and minutes_to_close is not None:
+        drift = abs(float(existing_minutes) - float(minutes_to_close))
+        if drift <= 1.0:
+            out["minutes_to_close"] = float(existing_minutes)
+            out.setdefault("market_clock_source", previous_source or "runtime_clock_verified")
+            out.setdefault("market_clock_kst", dt_kst.isoformat())
+            out["market_clock_verified_minutes_to_close"] = float(minutes_to_close)
+            state["market_context"] = out
+            return out
+        out["market_clock_previous_minutes_to_close"] = float(existing_minutes)
+        if previous_source:
+            out["market_clock_previous_source"] = previous_source
+        out["market_clock_source"] = "runtime_clock_override"
+    else:
+        out.setdefault("market_clock_source", "runtime_clock")
     out["minutes_to_close"] = minutes_to_close
-    out.setdefault("market_clock_source", "runtime_clock")
-    out.setdefault("market_clock_kst", dt_kst.isoformat())
+    out["market_clock_kst"] = dt_kst.isoformat()
     state["market_context"] = out
     return out
 
@@ -623,11 +735,20 @@ def _build_open_position_strategist_refresh_context(override_assessment: Dict[st
     )
     entry_state = _compact_monitor_entry_state_for_refresh(selected_position.get("entry_state") or {})
     entry_blockers = [str(x) for x in list(entry_state.get("entry_blockers") or []) if str(x or "").strip()]
-    summary = (
-        f"Repeated hold refresh for {selected_symbol or 'unknown_symbol'} after "
-        f"{int(selected_position.get('hold_repeat_count') or assessment.get('hold_repeat_count_max') or 0)} "
-        f"consecutive hold cycles."
+    refresh_trigger = str(assessment.get("refresh_trigger") or "repeated_hold_monitor_only").strip()
+    selected_hold_repeat_count = int(
+        selected_position.get("hold_repeat_count") or assessment.get("hold_repeat_count_max") or 0
     )
+    if refresh_trigger == "loss_threshold_exceeded":
+        summary = (
+            f"Loss threshold refresh for {selected_symbol or 'unknown_symbol'} after "
+            f"{selected_hold_repeat_count} consecutive hold cycles."
+        )
+    else:
+        summary = (
+            f"Repeated hold refresh for {selected_symbol or 'unknown_symbol'} after "
+            f"{selected_hold_repeat_count} consecutive hold cycles."
+        )
     blocking_axis = str(entry_state.get("current_blocking_axis") or "")
     if blocking_axis:
         summary += f" Current blocking axis is {blocking_axis}."
@@ -650,14 +771,18 @@ def _build_open_position_strategist_refresh_context(override_assessment: Dict[st
         summary += f" Carry control reason: {carry_risk_reason}."
     return {
         "refresh_scope": "open_position_monitor_refresh",
+        "refresh_trigger": str(refresh_trigger),
+        "refresh_cadence_sec": int(assessment.get("refresh_cadence_sec") or _OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC),
         "refresh_summary": summary,
         "selected_symbol": selected_symbol,
         "open_position_count": len(positions),
         "hold_repeat_count_max": int(assessment.get("hold_repeat_count_max") or 0),
-        "selected_hold_repeat_count": int(selected_position.get("hold_repeat_count") or 0),
+        "selected_hold_repeat_count": selected_hold_repeat_count,
         "selected_effective_loss_ratio": selected_position.get("effective_loss_ratio"),
         "effective_loss_ratio_min": assessment.get("effective_loss_ratio_min"),
         "price_anomaly_flag": bool(assessment.get("price_anomaly_flag")),
+        "force_exit_review_pending": bool(assessment.get("force_exit_review_pending")),
+        "open_position_risk_review_reason": str(assessment.get("open_position_risk_review_reason") or ""),
         "monitor_posture": str(selected_position.get("posture") or ""),
         "monitor_reason": str(selected_position.get("reason") or ""),
         "active_exit_axis": str(selected_position.get("active_exit_axis") or ""),
@@ -894,7 +1019,44 @@ def _resolve_commander_behavior_policy(
         allow_legacy_strategy_v1 = False
     memory_feedback_enabled = _existing_value("strategist", "memory_feedback", "enabled")
     if memory_feedback_enabled is None:
-        memory_feedback_enabled = True
+        memory_feedback_enabled = _env_bool(
+            "USE_STRATEGY_MEMORY_FEEDBACK",
+            _commander_default_bool("USE_STRATEGY_MEMORY_FEEDBACK", False),
+        )
+    performance_memory_enabled = _existing_value("strategist", "performance_memory", "enabled")
+    if performance_memory_enabled is None:
+        performance_memory_enabled = _env_bool(
+            "USE_STRATEGY_PERFORMANCE_MEMORY",
+            _commander_default_bool("USE_STRATEGY_PERFORMANCE_MEMORY", False),
+        )
+    strategy_memory_persist_enabled = _existing_value("strategist", "performance_memory", "persist_enabled")
+    if strategy_memory_persist_enabled is None:
+        strategy_memory_persist_enabled = _env_bool(
+            "STRATEGY_MEMORY_PERSIST_ENABLED",
+            _commander_default_bool("STRATEGY_MEMORY_PERSIST_ENABLED", False),
+        )
+    commander_memory_usage_disabled = _existing_value("commander", "memory_usage", "disabled")
+    if commander_memory_usage_disabled is None:
+        commander_memory_usage_disabled = _env_bool(
+            "COMMANDER_MEMORY_USAGE_DISABLED",
+            _commander_default_bool("COMMANDER_MEMORY_USAGE_DISABLED", True),
+        )
+    strategist_memory_usage_disabled = _existing_value("strategist", "memory_usage", "disabled")
+    if strategist_memory_usage_disabled is None:
+        strategist_memory_usage_disabled = _env_bool(
+            "STRATEGIST_MEMORY_USAGE_DISABLED",
+            _commander_default_bool("STRATEGIST_MEMORY_USAGE_DISABLED", True),
+        )
+    post_scanner_refresh_enabled = _existing_value("commander", "route", "post_scanner_refresh_enabled")
+    if post_scanner_refresh_enabled is None:
+        post_scanner_refresh_enabled = _env_bool(
+            "COMMANDER_POST_SCANNER_REFRESH_ENABLED",
+            _commander_default_bool("COMMANDER_POST_SCANNER_REFRESH_ENABLED", True),
+        )
+    memory_bias_observation_only = _env_bool(
+        "MEMORY_BIAS_OBSERVATION_ONLY",
+        _commander_default_bool("MEMORY_BIAS_OBSERVATION_ONLY", True),
+    )
     monitor_only_when_holding = _existing_value("commander", "route", "monitor_only_when_holding")
     if monitor_only_when_holding is None:
         monitor_only_when_holding = True
@@ -1221,6 +1383,15 @@ def _resolve_commander_behavior_policy(
                 "recent_runs": max(1, _coerce_int(strategy_memory_recent_runs, 12)),
                 "policy_source": "commander_applied_policy",
             },
+            "performance_memory": {
+                "enabled": bool(performance_memory_enabled),
+                "persist_enabled": bool(strategy_memory_persist_enabled),
+                "policy_source": "commander_applied_policy",
+            },
+            "memory_usage": {
+                "disabled": bool(strategist_memory_usage_disabled),
+                "policy_source": "commander_applied_policy",
+            },
             "reporter_feedback_mode": str(feedback_policy.get("reporter_feedback_mode") or "auto"),
             "reporter_feedback_mode_source": str(
                 feedback_policy.get("reporter_feedback_mode_source") or "commander_applied_policy"
@@ -1232,6 +1403,11 @@ def _resolve_commander_behavior_policy(
             "route": {
                 "monitor_only_when_holding": bool(monitor_only_when_holding),
                 "cached_strategist_when_flat": bool(cached_strategist_when_flat),
+                "post_scanner_refresh_enabled": bool(post_scanner_refresh_enabled),
+                "policy_source": "commander_applied_policy",
+            },
+            "memory_usage": {
+                "disabled": bool(commander_memory_usage_disabled),
                 "policy_source": "commander_applied_policy",
             },
         },
@@ -1240,6 +1416,10 @@ def _resolve_commander_behavior_policy(
             "policy_source": "commander_applied_policy",
         },
         "scanner": {
+            "memory_bias": {
+                "observation_only": bool(memory_bias_observation_only),
+                "policy_source": "commander_applied_policy",
+            },
             "source": {
                 "type": normalize_scanner_source_type(scanner_source_type),
                 "policy_source": "commander_applied_policy",
@@ -1261,6 +1441,10 @@ def _resolve_commander_behavior_policy(
             },
         },
         "monitor": {
+            "memory_bias": {
+                "observation_only": bool(memory_bias_observation_only),
+                "policy_source": "commander_applied_policy",
+            },
             "hold": {
                 "min_hold_seconds": max(0, _coerce_int(min_hold_seconds, 600)),
                 "policy_source": "commander_applied_policy",
@@ -1308,6 +1492,12 @@ def _resolve_commander_behavior_policy(
             "allow_legacy_rule": bool(allow_legacy_rule),
             "allow_legacy_strategy_v1": bool(allow_legacy_strategy_v1),
             "strategy_memory_feedback_enabled": bool(memory_feedback_enabled),
+            "strategy_performance_memory_enabled": bool(performance_memory_enabled),
+            "strategy_memory_persist_enabled": bool(strategy_memory_persist_enabled),
+            "commander_memory_usage_disabled": bool(commander_memory_usage_disabled),
+            "strategist_memory_usage_disabled": bool(strategist_memory_usage_disabled),
+            "memory_bias_observation_only": bool(memory_bias_observation_only),
+            "post_scanner_refresh_enabled": bool(post_scanner_refresh_enabled),
             "monitor_only_when_holding": bool(monitor_only_when_holding),
             "cached_strategist_when_flat": bool(cached_strategist_when_flat),
             "exit_policy_enabled": bool(exit_policy_enabled),
@@ -1538,6 +1728,7 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
                 or "session"
             ),
             memory_packets=memory_packets,
+            usage_disabled=_commander_memory_usage_disabled(state),
         )
     except Exception:
         memory_packets = (
@@ -1772,8 +1963,8 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     scanner_policy["scanner_memory_bias_summary"] = dict(scanner_memory_bias_summary)
     if commander_entry_control:
         scanner_policy["entry_control"] = dict(commander_entry_control)
-        scanner_policy["max_priority_rank"] = int(commander_entry_control.get("max_priority_rank") or 5)
-        scanner_policy["max_runner_ups"] = int(commander_entry_control.get("max_runner_ups") or 4)
+        scanner_policy["max_priority_rank"] = int(commander_entry_control.get("max_priority_rank") or 10)
+        scanner_policy["max_runner_ups"] = int(commander_entry_control.get("max_runner_ups") or 9)
     strategy_policy["scanner_policy"] = scanner_policy
 
     provenance = (
@@ -1921,8 +2112,8 @@ def _build_commander_entry_control(
         "failure_streak": int(failure_streak),
         "near_ready_flag": bool(near_ready),
         "avg_distance_to_ready": float(avg_distance),
-        "max_priority_rank": 5,
-        "max_runner_ups": 4,
+        "max_priority_rank": 10,
+        "max_runner_ups": 9,
         "allow_dynamic_entry_band": False,
         "adaptive_max_extended_from_vwap_pct": None,
         "max_extended_from_vwap_pct_cap": 0.10,
@@ -2317,6 +2508,7 @@ def _build_commander_decision(
     commander_memory_policy = build_commander_memory_policy(
         session_bias=session_bias,
         memory_packets=memory_packets,
+        usage_disabled=_commander_memory_usage_disabled(state),
     )
     scanner_memory_bias = build_scanner_memory_bias(
         commander_memory_policy=commander_memory_policy,
@@ -2617,8 +2809,8 @@ def _build_commander_decision(
             "apply_when_top_value_only": True,
             "policy_source": "commander_default",
         },
-        "max_priority_rank": int(entry_control.get("max_priority_rank") or 5),
-        "max_runner_ups": int(entry_control.get("max_runner_ups") or 4),
+        "max_priority_rank": int(entry_control.get("max_priority_rank") or 10),
+        "max_runner_ups": int(entry_control.get("max_runner_ups") or 9),
         "entry_control": dict(entry_control),
     }
     observations = {
@@ -2626,7 +2818,7 @@ def _build_commander_decision(
         "entry_control_mode": str(entry_control.get("mode") or ""),
         "entry_control_decision": str(entry_control.get("decision") or ""),
         "entry_control_reason": str(entry_control.get("reason") or ""),
-        "entry_control_max_priority_rank": int(entry_control.get("max_priority_rank") or 5),
+        "entry_control_max_priority_rank": int(entry_control.get("max_priority_rank") or 10),
         "entry_control_dynamic_band": bool(entry_control.get("allow_dynamic_entry_band")),
     }
     source_refs = {
@@ -2764,6 +2956,10 @@ def _build_commander_decision(
             or ""
         ),
         "override_action": str(commander_override.get("override_action") or ""),
+        "position_refresh_due": bool(commander_override.get("position_refresh_due")),
+        "position_refresh_trigger": str(commander_override.get("position_refresh_trigger") or ""),
+        "force_exit_review_pending": bool(commander_override.get("force_exit_review_pending")),
+        "open_position_risk_review_reason": str(commander_override.get("open_position_risk_review_reason") or ""),
         "override_context": dict(commander_override),
         "applied_policy_source_chain": list(applied_policy_meta.get("applied_policy_source_chain") or []),
         "commander_applied_policy_summary": dict(commander_applied_policy_summary),
@@ -3794,36 +3990,83 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
     refresh_cooldown_symbol = ""
     refresh_cooldown_until = 0
     refresh_cooldown_remaining_sec = 0
+    position_refresh_due = False
+    position_refresh_trigger = ""
+    force_exit_review_pending = False
+    open_position_risk_review_reason = ""
     strategist_refresh_context: Dict[str, Any] = {}
+
+    def _row_loss_value(item: Dict[str, Any]) -> float:
+        value = item.get("effective_loss_ratio")
+        return float(_runtime_float(value, 0.0)) if value not in (None, "") else 0.0
+
+    def _row_refresh_cooldown_remaining(item: Dict[str, Any]) -> int:
+        cooldown_until = max(0, _coerce_int(item.get("refresh_cooldown_until"), 0))
+        return max(0, int(cooldown_until - now_epoch)) if cooldown_until > now_epoch else 0
+
+    def _select_open_position_refresh_candidate(*, require_loss: bool) -> Dict[str, Any]:
+        candidates = []
+        for item in rows_summary:
+            if not isinstance(item, dict):
+                continue
+            if _coerce_int(item.get("hold_repeat_count"), 0) < 3:
+                continue
+            if require_loss and _row_loss_value(item) > -0.01:
+                continue
+            candidates.append(item)
+        if not candidates:
+            return {}
+        return dict(
+            sorted(
+                candidates,
+                key=lambda item: (
+                    1 if _row_refresh_cooldown_remaining(item) > 0 else 0,
+                    _row_loss_value(item) if require_loss else -_coerce_int(item.get("hold_repeat_count"), 0),
+                    -_coerce_int(item.get("hold_repeat_count"), 0) if require_loss else _row_loss_value(item),
+                    str(item.get("symbol") or ""),
+                ),
+            )[0]
+        )
+
     if override_triggered:
         if anomaly_found:
             override_action = "force_exit_review"
             override_reason = "price_pnl_anomaly"
-        elif risk_found:
-            override_action = "force_exit_review"
-            override_reason = "loss_threshold_exceeded"
         else:
-            repeated_hold_rows = sorted(
-                repeated_hold_rows,
-                key=lambda item: (
-                    -_coerce_int(item.get("hold_repeat_count"), 0),
-                    str(item.get("symbol") or ""),
-                ),
+            selected_row = (
+                _select_open_position_refresh_candidate(require_loss=True)
+                if risk_found
+                else _select_open_position_refresh_candidate(require_loss=False)
             )
-            selected_row = repeated_hold_rows[0] if repeated_hold_rows else {}
             refresh_cooldown_symbol = str(selected_row.get("symbol") or "")
             refresh_cooldown_until = max(0, _coerce_int(selected_row.get("refresh_cooldown_until"), 0))
-            if refresh_cooldown_until > now_epoch:
-                override_triggered = False
-                override_suppressed = True
-                override_suppressed_reason = "repeated_hold_monitor_only_refresh_cooldown"
+            refresh_trigger = "loss_threshold_exceeded" if risk_found else "repeated_hold_monitor_only"
+            if selected_row and refresh_cooldown_until > now_epoch:
                 refresh_cooldown_remaining_sec = max(0, int(refresh_cooldown_until - now_epoch))
+                override_suppressed = True
+                override_suppressed_reason = (
+                    "loss_threshold_refresh_cooldown"
+                    if risk_found
+                    else "repeated_hold_monitor_only_refresh_cooldown"
+                )
                 reasons.append(
                     f"{refresh_cooldown_symbol}:refresh_cooldown_active:{refresh_cooldown_remaining_sec}"
                 )
-            else:
+                if risk_found:
+                    override_action = "force_exit_review"
+                    override_reason = "loss_threshold_exceeded"
+                    force_exit_review_pending = True
+                    open_position_risk_review_reason = "loss_threshold_exceeded"
+                    position_refresh_trigger = str(refresh_trigger)
+                else:
+                    override_triggered = False
+            elif selected_row:
                 override_action = "strategist_refresh"
-                override_reason = "repeated_hold_monitor_only"
+                override_reason = str(refresh_trigger)
+                position_refresh_due = True
+                position_refresh_trigger = str(refresh_trigger)
+                force_exit_review_pending = bool(risk_found)
+                open_position_risk_review_reason = "loss_threshold_exceeded" if risk_found else ""
                 refresh_cooldown_until = int(now_epoch + _OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC)
                 refresh_cooldown_remaining_sec = int(_OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC)
                 if refresh_cooldown_symbol:
@@ -3834,10 +4077,19 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                         "hold_repeat_count_max": max_hold_repeat,
                         "effective_loss_ratio_min": min_effective_loss_ratio,
                         "price_anomaly_flag": anomaly_found,
+                        "refresh_trigger": str(refresh_trigger),
+                        "refresh_cadence_sec": int(_OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC),
+                        "force_exit_review_pending": bool(force_exit_review_pending),
+                        "open_position_risk_review_reason": str(open_position_risk_review_reason),
                         "reason_chain": list(reasons),
                         "positions": rows_summary,
                     }
                 )
+            elif risk_found:
+                override_action = "force_exit_review"
+                override_reason = "loss_threshold_exceeded"
+                force_exit_review_pending = True
+                open_position_risk_review_reason = "loss_threshold_exceeded"
 
     if next_refresh_cooldowns:
         persisted["commander_open_position_refresh_cooldown_until_by_symbol"] = dict(next_refresh_cooldowns)
@@ -3872,6 +4124,10 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         "refresh_cooldown_symbol": str(refresh_cooldown_symbol),
         "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
         "refresh_cooldown_remaining_sec": int(refresh_cooldown_remaining_sec),
+        "position_refresh_due": bool(position_refresh_due),
+        "position_refresh_trigger": str(position_refresh_trigger),
+        "force_exit_review_pending": bool(force_exit_review_pending),
+        "open_position_risk_review_reason": str(open_position_risk_review_reason),
         "strategist_refresh_context": dict(strategist_refresh_context),
         "carry_state": str(carry_focus.get("carry_state") or ""),
         "carry_risk_bias": str(carry_focus.get("carry_risk_bias") or ""),
@@ -4005,6 +4261,12 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
                 "refresh_cooldown_remaining_sec": int(
                     override_assessment.get("refresh_cooldown_remaining_sec") or 0
                 ),
+                "position_refresh_due": bool(override_assessment.get("position_refresh_due")),
+                "position_refresh_trigger": str(override_assessment.get("position_refresh_trigger") or ""),
+                "force_exit_review_pending": bool(override_assessment.get("force_exit_review_pending")),
+                "open_position_risk_review_reason": str(
+                    override_assessment.get("open_position_risk_review_reason") or ""
+                ),
                 "strategist_refresh_context": dict(
                     override_assessment.get("strategist_refresh_context") or {}
                 )
@@ -4036,6 +4298,12 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
                 "refresh_cooldown_until": override_assessment.get("refresh_cooldown_until"),
                 "refresh_cooldown_remaining_sec": int(
                     override_assessment.get("refresh_cooldown_remaining_sec") or 0
+                ),
+                "position_refresh_due": bool(override_assessment.get("position_refresh_due")),
+                "position_refresh_trigger": str(override_assessment.get("position_refresh_trigger") or ""),
+                "force_exit_review_pending": bool(override_assessment.get("force_exit_review_pending")),
+                "open_position_risk_review_reason": str(
+                    override_assessment.get("open_position_risk_review_reason") or ""
                 ),
             }
         )
@@ -4163,6 +4431,7 @@ def _assess_cached_strategist_memory_context(state: Dict[str, Any], cached_outpu
                 or "session"
             ),
             memory_packets=current_packets,
+            usage_disabled=_commander_memory_usage_disabled(state),
         )
         current_layers = [str(x or "") for x in list(current_policy.get("active_layers") or []) if str(x or "").strip()][:4]
         current_scanner_enabled = bool(current_policy.get("scanner_bias_enabled"))
@@ -4549,6 +4818,18 @@ def _run_integrated_chain(
     *,
     execute_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
+    previous_env = _apply_commander_temporary_runtime_defaults(state)
+    try:
+        return _run_integrated_chain_impl(state, execute_fn=execute_fn)
+    finally:
+        _restore_commander_temporary_runtime_env(previous_env)
+
+
+def _run_integrated_chain_impl(
+    state: Dict[str, Any],
+    *,
+    execute_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
+) -> Dict[str, Any]:
     """Run a visible end-to-end chain inside canonical runtime."""
     from graphs.nodes.build_portfolio_snapshot import build_portfolio_snapshot
     from graphs.nodes.build_risk_context import build_risk_context
@@ -4786,59 +5067,88 @@ def _run_integrated_chain(
         )
         post_scanner_refresh_requested = bool(post_scanner_decision.get("strategist_refresh_requested"))
         if post_scanner_refresh_requested:
-            state["commander_decision"] = dict(post_scanner_decision)
-            refresh_context = (
-                dict(post_scanner_decision.get("strategist_refresh_context") or {})
-                if isinstance(post_scanner_decision.get("strategist_refresh_context"), dict)
-                else {}
-            )
-            shadow_runtime["pre_buy_refresh_requested"] = True
-            shadow_runtime["pre_buy_refresh_reason"] = str(
-                post_scanner_decision.get("strategist_refresh_reason")
-                or refresh_context.get("refresh_signal")
-                or ""
-            )
-            shadow_runtime["pre_buy_refresh_context"] = dict(refresh_context)
-            shadow_runtime["post_scanner_refresh_requested"] = True
-            shadow_runtime["post_scanner_refresh_reason"] = str(
-                post_scanner_decision.get("strategist_refresh_reason")
-                or refresh_context.get("refresh_signal")
-                or ""
-            )
-            shadow_runtime["post_scanner_refresh_context"] = dict(refresh_context)
-            _log_commander_event(
-                state,
-                "post_scanner_refresh",
-                {
-                    "path": "integrated_chain_cached_frame_post_scanner",
+            if not _commander_post_scanner_refresh_enabled(state):
+                refresh_context = (
+                    dict(post_scanner_decision.get("strategist_refresh_context") or {})
+                    if isinstance(post_scanner_decision.get("strategist_refresh_context"), dict)
+                    else {}
+                )
+                shadow_runtime["post_scanner_refresh_requested"] = True
+                shadow_runtime["post_scanner_refresh_reason"] = str(
+                    post_scanner_decision.get("strategist_refresh_reason")
+                    or refresh_context.get("refresh_signal")
+                    or ""
+                )
+                shadow_runtime["post_scanner_refresh_context"] = {
                     **dict(refresh_context),
+                    "skipped": True,
+                    "skip_reason": "post_scanner_refresh_disabled",
+                }
+                _log_commander_event(
+                    state,
+                    "post_scanner_refresh_skipped",
+                    {
+                        "path": "integrated_chain_cached_frame_post_scanner",
+                        **dict(refresh_context),
+                        "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
+                        "skip_reason": "post_scanner_refresh_disabled",
+                    },
+                )
+                post_scanner_refresh_requested = False
+            else:
+                state["commander_decision"] = dict(post_scanner_decision)
+                refresh_context = (
+                    dict(post_scanner_decision.get("strategist_refresh_context") or {})
+                    if isinstance(post_scanner_decision.get("strategist_refresh_context"), dict)
+                    else {}
+                )
+                shadow_runtime["pre_buy_refresh_requested"] = True
+                shadow_runtime["pre_buy_refresh_reason"] = str(
+                    post_scanner_decision.get("strategist_refresh_reason")
+                    or refresh_context.get("refresh_signal")
+                    or ""
+                )
+                shadow_runtime["pre_buy_refresh_context"] = dict(refresh_context)
+                shadow_runtime["post_scanner_refresh_requested"] = True
+                shadow_runtime["post_scanner_refresh_reason"] = str(
+                    post_scanner_decision.get("strategist_refresh_reason")
+                    or refresh_context.get("refresh_signal")
+                    or ""
+                )
+                shadow_runtime["post_scanner_refresh_context"] = dict(refresh_context)
+                _log_commander_event(
+                    state,
+                    "post_scanner_refresh",
+                    {
+                        "path": "integrated_chain_cached_frame_post_scanner",
+                        **dict(refresh_context),
+                        "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
+                    },
+                )
+                state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="session")
+                state = _attach_commander_applied_policy(state)
+                state = strategist_node(state)
+                shadow_runtime["strategist_executed"] = True
+                shadow_runtime["strategist_called"] = True
+                shadow_runtime["used_cached_strategist"] = False
+                strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
+                llm_status = str(strategist_llm.get("status") or strategist_llm.get("llm_status") or "").strip().lower()
+                shadow_runtime["llm_called_by_strategist"] = bool(
+                    llm_status not in {"", "disabled"}
+                    or str(strategist_llm.get("prompt_ref") or "").strip()
+                    or str(strategist_llm.get("response_ref") or "").strip()
+                )
+                shadow_runtime["retry_count_estimate"] = max(0, _coerce_int(strategist_llm.get("attempts"), 1) - 1)
+                if _strategist_frame_blocked(state):
+                    return _apply_strategist_block(state, phase="integrated_chain")
+                state = _persist_strategist_output_cache(state)
+                state["runtime_fast_path"] = {
+                    "reason": "post_scanner_selected_symbol_refresh",
                     "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
-                },
-            )
-            state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="session")
-            state = _attach_commander_applied_policy(state)
-            state = strategist_node(state)
-            shadow_runtime["strategist_executed"] = True
-            shadow_runtime["strategist_called"] = True
-            shadow_runtime["used_cached_strategist"] = False
-            strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
-            llm_status = str(strategist_llm.get("status") or strategist_llm.get("llm_status") or "").strip().lower()
-            shadow_runtime["llm_called_by_strategist"] = bool(
-                llm_status not in {"", "disabled"}
-                or str(strategist_llm.get("prompt_ref") or "").strip()
-                or str(strategist_llm.get("response_ref") or "").strip()
-            )
-            shadow_runtime["retry_count_estimate"] = max(0, _coerce_int(strategist_llm.get("attempts"), 1) - 1)
-            if _strategist_frame_blocked(state):
-                return _apply_strategist_block(state, phase="integrated_chain")
-            state = _persist_strategist_output_cache(state)
-            state["runtime_fast_path"] = {
-                "reason": "post_scanner_selected_symbol_refresh",
-                "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
-                "selected_symbol": str(refresh_context.get("selected_symbol") or ""),
-            }
-            reused_strategist_cache = False
-            state = scanner_node(state)
+                    "selected_symbol": str(refresh_context.get("selected_symbol") or ""),
+                }
+                reused_strategist_cache = False
+                state = scanner_node(state)
     state = _hydrate_monitor_symbol_features(state)
     state = monitor_node(state)
     shadow_runtime["monitor_decision"] = str(((state.get("monitor_output") or {}).get("intent_side") or "NOOP"))
@@ -4960,7 +5270,7 @@ def resolve_runtime_phase(state: Dict[str, Any], *, phase: Optional[RuntimePhase
     return _normalize_phase(os.getenv("COMMANDER_RUNTIME_PHASE", "session"))
 
 
-def run_commander_runtime(
+def _run_commander_runtime_impl(
     state: Dict[str, Any],
     *,
     mode: Optional[RuntimeMode] = None,
@@ -5288,3 +5598,32 @@ def run_commander_runtime(
         )
         _persist_commander(selected, selected_phase, status_value="error", path_value=str(state.get("path") or ""), reason=str(e))
         raise
+
+
+def run_commander_runtime(
+    state: Dict[str, Any],
+    *,
+    mode: Optional[RuntimeMode] = None,
+    phase: Optional[RuntimePhase] = None,
+    graph_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    integrated_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    preopen_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    closeout_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    decide: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    execute: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    previous_env = _apply_commander_temporary_runtime_defaults(state)
+    try:
+        return _run_commander_runtime_impl(
+            state,
+            mode=mode,
+            phase=phase,
+            graph_runner=graph_runner,
+            integrated_runner=integrated_runner,
+            preopen_runner=preopen_runner,
+            closeout_runner=closeout_runner,
+            decide=decide,
+            execute=execute,
+        )
+    finally:
+        _restore_commander_temporary_runtime_env(previous_env)

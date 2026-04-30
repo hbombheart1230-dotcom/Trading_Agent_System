@@ -34,7 +34,21 @@ def _normalize_kiwoom_pct_ratio(value: Any) -> Optional[float]:
     raw = _safe_float(value)
     if raw is None:
         return None
+    if abs(raw) <= 1.0:
+        return raw
     return raw / 100.0
+
+
+def _derive_pnl_ratio_from_amount(row: Mapping[str, Any]) -> Optional[float]:
+    realized_pnl = _safe_float(row.get("realized_pnl"))
+    buy_price = _safe_float(row.get("buy_price"))
+    filled_qty = _safe_int(row.get("filled_qty"))
+    if realized_pnl is None or buy_price in (None, 0) or filled_qty in (None, 0):
+        return None
+    try:
+        return float(realized_pnl) / (float(buy_price) * float(filled_qty))
+    except Exception:
+        return None
 
 
 def _resolve_trade_day_hint(*values: Any) -> str:
@@ -125,13 +139,17 @@ def _build_match_payload(
     match_mode: str,
     authoritative: bool,
 ) -> Dict[str, Any]:
+    pnl_ratio = _normalize_kiwoom_pct_ratio(row.get("pnl_ratio"))
+    derived_pnl_ratio = _derive_pnl_ratio_from_amount(row)
+    if derived_pnl_ratio is not None and (pnl_ratio is None or abs(float(pnl_ratio) - derived_pnl_ratio) > 0.002):
+        pnl_ratio = derived_pnl_ratio
     return {
         "symbol": normalize_symbol(symbol, allow_test_symbols=True),
         "filled_qty": _safe_int(row.get("filled_qty")),
         "filled_price": _safe_float(row.get("filled_price")),
         "buy_price": _safe_float(row.get("buy_price")),
         "realized_pnl": _safe_float(row.get("realized_pnl")),
-        "pnl_ratio": _normalize_kiwoom_pct_ratio(row.get("pnl_ratio")),
+        "pnl_ratio": pnl_ratio,
         "fee": _safe_int(row.get("fee")),
         "tax": _safe_int(row.get("tax")),
         "source": "kiwoom.ka10077",

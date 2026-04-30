@@ -41,7 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Launch wrapper that enforces M28 startup preflight before running a command."
     )
     p.add_argument("--role", choices=["scheduler", "worker"], default="scheduler")
-    p.add_argument("--profile", choices=["dev", "staging", "prod"], default="dev")
+    p.add_argument("--profile", choices=["dev", "staging", "mock_live", "prod"], default="dev")
     p.add_argument("--env-path", default=".env")
     p.add_argument("--state-path", default="")
     p.add_argument("--report-dir", default="")

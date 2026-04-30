@@ -99,6 +99,6 @@ def test_commander_preserves_defensive_no_trade_when_market_is_risk_off():
     entry_control = decision["entry_control"]
     assert entry_control["mode"] == "preserve_defensive_no_trade_ok"
     assert entry_control["allow_dynamic_entry_band"] is False
-    assert entry_control["max_priority_rank"] == 5
-    assert decision["scanner_policy"]["max_priority_rank"] == 5
+    assert entry_control["max_priority_rank"] == 10
+    assert decision["scanner_policy"]["max_priority_rank"] == 10
     assert decision["scanner_policy"]["scan_aggressiveness"] == 0.0

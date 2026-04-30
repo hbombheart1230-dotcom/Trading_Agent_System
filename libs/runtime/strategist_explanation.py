@@ -201,6 +201,9 @@ def build_memory_usage_trace(
     if not priority_order:
         priority_order = ["daily", "weekly", "monthly", "symbol"]
     active_set = {x.lower() for x in active_layers}
+    memory_disabled = bool(commander_policy.get("disabled")) or str(
+        commander_policy.get("application_mode") or ""
+    ).strip().lower() == "disabled"
 
     scanner_delta = _dict(scanner_bias.get("source_weight_delta"))
     scanner_symbol_adjustments = _dict(scanner_bias.get("symbol_adjustments"))
@@ -248,6 +251,9 @@ def build_memory_usage_trace(
             "operator_summary": _operator_summary_ref(packet),
             "effect": effect,
             "application_targets": (
+                []
+                if memory_disabled
+                else
                 ["strategist_frame", "scanner_bias", "monitor_bias"]
                 if used and layer == "daily"
                 else ["strategist_frame", "commander_baseline"]
@@ -263,14 +269,28 @@ def build_memory_usage_trace(
 
     policy_signals = _dict(commander_policy.get("policy_signals"))
     applied_to_strategy = {
-        "playbook_effect": f"maintain_{_text(strategist_output.get('playbook'), max_len=40) or 'current'}",
-        "risk_posture_effect": _text(policy_signals.get("preferred_risk_posture") or strategist_output.get("risk_tone"), max_len=40),
+        "playbook_effect": (
+            "memory_disabled_no_playbook_effect"
+            if memory_disabled
+            else f"maintain_{_text(strategist_output.get('playbook'), max_len=40) or 'current'}"
+        ),
+        "risk_posture_effect": (
+            "memory_disabled_no_risk_posture_effect"
+            if memory_disabled
+            else _text(policy_signals.get("preferred_risk_posture") or strategist_output.get("risk_tone"), max_len=40)
+        ),
         "scanner_guidance_effect": (
+            "memory_disabled_no_scanner_effect"
+            if memory_disabled
+            else
             "source_weight_delta:" + ",".join(list(scanner_delta.keys())[:4])
             if scanner_delta
             else "no_scanner_memory_delta"
         ),
         "monitor_policy_effect": (
+            "memory_disabled_no_monitor_effect"
+            if memory_disabled
+            else
             "memory_delta:"
             + ",".join(
                 list(monitor_entry_delta.keys())[:3]
@@ -303,12 +323,18 @@ def build_memory_usage_trace(
         if row.get("visible") and not row.get("used")
     ][:4]
     human_summary = (
-        "Active memory layers: "
-        + (", ".join(active_layers) if active_layers else "none")
-        + ("; unused visible layers: " + "; ".join(unused) if unused else "")
+        "Memory usage disabled by Commander policy; visible packets are audit-only."
+        if memory_disabled
+        else (
+            "Active memory layers: "
+            + (", ".join(active_layers) if active_layers else "none")
+            + ("; unused visible layers: " + "; ".join(unused) if unused else "")
+        )
     )
     return {
         "schema_version": "strategist.memory_usage_trace.v1",
+        "memory_usage_disabled": bool(memory_disabled),
+        "memory_usage_disabled_reason": str(commander_policy.get("disabled_reason") or "") if memory_disabled else "",
         "active_layers": active_layers,
         "priority_order": priority_order,
         "layer_decisions": layer_decisions,

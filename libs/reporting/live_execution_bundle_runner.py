@@ -56,6 +56,7 @@ from libs.reporting.llm_artifacts import (
     write_json,
     write_text,
 )
+from libs.reporting.operator_summary_refresh import refresh_operator_summaries_after_trade
 from libs.reporting.trade_explain import (
     generate_trade_explain_report,
     official_trade_explain_report_dir,
@@ -316,7 +317,7 @@ def _latest_strategist_prompt_input_row(
     return dict(candidates[-1])
 
 
-def _flatten_news_titles(sample: Any, *, max_groups: int = 3, max_titles_per_group: int = 2) -> List[str]:
+def _flatten_news_titles(sample: Any, *, max_groups: int = 10, max_titles_per_group: int = 2) -> List[str]:
     out: List[str] = []
     if not isinstance(sample, dict):
         return out
@@ -652,6 +653,7 @@ def _normalized_feature_coverage_from_scanner_evidence(
         "engine_ma120",
         "engine_adx14",
         "engine_trend_strength",
+        "engine_atr14",
         "engine_volume_spike20",
         "engine_volatility20",
         "engine_vwap_distance",
@@ -675,8 +677,16 @@ def _normalized_feature_coverage_from_scanner_evidence(
             quality = "partial"
         else:
             quality = "weak"
-    present_keys = [str(x or "") for x in list(reported.get("present_keys") or computed_present_keys) if str(x or "").strip()]
-    missing_keys = [str(x or "") for x in list(reported.get("missing_keys") or computed_missing_keys) if str(x or "").strip()]
+    reported_present_keys = [str(x or "") for x in list(reported.get("present_keys") or []) if str(x or "").strip()]
+    reported_missing_keys = [str(x or "") for x in list(reported.get("missing_keys") or []) if str(x or "").strip()]
+    reported_key_counts_match = bool(
+        reported_present_keys
+        and len(reported_present_keys) == present
+        and len(reported_present_keys) + len(reported_missing_keys) == total
+    )
+    computed_key_counts_match = computed_present == present and computed_total == total
+    present_keys = reported_present_keys if reported_key_counts_match else (computed_present_keys if computed_key_counts_match else [])
+    missing_keys = reported_missing_keys if reported_key_counts_match else (computed_missing_keys if computed_key_counts_match else [])
     coverage_source = "feature_coverage_reported" if reported else "snapshot_derived"
     return {
         "present": present,
@@ -1294,6 +1304,7 @@ def _log_bundle_event(
     *,
     role: str,
     event: str,
+    level: str = "info",
     run_id: str = "report-bundle",
     symbol: str = "",
     trade_id: str = "",
@@ -1308,6 +1319,7 @@ def _log_bundle_event(
             stage="report_bundle",
             event=event,
             event_name=f"report_bundle.{event}",
+            level=str(level or "info"),
             agent="report_bundle",
             phase="reporting",
             symbol=str(symbol or ""),
@@ -3513,6 +3525,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         trade_provenance_path = trade_paths["trade_provenance_json"]
         trade_health_path = trade_paths["trade_health_json"]
         trade_artifact_links_path = trade_paths["trade_artifact_links_json"]
+        operator_summary_refresh_path = trade_root / "operator_summary_refresh.json"
         existing_normalized_bundle = _read_json_if_exists(lifecycle_bundle_path)
         if not existing_normalized_bundle:
             existing_normalized_bundle = _read_json_if_exists(trade_paths["aggregated_execution_bundle_json"])
@@ -4267,6 +4280,46 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         artifact_presence = dict(persisted_trade_outputs.get("artifact_presence") or {})
         trade_health_payload = dict(persisted_trade_outputs.get("trade_health_payload") or {})
+
+        operator_summary_refresh: Dict[str, Any] = {}
+        try:
+            operator_summary_refresh = refresh_operator_summaries_after_trade(
+                reports_root=reports_root,
+                event_log_path=event_log_path,
+                day=day,
+                symbol=symbol,
+            )
+        except Exception as exc:
+            operator_summary_refresh = {
+                "schema_version": "operator_summary_refresh.v1",
+                "day": day,
+                "symbol": symbol,
+                "status": "error",
+                "artifacts": {},
+                "errors": [{"layer": "refresh", "error": _sanitize_error_message(exc)}],
+            }
+        write_json(operator_summary_refresh_path, operator_summary_refresh)
+        _log_bundle_event(
+            event_log_path,
+            role=role,
+            event="operator_summary_refresh_finished",
+            run_id=str(anchor_run_id or "report-bundle"),
+            symbol=symbol,
+            trade_id=trade_id,
+            payload={
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "day": day,
+                "status": str(operator_summary_refresh.get("status") or ""),
+                "artifact_path": str(operator_summary_refresh_path),
+                "layers": sorted(
+                    str(key)
+                    for key in dict(operator_summary_refresh.get("artifacts") or {}).keys()
+                ),
+                "error_count": len(list(operator_summary_refresh.get("errors") or [])),
+            },
+            level="warning" if str(operator_summary_refresh.get("status") or "") in {"partial", "error"} else "info",
+        )
 
         backfill_payload = build_live_bundle_backfill_payload(
             trade_id=trade_id,
