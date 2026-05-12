@@ -22,6 +22,8 @@ def test_build_strategy_horizon_feedback_is_observability_only_and_defaults_intr
     assert payload["strategy_horizon"] == "intraday"
     assert payload["expected_hold_window"]["min_sec"] == 300
     assert payload["monitor_handoff"]["do_not_force_hold"] is True
+    assert payload["behavior_translation"]["strategy_horizon"] == "intraday"
+    assert payload["behavior_translation"]["applied"] is False
 
 
 def test_build_exit_vs_strategy_intent_marks_non_hard_early_exit_as_unproven() -> None:
@@ -62,9 +64,12 @@ def test_build_commander_horizon_policy_caps_long_horizon_in_live_validation() -
     assert out["observability_only"] is True
     assert out["do_not_force_hold"] is True
     assert out["allow_behavior_change"] is False
+    assert out["allow_behavior_translation"] is True
     assert out["strategy_horizon"] == "intraday"
     assert out["source_strategy_horizon"] == "1_2day_swing"
     assert out["strategist_horizon_proposal"]["strategy_horizon"] == "1_2day_swing"
+    assert out["behavior_translation"]["applied"] is True
+    assert out["monitor_handoff"]["review_cadence_sec"] > 0
 
 
 def test_exit_vs_strategy_intent_prefers_commander_horizon_policy() -> None:
@@ -96,6 +101,7 @@ def test_exit_vs_strategy_intent_prefers_commander_horizon_policy() -> None:
     assert out["source_strategy_horizon"] == "1_2day_swing"
     assert out["commander_horizon_policy"]["owner"] == "commander"
     assert out["early_exit_flag"] is True
+    assert out["behavior_translation"]["applied"] is True
 
 
 def test_build_post_exit_shadow_placeholder_records_pending_checkpoints_for_closed_trade() -> None:
@@ -118,6 +124,22 @@ def test_build_post_exit_shadow_placeholder_records_pending_checkpoints_for_clos
     assert out["strategy_horizon"] == "intraday"
     assert out["symbol"] == "005930"
     assert out["checkpoints"]["EOD"]["status"] == "pending"
+
+
+def test_build_post_exit_shadow_placeholder_prefers_monitor_exit_price_when_fill_missing() -> None:
+    out = build_post_exit_shadow_placeholder(
+        status="closed",
+        lifecycle_bundle={"symbol": "018880"},
+        lifecycle={
+            "exit": {
+                "ts": "2026-05-06T04:24:26+00:00",
+                "monitor_context": {"current_price": 5440, "average_price": 5394},
+            }
+        },
+        exit_execution_details={"filled_price": None, "avg_price": 5394},
+    )
+
+    assert out["exit_price"] == 5440
 
 
 def test_build_post_exit_shadow_placeholder_recovers_commander_policy_from_exit_intent() -> None:

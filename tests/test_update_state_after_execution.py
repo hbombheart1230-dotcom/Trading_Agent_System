@@ -76,6 +76,46 @@ def test_update_state_mock_buy_updates_mock_positions(monkeypatch):
     assert ps["last_trade_symbol"] == "005930"
 
 
+def test_update_state_mock_buy_persists_entry_sizing_risk(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {"last_order_epoch": 10, "mock_positions": []},
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 2,
+                "price": 70000,
+                "meta": {
+                    "sizing": {
+                        "price": 70000,
+                        "inputs": {
+                            "stop_loss_pct": 0.012,
+                            "stop_loss_source": "entry.metrics.vwap.reclaim_tolerance",
+                            "invalidation_price": 69160,
+                            "raw_structure_stop_loss_pct": 0.0105,
+                            "min_structure_stop_loss_pct": 0.008,
+                            "qty_by_risk": 11,
+                            "qty_by_notional": 14,
+                        },
+                    }
+                },
+            },
+        },
+    }
+
+    out = update_state_after_execution(state)
+
+    risk = (out["persisted_state"].get("position_entry_risk_by_symbol") or {}).get("005930") or {}
+    assert risk["stop_loss_pct"] == 0.012
+    assert risk["stop_loss_source"] == "entry.metrics.vwap.reclaim_tolerance"
+    assert risk["invalidation_price"] == 69160.0
+    assert risk["recorded_epoch"] == 1234
+
+
 def test_update_state_mock_buy_uses_selected_quote_when_order_price_missing(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: 1234.0)
     state = {
@@ -128,6 +168,107 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
     assert ps["last_trade_side"] == "SELL"
     assert ps["last_trade_epoch"] == 1234
     assert ps["last_trade_symbol"] == "005930"
+    watch = (ps.get("post_exit_shadow_watchlist") or {}).get("005930") or {}
+    assert watch["observability_only"] is True
+    assert watch["exit_epoch"] == 1234
+    assert watch["exit_price"] == 70200.0
+    assert watch["expires_epoch"] == 1234 + (90 * 60)
+
+
+def test_update_state_mock_sell_clears_closeout_unresolved_marker(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {
+            "last_order_epoch": 10,
+            "mock_positions": [{"symbol": "078890", "qty": 338, "avg_price": 8770.0}],
+            "closeout_unresolved_flatten_by_symbol": {
+                "078890": {
+                    "symbol": "078890",
+                    "qty": 338,
+                    "requires_immediate_flatten": True,
+                }
+            },
+            "closeout_backup_liquidation": {
+                "mode": "broker_truth_unresolved_positions_retained",
+                "symbols": ["078890"],
+                "qty_total": 338,
+                "unresolved_flatten_symbols": ["078890"],
+                "unresolved_flatten_requires_next_open_symbols": ["078890"],
+                "requires_next_open_flatten": True,
+                "reason": "closeout_broker_truth_unresolved_positions_retained",
+            },
+        },
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {"action": "SELL", "symbol": "078890", "qty": 338, "price": 9180},
+        },
+    }
+
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+
+    assert ps["mock_positions"] == []
+    assert "closeout_unresolved_flatten_by_symbol" not in ps
+    closeout = ps["closeout_backup_liquidation"]
+    assert closeout["mode"] == "broker_truth_unresolved_positions_cleared"
+    assert closeout["unresolved_flatten_symbols"] == []
+    assert closeout["unresolved_flatten_requires_next_open_symbols"] == []
+    assert closeout["requires_next_open_flatten"] is False
+
+
+def test_update_state_post_exit_watch_prefers_actual_fill_price(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    monkeypatch.setenv("KIWOOM_MODE", "real")
+    state = {
+        "persisted_state": {"last_order_epoch": 10},
+        "execution": {
+            "allowed": True,
+            "payload": {
+                "mode": "real",
+                "filled_price": 69900,
+                "filled_qty": 2,
+                "trade_id": "TRD_20260507_005930_01",
+            },
+            "reason": "Allowed",
+            "order": {"action": "SELL", "symbol": "005930", "qty": 2, "price": 70200},
+        },
+    }
+
+    out = update_state_after_execution(state)
+
+    watch = ((out.get("persisted_state") or {}).get("post_exit_shadow_watchlist") or {}).get("005930") or {}
+    assert watch["exit_price"] == 69900.0
+    assert watch["exit_price_source"] == "payload.filled_price"
+    assert watch["trade_id"] == "TRD_20260507_005930_01"
+
+
+def test_update_state_buy_clears_post_exit_shadow_watch(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 2000.0)
+    state = {
+        "persisted_state": {
+            "last_order_epoch": 10,
+            "mock_positions": [],
+            "post_exit_shadow_watchlist": {
+                "005930": {
+                    "symbol": "005930",
+                    "exit_epoch": 1234,
+                    "expires_epoch": 1234 + (90 * 60),
+                    "observability_only": True,
+                }
+            },
+        },
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 70300},
+        },
+    }
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert "005930" not in (ps.get("post_exit_shadow_watchlist") or {})
 
 
 def test_update_state_mock_sell_uses_market_snapshot_when_order_price_missing(monkeypatch):

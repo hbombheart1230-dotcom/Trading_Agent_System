@@ -286,6 +286,198 @@ def test_attach_broker_day_pnl_uses_entry_broker_fill_to_disambiguate_same_symbo
     assert broker_day_pnl.get("realized_pnl") == -1956.0
 
 
+def test_attach_broker_day_pnl_aggregates_split_rows_before_qty_fallback() -> None:
+    class _FakeReader:
+        def get_day_realized_details(self, *, symbol: str = ""):
+            assert symbol == "006910"
+            return {
+                "rows": [
+                    {
+                        "symbol": "006910",
+                        "filled_qty": 10,
+                        "filled_price": 14690,
+                        "buy_price": 14735,
+                        "realized_pnl": -1763,
+                        "pnl_ratio": -0.012,
+                        "fee": 1020,
+                        "tax": 293,
+                    },
+                    {
+                        "symbol": "006910",
+                        "filled_qty": 1,
+                        "filled_price": 14790,
+                        "buy_price": 14780,
+                        "realized_pnl": -119,
+                        "pnl_ratio": -0.008,
+                        "fee": 102,
+                        "tax": 29,
+                    },
+                    {
+                        "symbol": "006910",
+                        "filled_qty": 9,
+                        "filled_price": 14790,
+                        "buy_price": 14780,
+                        "realized_pnl": -1096,
+                        "pnl_ratio": -0.008,
+                        "fee": 918,
+                        "tax": 266,
+                    },
+                    {
+                        "symbol": "006910",
+                        "filled_qty": 10,
+                        "filled_price": 14360,
+                        "buy_price": 14370,
+                        "realized_pnl": -1387,
+                        "pnl_ratio": -0.0097,
+                        "fee": 1000,
+                        "tax": 287,
+                    },
+                ],
+                "source": "kiwoom.ka10077",
+            }
+
+        def get_account_profit_rate_rows(self):
+            return {"rows": [], "source": "kiwoom.ka10085"}
+
+    out = attach_broker_day_pnl(
+        {
+            "execution_details": {
+                "filled_qty": 10,
+                "filled_price": 14790,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "entry_execution_details": {
+                "filled_qty": 10,
+                "filled_price": 14780,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+        },
+        context={
+            "trade_day": "2026-05-04",
+            "action": "SELL",
+            "symbol": "006910",
+            "execution_details": {
+                "filled_qty": 10,
+                "filled_price": 14790,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "entry_execution_details": {
+                "filled_qty": 10,
+                "filled_price": 14780,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "broker_day_pnl_reader": _FakeReader(),
+            "broker_day_truth_lookup_enabled": True,
+        },
+    )
+
+    broker_day_pnl = ((out.get("execution_context") or {}).get("broker_day_pnl") or {})
+    assert broker_day_pnl.get("authoritative") is True
+    assert broker_day_pnl.get("match_mode") == "symbol_split_buy_sell_qty_exact"
+    assert broker_day_pnl.get("source_row_count") == 2
+    assert broker_day_pnl.get("filled_qty") == 10
+    assert broker_day_pnl.get("filled_price") == 14790.0
+    assert broker_day_pnl.get("buy_price") == 14780.0
+    assert broker_day_pnl.get("realized_pnl") == -1215.0
+    assert broker_day_pnl.get("fee") == 1020
+    assert broker_day_pnl.get("tax") == 295
+
+
+def test_attach_broker_day_pnl_aggregates_split_rows_by_weighted_sell_average() -> None:
+    class _FakeReader:
+        def get_day_realized_details(self, *, symbol: str = ""):
+            return {
+                "rows": [
+                    {
+                        "symbol": "018880",
+                        "filled_qty": 80,
+                        "filled_price": 5440,
+                        "buy_price": 5410,
+                        "realized_pnl": -1499,
+                        "pnl_ratio": -0.35,
+                        "fee": 3030,
+                        "tax": 869,
+                    },
+                    {
+                        "symbol": "018880",
+                        "filled_qty": 50,
+                        "filled_price": 5440,
+                        "buy_price": 5410,
+                        "realized_pnl": -934,
+                        "pnl_ratio": -0.35,
+                        "fee": 1890,
+                        "tax": 544,
+                    },
+                    {
+                        "symbol": "018880",
+                        "filled_qty": 145,
+                        "filled_price": 5430,
+                        "buy_price": 5410,
+                        "realized_pnl": -4164,
+                        "pnl_ratio": -0.53,
+                        "fee": 5490,
+                        "tax": 1574,
+                    },
+                    {
+                        "symbol": "018880",
+                        "filled_qty": 100,
+                        "filled_price": 5400,
+                        "buy_price": 5410,
+                        "realized_pnl": -5737,
+                        "pnl_ratio": -1.08,
+                        "fee": 3700,
+                        "tax": 1057,
+                    },
+                ],
+                "source": "kiwoom.ka10077",
+            }
+
+        def get_account_profit_rate_rows(self):
+            return {"rows": [], "source": "kiwoom.ka10085"}
+
+    out = attach_broker_day_pnl(
+        {
+            "execution_details": {
+                "filled_qty": 275,
+                "filled_price": 5435,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "entry_execution_details": {
+                "filled_qty": 275,
+                "filled_price": 5410,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+        },
+        context={
+            "trade_day": "2026-05-06",
+            "action": "SELL",
+            "symbol": "018880",
+            "execution_details": {
+                "filled_qty": 275,
+                "filled_price": 5435,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "entry_execution_details": {
+                "filled_qty": 275,
+                "filled_price": 5410,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "broker_day_pnl_reader": _FakeReader(),
+            "broker_day_truth_lookup_enabled": True,
+        },
+    )
+
+    broker_day_pnl = ((out.get("execution_context") or {}).get("broker_day_pnl") or {})
+    assert broker_day_pnl.get("authoritative") is True
+    assert broker_day_pnl.get("match_mode") == "symbol_split_buy_weighted_sell_qty_exact"
+    assert broker_day_pnl.get("filled_qty") == 275
+    assert broker_day_pnl.get("filled_price") == 5435.0
+    assert broker_day_pnl.get("buy_price") == 5410.0
+    assert broker_day_pnl.get("realized_pnl") == -6597.0
+    assert broker_day_pnl.get("fee") == 10410
+    assert broker_day_pnl.get("tax") == 2987
+
+
 def test_attach_broker_day_pnl_uses_monitor_context_buy_estimate_for_repeated_symbol_rows() -> None:
     class _FakeReader:
         def get_day_realized_details(self, *, symbol: str = ""):

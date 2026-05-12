@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.core.settings import load_env_file
-from libs.reporting.llm_artifacts import resolve_trade_day_root
+from libs.reporting.llm_artifacts import iter_trade_dirs, resolve_trade_day_root
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -74,7 +74,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 3
 
     rows: List[Dict[str, Any]] = []
-    trade_dirs = sorted(path for path in trade_day_root.iterdir() if path.is_dir())
+    trade_dirs = iter_trade_dirs(trade_day_root)
     trade_id_filters = _normalize_trade_id_filters(args.trade_id)
     if trade_id_filters:
         allowed = set(trade_id_filters)

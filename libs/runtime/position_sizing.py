@@ -82,6 +82,10 @@ def evaluate_position_size(
         _to_float((p.get("exit_policy") or {}).get("stop_loss_pct") if isinstance(p.get("exit_policy"), dict) else 0.03, 0.03),
     )
     stop_loss_pct = _clamp(stop_loss_pct, 0.0, 1.0)
+    stop_loss_source = str(p.get("stop_loss_source") or p.get("stop_loss_pct_source") or "").strip()
+    invalidation_price = _to_float(p.get("invalidation_price") or p.get("stop_price") or p.get("structural_stop_price"), 0.0)
+    raw_structure_stop_loss_pct = _to_float(p.get("raw_structure_stop_loss_pct"), 0.0)
+    min_structure_stop_loss_pct = _to_float(p.get("min_structure_stop_loss_pct"), 0.0)
 
     notional_ratio = _to_float(p.get("position_notional_ratio"), 0.10)
     notional_ratio = _clamp(notional_ratio, 0.0, 1.0)
@@ -138,12 +142,17 @@ def evaluate_position_size(
     risk_per_trade_ratio = _clamp(risk_per_trade_ratio * risk_mult, 0.0, 1.0)
     notional_ratio = _clamp(notional_ratio * notional_mult, 0.0, 1.0)
 
-    max_qty = max(0, _to_int(p.get("max_position_qty"), 0))
+    max_qty = max(0, _to_int(p.get("max_position_qty", p.get("max_order_qty")), 0))
+    max_notional = _to_float(p.get("max_position_notional", p.get("max_order_notional")), 0.0)
+    if max_notional < 0.0:
+        max_notional = 0.0
     min_qty = max(1, _to_int(p.get("min_position_qty"), 1))
     lot_size = max(1, _to_int(p.get("lot_size"), 1))
 
     risk_budget = float(c * risk_per_trade_ratio)
     notional_budget = float(c * notional_ratio)
+    if max_notional > 0.0 and notional_budget > max_notional:
+        notional_budget = float(max_notional)
     if risk_budget <= 0.0 and notional_budget <= 0.0:
         out["reason"] = "budget_zero"
         out["inputs"] = {
@@ -174,6 +183,14 @@ def evaluate_position_size(
         "base_risk_per_trade_ratio": float(base_risk_per_trade_ratio),
         "risk_per_trade_ratio": float(risk_per_trade_ratio),
         "stop_loss_pct": float(stop_loss_pct),
+        "stop_loss_source": stop_loss_source or None,
+        "invalidation_price": float(invalidation_price) if invalidation_price > 0.0 else None,
+        "raw_structure_stop_loss_pct": (
+            float(raw_structure_stop_loss_pct) if raw_structure_stop_loss_pct > 0.0 else None
+        ),
+        "min_structure_stop_loss_pct": (
+            float(min_structure_stop_loss_pct) if min_structure_stop_loss_pct > 0.0 else None
+        ),
         "base_position_notional_ratio": float(base_position_notional_ratio),
         "position_notional_ratio": float(notional_ratio),
         "regime": regime or None,
@@ -186,6 +203,7 @@ def evaluate_position_size(
         "notional_multiplier": float(notional_mult),
         "risk_budget": float(risk_budget),
         "notional_budget": float(notional_budget),
+        "max_position_notional": float(max_notional),
         "qty_by_risk": int(max(0, qty_risk)),
         "qty_by_notional": int(max(0, qty_notional)),
         "lot_size": int(lot_size),

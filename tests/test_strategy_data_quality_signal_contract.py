@@ -10,6 +10,7 @@ from libs.news.models import NewsItem
 def test_global_sentiment_signal_reports_unavailable_on_fetch_failure(monkeypatch):
     monkeypatch.setenv("DRY_RUN", "0")
     monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: None)
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_korea_index_inputs", lambda _state, _policy: None)
 
     signal = compute_global_sentiment_signal(state={}, policy={})
     assert signal["status"] == "unavailable"

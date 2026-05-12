@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
@@ -258,13 +259,14 @@ def _evaluate_order_limit_guard(state: Dict[str, Any], order: Dict[str, Any]) ->
     qty = _coerce_int(order.get("qty"), 0)
     max_qty, qty_key = _resolve_limit_env_value("MAX_ORDER_QTY", "MAX_QTY")
     max_notional, notional_key = _resolve_limit_env_value("MAX_ORDER_NOTIONAL", "MAX_NOTIONAL")
-    price = _resolve_order_price_for_notional(state, order)
+    price, price_source = _resolve_order_price_for_notional_with_source(state, order)
 
     details: Dict[str, Any] = {
         "guard_applied": True,
         "action": action,
         "qty": int(qty),
         "price": float(price) if price is not None else None,
+        "price_source": str(price_source),
         "max_qty_key": str(qty_key),
         "max_qty": int(max_qty),
         "max_notional_key": str(notional_key),
@@ -274,6 +276,11 @@ def _evaluate_order_limit_guard(state: Dict[str, Any], order: Dict[str, Any]) ->
     if max_qty > 0 and qty > max_qty:
         details["limit_exceeded"] = "qty"
         return False, "order_qty_limit_exceeded", details
+
+    if max_notional > 0 and qty > 0 and price <= 0:
+        details["price_evaluable"] = False
+        details["limit_exceeded"] = "notional_price_missing"
+        return False, "order_notional_price_missing", details
 
     if max_notional > 0 and qty > 0 and price > 0:
         notional = float(qty) * float(price)
@@ -580,6 +587,8 @@ def _should_block_duplicate_mock_buy(state: Dict[str, Any], order: Dict[str, Any
 
 _RECENT_BUY_GUARD_DEFAULT_TTL_SEC = 600
 _RECENT_BUY_GUARD_DEFAULT_PATH = Path("data/state/execution_recent_buy_guard.json")
+_RECENT_SELL_GUARD_DEFAULT_TTL_SEC = 180
+_RECENT_SELL_GUARD_DEFAULT_PATH = Path("data/state/execution_recent_sell_guard.json")
 
 
 def _recent_buy_guard_enabled(state: Dict[str, Any]) -> bool:
@@ -596,6 +605,20 @@ def _recent_buy_guard_path(state: Dict[str, Any]) -> Path:
     return Path(raw) if raw else _RECENT_BUY_GUARD_DEFAULT_PATH
 
 
+def _recent_sell_guard_enabled(state: Dict[str, Any]) -> bool:
+    if str(state.get("recent_sell_guard_path") or "").strip():
+        return True
+    details = _execution_mode_details()
+    if str(details.get("effective_mode") or "") not in ("mock_broker_http", "real_broker_http"):
+        return False
+    return any(str(state.get(key) or "").strip() for key in ("runtime_mode", "runtime_phase", "phase", "tick_ts"))
+
+
+def _recent_sell_guard_path(state: Dict[str, Any]) -> Path:
+    raw = str(state.get("recent_sell_guard_path") or "").strip()
+    return Path(raw) if raw else _RECENT_SELL_GUARD_DEFAULT_PATH
+
+
 def _recent_buy_guard_now_epoch(state: Dict[str, Any]) -> int:
     for key in ("tick_ts", "now_epoch"):
         epoch = _coerce_int(state.get(key), 0)
@@ -608,6 +631,12 @@ def _recent_buy_guard_ttl_sec(state: Dict[str, Any]) -> int:
     raw = state.get("recent_buy_guard_ttl_sec")
     ttl = _coerce_int(raw, _RECENT_BUY_GUARD_DEFAULT_TTL_SEC)
     return int(ttl if ttl > 0 else _RECENT_BUY_GUARD_DEFAULT_TTL_SEC)
+
+
+def _recent_sell_guard_ttl_sec(state: Dict[str, Any]) -> int:
+    raw = state.get("recent_sell_guard_ttl_sec")
+    ttl = _coerce_int(raw, _RECENT_SELL_GUARD_DEFAULT_TTL_SEC)
+    return int(ttl if ttl > 0 else _RECENT_SELL_GUARD_DEFAULT_TTL_SEC)
 
 
 def _read_recent_buy_guard(path: Path) -> Dict[str, Any]:
@@ -625,11 +654,42 @@ def _read_recent_buy_guard(path: Path) -> Dict[str, Any]:
     return {"schema_version": "execution_recent_buy_guard.v1", "orders": {}}
 
 
+def _read_recent_sell_guard(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {"schema_version": "execution_recent_sell_guard.v1", "orders": {}}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            orders = data.get("orders")
+            if not isinstance(orders, dict):
+                data["orders"] = {}
+            return data
+    except Exception:
+        pass
+    return {"schema_version": "execution_recent_sell_guard.v1", "orders": {}}
+
+
 def _write_recent_buy_guard(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
+
+
+def _write_recent_sell_guard(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _position_qty_hint_from_order(order: Dict[str, Any]) -> int:
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    for key in ("position_qty", "available_qty", "sellable_qty", "qty_available"):
+        qty = _coerce_int(meta.get(key), 0)
+        if qty > 0:
+            return int(qty)
+    return 0
 
 
 def _evaluate_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
@@ -673,6 +733,57 @@ def _evaluate_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any
         details["order_id"] = str(record.get("order_id") or "")
         details["run_id"] = str(record.get("run_id") or "")
         return False, "duplicate_buy_recent_order_exists", details
+    return True, "", details
+
+
+def _evaluate_recent_sell_order_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    details: Dict[str, Any] = {
+        "enabled": bool(_recent_sell_guard_enabled(state)),
+        "action": action,
+        "guard_applied": False,
+    }
+    if action != "SELL" or not details["enabled"]:
+        return True, "", details
+
+    symbol = _extract_order_symbol(order)
+    details["symbol"] = symbol
+    details["guard_applied"] = True
+    if not symbol:
+        details["symbol_evaluable"] = False
+        return True, "", details
+
+    path = _recent_sell_guard_path(state)
+    now_epoch = _recent_buy_guard_now_epoch(state)
+    ttl_sec = _recent_sell_guard_ttl_sec(state)
+    data = _read_recent_sell_guard(path)
+    orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
+    record = orders.get(symbol) if isinstance(orders.get(symbol), dict) else {}
+    expires_epoch = _coerce_int(record.get("expires_epoch"), 0)
+    order_qty = _coerce_int(order.get("qty"), 0)
+    remaining_qty_hint = _coerce_int(record.get("remaining_qty_hint"), -1)
+
+    details.update(
+        {
+            "path": str(path),
+            "now_epoch": int(now_epoch),
+            "ttl_sec": int(ttl_sec),
+            "order_qty": int(order_qty),
+            "remaining_qty_hint": int(remaining_qty_hint),
+            "expires_epoch": int(expires_epoch),
+            "recent_order_found": bool(record),
+        }
+    )
+    if not record or expires_epoch <= 0 or now_epoch > expires_epoch:
+        return True, "", details
+    details["remaining_sec"] = int(max(0, expires_epoch - now_epoch))
+    details["last_sell_epoch"] = _coerce_int(record.get("last_sell_epoch"), 0)
+    details["last_sell_qty"] = _coerce_int(record.get("last_sell_qty"), 0)
+    details["last_position_qty"] = _coerce_int(record.get("position_qty_hint"), 0)
+    if remaining_qty_hint <= 0:
+        return False, "duplicate_sell_recent_full_exit_exists", details
+    if order_qty > 0 and order_qty > remaining_qty_hint:
+        return False, "sell_qty_exceeds_recent_remaining_position", details
     return True, "", details
 
 
@@ -734,6 +845,70 @@ def _update_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any],
     }
 
 
+def _update_recent_sell_order_guard(state: Dict[str, Any], order: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(order.get("action") or "").strip().upper()
+    if action not in ("BUY", "SELL") or not _recent_sell_guard_enabled(state):
+        return {"enabled": False, "action": action, "updated": False}
+    if not bool(execution.get("execution_ok", execution.get("ok"))):
+        return {"enabled": True, "action": action, "updated": False, "reason": "execution_not_ok"}
+
+    symbol = _extract_order_symbol(order)
+    if not symbol:
+        return {"enabled": True, "action": action, "updated": False, "reason": "symbol_missing"}
+
+    path = _recent_sell_guard_path(state)
+    now_epoch = _recent_buy_guard_now_epoch(state)
+    ttl_sec = _recent_sell_guard_ttl_sec(state)
+    data = _read_recent_sell_guard(path)
+    data["schema_version"] = "execution_recent_sell_guard.v1"
+    orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
+    data["orders"] = orders
+
+    for sym, record in list(orders.items()):
+        if not isinstance(record, dict) or _coerce_int(record.get("expires_epoch"), 0) <= now_epoch:
+            orders.pop(sym, None)
+
+    if action == "BUY":
+        removed = bool(orders.pop(symbol, None))
+        _write_recent_sell_guard(path, data)
+        return {
+            "enabled": True,
+            "action": action,
+            "symbol": symbol,
+            "updated": bool(removed),
+            "cleared": bool(removed),
+            "path": str(path),
+        }
+
+    order_qty = _coerce_int(order.get("qty"), 0)
+    position_qty_hint = _position_qty_hint_from_order(order)
+    remaining_qty_hint = max(0, position_qty_hint - order_qty) if position_qty_hint > 0 else 0
+    payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
+    orders[symbol] = {
+        "symbol": symbol,
+        "last_sell_epoch": int(now_epoch),
+        "expires_epoch": int(now_epoch + ttl_sec),
+        "ttl_sec": int(ttl_sec),
+        "order_id": str(execution.get("order_id") or execution.get("ord_no") or payload.get("order_id") or ""),
+        "run_id": str(state.get("run_id") or ""),
+        "last_sell_qty": int(order_qty),
+        "position_qty_hint": int(position_qty_hint),
+        "remaining_qty_hint": int(remaining_qty_hint),
+        "effective_mode": str(_execution_mode_details().get("effective_mode") or ""),
+    }
+    _write_recent_sell_guard(path, data)
+    return {
+        "enabled": True,
+        "action": action,
+        "symbol": symbol,
+        "updated": True,
+        "remaining_qty_hint": int(remaining_qty_hint),
+        "expires_epoch": int(now_epoch + ttl_sec),
+        "ttl_sec": int(ttl_sec),
+        "path": str(path),
+    }
+
+
 def _resolve_mock_cash_available(state: Dict[str, Any]) -> float:
     persisted = state.get("persisted_state")
     if isinstance(persisted, dict):
@@ -750,17 +925,156 @@ def _resolve_mock_cash_available(state: Dict[str, Any]) -> float:
     return _coerce_float(os.getenv("MOCK_CASH_FALLBACK"), 0.0)
 
 
-def _resolve_order_price_for_notional(state: Dict[str, Any], order: Dict[str, Any]) -> float:
+def _symbol_matches_row(row: Dict[str, Any], symbol: str) -> bool:
+    row_symbol = normalize_symbol(row.get("symbol") or row.get("code") or row.get("stk_cd"))
+    return not symbol or not row_symbol or row_symbol == symbol
+
+
+def _positive_price_from_row(row: Dict[str, Any], keys: Tuple[str, ...]) -> Tuple[float, str]:
+    for key in keys:
+        px = _coerce_float(row.get(key), 0.0)
+        if px > 0.0:
+            return float(abs(px)), str(key)
+    return 0.0, ""
+
+
+def _canonical_artifact_row(state: Dict[str, Any], agent: str) -> Dict[str, Any]:
+    refs = state.get("canonical_artifacts") if isinstance(state.get("canonical_artifacts"), dict) else {}
+    path_text = str(refs.get(agent) or "").strip()
+    if not path_text:
+        return {}
+    try:
+        path = Path(path_text)
+        if not path.exists():
+            return {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _resolve_order_price_for_notional_with_source(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[float, str]:
+    symbol = _extract_order_symbol(order)
     px = _coerce_float(order.get("price"), 0.0)
     if px > 0.0:
-        return px
+        return float(abs(px)), "order.price"
+
+    px = _coerce_float(order.get("order_price"), 0.0)
+    if px > 0.0:
+        return float(abs(px)), "order.order_price"
+
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    meta_px, meta_key = _positive_price_from_row(
+        meta,
+        (
+            "price",
+            "current_price",
+            "raw_price",
+            "reference_price",
+            "monitor_price",
+            "signal_price",
+            "effective_price",
+        ),
+    )
+    if meta_px > 0.0:
+        return float(abs(meta_px)), f"order.meta.{meta_key}"
+
+    price_candidates: list[Tuple[float, str]] = []
+
+    for state_key in (
+        "selected",
+        "scanner_selected_snapshot",
+        "top_candidate",
+        "monitor_output",
+        "monitor",
+        "monitor_snapshot",
+        "monitor_state",
+    ):
+        row = state.get(state_key)
+        if not isinstance(row, dict) or not _symbol_matches_row(row, symbol):
+            continue
+        row_px, row_key = _positive_price_from_row(
+            row,
+            (
+                "price",
+                "current_price",
+                "effective_price",
+                "raw_price",
+                "account_current_price",
+                "account_mark_price",
+                "cur_price",
+                "last_price",
+                "close",
+            ),
+        )
+        if row_px > 0.0:
+            price_candidates.append((row_px, f"{state_key}.{row_key}"))
+
+        position_snapshot = row.get("position_snapshot")
+        if isinstance(position_snapshot, dict) and _symbol_matches_row(position_snapshot, symbol):
+            position_px, position_key = _positive_price_from_row(
+                position_snapshot,
+                ("current_price", "price", "mark_price", "avg_price"),
+            )
+            if position_px > 0.0:
+                price_candidates.append((position_px, f"{state_key}.position_snapshot.{position_key}"))
+
+        features = row.get("features")
+        if isinstance(features, dict):
+            feat_px, feat_key = _positive_price_from_row(
+                features,
+                ("skill_quote_price", "price", "current_price", "cur_price", "last_price", "close"),
+            )
+            if feat_px > 0.0:
+                price_candidates.append((feat_px, f"{state_key}.features.{feat_key}"))
+
+    quotes = _extract_market_quotes_safe(state)
+    quote = quotes.get(symbol) if symbol else None
+    if isinstance(quote, dict):
+        quote_px, quote_key = _positive_price_from_row(
+            quote,
+            ("best_ask", "ask", "price", "cur", "current_price", "last_price", "best_bid", "bid"),
+        )
+        if quote_px > 0.0:
+            price_candidates.append((quote_px, f"market.quote.{quote_key}"))
+
+        raw_quote = quote.get("raw") if isinstance(quote.get("raw"), dict) else {}
+        raw_rows = raw_quote.get("cntr_infr") if isinstance(raw_quote.get("cntr_infr"), list) else []
+        raw_row = raw_rows[0] if raw_rows and isinstance(raw_rows[0], dict) else {}
+        if raw_row:
+            raw_px, raw_key = _positive_price_from_row(
+                raw_row,
+                ("pri_sel_bid_unit", "sel_1bid", "cur_prc", "pri_buy_bid_unit", "buy_1bid"),
+            )
+            if raw_px > 0.0:
+                price_candidates.append((raw_px, f"market.quote.raw.{raw_key}"))
 
     market = state.get("market_snapshot")
-    if isinstance(market, dict):
-        px = _coerce_float(market.get("price"), 0.0)
-        if px > 0.0:
-            return px
-    return 0.0
+    if isinstance(market, dict) and _symbol_matches_row(market, symbol):
+        market_px, market_key = _positive_price_from_row(
+            market,
+            ("best_ask", "ask", "price", "cur", "current_price", "last_price", "best_bid", "bid"),
+        )
+        if market_px > 0.0:
+            price_candidates.append((market_px, f"market_snapshot.{market_key}"))
+
+    canonical_monitor = _canonical_artifact_row(state, "monitor")
+    if isinstance(canonical_monitor, dict) and _symbol_matches_row(canonical_monitor, symbol):
+        canonical_px, canonical_key = _positive_price_from_row(
+            canonical_monitor,
+            ("price", "current_price", "effective_price", "raw_price", "cur_price", "last_price", "close"),
+        )
+        if canonical_px > 0.0:
+            price_candidates.append((canonical_px, f"canonical.monitor.{canonical_key}"))
+
+    if not price_candidates:
+        return 0.0, ""
+    return max(price_candidates, key=lambda item: item[0])
+
+
+def _resolve_order_price_for_notional(state: Dict[str, Any], order: Dict[str, Any]) -> float:
+    price, _source = _resolve_order_price_for_notional_with_source(state, order)
+    return price
 
 
 def _evaluate_mock_cash_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
@@ -793,6 +1107,102 @@ def _evaluate_mock_cash_guard(state: Dict[str, Any], order: Dict[str, Any]) -> T
     }
     if notional > cash:
         return False, "insufficient_mock_cash", details
+    return True, "", details
+
+
+def _execution_runtime_clock_input_present(state: Dict[str, Any]) -> bool:
+    return _coerce_int(state.get("tick_ts"), 0) > 0 or _coerce_int(state.get("now_epoch"), 0) > 0
+
+
+def _resolve_execution_minutes_to_close(state: Dict[str, Any]) -> float | None:
+    market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    existing = None
+    if market_context.get("minutes_to_close") not in (None, ""):
+        existing = _coerce_float(market_context.get("minutes_to_close"), -1.0)
+        if existing < 0.0:
+            existing = None
+
+    if not _execution_runtime_clock_input_present(state):
+        return existing
+
+    try:
+        from libs.runtime.market_hours import MarketHours
+
+        mh = MarketHours()
+        epoch = _coerce_int(state.get("tick_ts"), 0) or _coerce_int(state.get("now_epoch"), 0)
+        dt_kst = datetime.fromtimestamp(epoch, tz=mh.tz)
+        if not mh.is_open(dt_kst):
+            return existing
+        close_dt = dt_kst.replace(
+            hour=mh.close_time.hour,
+            minute=mh.close_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        computed = max(0.0, (close_dt - dt_kst).total_seconds() / 60.0)
+        if existing is not None and abs(float(existing) - float(computed)) <= 1.0:
+            return float(existing)
+        return float(computed)
+    except Exception:
+        return existing
+
+
+def _resolve_execution_buy_closeout_cutoff(state: Dict[str, Any]) -> Tuple[bool, int, int]:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    applied_monitor = applied_policy.get("monitor") if isinstance(applied_policy.get("monitor"), dict) else {}
+    policy_monitor = policy.get("monitor") if isinstance(policy.get("monitor"), dict) else {}
+    applied_exit = applied_monitor.get("exit") if isinstance(applied_monitor.get("exit"), dict) else {}
+    policy_exit = policy_monitor.get("exit") if isinstance(policy_monitor.get("exit"), dict) else {}
+    applied_eod = applied_exit.get("eod_flat") if isinstance(applied_exit.get("eod_flat"), dict) else {}
+    policy_eod = policy_exit.get("eod_flat") if isinstance(policy_exit.get("eod_flat"), dict) else {}
+    use_eod_flat = (
+        applied_eod.get("enabled")
+        if applied_eod.get("enabled") is not None
+        else policy_eod.get("enabled")
+    )
+    if use_eod_flat is None and isinstance(policy.get("exit_policy"), dict):
+        use_eod_flat = policy["exit_policy"].get("use_eod_flat")
+    enabled = _is_trueish(use_eod_flat if use_eod_flat is not None else True)
+
+    eod_raw = applied_eod.get("cutoff_min") if applied_eod.get("cutoff_min") not in (None, "") else policy_eod.get("cutoff_min")
+    if eod_raw in (None, "") and isinstance(policy.get("exit_policy"), dict):
+        eod_raw = policy["exit_policy"].get("eod_flat_cutoff_min")
+    eod_cutoff = max(0, _coerce_int(eod_raw, 10))
+
+    applied_entry = applied_monitor.get("entry") if isinstance(applied_monitor.get("entry"), dict) else {}
+    policy_entry = policy_monitor.get("entry") if isinstance(policy_monitor.get("entry"), dict) else {}
+    buy_raw = (
+        applied_entry.get("buy_closeout_cutoff_min")
+        if applied_entry.get("buy_closeout_cutoff_min") not in (None, "")
+        else policy_entry.get("buy_closeout_cutoff_min")
+    )
+    buy_cutoff = _coerce_int(buy_raw, max(15, eod_cutoff))
+    if buy_cutoff <= 0:
+        buy_cutoff = max(15, eod_cutoff)
+    return bool(enabled), int(eod_cutoff), int(max(eod_cutoff, buy_cutoff))
+
+
+def _evaluate_execution_closeout_buy_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    if action != "BUY":
+        return True, "", {"enabled": False, "action": action}
+    use_eod_flat, eod_cutoff, buy_cutoff = _resolve_execution_buy_closeout_cutoff(state)
+    minutes_to_close = _resolve_execution_minutes_to_close(state)
+    details = {
+        "enabled": bool(use_eod_flat),
+        "action": action,
+        "minutes_to_close": minutes_to_close,
+        "eod_flat_cutoff_min": int(eod_cutoff),
+        "buy_closeout_cutoff_min": int(buy_cutoff),
+    }
+    if not use_eod_flat or minutes_to_close is None or minutes_to_close < 0.0:
+        details["guard_applied"] = False
+        return True, "", details
+    details["guard_applied"] = True
+    if minutes_to_close <= float(buy_cutoff):
+        details["block_reason"] = "buy_blocked_closeout_window"
+        return False, "buy_blocked_closeout_window", details
     return True, "", details
 
 
@@ -912,20 +1322,32 @@ def _evaluate_degrade_execution_policy(
     effective_limit = max(1, int(max_notional * ratio))
     details["effective_max_notional"] = effective_limit
 
+    action = str(order.get("action") or "").strip().upper()
     qty = _coerce_int(order.get("qty"), 0)
     if qty <= 0:
         return True, "", details
 
     px_raw = order.get("price")
-    if px_raw is None:
-        return True, "", details
-    try:
-        px = int(px_raw)
-    except Exception:
-        details["invalid_price"] = str(px_raw)
-        return False, "degrade_invalid_price_for_notional_guard", details
+    price_source = "order.price"
+    if px_raw is not None:
+        try:
+            px = int(px_raw)
+        except Exception:
+            details["invalid_price"] = str(px_raw)
+            return False, "degrade_invalid_price_for_notional_guard", details
+    else:
+        price, price_source = _resolve_order_price_for_notional_with_source(state, order)
+        details["price_source"] = str(price_source)
+        if price <= 0.0:
+            if action == "BUY":
+                details["price_evaluable"] = False
+                return False, "degrade_missing_price_for_notional_guard", details
+            return True, "", details
+        px = int(price)
 
     notional = qty * px
+    details["price"] = float(px)
+    details["price_source"] = str(price_source)
     details["order_notional"] = notional
     if notional > effective_limit:
         return False, "degrade_notional_limit_exceeded", details
@@ -946,7 +1368,19 @@ def _build_order_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
     order_type = str(order_type or "limit").strip().lower()
 
     qty = intent.get("qty") or intent.get("quantity")
+    meta = intent.get("meta") if isinstance(intent.get("meta"), dict) else {}
     price = intent.get("price")
+    if price in (None, ""):
+        for candidate in (
+            meta.get("price"),
+            meta.get("current_price"),
+            meta.get("raw_price"),
+            meta.get("quote_price"),
+            meta.get("market_price"),
+        ):
+            if candidate not in (None, ""):
+                price = candidate
+                break
     raw_symbol = intent.get("symbol") or intent.get("code") or intent.get("stk_cd")
     symbol = normalize_symbol(raw_symbol)
 
@@ -1150,11 +1584,12 @@ def _augment_supervisor_risk_context(
         enriched["strategy_policy_summary"] = dict(strategy_policy_summary)
 
     qty = _coerce_int(order.get("qty"), 0)
-    price = _resolve_order_price_for_notional(state, order)
+    price, price_source = _resolve_order_price_for_notional_with_source(state, order)
     if qty > 0:
         enriched["order_qty"] = int(qty)
     if price > 0:
         enriched["order_price"] = float(price)
+        enriched["order_price_source"] = str(price_source)
     if qty > 0 and price > 0:
         enriched["order_notional"] = float(qty) * float(price)
     return enriched, strategy_policy_summary
@@ -1616,6 +2051,38 @@ def execute_from_packet(state: dict) -> dict:
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
+        closeout_buy_allowed, closeout_buy_reason, closeout_buy_details = _evaluate_execution_closeout_buy_guard(state, order)
+        if not closeout_buy_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=closeout_buy_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["closeout_buy_guard"] = closeout_buy_details
+            _append_execution_trace_entries(
+                state,
+                order=order,
+                execution=state["execution"],
+                allow_result=None,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="closeout_buy_guard_block",
+                payload={"allowed": False, "reason": closeout_buy_reason, **closeout_buy_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=closeout_buy_reason,
+                supervisor_details=closeout_buy_details,
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
         symbol_format_allowed, symbol_format_reason, symbol_format_details = _evaluate_symbol_format_guard(order)
         if not symbol_format_allowed:
             state["execution"] = _normalize_execution(
@@ -1868,6 +2335,35 @@ def execute_from_packet(state: dict) -> dict:
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
+        recent_sell_allowed, recent_sell_reason, recent_sell_details = _evaluate_recent_sell_order_guard(state, order)
+        if not recent_sell_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=recent_sell_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["portfolio_guard"] = portfolio_details
+            state["execution"]["recent_sell_order_guard"] = recent_sell_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="recent_sell_order_guard_block",
+                payload={"allowed": False, "reason": recent_sell_reason, "portfolio_guard": portfolio_details, **recent_sell_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=recent_sell_reason,
+                supervisor_details={**dict(portfolio_details or {}), **dict(recent_sell_details or {})},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
         cash_allowed, cash_reason, cash_details = _evaluate_mock_cash_guard(state, order)
         if not cash_allowed:
             state["execution"] = _normalize_execution(
@@ -1985,6 +2481,9 @@ def execute_from_packet(state: dict) -> dict:
         recent_buy_guard_update = _update_recent_buy_order_guard(state, order, state["execution"])
         if bool(recent_buy_guard_update.get("enabled")):
             state["execution"]["recent_buy_order_guard"] = recent_buy_guard_update
+        recent_sell_guard_update = _update_recent_sell_order_guard(state, order, state["execution"])
+        if bool(recent_sell_guard_update.get("enabled")):
+            state["execution"]["recent_sell_order_guard"] = recent_sell_guard_update
 
         _append_execution_trace_entries(
             state,

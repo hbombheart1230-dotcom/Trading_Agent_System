@@ -34,6 +34,7 @@ Those remain in:
 - `entry_participation_control_2026-04-27.md`
 - `market_representative_guard_2026-04-28.md`
 - `duplicate_buy_and_closeout_guard_2026-04-29.md`
+- `daily_profit_guard_policy_draft_2026-05-11.md`
 - `../runtime_entrypoint/strategy_conservatism_review_2026-04-29.md`
 
 Commander-specific memory control in this folder assumes the packet schema defined in:

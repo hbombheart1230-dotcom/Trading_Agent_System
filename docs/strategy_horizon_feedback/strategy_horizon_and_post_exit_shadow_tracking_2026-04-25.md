@@ -1,5 +1,12 @@
 # Strategy Horizon and Post-Exit Shadow Tracking
 
+> 2026-05-08 update: current operating design is minimal multi-position.
+> The system should not pre-assign trades into `short_term` / `long_hold`
+> slots for the next patch. Older horizon labels such as `scalp`,
+> `intraday`, `overnight_probe`, and `1_2day_swing` remain strategy-horizon
+> hints and report context only. Position capacity should be controlled by
+> max-position and same-symbol duplicate guards.
+
 ## 목적
 
 현재 시스템은 종목 선택 품질은 나쁘지 않은데, 청산 이후 같은 종목이 다시 상승하거나 다음날 슈팅하는 사례가 있다. 이 문제를 바로 "더 오래 보유"로 해결하면 라이브 검증 샘플이 줄고 손실 리스크가 커진다.
@@ -75,7 +82,8 @@ Strategist output에는 다음 필드를 추가한다.
 - `overnight_probe`: 당일 종가 이후 뉴스/수급 연속성을 일부 기대한다.
 - `1_2day_swing`: 1-2거래일 테마/수급 지속성을 본다.
 
-초기 live 검증에서는 `overnight_probe`와 `1_2day_swing`이 나와도 monitor가 강제 보유하지 않는다. 대신 "전략은 길게 보라고 했지만 monitor가 왜 팔았는지"를 기록한다.
+현재 live 검증에서는 긴 horizon이 나와도 monitor가 강제 보유하지 않는다.
+대신 "전략은 길게 보라고 했지만 monitor가 왜 팔았는지"를 기록한다.
 
 ## Commander Horizon Ownership
 
@@ -90,7 +98,11 @@ Strategist output에는 다음 필드를 추가한다.
 - `do_not_force_hold=true`: horizon이 길게 나와도 Monitor가 강제로 버티지 않는다.
 - `allow_behavior_change=false`: post-exit shadow와 live sample이 충분히 쌓이기 전에는 행동 변경을 금지한다.
 
-Live validation 단계에서는 Strategist가 `overnight_probe` 또는 `1_2day_swing`을 제안하더라도 Commander가 운용 horizon을 `intraday`로 제한할 수 있다. 이때 제안 자체는 버리지 않고 `proposal`과 `source_strategy_horizon`에 보존한다. 즉 “전략가는 더 길게 볼 수 있다고 봤지만, 현재 운용은 장중 검증만 허용했다”는 사실을 artifact에 남긴다.
+Live validation 단계에서는 Strategist가 더 긴 보유 horizon을 제안하더라도
+Commander가 운용 horizon을 `intraday`로 제한할 수 있다. 이때 제안 자체는
+버리지 않고 `proposal`과 `source_strategy_horizon`에 보존한다. 즉
+"전략가는 더 길게 볼 수 있다고 봤지만, 현재 운용은 장중 검증만 허용했다"는
+사실을 artifact에 남긴다.
 
 Refresh 흐름:
 

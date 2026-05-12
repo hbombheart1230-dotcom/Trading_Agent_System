@@ -54,6 +54,30 @@ class Supervisor:
         except Exception:
             return 0
 
+    @staticmethod
+    def _entry_order_notional(context: Dict[str, Any]) -> float:
+        direct = context.get("order_notional")
+        try:
+            notional = float(direct or 0.0)
+        except Exception:
+            notional = 0.0
+        if notional > 0.0:
+            return float(notional)
+
+        order = context.get("order")
+        if not isinstance(order, dict):
+            return 0.0
+        qty = Supervisor._entry_order_qty(context)
+        if qty <= 0:
+            return 0.0
+        try:
+            price = float(context.get("order_price") or order.get("price") or order.get("order_price") or 0.0)
+        except Exception:
+            price = 0.0
+        if price <= 0.0:
+            return 0.0
+        return float(qty) * float(price)
+
     def allow(self, intent: str, context: Dict[str, Any]) -> AllowResult:
         intent = (intent or "").lower().strip()
         now = int(context.get("now_epoch") or time.time())
@@ -105,6 +129,7 @@ class Supervisor:
             qty = self._entry_order_qty(context)
             if sizing:
                 max_qty = int(sizing.get("max_position_qty") or 0)
+                max_notional = float(sizing.get("max_position_notional") or sizing.get("max_order_notional") or 0.0)
                 min_qty = int(sizing.get("min_position_qty") or 0)
                 lot_size = int(sizing.get("lot_size") or 0)
 
@@ -118,6 +143,30 @@ class Supervisor:
                             "policy_guard": "max_position_qty",
                         },
                     )
+
+                if max_notional > 0.0 and qty > 0:
+                    order_notional = self._entry_order_notional(context)
+                    if order_notional <= 0.0:
+                        return AllowResult(
+                            allow=False,
+                            reason="Strategy policy max position notional cannot be evaluated",
+                            details={
+                                "order_qty": qty,
+                                "max_position_notional": float(max_notional),
+                                "policy_guard": "max_position_notional_price_missing",
+                            },
+                        )
+                    if order_notional > max_notional:
+                        return AllowResult(
+                            allow=False,
+                            reason="Strategy policy max position notional exceeded",
+                            details={
+                                "order_qty": qty,
+                                "order_notional": float(order_notional),
+                                "max_position_notional": float(max_notional),
+                                "policy_guard": "max_position_notional",
+                            },
+                        )
 
                 if min_qty > 0 and qty > 0 and qty < min_qty:
                     return AllowResult(

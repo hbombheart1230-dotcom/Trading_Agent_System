@@ -165,6 +165,11 @@ class ExecutorAgent:
         if max_qty > 0 and qty > max_qty:
             raise ExecutionDisabledError(f"Order qty {qty} exceeds MAX_ORDER_QTY={max_qty} (symbol={sym})")
 
+        if max_notional > 0 and action == "BUY" and price is None:
+            raise ExecutionDisabledError(
+                f"Missing price for MAX_ORDER_NOTIONAL guard (qty={qty}, symbol={sym})"
+            )
+
         # Notional check only when price is known (e.g., limit orders)
         if max_notional > 0 and price is not None:
             try:

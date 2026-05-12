@@ -337,6 +337,9 @@ def test_scanner_output_records_entry_compatibility_trace(monkeypatch) -> None:
                 "breakout_readiness_score": 0.72,
                 "reclaim_proximity": 0.90,
             },
+            "scanner_chart_fit_score": 0.86,
+            "scanner_chart_fit_authority": "soft_rank_bias_only",
+            "scanner_chart_fit_components": {"vwap_reclaim_persistence": "strong"},
             "expected_monitor_block_reason": "",
             "compatibility_source": "minute_eval",
             "triggered_path": "pullback_volume_path",
@@ -369,6 +372,9 @@ def test_scanner_output_records_entry_compatibility_trace(monkeypatch) -> None:
     assert scanner_output.get("entry_compatibility_score") == 0.88
     assert scanner_output.get("compatibility_bias") == 0.0456
     assert scanner_output.get("compatibility_components", {}).get("vwap_proximity_score") == 0.90
+    assert scanner_output.get("scanner_chart_fit_score") == 0.86
+    assert scanner_output.get("scanner_chart_fit_authority") == "soft_rank_bias_only"
+    assert scanner_output.get("scanner_chart_fit_components", {}).get("vwap_reclaim_persistence") == "strong"
     assert scanner_output.get("expected_monitor_block_reason") == ""
     assert scanner_output.get("dominant_block_reason") == "volume_confirmation_missing"
     assert scanner_output.get("dominant_block_reason_ratio") == 0.55

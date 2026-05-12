@@ -851,6 +851,29 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     if not commander_context:
         commander_context = _dict(state.get("commander_decision"))
     strategist_plan = _dict(strategy_policy.get("strategist_plan"))
+    market_policy = _dict(strategy_policy.get("market_policy"))
+    scanner_policy = _dict(strategy_policy.get("scanner_policy"))
+    strategy_scores = _dict(strategist_output.get("strategy_scores")) or _dict(market_policy.get("strategy_scores"))
+    rejected_strategy_reasons = _dict(strategist_output.get("rejected_strategy_reasons")) or _dict(
+        market_policy.get("rejected_strategy_reasons")
+    )
+    candidate_watch_policy = _dict(strategist_output.get("candidate_watch_policy")) or _dict(
+        scanner_policy.get("candidate_watch_policy")
+    )
+    strategy_detail = {
+        "pre_llm_playbook": _clip(strategist_output.get("pre_llm_playbook"), max_len=80),
+        "llm_requested_playbook": _clip(strategist_output.get("llm_requested_playbook"), max_len=80),
+        "requested_playbook": _clip(strategist_output.get("requested_playbook"), max_len=80),
+        "requested_playbook_source": _clip(strategist_output.get("requested_playbook_source"), max_len=80),
+        "final_playbook": _clip(strategist_output.get("final_playbook") or strategist_output.get("playbook"), max_len=80),
+        "tactical_strategy": _clip(
+            strategist_output.get("tactical_strategy") or market_policy.get("tactical_strategy"),
+            max_len=120,
+        ),
+        "strategy_scores": dict(strategy_scores),
+        "rejected_strategy_reasons": dict(rejected_strategy_reasons),
+        "candidate_watch_policy": dict(candidate_watch_policy),
+    }
     policy_provenance = _dict(strategy_policy.get("provenance"))
     monitor_entry_policy = _dict(strategist_output.get("monitor_entry_policy"))
     policy_rationale = _clip(strategist_output.get("policy_rationale"), max_len=320)
@@ -965,6 +988,16 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "strategy_thesis": dict(explanation_fields.get("strategy_thesis") or {}),
             "strategy_thesis_text": strategy_thesis_text,
             "playbook": playbook,
+            "pre_llm_playbook": strategy_detail["pre_llm_playbook"],
+            "llm_requested_playbook": strategy_detail["llm_requested_playbook"],
+            "requested_playbook": strategy_detail["requested_playbook"],
+            "requested_playbook_source": strategy_detail["requested_playbook_source"],
+            "final_playbook": strategy_detail["final_playbook"],
+            "tactical_strategy": strategy_detail["tactical_strategy"],
+            "strategy_scores": dict(strategy_detail["strategy_scores"]),
+            "rejected_strategy_reasons": dict(strategy_detail["rejected_strategy_reasons"]),
+            "candidate_watch_policy": dict(strategy_detail["candidate_watch_policy"]),
+            "strategy_detail": dict(strategy_detail),
             "policy_selected": {
                 "strategy_policy": _dict(strategist_output.get("strategy_policy")),
                 "monitor_guidance": _clip(strategist_output.get("monitor_guidance"), max_len=80),
@@ -1722,6 +1755,7 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
 def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     monitor = _dict(state.get("monitor"))
     monitor_output = _dict(state.get("monitor_output"))
+    monitor_focus_state = _dict(state.get("monitor_focus_context"))
     monitor_evaluation = _dict(state.get("monitor_evaluation"))
     monitor_action = _dict(state.get("monitor_action_decision"))
     exit_info = _dict(state.get("monitor_exit"))
@@ -1733,6 +1767,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     scanner_selected_snapshot = _dict(state.get("scanner_selected_snapshot"))
     trace_sources = [
         monitor_output,
+        monitor_focus_state,
         monitor_action,
         monitor_evaluation,
         entry_detail,
@@ -1834,6 +1869,55 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     first_intent = intents[0] if intents else {}
     intent_side = str(monitor_output.get("intent_side") or first_intent.get("side") or "NOOP").strip().upper()
     open_position_count = _safe_int(monitor.get("open_position_count"))
+    monitor_focus_context = _first_trace_dict("monitor_focus_context")
+    if not monitor_focus_context and monitor_focus_state:
+        monitor_focus_context = dict(monitor_focus_state)
+    if not monitor_focus_context:
+        entry_candidate_symbol = _clip(
+            monitor_output.get("entry_candidate_symbol")
+            or entry_info.get("selected_symbol")
+            or entry_info.get("symbol")
+            or selected.get("symbol"),
+            max_len=24,
+        )
+        entry_final_symbol = _clip(
+            monitor_output.get("entry_final_symbol")
+            or _dict(scanner_monitor_handoff.get("entry_candidate_cascade")).get("final_selected_symbol")
+            or entry_candidate_symbol,
+            max_len=24,
+        )
+        position_focus_symbol = _clip(
+            monitor_output.get("position_focus_symbol")
+            or exit_info.get("symbol")
+            or "",
+            max_len=24,
+        )
+        if position_focus_symbol and entry_final_symbol and position_focus_symbol != entry_final_symbol:
+            focus_mode = "entry_candidate_and_position_focus"
+        elif position_focus_symbol:
+            focus_mode = "position_focus"
+        elif entry_final_symbol:
+            focus_mode = "entry_candidate_focus"
+        else:
+            focus_mode = ""
+        if focus_mode:
+            monitor_focus_context = {
+                "schema_version": "monitor.focus_context.v1",
+                "focus_mode": focus_mode,
+                "scanner_selected_symbol": _clip(scanner_monitor_handoff.get("scanner_selected_symbol"), max_len=24),
+                "entry_candidate_symbol": entry_candidate_symbol,
+                "entry_final_symbol": entry_final_symbol,
+                "position_focus_symbol": position_focus_symbol,
+                "monitor_output_symbol": _clip(position_focus_symbol or entry_final_symbol, max_len=24),
+                "open_position_count": open_position_count,
+                "max_positions": _safe_int(monitor.get("max_positions")),
+                "capacity_remaining": _safe_int(monitor.get("multi_position_capacity_remaining")),
+                "entry_decision": str(monitor_output.get("intent_side") or "NOOP").strip().upper(),
+                "entry_reason": _clip(entry_info.get("guard_reason") or entry_info.get("reason"), max_len=160),
+                "entry_primary_failure_axis": _clip(entry_info.get("primary_failure_axis"), max_len=120),
+                "exit_reason": _clip(exit_info.get("reason"), max_len=160),
+                "exit_monitor_reason": _clip(exit_info.get("monitor_reason"), max_len=160),
+            }
     triggered_rules: List[str] = []
     if bool(exit_info.get("triggered")) and str(exit_info.get("reason") or "").strip():
         triggered_rules.append(str(exit_info.get("reason") or "").strip())
@@ -2129,6 +2213,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "open_position_count": open_position_count,
                 "symbol": symbol,
                 "qty": _safe_int(exit_info.get("qty")),
+                "exit_qty": _safe_int(exit_info.get("exit_qty") or exit_info.get("qty")),
                 "avg_price": exit_info.get("avg_price"),
                 "current_price": exit_info.get("price"),
                 "peak_price": exit_info.get("peak_price"),
@@ -2178,6 +2263,12 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "monitor_rejection_reason_summary": _clip(scanner_monitor_handoff.get("monitor_rejection_reason_summary"), max_len=220),
             "handoff_trace": _listify(scanner_monitor_handoff.get("handoff_trace"), limit=6, max_len=120),
             "entry_candidate_cascade": dict(entry_candidate_cascade),
+            "monitor_focus_context": dict(monitor_focus_context),
+            "entry_candidate_symbol": _clip(monitor_focus_context.get("entry_candidate_symbol"), max_len=24),
+            "entry_final_symbol": _clip(monitor_focus_context.get("entry_final_symbol"), max_len=24),
+            "position_focus_symbol": _clip(monitor_focus_context.get("position_focus_symbol"), max_len=24),
+            "monitor_output_symbol": _clip(monitor_focus_context.get("monitor_output_symbol"), max_len=24),
+            "monitor_focus_mode": _clip(monitor_focus_context.get("focus_mode"), max_len=80),
             "threshold_snapshot": threshold_snapshot,
             "applied_policy": _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
             "received_policy": _dict(entry_info.get("received_policy")),
@@ -2379,6 +2470,8 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "current_price": exit_info.get("price"),
             "price": exit_info.get("price"),
             "raw_price": exit_info.get("raw_price"),
+            "technical_price": exit_info.get("technical_price"),
+            "technical_price_source": _clip(exit_info.get("technical_price_source"), max_len=120),
             "effective_price": exit_info.get("effective_price"),
             "average_price": exit_info.get("avg_price"),
             "avg_price": exit_info.get("avg_price"),
@@ -2395,6 +2488,23 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_trigger_metric_name": _clip(exit_info.get("exit_trigger_metric_name"), max_len=120),
             "exit_trigger_metric_value": exit_info.get("exit_trigger_metric_value"),
             "exit_trigger_metric_source": _clip(exit_info.get("exit_trigger_metric_source"), max_len=120),
+            "risk_reward_take_profit_target_pct": exit_info.get("risk_reward_take_profit_target_pct"),
+            "risk_reward_take_profit_rung": exit_info.get("risk_reward_take_profit_rung"),
+            "resistance_price": exit_info.get("resistance_price"),
+            "resistance_price_source": _clip(exit_info.get("resistance_price_source"), max_len=120),
+            "resistance_distance_pct": exit_info.get("resistance_distance_pct"),
+            "profit_time_stop_peak_giveback_pct": exit_info.get("profit_time_stop_peak_giveback_pct"),
+            "partial_exit": bool(exit_info.get("partial_exit")),
+            "exit_qty": exit_info.get("exit_qty"),
+            "exit_qty_fraction": exit_info.get("exit_qty_fraction"),
+            "profit_ladder_level_pct": exit_info.get("profit_ladder_level_pct"),
+            "profit_ladder_level_index": exit_info.get("profit_ladder_level_index"),
+            "volume_ratio": exit_info.get("volume_ratio"),
+            "execution_strength": exit_info.get("execution_strength"),
+            "trade_strength": exit_info.get("trade_strength"),
+            "opening_gap_chase_observed": bool(exit_info.get("opening_gap_chase_observed")),
+            "open_gap_pct": exit_info.get("open_gap_pct"),
+            "prev_close_distance_pct": exit_info.get("prev_close_distance_pct"),
             "vwap_distance": exit_info.get("vwap_distance"),
             "position_age_seconds": exit_info.get("position_age_seconds"),
             "price_source": price_source,
@@ -2402,7 +2512,21 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "price_source_policy": _clip(exit_info.get("price_source_policy"), max_len=260),
             "feature_source": feature_source,
             "raw_pnl_ratio": exit_info.get("raw_pnl_ratio"),
+            "gross_pnl_ratio": exit_info.get("gross_pnl_ratio"),
+            "technical_pnl_ratio": exit_info.get("technical_pnl_ratio"),
             "effective_pnl_ratio": exit_info.get("effective_pnl_ratio"),
+            "stop_pnl_ratio": exit_info.get("stop_pnl_ratio"),
+            "stop_pnl_ratio_source": _clip(exit_info.get("stop_pnl_ratio_source"), max_len=120),
+            "hard_stop_pnl_ratio": exit_info.get("hard_stop_pnl_ratio"),
+            "hard_stop_pnl_ratio_source": _clip(exit_info.get("hard_stop_pnl_ratio_source"), max_len=120),
+            "cost_drag_pressure": bool(exit_info.get("cost_drag_pressure")),
+            "cost_drag_pressure_pct": exit_info.get("cost_drag_pressure_pct"),
+            "cost_drag_pressure_reason": _clip(exit_info.get("cost_drag_pressure_reason"), max_len=180),
+            "stop_loss_cost_drag_blocked": bool(exit_info.get("stop_loss_cost_drag_blocked")),
+            "stop_loss_cost_drag_blocked_reason": _clip(
+                exit_info.get("stop_loss_cost_drag_blocked_reason"),
+                max_len=180,
+            ),
             "account_pnl_ratio": exit_info.get("account_pnl_ratio"),
             "pnl_crosscheck_applied": bool(exit_info.get("pnl_crosscheck_applied")),
             "pnl_crosscheck_reason": _clip(exit_info.get("pnl_crosscheck_reason"), max_len=180),

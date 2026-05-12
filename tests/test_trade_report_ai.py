@@ -375,8 +375,73 @@ def test_trade_summary_monitor_fallback_labels_reassessment_rank_and_score() -> 
     assert "VWAP 위 되돌림 반등과 거래량 확인" in summary
     assert "스캐너 순위: 1위" not in summary
     assert "스캐너 1순위 005380" not in summary
+    assert "turnover and volume" not in summary
+    assert "회전율/거래량" in summary
     assert summary_input["decision_flow"]["scanner_rank_basis"] == "monitor_fallback_reassessment"
     assert summary_input["decision_flow"]["scanner_score"] == 0.6545414868109848
+    assert summary_input["decision_flow"]["selection_basis"] == "거래대금, 회전율/거래량, 감성 지원"
+
+
+def test_trade_summary_ignores_later_unrelated_candidate_cascade_for_fallback_trade() -> None:
+    report = {
+        "trade_id": "TRD_20260511_078890_02",
+        "symbol": "078890",
+        "status": "closed",
+        "story_type": "simulation",
+        "execution_mode_label": "simulation (mock broker)",
+        "action": "SELL",
+        "shared_facts": {"symbol": "078890", "status": "closed", "action": "SELL", "pnl": 25718, "pnl_pct": 0.0086},
+        "market_context_at_entry": {"summary": "시장 강세", "playbook": "pullback"},
+        "why_this_symbol_was_chosen": {
+            "symbol": "078890",
+            "selected_rank": 2,
+            "basis": "감성 지원",
+            "scanner_selection_trace": {
+                "selected_symbol": "078890",
+                "selected_rank": 2,
+                "monitor_fallback_used": True,
+                "selection_path": "monitor_fallback_from_scanner_top_pick",
+                "scanner_top_pick_symbol": "000660",
+                "monitor_selected_symbol": "078890",
+                "monitor_fallback_reason": "breakout above recent high with vwap hold and volume confirmation",
+                "ranked_candidates": [
+                    {"rank": 1, "symbol": "000660", "score_total": 1.12},
+                    {"rank": 2, "symbol": "078890", "score_total": 0.97},
+                ],
+            },
+        },
+        "entry_decision": {"summary": "진입은 VWAP 유지와 거래량 확인이 있는 최근 고점 돌파 조건에서 실행됐습니다.", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "reporter_evaluation": {"bullets": []},
+        "memory_application_surface": {},
+        "entry_execution_visibility": {
+            "commander_entry_control": {
+                "max_priority_rank": 10,
+                "max_runner_ups": 9,
+                "cascade_enabled": True,
+            },
+            "monitor_entry_candidate_cascade": {
+                "attempted": False,
+                "eligible": False,
+                "cascade_enabled": True,
+                "blocked_reason": "max_positions_reached",
+                "top_pick_symbol": "005930",
+                "final_selected_symbol": "005930",
+                "max_priority_rank": 10,
+                "max_runner_ups": 9,
+            },
+        },
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL"},
+        "full_timeline": [],
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+
+    assert "스캐너 상위 후보 000660 보류 후 078890" in summary
+    assert "최종 후보: 005930" not in summary
+    assert "1순위 005930" not in summary
+    assert "max_positions_reached" not in summary
 
 
 def test_attach_report_status_matrix_prefers_trade_read_model_for_separated_fallback(tmp_path, monkeypatch) -> None:
@@ -729,6 +794,32 @@ def test_build_deterministic_trade_report_adds_truth_surface() -> None:
     assert availability.get("broker_fill_present") is True
     assert availability.get("broker_pnl_present") is True
     assert availability.get("broker_day_authoritative") is True
+
+
+def test_truth_surface_separates_broker_day_match_confidence_from_authority() -> None:
+    exact = build_trade_report_truth_surface(
+        {
+            "pnl": -1000,
+            "pnl_pct": -0.01,
+            "pnl_truth_source": "kiwoom.ka10077",
+            "broker_day_match_mode": "symbol_split_buy_sell_qty_exact",
+            "broker_day_authoritative": True,
+        }
+    )
+    ambiguous = build_trade_report_truth_surface(
+        {
+            "pnl": "unavailable",
+            "pnl_pct": -0.01,
+            "pnl_truth_source": "kiwoom.ka10077",
+            "broker_day_match_mode": "ambiguous_symbol_rows",
+            "broker_day_authoritative": False,
+        }
+    )
+
+    assert exact["pnl"]["broker_day_match_status"] == "exact"
+    assert exact["pnl"]["broker_day_match_confidence"] == "high"
+    assert ambiguous["pnl"]["broker_day_match_status"] == "ambiguous"
+    assert ambiguous["pnl"]["broker_day_match_confidence"] == "low"
 
 
 def test_fallback_report_prefers_trade_read_model_strategist_and_scanner_context_when_runtime_sections_missing(tmp_path, monkeypatch) -> None:
@@ -1321,6 +1412,65 @@ def test_normalize_trade_report_output_reconciles_closed_buy_when_exit_reason_is
     assert (normalized.get("shared_facts") or {}).get("exit_reason") == "SELL was triggered because peak_drawdown."
 
 
+def test_trade_report_shared_fact_ignores_no_position_and_prefers_exit_monitor_axis() -> None:
+    story_input = _story_input()
+    story_input.update(
+        {
+            "status": "closed",
+            "action": "SELL",
+            "lifecycle_summary": {"exit_reason": "no_position"},
+            "canonical_agent_artifacts": {
+                "monitor": {
+                    "decision_action": "buy",
+                    "exit_reason": "no_position",
+                    "primary_reason_code": "no_position",
+                }
+            },
+            "monitor_reason_human": {
+                "trigger_type": "intraday_low_break",
+                "active_exit_axis": "Intraday Low Break",
+                "summary": "SELL was triggered because intraday_low_break.",
+            },
+        }
+    )
+
+    seed = mod._build_shared_summary_seed(story_input)
+    facts = seed.get("resolved_trade_facts") if isinstance(seed.get("resolved_trade_facts"), dict) else {}
+
+    assert facts.get("exit_reason") == "intraday_low_break"
+    assert (facts.get("data_source") or {}).get("exit_reason") == "monitor"
+
+
+def test_deterministic_trade_report_preserves_post_exit_shadow_from_story_input() -> None:
+    story_input = _story_input()
+    story_input.update(
+        {
+            "status": "closed",
+            "action": "SELL",
+            "post_exit_shadow": {
+                "schema_version": "post_exit_shadow.v1",
+                "observability_only": True,
+                "status": "pending",
+                "symbol": "000660",
+                "exit_price": 100000,
+                "price_observation_status": "observed",
+                "checkpoints": {
+                    "+5m": {"status": "observed", "price": 101000, "return_pct": 0.01},
+                    "+15m": {"status": "pending"},
+                },
+            },
+        }
+    )
+
+    report = mod.build_deterministic_trade_report(story_input)
+    summary_input = mod.build_trade_summary_input(report)
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert report["post_exit_shadow"]["checkpoints"]["+5m"]["price"] == 101000
+    assert summary_input["post_exit_shadow"]["checkpoints"]["+5m"]["price"] == 101000
+    assert "## 매도 후 가격 추적 (관측-only)" in markdown
+
+
 def test_trade_report_shared_fact_marks_unavailable_when_missing() -> None:
     story_input = _story_input()
     story_input.update(
@@ -1765,6 +1915,18 @@ def test_ai_trade_report_compact_input_surfaces_structured_strategist_output_bou
                 "selected_playbook": "pullback",
                 "one_line": "Use pullback entries only after liquidity and VWAP confirmation.",
             },
+            "pre_llm_playbook": "defensive",
+            "llm_requested_playbook": "pullback",
+            "final_playbook": "pullback",
+            "tactical_strategy": "leader_vwap_reclaim_pullback",
+            "strategy_scores": {"leader_vwap_reclaim_pullback": 0.77, "defensive_observe": 0.22},
+            "candidate_watch_policy": {
+                "behavior_effect": "visibility_only",
+                "max_priority_rank": 5,
+                "max_runner_ups": 4,
+                "cascade_enabled": True,
+                "reason": "pullback frame should watch liquid reclaim candidates",
+            },
             "memory_usage_trace": {
                 "schema_version": "strategist_memory_usage_trace.v1",
                 "active_layers": ["daily", "symbol"],
@@ -1813,6 +1975,9 @@ def test_ai_trade_report_compact_input_surfaces_structured_strategist_output_bou
     strategist = compact_input["strategist_output"]
 
     assert strategist["strategy_thesis"]["selected_playbook"] == "pullback"
+    assert strategist["strategy_detail"]["pre_llm_playbook"] == "defensive"
+    assert strategist["strategy_detail"]["llm_requested_playbook"] == "pullback"
+    assert strategist["strategy_detail"]["candidate_watch_policy"]["max_priority_rank"] == 5
     assert strategist["memory_usage_trace"]["layer_decisions"]["daily"]["used"] is True
     assert strategist["memory_usage_trace"]["scanner_application"]["selected_symbol"] == "000660"
     assert strategist["news_usage_trace"]["market_effect"] == "market tone supports semiconductor leadership"
@@ -1830,6 +1995,18 @@ def test_ai_trade_report_preserves_and_renders_structured_strategist_output() ->
                 "risk_tone": "normal",
                 "market_view": "neutral tape",
                 "one_line": "pullback frame with normal risk tone",
+            },
+            "pre_llm_playbook": "defensive",
+            "llm_requested_playbook": "pullback",
+            "final_playbook": "pullback",
+            "tactical_strategy": "leader_vwap_reclaim_pullback",
+            "strategy_scores": {"leader_vwap_reclaim_pullback": 0.73, "defensive_observe": 0.31},
+            "candidate_watch_policy": {
+                "behavior_effect": "visibility_only",
+                "max_priority_rank": 5,
+                "max_runner_ups": 4,
+                "cascade_enabled": True,
+                "reason": "pullback watch expansion is visibility-only",
             },
             "memory_usage_trace": {
                 "active_layers": ["daily"],
@@ -1869,12 +2046,16 @@ def test_ai_trade_report_preserves_and_renders_structured_strategist_output() ->
     report = mod.build_deterministic_trade_report(story_input)
     strategist_output = report.get("strategist_output") or {}
     assert strategist_output["strategy_thesis"]["selected_playbook"] == "pullback"
+    assert strategist_output["strategy_detail"]["tactical_strategy"] == "leader_vwap_reclaim_pullback"
+    assert strategist_output["strategy_detail"]["candidate_watch_policy"]["max_priority_rank"] == 5
     assert strategist_output["memory_usage_trace"]["active_layers"] == ["daily"]
     assert strategist_output["news_usage_trace"]["query_targets"] == ["KOSPI", "000660"]
 
     markdown = mod.render_trade_report_markdown(report)
     assert "## 전략가 출력 근거" in markdown
     assert "- [전략가 출력]" in markdown
+    assert "- [전략 디테일]" in markdown
+    assert "leader_vwap_reclaim_pullback" in markdown
     assert "- [메모리]" in markdown
     assert "daily=used/fresh_packet" in markdown
     assert "- [뉴스]" in markdown
@@ -1882,6 +2063,321 @@ def test_ai_trade_report_preserves_and_renders_structured_strategist_output() ->
     assert "- [모니터 인계]" in markdown
     assert "- [권한 프레임]" in markdown
     assert "- [역할 경계]" in markdown
+
+
+def test_ai_trade_report_surfaces_candidate_watch_execution_visibility() -> None:
+    story_input = _story_input()
+    story_input["symbol"] = "000660"
+    story_input["canonical_agent_artifacts"] = {
+        "strategist": {
+            "strategy_thesis": {
+                "selected_playbook": "pullback",
+                "risk_tone": "balanced",
+                "market_view": "leader pullback needs confirmation",
+            },
+            "tactical_strategy": "leader_vwap_reclaim_pullback",
+            "candidate_watch_policy": {
+                "source": "strategist_output.candidate_watch_policy",
+                "behavior_effect": "execution_proposal",
+                "max_priority_rank": 10,
+                "max_runner_ups": 9,
+                "cascade_enabled": True,
+                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "reason": "watch leaders beyond the first rank",
+            },
+        },
+        "commander": {
+            "selected_route": "full_cycle",
+            "policy_source": "strategist",
+            "commander_decision": {
+                "command_intent": "ALLOW_ENTRY_SCAN",
+                "entry_control": {
+                    "mode": "strategy_watch_policy",
+                    "decision": "apply_strategy_candidate_watch_policy",
+                    "reason": "strategy_candidate_watch_policy",
+                    "max_priority_rank": 7,
+                    "max_runner_ups": 6,
+                    "cascade_enabled": True,
+                    "candidate_watch_policy_detected": True,
+                    "candidate_watch_policy_applied": True,
+                    "candidate_watch_policy_clamp_reason": "balanced_rank_cap",
+                    "candidate_watch_policy_proposal": {
+                        "source": "strategist_output.candidate_watch_policy",
+                        "max_priority_rank": 10,
+                        "max_runner_ups": 9,
+                        "cascade_enabled": True,
+                        "reason": "watch leaders beyond the first rank",
+                    },
+                },
+            },
+        },
+        "monitor": {
+            "entry_candidate_cascade": {
+                "attempted": True,
+                "eligible": True,
+                "cascade_enabled": True,
+                "top_pick_symbol": "005930",
+                "top_pick_triggered": False,
+                "top_pick_reason": "breakout_not_ready",
+                "max_priority_rank": 7,
+                "max_runner_ups": 6,
+                "runner_up_symbols": ["000660", "035420"],
+                "fallback_used": True,
+                "fallback_from_symbol": "005930",
+                "fallback_to_symbol": "000660",
+                "fallback_to_rank": 2,
+                "final_selected_symbol": "000660",
+                "final_selected_rank": 2,
+                "fallback_trace": [
+                    {
+                        "symbol": "000660",
+                        "rank": 2,
+                        "score_total": 0.72,
+                        "triggered": True,
+                        "reason": "vwap_reclaim_confirmed",
+                        "confidence_score": 0.61,
+                        "confidence_threshold": 0.55,
+                    }
+                ],
+            }
+        },
+    }
+
+    compact_input = mod.build_ai_trade_report_compact_input(story_input)
+    visibility = compact_input["entry_execution_visibility"]
+
+    assert visibility["strategy_candidate_watch_proposal"]["max_priority_rank"] == 10
+    assert visibility["commander_entry_control"]["max_priority_rank"] == 7
+    assert visibility["monitor_entry_candidate_cascade"]["fallback_to_symbol"] == "000660"
+    assert compact_input["commander"]["entry_control"]["candidate_watch_policy_clamp_reason"] == "balanced_rank_cap"
+    assert compact_input["monitor"]["entry_candidate_cascade"]["final_selected_rank"] == 2
+
+    report = mod.build_deterministic_trade_report(story_input)
+    assert report["entry_execution_visibility"]["commander_entry_control"]["max_runner_ups"] == 6
+
+    summary = mod.render_trade_summary_markdown(report)
+    full = mod.render_trade_report_markdown(report)
+    assert "후보 감시:" in summary
+    assert "후보 감시: 7위까지 / 차순위 6개 / cascade 활성" in summary
+    assert "후보 선택: 최종 후보: 000660(2위)" in summary
+    assert "전략가 후보 감시 제안" not in summary
+    assert "watch leaders beyond the first rank" not in summary
+    assert "balanced_rank_cap" not in summary
+    assert "지휘관 최종 적용 범위" not in summary
+    assert "지휘관 최종 적용 범위" not in full
+    assert "최종 후보: 000660(2위)" in full
+    assert "- [후보 감시 실행]" in full
+
+
+def test_trade_summary_omits_empty_candidate_watch_proposal_explanation() -> None:
+    story_input = _story_input()
+    story_input["canonical_agent_artifacts"] = {
+        "strategist": {
+            "tactical_strategy": "leader_vwap_reclaim_pullback",
+            "candidate_watch_policy": {
+                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "reason": "recent pullback pattern explanation",
+            },
+        }
+    }
+
+    report = mod.build_deterministic_trade_report(story_input)
+    summary = mod.render_trade_summary_markdown(report)
+    full = mod.render_trade_report_markdown(report)
+
+    assert "전략가 후보 감시 제안은 -" not in summary
+    assert "후보 감시:" not in summary
+    assert "recent pullback pattern explanation" not in summary
+    assert "전략가 후보 감시 제안은 -" not in full
+
+
+def test_entry_execution_visibility_reads_handoff_nested_cascade() -> None:
+    story_input = _story_input()
+    story_input["canonical_agent_artifacts"] = {
+        "commander": {
+            "commander_decision": {
+                "entry_control": {
+                    "mode": "strategy_watch_policy",
+                    "max_priority_rank": 3,
+                    "max_runner_ups": 2,
+                    "cascade_enabled": False,
+                    "candidate_watch_policy_clamp_reason": "risk_off_rank_cap",
+                }
+            }
+        },
+        "monitor": {
+            "scanner_monitor_handoff": {
+                "entry_candidate_cascade": {
+                    "attempted": False,
+                    "eligible": False,
+                    "cascade_enabled": False,
+                    "top_pick_symbol": "005930",
+                    "top_pick_reason": "breakout_not_ready",
+                    "blocked_reason": "cascade_disabled_by_entry_control",
+                    "max_priority_rank": 3,
+                    "max_runner_ups": 2,
+                }
+            }
+        },
+    }
+
+    seed = mod._build_shared_summary_seed(story_input)
+    visibility = seed["entry_execution_visibility"]
+
+    assert visibility["commander_entry_control"]["max_priority_rank"] == 3
+    assert visibility["commander_entry_control"]["candidate_watch_policy_clamp_reason"] == "risk_off_rank_cap"
+    assert visibility["monitor_entry_candidate_cascade"]["blocked_reason"] == "cascade_disabled_by_entry_control"
+
+    report = mod.build_deterministic_trade_report(story_input)
+    summary = mod.render_trade_summary_markdown(report)
+    assert "실제 확인: 차순위 미실행 (1순위 005930, 사유: 지휘관 설정으로 차순위 확인 비활성)" in summary
+    assert "cascade_disabled_by_entry_control" not in summary
+
+
+def test_trade_summary_candidate_watch_open_position_is_operator_readable() -> None:
+    story_input = _story_input()
+    story_input["symbol"] = "034020"
+    story_input["canonical_agent_artifacts"] = {
+        "commander": {
+            "commander_decision": {
+                "entry_control": {
+                    "max_priority_rank": 10,
+                    "max_runner_ups": 4,
+                    "cascade_enabled": True,
+                    "candidate_watch_policy_clamp_reason": "market_supportive_repeated_blocker:below_vwap_reclaim_not_ready:streak=14",
+                }
+            }
+        },
+        "monitor": {
+            "entry_candidate_cascade": {
+                "attempted": False,
+                "top_pick_symbol": "034020",
+                "blocked_reason": "open_position_present",
+                "max_priority_rank": 10,
+                "max_runner_ups": 4,
+            }
+        },
+    }
+
+    report = mod.build_deterministic_trade_report(story_input)
+    summary = mod.render_trade_summary_markdown(report)
+
+    assert "* 후보 감시: 10위까지 / 차순위 4개 / cascade 활성" in summary
+    assert "* 실제 확인: 차순위 미실행 (1순위 034020, 사유: 보유 포지션 존재)" in summary
+    assert "market_supportive_repeated_blocker" not in summary
+    assert "지휘관 최종 적용 범위" not in summary
+    assert "모니터 차순위 확인은 실행되지 않았습니다" not in summary
+
+
+def test_entry_execution_visibility_enriches_strategy_proposal_from_commander_proposed_scope() -> None:
+    story_input = _story_input()
+    story_input["canonical_agent_artifacts"] = {
+        "strategist": {
+            "candidate_watch_policy": {
+                "source": "strategist_visibility_proposal",
+                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "reason": "watch clean pullbacks",
+            }
+        },
+        "commander": {
+            "commander_decision": {
+                "entry_control": {
+                    "max_priority_rank": 10,
+                    "max_runner_ups": 4,
+                    "cascade_enabled": True,
+                    "candidate_watch_policy_detected": True,
+                    "candidate_watch_policy_applied": True,
+                    "candidate_watch_policy_effect": "commander_clamped_execution",
+                    "candidate_watch_policy_clamp_reason": "market_supportive_repeated_blocker",
+                    "proposed_max_priority_rank": 5,
+                    "proposed_max_runner_ups": 4,
+                }
+            }
+        },
+    }
+
+    compact = mod.build_ai_trade_report_compact_input(story_input)
+    proposal = compact["entry_execution_visibility"]["strategy_candidate_watch_proposal"]
+
+    assert proposal["max_priority_rank"] == 5
+    assert proposal["max_runner_ups"] == 4
+    assert proposal["tactical_strategy"] == "leader_vwap_reclaim_pullback"
+
+
+def test_trade_report_reconstructs_strategy_output_surface_from_entry_visibility() -> None:
+    report = {
+        "trade_id": "TRD_TEST",
+        "symbol": "010170",
+        "action": "SELL",
+        "status": "closed",
+        "strategist_summary": {
+            "summary": "cached strategist가 사용됐습니다.",
+            "selected_playbook": "pullback",
+        },
+        "market_context": {"risk_mode": "balanced"},
+        "entry_execution_visibility": {
+            "strategy_candidate_watch_proposal": {
+                "source": "strategist_visibility_proposal",
+                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "reason": "watch clean pullbacks",
+            },
+            "commander_entry_control": {
+                "max_priority_rank": 10,
+                "max_runner_ups": 4,
+                "cascade_enabled": True,
+                "proposed_max_priority_rank": 5,
+                "proposed_max_runner_ups": 4,
+            },
+            "monitor_entry_candidate_cascade": {
+                "attempted": False,
+                "top_pick_symbol": "010170",
+                "blocked_reason": "open_position_present",
+                "final_selected_symbol": "010170",
+            },
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "## 전략가 출력 근거" in markdown
+    assert "- [전략 디테일]" in markdown
+    assert "전술=leader_vwap_reclaim_pullback" in markdown
+    assert "후보 감시 제안=rank<=5 / runner_ups=4" in markdown
+    assert "- [후보 감시 실행]" in markdown
+    assert "전략가 제안: 5위까지 / 차순위 4개" in markdown
+    assert "실제 확인: 차순위 미실행 (1순위 010170, 사유: 보유 포지션 존재)" in markdown
+
+
+def test_trade_report_candidate_watch_display_filters_non_krx_runner_up_symbols() -> None:
+    report = {
+        "trade_id": "TRD_TEST",
+        "symbol": "010170",
+        "action": "BUY",
+        "status": "closed",
+        "entry_execution_visibility": {
+            "commander_entry_control": {
+                "max_priority_rank": 10,
+                "max_runner_ups": 4,
+                "cascade_enabled": True,
+            },
+            "monitor_entry_candidate_cascade": {
+                "attempted": True,
+                "top_pick_symbol": "005930",
+                "top_pick_reason": "below_vwap_reclaim_not_ready",
+                "runner_up_symbols": ["000660", "SK", "010170", "DB"],
+                "fallback_used": True,
+                "fallback_to_symbol": "010170",
+                "fallback_to_rank": 4,
+                "final_selected_symbol": "010170",
+            },
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "차순위 000660, 010170 확인" in markdown
+    assert "차순위 000660, SK" not in markdown
+    assert ", DB" not in markdown
 
 
 def test_ai_trade_report_messages_use_clean_json_only_instructions() -> None:
@@ -2440,6 +2936,66 @@ def test_fallback_entry_decision_uses_buy_detail_before_later_monitor_gate() -> 
     assert any("점수는 0.5488 / 기준 0.5500" in row for row in bullets)
 
 
+def test_fallback_entry_decision_does_not_use_later_monitor_gate_as_entry_gate_without_buy_detail() -> None:
+    story_input = _story_input()
+    story_input.update(
+        {
+            "symbol": "050890",
+            "action": "SELL",
+            "status": "closed",
+            "entry_summary": {
+                "run_id": "run-entry",
+                "ts": "2026-04-30T00:57:31+00:00",
+                "action": "BUY",
+                "reason_human": "breakout_above_recent_high_with_vwap_structure_confirmation",
+            },
+            "scanner_reason_human": {
+                "selected_symbol": "050890",
+                "selected_rank": 4,
+                "selected_score": 0.799,
+            },
+            "monitor_reason_human": {
+                "posture": "SELL",
+                "trigger_type": "hard_stop",
+                "active_exit_axis": "hard_stop",
+                "position_age_seconds": 240,
+                "entry_condition_path": "",
+                "entry_condition_scores": {
+                    "confidence_score": 0.5488,
+                    "confidence_threshold": 0.55,
+                    "confidence_gate_ok": False,
+                },
+                "entry_grouped_logic_trace": {
+                    "reclaim_gate_ok": False,
+                    "extension_ok": True,
+                    "confidence_gate_ok": False,
+                    "triggered_path": "",
+                    "paths_passed": [],
+                },
+            },
+            "monitor_timeline": {"entry_decision_details": []},
+        }
+    )
+
+    report = mod._fallback_report(
+        story_input,
+        status="salvaged",
+        mode="ai",
+        model="openrouter/free",
+        reason="partial",
+    )
+
+    summary = report["entry_decision"]["summary"]
+    bullets = report["entry_decision"]["bullets"]
+    summary_markdown = mod.render_trade_summary_markdown(report)
+    entry_section = summary_markdown.split("## 🚪 진입 판단", 1)[1].split("---", 1)[0]
+
+    assert "진입 게이트 점수는 0.5488" not in summary
+    assert not any(row.startswith("진입 게이트 상태는") for row in bullets)
+    assert any(row.startswith("사후 모니터 재평가 게이트는") for row in bullets)
+    assert "신뢰도 게이트 미통과" not in entry_section
+
+
 def test_entry_decision_detail_can_be_read_from_monitor_evidence_artifact(tmp_path) -> None:
     evidence_path = tmp_path / "monitor_evidence.json"
     evidence_path.write_text(
@@ -2954,6 +3510,22 @@ def test_render_trade_summary_markdown_creates_operator_summary_without_replacin
             "market_news_titles": ["코스피: 시장 뉴스"],
             "candidate_news_titles": ["000660: 종목 뉴스"],
         },
+        "monitor_snapshot": {
+            "current_price": 99500.0,
+            "average_price": 100000.0,
+            "peak_price": 100500.0,
+            "gross_pnl_ratio": 0.0,
+            "effective_pnl_ratio": -0.009,
+            "stop_pnl_ratio": 0.0,
+            "stop_pnl_ratio_source": "raw_price",
+            "hard_stop_pnl_ratio": -0.009,
+            "hard_stop_pnl_ratio_source": "account_pnl_ratio_mark",
+            "cost_drag_pressure": True,
+            "cost_drag_pressure_pct": 0.009,
+            "cost_drag_pressure_reason": "account_pnl_ratio_more_conservative",
+            "stop_loss_cost_drag_blocked": True,
+            "stop_loss_cost_drag_blocked_reason": "net_pnl_stop_loss_without_technical_stop",
+        },
         "why_this_symbol_was_chosen": {
             "symbol": "000660",
             "selected_rank": 2,
@@ -3033,7 +3605,7 @@ def test_render_trade_summary_markdown_creates_operator_summary_without_replacin
             "conclusion": "청산 조건과 차순위 진입 구조를 우선 점검해야 합니다.",
             "root_cause": "root_cause_candidates가 비어 있어 단정은 어렵지만 peak_drawdown 기준과 scanner 재평가가 손익비를 압박했습니다.",
             "priority_actions": ["peak_drawdown confirm 조건 재검증"],
-            "risk_notes": ["단일 거래로 원인을 단정하지 말 것"],
+            "risk_notes": ["중립 inúmer により 阈值 미달성况"],
             "validation_questions": ["monitor_only 경로가 25/25로 고정된 이유는何か?"],
         },
     }
@@ -3042,15 +3614,22 @@ def test_render_trade_summary_markdown_creates_operator_summary_without_replacin
 
     assert "## 🔴 운영 요약 (Operator Decision Summary)" in summary
     assert "## 📊 실행 결과 (Truth Surface)" in summary
+    assert "당일 성과(리포트 생성 시점 기준)" in summary
     assert "9건 중 2승 / 6패 / 평균 -0.40%" in summary
     assert "peak_drawdown activation/confirm 조건 점검" in summary
     assert summary_input["schema_version"] == "ai_trade_summary_input.v1"
+    assert summary_input["same_day_context"]["basis"] == "report_generation_time"
+    assert summary_input["same_day_context"]["label"] == "당일 성과(리포트 생성 시점 기준)"
     assert summary_input["truth_surface"]["pnl"] == -1000
     assert summary_input["decision_flow"]["scanner_rank"] == 2
     assert summary_input["decision_flow"]["exit_reason"] == "고점 대비 하락폭 기준"
     assert summary_input["decision_flow"]["exit_observation"]["basis"] == "monitor_signal_snapshot"
     assert summary_input["decision_flow"]["exit_observation"]["monitor_current_price"] == 99500.0
     assert summary_input["decision_flow"]["exit_observation"]["position_avg_price"] == 100000.0
+    assert summary_input["decision_flow"]["exit_observation"]["gross_pnl_ratio"] == 0.0
+    assert summary_input["decision_flow"]["exit_observation"]["effective_pnl_ratio"] == -0.009
+    assert summary_input["decision_flow"]["exit_observation"]["stop_pnl_ratio"] == 0.0
+    assert summary_input["decision_flow"]["exit_observation"]["stop_loss_cost_drag_blocked"] is True
     assert summary_input["post_exit_shadow"]["price_observation_status"] == "observed"
     assert summary_input["post_exit_shadow"]["checkpoints"]["+5m"]["price"] == 100000
     assert "price" in summary_input["llm_task"]["hard_constraints"][0]
@@ -3058,15 +3637,24 @@ def test_render_trade_summary_markdown_creates_operator_summary_without_replacin
     assert "observation-only" in summary_input["llm_task"]["hard_constraints"][3]
     assert summary_report["schema_version"] == "ai_trade_summary.v1"
     assert "포지션 평균단가(모니터 신호 계산용) 100,000" in summary
+    assert "고점 대비 하락폭 -0.50%" in summary
+    assert "손익 기준 분리: 가격 기준 손익 0.00% / 비용/계좌 반영 손익 -0.90% / 일반 손절 판단 기준 0.00%, raw_price" in summary
+    assert "일반 손절 차단: 가격 기준 손절선은 미통과했고 비용 반영 손익만 손절선을 건드렸습니다" in summary
+    assert "신호 기준 손익" not in summary
     assert "체결/실현손익 기준: Truth Surface의 매수가 100,000 / 매도가 99,000" in summary
     assert "### 매도 후 가격 추적 (관측-only)" in summary
     assert "* +5분: 100,000 (1.01%) / 구간 고가 100,500 / 구간 저가 98,500" in summary
     assert "현재까지 최선 가상 청산 지점: +15분, 101,500" in summary
+    assert "## 매도 후 가격 추적 (관측-only)" in full
+    assert "* +15분: 101,000 (2.02%) / 구간 고가 101,500 / 구간 저가 98,500" in full
     assert "평균가는" not in summary
     assert "## 🤖 LLM 평가 결론" in summary_with_eval
     assert summary_with_eval.index("## 🤖 LLM 평가 결론") < summary_with_eval.index("## 🧭 거래 개요")
     assert "root_cause_candidates" not in summary_with_eval
     assert "何か" not in summary_with_eval
+    assert "により" not in summary_with_eval
+    assert "阈值" not in summary_with_eval
+    assert "inúmer" not in summary_with_eval
     assert "?입니다" not in summary_with_eval
     assert "## 🔴 운영 요약 (Operator Decision Summary)" not in full
 
@@ -3074,6 +3662,206 @@ def test_render_trade_summary_markdown_creates_operator_summary_without_replacin
     prompt = "\n".join(message["content"] for message in messages)
     assert "exit_observation은 모니터 신호 판단용 스냅샷" in prompt
     assert "Truth Surface 기준과 모니터 관측값 기준을 반드시 구분" in prompt
+
+
+def test_trade_summary_marks_recovered_partial_sell_as_exit_only() -> None:
+    report = {
+        "trade_id": "TRD_20260506_036540_01",
+        "symbol": "036540",
+        "status": "partial",
+        "story_type": "simulation",
+        "execution_mode_label": "simulation (mock broker)",
+        "action": "SELL",
+        "trade_origin": "recovered_partial",
+        "lifecycle_completeness": "partial",
+        "evidence_recovery_used": True,
+        "shared_facts": {
+            "symbol": "036540",
+            "status": "partial",
+            "action": "SELL",
+            "broker_buy_price": 8620,
+            "broker_fill_price": 8970,
+            "broker_fee": 610,
+            "broker_tax": 179,
+            "pnl": 2711,
+            "pnl_pct": 0.0315,
+            "pnl_truth_source": "kiwoom.ka10077",
+            "exit_reason": "SELL was triggered because stop_loss.",
+        },
+        "truth_surface": {
+            "price": {"broker_buy_price": 8620, "broker_fill_price": 8970},
+            "pnl": {
+                "value": 2711,
+                "pnl_pct": 0.0315,
+                "broker_fee": 610,
+                "broker_tax": 179,
+                "pnl_truth_source": "kiwoom.ka10077",
+            },
+        },
+        "market_context_at_entry": {"summary": "시장 컨텍스트가 캡처되지 않았습니다.", "risk_mode": "balanced"},
+        "why_this_symbol_was_chosen": {
+            "symbol": "036540",
+            "selected_rank": 0,
+            "universe_size": 0,
+            "basis": "combined scanner ranking score",
+        },
+        "entry_decision": {
+            "summary": "Entry evidence was not captured for this day. Position context was inferred from downstream monitor/exit artifacts.",
+            "bullets": [
+                "진입 사유는 Entry evidence was not captured for this day. Position context was inferred from downstream monitor/exit artifacts.",
+            ],
+        },
+        "holding_monitoring_story": {
+            "summary": "SELL was triggered because stop_loss.",
+            "bullets": ["Trigger type: stop_loss"],
+        },
+        "exit_decision": {
+            "summary": "stop_loss 기준으로 청산됐습니다.",
+            "bullets": [
+                "청산을 직접 촉발한 신호는 stop_loss입니다.",
+                "청산 확인 조건은 0/1 단계로 기록되었습니다.",
+                "현재가, 평균가, 고점 기준 값은 8620.00 / 8620.00 / 8620.00입니다.",
+                "현재 손익 변동은 0.00%입니다.",
+            ],
+        },
+        "reporter_evaluation": {"summary": "", "bullets": []},
+        "final_operator_conclusion": {
+            "summary": "현재 판단은 청산 완료입니다.",
+            "current_action": "SELL",
+        },
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    summary_input = mod.build_trade_summary_input(report)
+
+    assert "회수/partial 청산: 당일 진입 증거가 부족해 신규 진입 평가는 제외" in summary
+    assert "* 스캐너 순위: 기록 없음" in summary
+    assert "* 스캐너 순위: 0위" not in summary
+    assert "신규 진입 판단이 아니라 회수 포지션 청산 리포트입니다" in summary
+    assert "threshold 근접 진입 여부 확인 필요" not in summary
+    assert "Entry evidence was 기록되지 않음" not in summary
+    assert "모니터 신호명은 고정 손절 기준이었지만 Truth Surface 기준 실현 결과는 이익입니다" in summary
+    assert summary_input["trade"]["recovered_partial_exit"] is True
+    assert summary_input["trade"]["entry_assessment_scope"] == "excluded_recovered_partial"
+    assert summary_input["decision_flow"]["scanner_rank"] is None
+    assert summary_input["decision_flow"]["scanner_rank_basis"] == "recovered_partial_no_entry_evidence"
+    assert summary_input["decision_flow"]["selection_basis"] == "보유/회수 포지션 청산"
+    assert summary_input["decision_flow"]["entry_reason"].startswith("당일 진입 증거가 부족해")
+    assert summary_input["decision_flow"]["exit_reason"] == "고정 손절 기준"
+    assert "실현 결과는 이익" in summary_input["decision_flow"]["exit_result_note"]
+
+
+def test_trade_summary_marks_weekend_carryover_exit_with_date_basis() -> None:
+    report = {
+        "trade_id": "TRD_20260511_005930_01",
+        "symbol": "005930",
+        "status": "partial",
+        "story_type": "simulation",
+        "execution_mode_label": "simulation (mock broker)",
+        "action": "SELL",
+        "shared_facts": {
+            "symbol": "005930",
+            "status": "partial",
+            "action": "SELL",
+            "broker_buy_price": 264500,
+            "broker_fill_price": 287750,
+            "broker_fee": 3860,
+            "broker_tax": 1150,
+            "pnl": 41490,
+            "pnl_pct": 0.0784,
+            "pnl_truth_source": "kiwoom.ka10077",
+            "exit_reason": "partial_take_profit",
+            "commander_route": {
+                "applied_policy": {
+                    "horizon": {
+                        "runtime_context": {
+                            "carry_state": "multi_session_stale",
+                            "carry_risk_bias": "urgent_exit_review",
+                        }
+                    }
+                }
+            },
+        },
+        "truth_surface": {
+            "price": {"broker_buy_price": 264500, "broker_fill_price": 287750},
+            "pnl": {
+                "value": 41490,
+                "pnl_pct": 0.0784,
+                "broker_fee": 3860,
+                "broker_tax": 1150,
+                "pnl_truth_source": "kiwoom.ka10077",
+            },
+        },
+        "fact_payload": {
+            "trade": {
+                "exit_summary": {"ts": "2026-05-11T00:49:27+00:00"},
+                "exit_vs_strategy_intent": {"actual_hold_sec": 249265},
+            }
+        },
+        "market_context_at_entry": {
+            "summary": "중립 regime에서 강세 sentiment 우세",
+            "playbook": "pullback",
+            "risk_mode": "balanced",
+            "market_sentiment": "bullish",
+            "korea_indices": {
+                "indices": {
+                    "KOSPI": {"current": 7876.6, "previous_close": 7498.0, "change_pct": 0.0505}
+                }
+            },
+        },
+        "why_this_symbol_was_chosen": {
+            "symbol": "005930",
+            "selected_rank": 1,
+            "score_total": 1.354,
+            "basis": "sector theme alignment",
+        },
+        "entry_execution_visibility": {
+            "monitor_entry_candidate_cascade": {
+                "top_pick_symbol": "078890",
+                "final_selected_symbol": "078890",
+                "ranked_candidates": [
+                    {"rank": 1, "symbol": "078890"},
+                    {"rank": 2, "symbol": "000660"},
+                ],
+            }
+        },
+        "entry_decision": {
+            "summary": "Entry evidence was not captured for this day. Position context was inferred from downstream monitor/exit artifacts.",
+            "bullets": [
+                "진입 사유는 Entry evidence was not captured for this day. Position context was inferred from downstream monitor/exit artifacts.",
+            ],
+        },
+        "holding_monitoring_story": {
+            "summary": "SELL was triggered because partial_take_profit.",
+            "bullets": ["Trigger type: partial_take_profit"],
+        },
+        "exit_decision": {
+            "summary": "partial_take_profit 기준으로 청산됐습니다.",
+            "bullets": ["청산을 직접 촉발한 신호는 partial_take_profit입니다."],
+        },
+        "reporter_evaluation": {"summary": "", "bullets": []},
+        "final_operator_conclusion": {
+            "summary": "005930 2주 매도 주문이 시뮬레이션으로 승인 및 기록됐습니다.",
+            "current_action": "SELL",
+        },
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    summary_input = mod.build_trade_summary_input(report)
+
+    assert "포지션 성격: 전일/주말 이월 보유" in summary
+    assert "보유 시작 2026-05-08 12:35 KST / 청산 2026-05-11 09:49 KST" in summary
+    assert "선정 경로: 오버나이트/주말 이월 포지션 청산" in summary
+    assert "주말 이월: 금요일 보유분이 월요일 청산까지 이어진 거래입니다" in summary
+    assert "신규 진입 판단이 아니라 이월 포지션 청산 리포트입니다" in summary
+    assert "최종 후보: 078890" not in summary
+    assert "스캐너 순위: 1위" not in summary
+    assert summary_input["trade"]["carryover_exit"] is True
+    assert summary_input["trade"]["entry_assessment_scope"] == "excluded_carryover_exit"
+    assert summary_input["decision_flow"]["scanner_rank"] is None
+    assert summary_input["decision_flow"]["scanner_rank_basis"] == "carryover_exit_no_same_day_entry"
+    assert summary_input["decision_flow"]["carryover_context"]["weekend_carry"] is True
+    assert summary_input["decision_flow"]["selection_basis"] == "오버나이트/주말 이월 포지션 청산"
 
 
 def test_render_trade_summary_markdown_filters_symbol_news_to_trade_symbol() -> None:
@@ -3164,6 +3952,75 @@ def test_render_trade_summary_markdown_explains_missing_news_sample_location() -
     assert "market_context_at_entry.market_news_titles" in news_section
     assert "market_context_at_entry.candidate_news_titles" in news_section
     assert "005930 항목" in news_section
+
+
+def test_trade_summary_corrects_closed_sell_final_operator_summary_prefix() -> None:
+    report = {
+        "trade_id": "TRD_20260504_018880_01",
+        "symbol": "018880",
+        "status": "closed",
+        "story_type": "live trade report",
+        "execution_mode_label": "real broker",
+        "action": "SELL",
+        "shared_facts": {
+            "symbol": "018880",
+            "status": "closed",
+            "action": "SELL",
+            "broker_buy_price": 4810,
+            "broker_fill_price": 4870,
+            "pnl": 173,
+            "pnl_pct": 0.0036,
+        },
+        "entry_decision": {"summary": "진입", "bullets": []},
+        "exit_decision": {"summary": "청산", "bullets": []},
+        "final_operator_conclusion": {
+            "summary": "현재 판단은 진입 유지입니다. 018880 10주 매도 주문은 실거래로 체결됐습니다.",
+            "current_action": "SELL",
+        },
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    summary_input = mod.build_trade_summary_input(report)
+
+    assert "현재 판단은 청산 완료입니다." in summary
+    assert "현재 판단은 진입 유지입니다." not in summary
+    assert summary_input["decision_flow"]["final_operator_summary"].startswith("현재 판단은 청산 완료입니다.")
+
+
+def test_trade_summary_does_not_surface_stale_post_entry_gate_as_confirmed_entry_gate() -> None:
+    report = {
+        "trade_id": "TRD_20260504_018880_01",
+        "symbol": "018880",
+        "status": "closed",
+        "story_type": "live trade report",
+        "execution_mode_label": "real broker",
+        "action": "SELL",
+        "shared_facts": {
+            "symbol": "018880",
+            "status": "closed",
+            "action": "SELL",
+            "broker_buy_price": 4810,
+            "broker_fill_price": 4870,
+            "pnl": 173,
+            "pnl_pct": 0.0036,
+        },
+        "entry_decision": {
+            "summary": "진입",
+            "bullets": [
+                "진입 게이트 상태는 VWAP 재회복 통과, 과확장 점검 통과, 신뢰도 게이트 미통과였습니다.",
+            ],
+        },
+        "exit_decision": {"summary": "청산", "bullets": []},
+        "final_operator_conclusion": {"summary": "현재 판단은 진입 유지이다. 매도 주문 완료.", "current_action": "SELL"},
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    summary_input = mod.build_trade_summary_input(report)
+    entry_section = summary.split("## 🚪 진입 판단", 1)[1].split("---", 1)[0]
+
+    assert "신뢰도 게이트 미통과" not in entry_section
+    assert "사후 모니터 재평가와 혼재" in entry_section
+    assert "청산 완료입니다." in summary_input["decision_flow"]["final_operator_summary"]
 
 
 def test_render_trade_report_markdown_translates_fixed_english_report_phrases() -> None:
@@ -3523,9 +4380,218 @@ def test_truth_surface_hides_fallback_pct_from_realized_pnl_when_truth_unavailab
     )
 
     assert truth["pnl"]["pct"] is None
-    assert truth["pnl"]["pct_display"] == -0.0035
+    assert truth["pnl"]["pct_display"] == (56700.0 - 56800.0) / 56800.0
     assert truth["pnl"]["pct_display_role"] == "fallback_mark_only"
     assert truth["availability"]["broker_pnl_present"] is False
+
+
+def test_truth_surface_treats_ambiguous_broker_day_pct_as_observation_only() -> None:
+    truth = build_trade_report_truth_surface(
+        {
+            "pnl": "unavailable",
+            "pnl_pct": -0.027707808564231717,
+            "pnl_truth_source": "kiwoom.ka10077",
+            "broker_day_truth_source": "kiwoom.ka10077",
+            "broker_day_match_mode": "ambiguous_symbol_rows",
+            "broker_day_authoritative": False,
+            "broker_day_row_count": 2,
+            "broker_fill_price": None,
+            "broker_buy_price": 17800.0,
+            "monitor_mark_price": 17370.0,
+            "price_truth_source": "monitor_mark",
+            "data_source": {"pnl_pct": "fallback"},
+        }
+    )
+
+    assert truth["pnl"]["pct"] is None
+    assert truth["pnl"]["pct_display"] == (17370.0 - 17800.0) / 17800.0
+    assert truth["pnl"]["pct_display_role"] == "fallback_mark_only"
+    assert truth["pnl"]["broker_day_authoritative"] is False
+    assert truth["availability"]["broker_pnl_present"] is False
+
+
+def test_trade_summary_labels_observed_negative_pct_as_loss_not_breakeven() -> None:
+    shared_facts = {
+        "symbol": "199820",
+        "trade_id": "TRD_20260430_199820_02",
+        "action": "SELL",
+        "status": "closed",
+        "exit_reason": "hard_stop",
+        "pnl": "unavailable",
+        "pnl_pct": -0.027707808564231717,
+        "pnl_truth_source": "kiwoom.ka10077",
+        "broker_day_truth_source": "kiwoom.ka10077",
+        "broker_day_match_mode": "ambiguous_symbol_rows",
+        "broker_day_authoritative": False,
+        "broker_day_row_count": 2,
+        "broker_fill_price": None,
+        "broker_buy_price": 17800.0,
+        "monitor_mark_price": 17370.0,
+        "price_truth_source": "monitor_mark",
+        "qty": 1,
+        "data_source": {"pnl": "unavailable", "pnl_pct": "fallback"},
+    }
+    report = {
+        "trade_id": "TRD_20260430_199820_02",
+        "symbol": "199820",
+        "status": "closed",
+        "story_type": "simulation",
+        "execution_mode_label": "simulation (mock broker)",
+        "action": "SELL",
+        "shared_facts": shared_facts,
+        "truth_surface": build_trade_report_truth_surface(shared_facts),
+        "entry_decision": {"summary": "entry"},
+        "exit_decision": {"summary": "hard stop"},
+        "holding_monitoring_story": {"bullets": ["목표 수익 실현 기준은 1.42%였습니다."]},
+        "final_operator_conclusion": {"current_action": "SELL"},
+    }
+
+    summary_input = mod.build_trade_summary_input(report)
+    markdown = mod.render_trade_summary_markdown(report)
+
+    assert summary_input["truth_surface"]["result_label"] == "loss"
+    assert summary_input["truth_surface"]["pnl"] == "unavailable"
+    assert summary_input["truth_surface"]["pnl_pct"] == (17370.0 - 17800.0) / 17800.0
+    assert summary_input["truth_surface"]["truth_source"] == "모니터 관측값 기준"
+    cost = summary_input["truth_surface"]["cost_analysis"]
+    assert cost["observed_pnl_pct"] == (17370.0 - 17800.0) / 17800.0
+    assert "broker_reported_pnl_pct" not in cost
+    assert "total_cost" not in cost
+    assert "* 결과: **손실 관측 (-2.42%)**" in markdown
+    assert "* 실현 손익: **확인 불가**" in markdown
+    assert "* 매수가 / 매도가: 17,800 / - (체결가 미확정, 모니터 기준 17,370)" in markdown
+    assert "* 청산가: - (체결가 미확정, 모니터 기준 17,370)" in markdown
+    assert "매도 체결가 미확정" in markdown
+    assert "실현 손익: **- (-2.77%)**" not in markdown
+    assert "* 청산은 고정 손절 기준으로 실행됨" in markdown
+    assert "청산은 목표 수익 실현 기준으로 실행됨" not in markdown
+    assert "* 관측 손익률: -2.42%" in markdown
+    assert "키움 제공 손익률" not in markdown
+    assert "비용 드래그: 0" not in markdown
+
+
+def test_resolve_trade_facts_uses_mark_return_not_peak_drawdown_for_fallback() -> None:
+    facts = mod._resolve_trade_facts_with_precedence(
+        {
+            "status": "closed",
+            "exit_summary": {
+                "action": "SELL",
+                "reason_human": "SELL was triggered because peak_drawdown.",
+            },
+            "monitor_reason_human": {
+                "current_price": 52900.0,
+                "average_price": 53000.0,
+                "current_drawdown": -0.01855287569573283,
+                "peak_drawdown": -0.01855287569573283,
+            },
+            "canonical_agent_artifacts": {
+                "monitor": {
+                    "position_snapshot": {
+                        "current_price": 52900.0,
+                        "avg_price": 53000.0,
+                        "peak_price": 53900.0,
+                    }
+                }
+            },
+        }
+    )
+
+    assert facts["pnl_pct"] == (52900.0 - 53000.0) / 53000.0
+    assert facts["data_source"]["pnl_pct"] == "fallback"
+
+
+def test_truth_surface_ignores_zero_mark_price_for_fallback_pct() -> None:
+    truth = build_trade_report_truth_surface(
+        {
+            "symbol": "115160",
+            "status": "closed",
+            "pnl": "unavailable",
+            "pnl_pct": -1.0,
+            "pnl_truth_source": "unavailable",
+            "broker_buy_price": 6906.0,
+            "broker_fill_price": 0.0,
+            "account_mark_price": 0.0,
+            "monitor_mark_price": 0.0,
+            "data_source": {"pnl_pct": "fallback"},
+        }
+    )
+
+    assert truth["pnl"]["pct"] is None
+    assert truth["pnl"]["pct_display"] is None
+    assert truth["pnl"]["pct_display_role"] == "fallback_mark_only"
+
+
+def test_truth_surface_ignores_zero_fill_snapshot_estimate_for_fallback_pct() -> None:
+    truth = build_trade_report_truth_surface(
+        {
+            "symbol": "115160",
+            "status": "closed",
+            "pnl": "unavailable",
+            "pnl_pct": -1.0,
+            "pnl_truth_source": "broker_fill_account_snapshot_estimate",
+            "broker_buy_price": 6906.0,
+            "broker_fill_price": 0.0,
+            "account_mark_price": None,
+            "monitor_mark_price": 6900.0,
+            "data_source": {"pnl_pct": "broker_fill_account_snapshot_estimate"},
+        }
+    )
+
+    assert truth["price"]["broker_fill_price"] is None
+    assert truth["availability"]["broker_fill_present"] is False
+    assert truth["pnl"]["pct"] is None
+    assert abs(float(truth["pnl"]["pct_display"]) - ((6900.0 - 6906.0) / 6906.0)) < 1e-9
+    assert truth["pnl"]["pct_display_role"] == "fallback_mark_only"
+
+
+def test_shared_summary_seed_ignores_read_model_default_zero_pnl(tmp_path) -> None:
+    trade_dir = tmp_path / "TRD_20260430_199820_02"
+    report_dir = trade_dir / "reports"
+    report_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+    (trade_dir / "lifecycle_bundle.json").write_text(
+        json.dumps(
+            {
+                "trade_id": "TRD_20260430_199820_02",
+                "symbol": "199820",
+                "lifecycle": {
+                    "exit": {"reason_human": "SELL was triggered because hard_stop."},
+                    "status": "closed",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (report_dir / "ai_trade_report.json").write_text(
+        json.dumps(
+            {
+                "trade_id": "TRD_20260430_199820_02",
+                "symbol": "199820",
+                "status": "closed",
+                "shared_facts": {
+                    "pnl": "unavailable",
+                    "pnl_pct": -0.027707808564231717,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    story_input = {
+        "trade_id": "TRD_20260430_199820_02",
+        "symbol": "199820",
+        "status": "closed",
+        "artifacts": {"ai_trade_report_input_json": str(input_path)},
+        "monitor_reason_human": {"current_drawdown": -0.027707808564231717},
+    }
+
+    seed = mod._build_shared_summary_seed(story_input)
+    facts = seed["resolved_trade_facts"]
+
+    assert seed["pnl"] == "unavailable"
+    assert seed["pnl_pct"] == -0.027707808564231717
+    assert facts["data_source"]["pnl"] == "unavailable"
+    assert facts["data_source"]["pnl_pct"] == "trade_read_model"
 
 
 def test_render_trade_report_markdown_surfaces_execution_truth_fields() -> None:
@@ -4112,6 +5178,45 @@ def test_render_trade_report_markdown_explains_same_price_round_trip_as_cost_los
     assert "브로커 매수가/매도가는 537000.00 / 537000.00입니다." in markdown
     assert "매수가와 매도가가 같았고, 손익은 가격 변동이 아니라 수수료와 세금에서 발생했습니다." in markdown
     assert "모니터 가격 소스는" not in markdown
+
+
+def test_trade_summary_cost_analysis_keeps_zero_price_move_when_qty_missing() -> None:
+    report = {
+        "trade_id": "TRD_20260507_010170_01",
+        "action": "SELL",
+        "symbol": "010170",
+        "status": "closed",
+        "shared_facts": {
+            "pnl": -13481.0,
+            "pnl_pct": -0.008978354978354978,
+            "broker_fee": 10480,
+            "broker_tax": 3001,
+            "broker_buy_price": 21450.0,
+            "broker_fill_price": 21450.0,
+            "price_truth_source": "broker_fill",
+            "pnl_truth_source": "kiwoom.ka10077",
+        },
+        "truth_surface": {
+            "price": {
+                "broker_buy_price": 21450.0,
+                "broker_fill_price": 21450.0,
+                "price_truth_source": "broker_fill",
+            },
+            "pnl": {
+                "value": -13481.0,
+                "pct": -0.008978354978354978,
+                "broker_fee": 10480,
+                "broker_tax": 3001,
+                "pnl_truth_source": "kiwoom.ka10077",
+            },
+        },
+    }
+
+    summary_input = mod.build_trade_summary_input(report)
+    cost = summary_input["truth_surface"]["cost_analysis"]
+
+    assert cost["price_move_pct"] == 0.0
+    assert round(cost["cost_drag_pct"], 6) == round(0.008978354978354978, 6)
 
 
 def test_render_trade_report_markdown_discloses_missing_buy_price_when_only_sell_fill_is_recovered() -> None:

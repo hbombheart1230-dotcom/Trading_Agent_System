@@ -16,6 +16,10 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("APPROVAL_MODE", "manual")
     monkeypatch.setenv("EXECUTION_ENABLED", "false")
     monkeypatch.delenv("AUTO_APPROVE", raising=False)
+    monkeypatch.delenv("MAX_ORDER_NOTIONAL", raising=False)
+    monkeypatch.delenv("MAX_NOTIONAL", raising=False)
+    monkeypatch.delenv("MAX_ORDER_QTY", raising=False)
+    monkeypatch.delenv("MAX_QTY", raising=False)
     return monkeypatch
 
 

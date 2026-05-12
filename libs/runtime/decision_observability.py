@@ -183,6 +183,11 @@ def build_monitor_no_trade_surface(
     confidence_score = _to_float(condition_scores.get("confidence_score"))
     confidence_threshold = _to_float(condition_scores.get("confidence_threshold"))
     confidence_gap = max(0.0, confidence_threshold - confidence_score) if confidence_threshold > 0.0 else 0.0
+    confidence_near_miss = bool(
+        decision_outcome not in {"BUY", "SELL"}
+        and confidence_threshold > 0.0
+        and 0.0 < confidence_gap <= 0.005
+    )
     entry_quality_score = _to_float(
         condition_scores.get("entry_quality_score")
         if condition_scores.get("entry_quality_score") not in (None, "")
@@ -201,6 +206,8 @@ def build_monitor_no_trade_surface(
         "breakout_margin": breakout_distance,
         "volume_margin": volume_distance,
         "confidence_margin": round(confidence_score - confidence_threshold, 4) if confidence_threshold > 0.0 else None,
+        "confidence_gap": round(confidence_gap, 4) if confidence_threshold > 0.0 else None,
+        "confidence_near_miss": confidence_near_miss,
         "transition_readiness_score": transition_readiness_score if transition_readiness_score > 0.0 else None,
         "entry_quality_score": round(entry_quality_score, 4) if entry_quality_score > 0.0 else None,
     }
@@ -223,6 +230,16 @@ def build_monitor_no_trade_surface(
             or (volume_gap is not None and volume_gap <= 0.20)
             or (confidence_threshold > 0.0 and confidence_gap <= 0.05)
         )
+    )
+    near_ready_reasons = _dedupe_non_empty(
+        [
+            "transition_readiness_near_ready" if transition_readiness_score >= 0.75 else "",
+            "reclaim_near_ready" if reclaim_gap is not None and reclaim_gap <= 0.03 else "",
+            "breakout_near_ready" if breakout_gap is not None and breakout_gap <= 0.01 else "",
+            "volume_near_ready" if volume_gap is not None and volume_gap <= 0.20 else "",
+            "confidence_threshold_near_miss" if confidence_near_miss else "",
+        ],
+        limit=6,
     )
 
     required_checks_failed = _dedupe_non_empty(
@@ -256,6 +273,8 @@ def build_monitor_no_trade_surface(
         "chart_structure_hint_applied": bool(chart_hint.get("applied")),
         "confidence_score": round(confidence_score, 4) if confidence_score > 0.0 else None,
         "confidence_threshold": round(confidence_threshold, 4) if confidence_threshold > 0.0 else None,
+        "confidence_gap": round(confidence_gap, 4) if confidence_threshold > 0.0 else None,
+        "confidence_near_miss": confidence_near_miss,
     }
     evidence_snapshot = {k: v for k, v in evidence_snapshot.items() if v not in (None, "", [])}
 
@@ -277,6 +296,8 @@ def build_monitor_no_trade_surface(
         "blocker_metrics": blocker_metrics,
         "distance_to_ready": distance_to_ready,
         "near_ready_flag": near_ready_flag,
+        "near_ready_reasons": near_ready_reasons,
+        "confidence_near_miss": confidence_near_miss,
         "required_checks_failed": required_checks_failed,
         "preferred_checks_failed": preferred_checks_failed,
         "relaxable_checks_failed": relaxable_checks_failed,
@@ -418,6 +439,14 @@ def build_entry_blocker_surface(
     structure_state = _resolve_structure_state(chart_features, check_status)
 
     final_outcome = _normalize_decision_outcome(final_decision, fallback="WAIT")
+    confidence_score = _to_float(metrics.get("confidence_score", condition_scores.get("confidence_score")))
+    confidence_threshold = _to_float(metrics.get("confidence_threshold", condition_scores.get("confidence_threshold")))
+    confidence_gap = max(0.0, confidence_threshold - confidence_score) if confidence_threshold > 0.0 else 0.0
+    confidence_near_miss = bool(
+        final_outcome not in {"BUY", "SELL"}
+        and confidence_threshold > 0.0
+        and 0.0 < confidence_gap <= 0.005
+    )
     cooldown_remaining = _to_int(post_exit_cooldown_remaining_sec)
     volume_missing = no_trade_code == "volume_confirmation_missing" or dominant_blocker == "volume_confirmation_missing"
     pullback_not_mature = no_trade_code == "pullback_not_mature" or dominant_blocker == "pullback_not_mature"
@@ -464,6 +493,9 @@ def build_entry_blocker_surface(
         "entry_style": str(policy_interpretation.get("entry_style") or "").strip(),
         "confidence_score": metrics.get("confidence_score", condition_scores.get("confidence_score")),
         "confidence_threshold": metrics.get("confidence_threshold", condition_scores.get("confidence_threshold")),
+        "confidence_gap": round(confidence_gap, 4) if confidence_threshold > 0.0 else None,
+        "confidence_near_miss": confidence_near_miss,
+        "entry_probe_candidate": bool(confidence_near_miss and bool(no_trade.get("near_ready_flag"))),
         "entry_quality_score": metrics.get("entry_quality_score", condition_scores.get("entry_quality_score")),
         "entry_quality_tier": metrics.get("entry_quality_tier", condition_scores.get("entry_quality_tier")),
         "entry_quality_path": metrics.get("entry_quality_path", condition_scores.get("entry_quality_path")),

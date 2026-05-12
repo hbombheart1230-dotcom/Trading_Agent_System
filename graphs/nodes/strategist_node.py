@@ -48,7 +48,12 @@ from libs.runtime.monitor_policy import (
     normalize_monitor_entry_policy,
 )
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
-from libs.runtime.canonical_artifacts import write_llm_artifact_bundle, write_strategist_artifact
+from libs.runtime.canonical_artifacts import (
+    strategist_llm_stage_descriptor,
+    write_llm_artifact_bundle,
+    write_llm_stage_manifest_entry,
+    write_strategist_artifact,
+)
 from libs.runtime.regime import classify_regime_v2
 from libs.runtime.strategist_explanation import build_strategist_explanation_fields
 from libs.runtime.strategy_horizon_feedback import build_commander_horizon_policy, build_strategy_horizon_feedback
@@ -496,6 +501,10 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
         "themes",
         "avoid_themes",
         "playbook",
+        "tactical_strategy",
+        "strategy_scores",
+        "rejected_strategy_reasons",
+        "candidate_watch_policy",
         "scanner_bias",
         "scanner_priority",
         "trade_aggressiveness",
@@ -508,6 +517,10 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
         "monitor_entry_policy",
         "report_focus",
         "scanner_source_policy",
+        "selected_symbol_decision",
+        "hold_review_decision",
+        "carry_review",
+        "portfolio_level_decision",
     }
 
     def unwrap(obj: Any) -> Dict[str, Any]:
@@ -571,6 +584,480 @@ def _resolve_strategist_frame_llm_strict_enabled(policy: Dict[str, Any]) -> bool
     return strategist_llm_strict(policy)
 
 
+def _stage_text_list(raw: Any, *, limit: int = 8, upper: bool = False) -> List[str]:
+    values = _parse_text_list_fragment(raw)
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = str(item or "").strip()
+        if upper:
+            text = text.upper()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= int(limit):
+            break
+    return out
+
+
+def _stage_bool(raw: Any, default: bool = False) -> bool:
+    if raw is None:
+        return bool(default)
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(raw) if isinstance(raw, bool) else bool(default)
+
+
+def _stage_float(raw: Any, default: float | None = None) -> float | None:
+    try:
+        if raw in (None, ""):
+            return default
+        return float(raw)
+    except Exception:
+        return default
+
+
+def _normalize_stage2_selected_symbol_review(raw: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or "selected_symbol_decision" not in raw:
+        return {}
+    allowed_decisions = {
+        "watch_rank1",
+        "avoid_rank1",
+        "watch_rank1_with_tighter_gates",
+        "cascade_to_runner_up",
+        "no_trade",
+    }
+    decision = str(raw.get("selected_symbol_decision") or "").strip().lower()
+    if decision not in allowed_decisions:
+        decision = "watch_rank1"
+    monitor_instruction_raw = (
+        dict(raw.get("monitor_instruction") or {})
+        if isinstance(raw.get("monitor_instruction"), dict)
+        else {}
+    )
+    watch_intensity = str(monitor_instruction_raw.get("watch_intensity") or "normal").strip().lower()
+    if watch_intensity not in {"normal", "strict", "aggressive"}:
+        watch_intensity = "normal"
+    entry_delta_raw = (
+        dict(raw.get("entry_policy_delta") or {})
+        if isinstance(raw.get("entry_policy_delta"), dict)
+        else {}
+    )
+    memory_usage_raw = dict(raw.get("memory_usage") or {}) if isinstance(raw.get("memory_usage"), dict) else {}
+    memory_status = str(memory_usage_raw.get("status") or "").strip().lower()
+    if memory_status not in {"used", "disabled", "insufficient", "stale"}:
+        memory_status = "disabled" if _strategy_memory_usage_disabled(raw) else "insufficient"
+    actionability = str(raw.get("commander_actionability") or "advisory_only").strip().lower()
+    if actionability not in {"advisory_only", "policy_delta_allowed", "hard_block_recommended"}:
+        actionability = "advisory_only"
+    return {
+        "schema_version": "strategist.stage2.selected_symbol_tactical_review.v1",
+        "stage_name": "selected_symbol_tactical_refresh",
+        "selected_symbol_decision": decision,
+        "target_symbol": str(raw.get("target_symbol") or "").strip().upper(),
+        "target_rank": max(0, _to_int(raw.get("target_rank"), 0)),
+        "runner_up_order": _stage_text_list(raw.get("runner_up_order"), limit=8, upper=True),
+        "monitor_instruction": {
+            "watch_intensity": watch_intensity,
+            "required_confirmations": _stage_text_list(
+                monitor_instruction_raw.get("required_confirmations"),
+                limit=8,
+            ),
+            "avoid_if": _stage_text_list(monitor_instruction_raw.get("avoid_if"), limit=8),
+        },
+        "entry_policy_delta": {
+            "tighten_confidence_threshold": _stage_bool(entry_delta_raw.get("tighten_confidence_threshold")),
+            "require_prev_close_context": _stage_bool(entry_delta_raw.get("require_prev_close_context"), True),
+            "require_cost_hurdle": _stage_bool(entry_delta_raw.get("require_cost_hurdle"), True),
+        },
+        "memory_usage": {
+            "status": memory_status,
+            "sample_count": max(0, _to_int(memory_usage_raw.get("sample_count"), 0)),
+            "confidence": str(memory_usage_raw.get("confidence") or "").strip().lower(),
+            "data_quality": str(memory_usage_raw.get("data_quality") or "").strip().lower(),
+            "effect": str(memory_usage_raw.get("effect") or "neutral").strip().lower(),
+            "reason": str(memory_usage_raw.get("reason") or "").strip(),
+        },
+        "commander_actionability": actionability,
+        "confidence": _stage_float(raw.get("confidence"), 0.0),
+        "reason": str(raw.get("reason") or "").strip(),
+    }
+
+
+def _normalize_stage3_hold_review(raw: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or "hold_review_decision" not in raw:
+        return {}
+    decision = str(raw.get("hold_review_decision") or "").strip().lower()
+    if decision not in {"hold", "tighten_exit", "exit_now", "wait_until_next_check"}:
+        decision = "wait_until_next_check"
+    exit_pressure = str(raw.get("exit_pressure") or "medium").strip().lower()
+    if exit_pressure not in {"low", "medium", "high"}:
+        exit_pressure = "medium"
+    thesis_status = str(raw.get("thesis_status") or "weakened").strip().lower()
+    if thesis_status not in {"intact", "weakened", "broken"}:
+        thesis_status = "weakened"
+    adjustment_raw = (
+        dict(raw.get("monitor_adjustment") or {})
+        if isinstance(raw.get("monitor_adjustment"), dict)
+        else {}
+    )
+    next_check = max(1, _to_int(raw.get("next_check_minutes") or adjustment_raw.get("next_check_minutes"), 5))
+    return {
+        "schema_version": "strategist.stage3.stale_intraday_hold_review.v1",
+        "stage_name": "stale_intraday_hold_review",
+        "hold_review_decision": decision,
+        "exit_pressure": exit_pressure,
+        "thesis_status": thesis_status,
+        "monitor_adjustment": {
+            "tighten_stop": _stage_bool(adjustment_raw.get("tighten_stop")),
+            "tighten_time_decay": _stage_bool(adjustment_raw.get("tighten_time_decay")),
+            "allow_profit_recovery_wait": _stage_bool(adjustment_raw.get("allow_profit_recovery_wait")),
+            "next_check_minutes": next_check,
+        },
+        "priority_exit_triggers": _stage_text_list(raw.get("priority_exit_triggers"), limit=8),
+        "next_check_minutes": next_check,
+        "reason": str(raw.get("reason") or "").strip(),
+    }
+
+
+def _normalize_stage4_carry_review(raw: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or "carry_review" not in raw:
+        return {}
+    rows: List[Dict[str, Any]] = []
+    for item in list(raw.get("carry_review") or [])[:8]:
+        if not isinstance(item, dict):
+            continue
+        decision = str(item.get("decision") or "").strip().lower()
+        if decision not in {"carry_overnight", "flatten_today", "reduce_or_flatten"}:
+            decision = "flatten_today"
+        confidence = str(item.get("carry_confidence") or "low").strip().lower()
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "low"
+        plan = dict(item.get("required_next_day_plan") or {}) if isinstance(item.get("required_next_day_plan"), dict) else {}
+        rows.append(
+            {
+                "symbol": str(item.get("symbol") or "").strip().upper(),
+                "decision": decision,
+                "carry_confidence": confidence,
+                "required_next_day_plan": {
+                    "gap_down_action": str(plan.get("gap_down_action") or "").strip(),
+                    "gap_up_action": str(plan.get("gap_up_action") or "").strip(),
+                    "flat_open_action": str(plan.get("flat_open_action") or "").strip(),
+                },
+                "reason": str(item.get("reason") or "").strip(),
+            }
+        )
+    portfolio_level = str(raw.get("portfolio_level_decision") or "flatten_all").strip().lower()
+    if portfolio_level not in {"carry_allowed", "flatten_all", "carry_only_best_one"}:
+        portfolio_level = "flatten_all"
+    return {
+        "schema_version": "strategist.stage4.end_of_day_carry_review.v1",
+        "stage_name": "end_of_day_carry_review",
+        "carry_review": rows,
+        "portfolio_level_decision": portfolio_level,
+        "risk_note": str(raw.get("risk_note") or "").strip(),
+    }
+
+
+def _derive_stage_specific_common_overrides(out: Dict[str, Any]) -> None:
+    stage2 = dict(out.get("selected_symbol_tactical_review") or {})
+    if stage2:
+        decision = str(stage2.get("selected_symbol_decision") or "").strip()
+        runner_ups = list(stage2.get("runner_up_order") or [])
+        reason = str(stage2.get("reason") or "selected-symbol tactical refresh").strip()
+        if "candidate_watch_policy" not in out:
+            cascade = decision == "cascade_to_runner_up" and bool(runner_ups)
+            max_rank = 1 + len(runner_ups) if cascade else 1
+            if cascade and "tactical_strategy" not in out:
+                out["tactical_strategy"] = "leader_vwap_reclaim_pullback"
+            out["candidate_watch_policy"] = {
+                "max_priority_rank": max(1, min(10, int(max_rank))),
+                "max_runner_ups": len(runner_ups) if cascade else 0,
+                "cascade_enabled": bool(cascade),
+                "cascade_allowed_reasons": [
+                    "breakout_not_ready",
+                    "volume_confirmation_missing",
+                    "below_vwap_reclaim_not_ready",
+                    "pullback_not_mature",
+                ],
+                "cascade_blocked_reasons": [
+                    "cost_filter_failed",
+                    "risk_policy_block",
+                    "closeout_window",
+                    "open_position_present",
+                    "broker_truth_mismatch",
+                ],
+                "reason": reason,
+            }
+        if "strategy_adjustment_directives" not in out:
+            monitor_instruction = dict(stage2.get("monitor_instruction") or {})
+            entry_delta = dict(stage2.get("entry_policy_delta") or {})
+            required = list(monitor_instruction.get("required_confirmations") or [])
+            avoid_if = list(monitor_instruction.get("avoid_if") or [])
+            tighten = (
+                decision in {"avoid_rank1", "watch_rank1_with_tighter_gates", "no_trade"}
+                or bool(entry_delta.get("tighten_confidence_threshold"))
+            )
+            out["strategy_adjustment_directives"] = {
+                "playbook_action": {"action": "maintain", "target": None, "reason": reason},
+                "entry_policy_action": {
+                    "action": "tighten" if tighten else "maintain",
+                    "target_fields": [
+                        field
+                        for field, enabled in (
+                            ("confidence_threshold", entry_delta.get("tighten_confidence_threshold")),
+                            ("previous_close_context", entry_delta.get("require_prev_close_context")),
+                            ("cost_hurdle", entry_delta.get("require_cost_hurdle")),
+                        )
+                        if bool(enabled)
+                    ][:6],
+                    "reason": reason,
+                },
+                "monitor_focus_action": {
+                    "action": "increase_focus" if required or avoid_if else "maintain",
+                    "target_axes": _focus_axes_from_strings(" ".join(required), " ".join(avoid_if)),
+                    "reason": reason,
+                },
+                "selected_symbol_bias_action": {
+                    "action": "avoid_breakout"
+                    if decision in {"avoid_rank1", "no_trade"}
+                    else "prefer_reclaim"
+                    if decision == "watch_rank1_with_tighter_gates"
+                    else "none",
+                    "reason": reason,
+                },
+                "refresh_action": {"action": "none", "reason": "Stage 2 review completed before monitor entry."},
+            }
+        out.setdefault(
+            "strategy_refresh_trace",
+            {
+                "summary": reason,
+                "bullets": [reason] if reason else [],
+                "stages": [
+                    {
+                        "stage": "post_scanner_refresh",
+                        "label": "Stage 2 selected-symbol tactical refresh",
+                        "summary": reason,
+                        "requested": True,
+                        "effective": True,
+                        "reason": decision,
+                    }
+                ],
+            },
+        )
+
+    stage3 = dict(out.get("stale_intraday_hold_review") or {})
+    if stage3:
+        decision = str(stage3.get("hold_review_decision") or "").strip()
+        reason = str(stage3.get("reason") or "stale intraday hold review").strip()
+        if "strategy_adjustment_directives" not in out:
+            out["strategy_adjustment_directives"] = {
+                "playbook_action": {"action": "maintain", "target": None, "reason": reason},
+                "entry_policy_action": {"action": "maintain", "target_fields": [], "reason": reason},
+                "monitor_focus_action": {
+                    "action": "increase_focus" if decision in {"tighten_exit", "exit_now"} else "maintain",
+                    "target_axes": ["exit_axis"],
+                    "reason": reason,
+                },
+                "selected_symbol_bias_action": {"action": "none", "reason": reason},
+                "refresh_action": {
+                    "action": "refresh_for_exit_axis_mismatch"
+                    if decision in {"tighten_exit", "exit_now"}
+                    else "refresh_for_holding",
+                    "reason": reason,
+                },
+            }
+        out.setdefault(
+            "strategy_refresh_trace",
+            {
+                "summary": reason,
+                "bullets": [reason] if reason else [],
+                "stages": [
+                    {
+                        "stage": "stale_intraday_hold_review",
+                        "label": "Stage 3 stale intraday hold review",
+                        "summary": reason,
+                        "requested": True,
+                        "effective": True,
+                        "reason": decision,
+                    }
+                ],
+            },
+        )
+
+    stage4 = dict(out.get("end_of_day_carry_review") or {})
+    if stage4:
+        reason = str(stage4.get("risk_note") or "end-of-day carry review").strip()
+        portfolio_level = str(stage4.get("portfolio_level_decision") or "").strip()
+        carry_allowed = portfolio_level in {"carry_allowed", "carry_only_best_one"}
+        out.setdefault(
+            "strategy_horizon_feedback",
+            {
+                "strategy_horizon": "overnight_probe" if carry_allowed else "intraday",
+                "exit_guidance": {
+                    "allow_overnight": bool(carry_allowed),
+                    "preferred_exit": "carry_review" if carry_allowed else "flatten_today",
+                },
+                "monitor_handoff": {
+                    "hold_bias": "neutral_to_patient" if carry_allowed else "defensive",
+                    "preferred_exit": "carry_review" if carry_allowed else "flatten_today",
+                    "do_not_force_hold": True,
+                },
+            },
+        )
+        out.setdefault(
+            "strategy_refresh_trace",
+            {
+                "summary": reason,
+                "bullets": [reason] if reason else [],
+                "stages": [
+                    {
+                        "stage": "end_of_day_carry_review",
+                        "label": "Stage 4 end-of-day carry review",
+                        "summary": reason,
+                        "requested": True,
+                        "effective": True,
+                        "reason": portfolio_level,
+                    }
+                ],
+            },
+        )
+
+
+def _stage_specific_role_boundary(call_kind: str) -> str:
+    if call_kind == "selected_symbol_tactical_refresh":
+        return (
+            "You may recommend how to watch the Scanner-selected symbol and runner-ups, "
+            "but you do not approve orders. Monitor calculates the final entry signal and Commander owns hard risk gates. "
+        )
+    if call_kind == "stale_intraday_hold_review":
+        return (
+            "You review an already-held intraday position for hold, tighter exit handling, or exit pressure, "
+            "but you do not place or approve sell orders. Monitor and Commander retain hard exit authority. "
+        )
+    if call_kind == "end_of_day_carry_review":
+        return (
+            "You review held positions near the close for flatten/carry risk, "
+            "but you do not bypass deterministic closeout, broker truth, weekend, or risk controls. "
+        )
+    return "Do not select final stock and do not produce order instructions. "
+
+
+def _stage_specific_task_requirement(call_kind: str) -> str:
+    if call_kind == "selected_symbol_tactical_refresh":
+        return (
+            "Your role is to compare Scanner rank #1 with compressed runner-ups, use selected_symbol_memory only as bounded symbol-specific evidence when memory is enabled, "
+            "and output selected_symbol_decision, target_symbol, target_rank, runner_up_order, monitor_instruction, entry_policy_delta, memory_usage, commander_actionability, confidence, and reason. "
+        )
+    if call_kind == "stale_intraday_hold_review":
+        return (
+            "Your role is to review whether the held position thesis is still intact, whether exit pressure is rising, and whether Monitor should tighten exits or wait for the next check. "
+            "Output hold_review_decision, exit_pressure, thesis_status, monitor_adjustment, priority_exit_triggers, next_check_minutes, and reason. "
+        )
+    if call_kind == "end_of_day_carry_review":
+        return (
+            "Your role is to review each held position near session close for carry risk versus same-day flattening. "
+            "Output carry_review, portfolio_level_decision, and risk_note. "
+        )
+    return (
+        "Your role is to choose exactly ONE playbook, provide a short rationale, produce a realistic and bounded monitor_entry_policy, propose tactical strategy detail, propose candidate_watch_policy, and produce explicit strategy_adjustment_directives that indicate what should change, what should be maintained, and why. "
+    )
+
+
+def _stage_specific_user_requirement(call_kind: str) -> str:
+    if call_kind == "selected_symbol_tactical_refresh":
+        return (
+            "Decision requirements: return the Stage 2 selected-symbol tactical refresh contract only. "
+            "Compare rank #1 and runner-ups in one call, decide whether to watch rank #1, avoid rank #1, tighten rank #1 gates, cascade to runner-ups, or no-trade. "
+            "Do not output a direct BUY/SELL. "
+        )
+    if call_kind == "stale_intraday_hold_review":
+        return (
+            "Decision requirements: return the Stage 3 stale intraday hold review contract only. "
+            "Decide hold, tighten_exit, exit_now, or wait_until_next_check using the held position thesis, net PnL, VWAP, drawdown, time decay, and market context. "
+            "Keep the reason tied to the held symbol under review and do not attribute unrelated candidate or market theme labels to that position. "
+            "Do not output a direct SELL order. "
+        )
+    if call_kind == "end_of_day_carry_review":
+        return (
+            "Decision requirements: return the Stage 4 end-of-day carry review contract only. "
+            "For each held position decide carry_overnight, flatten_today, or reduce_or_flatten, then provide a portfolio-level carry decision. "
+            "Do not bypass hard closeout, weekend, broker-truth, or risk controls. "
+        )
+    return (
+        "Decision requirements: choose exactly ONE playbook, provide a short but concrete rationale, produce tactical_strategy, strategy_scores, rejected_strategy_reasons, candidate_watch_policy, a realistic and bounded monitor_entry_policy, and strategy_adjustment_directives that clearly state whether to maintain, tighten, relax, rebalance, deprioritize, prefer, or switch, which fields, axes, or playbooks are affected, and why this action is justified by deterministic evidence. "
+    )
+
+
+def _stage_specific_llm_contract(call_kind: str, base_contract: Dict[str, Any]) -> Dict[str, Any]:
+    if call_kind == "selected_symbol_tactical_refresh":
+        return {
+            "selected_symbol_decision": "watch_rank1|avoid_rank1|watch_rank1_with_tighter_gates|cascade_to_runner_up|no_trade",
+            "target_symbol": "005930",
+            "target_rank": 1,
+            "runner_up_order": ["000660", "035420"],
+            "monitor_instruction": {
+                "watch_intensity": "normal|strict|aggressive",
+                "required_confirmations": ["vwap_reclaim", "net_cost_hurdle_pass", "volume_confirmation"],
+                "avoid_if": ["fails_to_hold_vwap", "net_expected_edge_below_cost", "opening_gap_chase_without_pullback"],
+            },
+            "entry_policy_delta": {
+                "tighten_confidence_threshold": False,
+                "require_prev_close_context": True,
+                "require_cost_hurdle": True,
+            },
+            "memory_usage": {
+                "status": "used|disabled|insufficient|stale",
+                "sample_count": 0,
+                "confidence": "low|medium|high",
+                "data_quality": "ok|stale|insufficient",
+                "effect": "neutral|supportive|cautionary",
+                "reason": "string",
+            },
+            "commander_actionability": "advisory_only|policy_delta_allowed|hard_block_recommended",
+            "confidence": 0.0,
+            "reason": "string",
+        }
+    if call_kind == "stale_intraday_hold_review":
+        return {
+            "hold_review_decision": "hold|tighten_exit|exit_now|wait_until_next_check",
+            "exit_pressure": "low|medium|high",
+            "thesis_status": "intact|weakened|broken",
+            "monitor_adjustment": {
+                "tighten_stop": True,
+                "tighten_time_decay": True,
+                "allow_profit_recovery_wait": False,
+                "next_check_minutes": 5,
+            },
+            "priority_exit_triggers": ["vwap_breakdown", "time_decay"],
+            "next_check_minutes": 5,
+            "reason": "string",
+        }
+    if call_kind == "end_of_day_carry_review":
+        return {
+            "carry_review": [
+                {
+                    "symbol": "005930",
+                    "decision": "carry_overnight|flatten_today|reduce_or_flatten",
+                    "carry_confidence": "low|medium|high",
+                    "required_next_day_plan": {
+                        "gap_down_action": "exit_on_open|wait_first_5min|monitor_vwap",
+                        "gap_up_action": "take_profit|trail|hold_if_vwap_supports",
+                        "flat_open_action": "monitor_vwap_and_volume",
+                    },
+                    "reason": "string",
+                }
+            ],
+            "portfolio_level_decision": "carry_allowed|flatten_all|carry_only_best_one",
+            "risk_note": "string",
+        }
+    return base_contract
+
+
 def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
@@ -602,6 +1089,9 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
         "conflict_analysis",
         "trade_permission_frame",
         "responsibility_boundary",
+        "selected_symbol_tactical_review",
+        "stale_intraday_hold_review",
+        "end_of_day_carry_review",
     }
     out: Dict[str, Any] = {}
     for key in allowed:
@@ -628,10 +1118,39 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
         out["policy_adjustment"] = dict(raw.get("policy_adjustment") or {})
     if isinstance(raw.get("strategy_adjustment_directives"), dict):
         out["strategy_adjustment_directives"] = dict(raw.get("strategy_adjustment_directives") or {})
+    if isinstance(raw.get("strategy_scores"), dict):
+        out["strategy_scores"] = dict(raw.get("strategy_scores") or {})
+    if isinstance(raw.get("rejected_strategy_reasons"), dict):
+        out["rejected_strategy_reasons"] = dict(raw.get("rejected_strategy_reasons") or {})
+    if isinstance(raw.get("candidate_watch_policy"), dict):
+        out["candidate_watch_policy"] = dict(raw.get("candidate_watch_policy") or {})
+    if raw.get("tactical_strategy") not in (None, ""):
+        out["tactical_strategy"] = str(raw.get("tactical_strategy") or "").strip().lower()
     if isinstance(raw.get("selected_themes"), list):
         out["selected_themes"] = _extract_theme_names_from_any(raw.get("selected_themes"))
     if isinstance(raw.get("theme_strategy"), dict):
         out["theme_strategy"] = dict(raw.get("theme_strategy") or {})
+    stage2 = _normalize_stage2_selected_symbol_review(raw)
+    if stage2:
+        out["selected_symbol_tactical_review"] = dict(stage2)
+        out["selected_symbol_decision"] = str(stage2.get("selected_symbol_decision") or "")
+        out["target_symbol"] = str(stage2.get("target_symbol") or "")
+        out["target_rank"] = int(stage2.get("target_rank") or 0)
+        out["runner_up_order"] = list(stage2.get("runner_up_order") or [])
+        out["monitor_instruction"] = dict(stage2.get("monitor_instruction") or {})
+        out["entry_policy_delta"] = dict(stage2.get("entry_policy_delta") or {})
+        out["memory_usage"] = dict(stage2.get("memory_usage") or {})
+        out["commander_actionability"] = str(stage2.get("commander_actionability") or "")
+    stage3 = _normalize_stage3_hold_review(raw)
+    if stage3:
+        out["stale_intraday_hold_review"] = dict(stage3)
+        out["hold_review_decision"] = str(stage3.get("hold_review_decision") or "")
+    stage4 = _normalize_stage4_carry_review(raw)
+    if stage4:
+        out["end_of_day_carry_review"] = dict(stage4)
+        out["carry_review"] = list(stage4.get("carry_review") or [])
+        out["portfolio_level_decision"] = str(stage4.get("portfolio_level_decision") or "")
+    _derive_stage_specific_common_overrides(out)
     return out
 
 
@@ -829,6 +1348,11 @@ def _build_llm_commander_refresh_context(
         if isinstance(context.get("strategist_refresh_context"), dict)
         else {}
     )
+    refresh_context = (
+        dict(open_position_refresh_context)
+        if open_position_refresh_context
+        else dict(strategist_refresh_context)
+    )
     commander_horizon_policy = (
         dict(context.get("commander_horizon_policy") or {})
         if isinstance(context.get("commander_horizon_policy"), dict)
@@ -838,39 +1362,83 @@ def _build_llm_commander_refresh_context(
         if isinstance(open_position_refresh_context.get("commander_horizon_policy"), dict)
         else {}
     )
-    selected_symbol = str(open_position_refresh_context.get("selected_symbol") or "")
+    selected_symbol = str(refresh_context.get("selected_symbol") or "")
+    selected_symbol_was_rank1_raw = refresh_context.get("selected_symbol_was_rank1")
+    selected_symbol_was_rank1 = (
+        bool(selected_symbol_was_rank1_raw)
+        if selected_symbol_was_rank1_raw is not None
+        else int(refresh_context.get("selected_rank") or 0) == 1
+    )
     return {
         "requested": bool(context.get("strategist_refresh_requested")),
         "reason": str(context.get("strategist_refresh_reason") or ""),
-        "refresh_scope": str(open_position_refresh_context.get("refresh_scope") or ""),
+        "refresh_scope": str(refresh_context.get("refresh_scope") or ""),
         "selected_symbol": selected_symbol,
-        "hold_repeat_count_max": int(open_position_refresh_context.get("hold_repeat_count_max") or 0),
-        "selected_hold_repeat_count": int(open_position_refresh_context.get("selected_hold_repeat_count") or 0),
-        "monitor_reason": str(open_position_refresh_context.get("monitor_reason") or ""),
-        "active_exit_axis": str(open_position_refresh_context.get("active_exit_axis") or ""),
-        "refresh_summary": str(open_position_refresh_context.get("refresh_summary") or ""),
-        "entry_state": dict(open_position_refresh_context.get("entry_state") or {}),
-        "carry_state": str(open_position_refresh_context.get("carry_state") or context.get("carry_state") or ""),
+        "hold_repeat_count_max": int(refresh_context.get("hold_repeat_count_max") or 0),
+        "selected_hold_repeat_count": int(refresh_context.get("selected_hold_repeat_count") or 0),
+        "monitor_reason": str(refresh_context.get("monitor_reason") or ""),
+        "active_exit_axis": str(refresh_context.get("active_exit_axis") or ""),
+        "refresh_summary": str(refresh_context.get("refresh_summary") or ""),
+        "selected_rank": int(refresh_context.get("selected_rank") or 0),
+        "selected_score": _round_optional(refresh_context.get("selected_score"), 4),
+        "scanner_primary_candidate": dict(refresh_context.get("scanner_primary_candidate") or {}),
+        "actual_selected_candidate": dict(
+            refresh_context.get("actual_selected_candidate")
+            or refresh_context.get("scanner_primary_candidate")
+            or {}
+        ),
+        "scanner_rank1_candidate": dict(refresh_context.get("scanner_rank1_candidate") or {}),
+        "scanner_runner_ups": [
+            dict(row)
+            for row in list(refresh_context.get("scanner_runner_ups") or [])[:4]
+            if isinstance(row, dict)
+        ],
+        "scanner_top_candidates": [
+            dict(row)
+            for row in list(refresh_context.get("scanner_top_candidates") or [])[:5]
+            if isinstance(row, dict)
+        ],
+        "selected_symbol_was_rank1": bool(selected_symbol_was_rank1),
+        "stage2_context_quality": str(refresh_context.get("stage2_context_quality") or ""),
+        "stage2_context_quality_reasons": [
+            str(reason or "")
+            for reason in list(refresh_context.get("stage2_context_quality_reasons") or [])[:6]
+            if str(reason or "").strip()
+        ],
+        "entry_state": dict(refresh_context.get("entry_state") or {}),
+        "carry_state": str(refresh_context.get("carry_state") or context.get("carry_state") or ""),
         "carry_risk_bias": str(
-            open_position_refresh_context.get("carry_risk_bias") or context.get("carry_risk_bias") or ""
+            refresh_context.get("carry_risk_bias") or context.get("carry_risk_bias") or ""
         ),
         "carry_risk_reason": str(
-            open_position_refresh_context.get("carry_risk_reason") or context.get("carry_risk_reason") or ""
+            refresh_context.get("carry_risk_reason") or context.get("carry_risk_reason") or ""
         ),
         "session_open_recovery_assessment": dict(
-            open_position_refresh_context.get("session_open_recovery_assessment")
+            refresh_context.get("session_open_recovery_assessment")
             or context.get("session_open_recovery_assessment")
             or {}
         ),
         "prior_monitor_entry_policy_summary": dict(
-            strategist_refresh_context.get("prior_monitor_entry_policy_summary") or {}
+            refresh_context.get("prior_monitor_entry_policy_summary")
+            or strategist_refresh_context.get("prior_monitor_entry_policy_summary")
+            or {}
         )
-        if isinstance(strategist_refresh_context.get("prior_monitor_entry_policy_summary"), dict)
+        if isinstance(
+            refresh_context.get("prior_monitor_entry_policy_summary")
+            or strategist_refresh_context.get("prior_monitor_entry_policy_summary"),
+            dict,
+        )
         else {},
         "current_monitor_entry_policy_summary": dict(
-            strategist_refresh_context.get("current_monitor_entry_policy_summary") or {}
+            refresh_context.get("current_monitor_entry_policy_summary")
+            or strategist_refresh_context.get("current_monitor_entry_policy_summary")
+            or {}
         )
-        if isinstance(strategist_refresh_context.get("current_monitor_entry_policy_summary"), dict)
+        if isinstance(
+            refresh_context.get("current_monitor_entry_policy_summary")
+            or strategist_refresh_context.get("current_monitor_entry_policy_summary"),
+            dict,
+        )
         else {},
         "commander_horizon_policy": dict(commander_horizon_policy),
         "horizon_context": {
@@ -1150,12 +1718,28 @@ def _normalize_strategy_adjustment_directives(
 
 def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, str]]:
     memory_usage_disabled = _strategy_memory_usage_disabled(payload)
+    call_kind = _resolve_strategist_llm_call_kind(payload)
+    stage_instruction = (
+        "This is Stage 2 selected-symbol tactical refresh. Keep the Stage 1 market frame unless the selected symbol and runner-up evidence clearly contradict it. Use selected_symbol_memory only for symbol-specific bias, policy delta, and monitor handoff. "
+        if call_kind == "selected_symbol_tactical_refresh"
+        else "This is Stage 3 stale intraday hold review. Focus on whether the open position still deserves HOLD, needs tighter exit handling, or needs an immediate exit review. Review only the held symbol from commander_refresh_context/current_position; do not borrow Stage 1 selected themes, runner-up themes, or unrelated candidate themes unless explicit held-symbol evidence says they apply. If held-symbol theme evidence is missing, say it is unavailable instead of naming a theme. "
+        if call_kind == "stale_intraday_hold_review"
+        else "This is Stage 4 end-of-day carry review. Focus on whether the position can be carried overnight or should be closed before session end, using carry risk and session context. "
+        if call_kind == "end_of_day_carry_review"
+        else "This is Stage 1 market strategy frame. Do not choose a final stock here; set market, theme, playbook, scanner, and monitor guidance only. Symbol-level memory is intentionally excluded at this stage. "
+    )
     memory_system_instruction = (
         "Memory packets are temporarily disabled by Commander policy. "
         "Treat read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, and commander_memory_policy as audit-only surfaces. "
         "Do not use memory fields to adjust playbook, selected themes, monitor_entry_policy, scanner guidance, monitor focus, or selected_symbol_bias_action. "
         "strategy_adjustment_directives must be based on current market, scanner, monitor, refresh, and risk evidence only. "
         if memory_usage_disabled
+        else (
+            "You MUST use the provided deterministic memory packets as primary constraints: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
+            "You MUST convert those inputs into explicit strategy adjustment directives. "
+            "For Stage 1, use broad daily/weekly/monthly performance memory only and do not infer symbol-specific bias unless a selected-symbol refresh is requested. "
+        )
+        if call_kind == "market_strategy_frame"
         else (
             "You MUST use the provided deterministic memory packets as primary constraints: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
             "You MUST convert those inputs into explicit strategy adjustment directives. "
@@ -1169,20 +1753,41 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
             "Input packets: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
         )
     )
+    memory_sensitive_directives = (
+        "Do not ignore repeated patterns across memory packets. "
+        "If a playbook is consistently underperforming in the recent memory, you must deprioritize or switch it. "
+        + (
+            "Do not use selected_symbol_bias_action as a symbol-memory decision during Stage 1. "
+            if call_kind == "market_strategy_frame"
+            else "If a selected symbol shows repeated structural mismatch, you must reflect that in selected_symbol_bias_action. "
+        )
+        if not memory_usage_disabled
+        else (
+            "Ignore memory-derived performance, win-rate, loss, pattern, and symbol-history fields when choosing playbook, thresholds, themes, monitor focus, or symbol bias. "
+        )
+    )
+    memory_user_directives = (
+        "Do not ignore repeated patterns across memory packets. "
+        "If symbol-level memory contradicts broad market memory, keep broad playbook stable but express symbol-specific bias separately. "
+        if not memory_usage_disabled
+        else (
+            "Memory performance and symbol-history fields are hidden; do not reference weekly, monthly, symbol, win-rate, or loss memory as a reason. "
+        )
+    )
     system = (
         "You are the Strategist agent for an automated trading system. "
         "You must output a strategic frame only. "
-        "Do not select final stock and do not produce order instructions. "
+        f"{_stage_specific_role_boundary(call_kind)}"
+        f"{stage_instruction}"
         f"{memory_system_instruction}"
         "Do not merely summarize, restate, or lightly reference the inputs. "
-        "Your role is to choose exactly ONE playbook, provide a short rationale, produce a realistic and bounded monitor_entry_policy, and produce explicit strategy_adjustment_directives that indicate what should change, what should be maintained, and why. "
+        f"{_stage_specific_task_requirement(call_kind)}"
         "Return exactly one minified JSON object only. "
         "Do not add analysis, markdown, bullet points, or any text before or after the JSON. "
         "The first character must be { and the last character must be }. "
         "If deterministic evidence shows repeated NOOP-like blockage, you must decide whether entry conditions should be relaxed, tightened, or rebalanced. "
         "If deterministic evidence shows repeated false entries, stop-outs, or drawdown-heavy outcomes, you must tighten or rebalance policy. "
-        "If a playbook is consistently underperforming in the recent memory, you must deprioritize or switch it. "
-        "If a selected symbol shows repeated structural mismatch, you must reflect that in selected_symbol_bias_action. "
+        f"{memory_sensitive_directives}"
         "If evidence is mixed or weak, explicitly maintain conservative baseline. "
         "strategy_adjustment_directives must be actionable, specific, and bounded. "
         "Do not output generic advice. "
@@ -1195,8 +1800,48 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "All human-readable sentences must be in Korean. "
         "Return JSON only."
     )
-    contract = {
+    base_contract = {
         "playbook": "breakout|pullback|reversal|defensive",
+        "tactical_strategy": (
+            "opening_gap_momentum|opening_range_breakout|leader_vwap_reclaim_pullback|"
+            "volume_breakout|reversal_reclaim|cost_aware_scalp|defensive_observe"
+        ),
+        "strategy_scores": {
+            "opening_gap_momentum": 0.0,
+            "opening_range_breakout": 0.0,
+            "leader_vwap_reclaim_pullback": 0.0,
+            "volume_breakout": 0.0,
+            "reversal_reclaim": 0.0,
+            "cost_aware_scalp": 0.0,
+            "defensive_observe": 0.0,
+        },
+        "rejected_strategy_reasons": {
+            "strategy_name": "short reason why this tactical strategy was not selected"
+        },
+        "candidate_watch_policy": {
+            "max_priority_rank": 5,
+            "max_runner_ups": 4,
+            "cascade_enabled": True,
+            "cascade_allowed_reasons": [
+                "too_extended_from_vwap",
+                "breakout_not_ready",
+                "volume_insufficient",
+                "volume_confirmation_missing",
+                "below_vwap_reclaim_not_ready",
+                "pullback_below_vwap_reclaim_not_ready",
+                "pullback_not_mature",
+            ],
+            "cascade_blocked_reasons": [
+                "cost_filter_failed",
+                "risk_policy_block",
+                "closeout_window",
+                "open_position_present",
+                "daily_loss_limit",
+                "broker_truth_mismatch",
+                "data_quality_guard",
+            ],
+            "reason": "string",
+        },
         "selected_themes": ["string from available_themes only when available"],
         "theme_strategy": {
             "selection_mode": "kiwoom_api_constrained|fallback",
@@ -1283,6 +1928,7 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
             },
         },
     }
+    contract = _stage_specific_llm_contract(call_kind, base_contract)
     user = (
         (
             "Use the provided market context and candidate hints. "
@@ -1290,21 +1936,21 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
             else "Use the provided market context, candidate hints, and deterministic memory packets. "
         )
         + f"{memory_user_instruction}"
-        "Decision requirements: choose exactly ONE playbook, provide a short but concrete rationale, produce a realistic and bounded monitor_entry_policy, and produce strategy_adjustment_directives that clearly state whether to maintain, tighten, relax, rebalance, deprioritize, prefer, or switch, which fields, axes, or playbooks are affected, and why this action is justified by deterministic evidence. "
+        f"{_stage_specific_user_requirement(call_kind)}"
         "Prefer changing strategy only when deterministic evidence supports it. "
         "Prefer maintaining current baseline when evidence is weak or mixed. "
         "Do not overreact to a single trade. "
-        "Do not ignore repeated patterns across memory packets. "
+        f"{memory_user_directives}"
         "Do not produce narrative summary in place of directives. "
         "Do not collapse strategist refresh into one generic summary; strategy_refresh_trace must distinguish 1st/base frame, 2nd/post-scanner refresh, and final application. "
         "If available_themes is non-empty, selected_themes must be chosen only from available_themes.theme. "
         "If available_themes is empty, selected_themes must stay empty; fallback_theme_hints are context only and must not be treated as tradable Kiwoom themes. "
         "Do not invent tradable theme names outside Kiwoom available_themes; abstract labels may appear only in rationale or fallback_reason. "
         "Scanner directives must describe how to rank symbols inside selected Kiwoom theme components, not name a final stock. "
+        "candidate_watch_policy is a proposal only; Commander owns final executable entry_control and may clamp the proposed watch depth. "
         "Avoid vague terms such as slightly, carefully, appropriately, or in general. "
         "Use explicit, bounded, implementable language. "
         "If repeated failure is concentrated in one axis, reflect that axis in monitor_focus_action. "
-        "If symbol-level memory contradicts broad market memory, keep broad playbook stable but express symbol-specific bias separately. "
         "Reply with JSON only. No prose.\n"
         "JSON contract:\n"
         f"{json.dumps(contract, ensure_ascii=False)}\n\n"
@@ -1352,6 +1998,22 @@ def _compact_global_signal_for_llm(signal: Any) -> Dict[str, Any]:
     index_moves = src.get("index_moves") if isinstance(src.get("index_moves"), dict) else {}
     macro_moves = src.get("macro_moves") if isinstance(src.get("macro_moves"), dict) else {}
     fear_index = src.get("fear_index") if isinstance(src.get("fear_index"), dict) else {}
+    korea_indices = src.get("korea_indices") if isinstance(src.get("korea_indices"), dict) else {}
+    korea_rows = korea_indices.get("indices") if isinstance(korea_indices.get("indices"), dict) else {}
+
+    def _compact_korea_index(name: str) -> Dict[str, Any]:
+        row = korea_rows.get(name) if isinstance(korea_rows.get(name), dict) else {}
+        if not row:
+            return {}
+        return {
+            "current": _round_optional(row.get("current"), 2),
+            "previous_close": _round_optional(row.get("previous_close"), 2),
+            "change_pct": _round_optional(row.get("change_pct"), 3),
+            "change": _round_optional(row.get("change"), 2),
+            "current_date": str(row.get("current_date") or ""),
+            "previous_date": str(row.get("previous_date") or ""),
+        }
+
     return {
         "score": _round_optional(src.get("score"), 4),
         "status": str(src.get("status") or ""),
@@ -1360,6 +2022,18 @@ def _compact_global_signal_for_llm(signal: Any) -> Dict[str, Any]:
             "sp500_pct": _round_optional(index_moves.get("sp500_pct"), 3),
             "nasdaq_pct": _round_optional(index_moves.get("nasdaq_pct"), 3),
             "dow_pct": _round_optional(index_moves.get("dow_pct"), 3),
+            "kospi_pct": _round_optional(index_moves.get("kospi_pct"), 3),
+            "kosdaq_pct": _round_optional(index_moves.get("kosdaq_pct"), 3),
+        },
+        "korea_indices": {
+            "source": str(korea_indices.get("source") or ""),
+            "status": str(korea_indices.get("status") or ""),
+            "average_change_pct": _round_optional(korea_indices.get("average_change_pct"), 3),
+            "breadth": _round_optional(korea_indices.get("breadth"), 3),
+            "indices": {
+                "KOSPI": _compact_korea_index("KOSPI"),
+                "KOSDAQ": _compact_korea_index("KOSDAQ"),
+            },
         },
         "macro_moves": {
             "vix_pct": _round_optional(macro_moves.get("vix_pct"), 3),
@@ -1785,13 +2459,190 @@ def _compact_pattern_performance_for_llm(snapshot: Any) -> Dict[str, Any]:
     return out
 
 
+def _clip_text_for_llm(raw: Any, *, max_len: int = 180) -> str:
+    text = str(raw or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max(0, max_len - 1)].rstrip() + "..."
+
+
+def _compact_scalar_mapping_for_llm(src: Any, *, allowed_keys: List[str], max_text_len: int = 160) -> Dict[str, Any]:
+    obj = src if isinstance(src, dict) else {}
+    out: Dict[str, Any] = {}
+    for key in allowed_keys:
+        if key not in obj:
+            continue
+        value = obj.get(key)
+        if isinstance(value, str):
+            out[key] = _clip_text_for_llm(value, max_len=max_text_len)
+        elif isinstance(value, (int, float, bool)) or value is None:
+            out[key] = value
+        elif isinstance(value, list):
+            out[key] = [
+                _clip_text_for_llm(x, max_len=max_text_len) if not isinstance(x, dict) else x
+                for x in list(value)[:4]
+            ]
+    return out
+
+
+def _compact_pattern_rows_for_llm(rows: Any, *, limit: int = 3) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for row in list(rows or [])[:limit]:
+        if not isinstance(row, dict):
+            continue
+        compact = _compact_scalar_mapping_for_llm(
+            row,
+            allowed_keys=[
+                "type",
+                "value",
+                "count",
+                "playbook",
+                "entry_reason",
+                "exit_reason",
+                "monitor_reason",
+                "blocker",
+                "pattern",
+                "win_rate",
+                "avg_return",
+                "avg_pnl_pct",
+            ],
+            max_text_len=100,
+        )
+        if compact:
+            out.append(compact)
+    return out
+
+
 def _operator_summary_for_llm(summary: Any) -> Dict[str, Any]:
     src = summary if isinstance(summary, dict) else {}
     if not src:
         return {}
-    # operator_summary is already the curated summary surface. Keep it intact so
-    # the LLM sees the same summary the operator reviews, without raw expansion.
-    return dict(src)
+    metrics = src.get("metrics") if isinstance(src.get("metrics"), dict) else {}
+    operator_view = src.get("operator_view") if isinstance(src.get("operator_view"), dict) else {}
+    out: Dict[str, Any] = {
+        "schema_version": str(src.get("schema_version") or ""),
+        "available": bool(src.get("available")),
+        "status": str(src.get("status") or ""),
+        "key": str(src.get("key") or ""),
+        "artifact_path": str(src.get("artifact_path") or ""),
+        "metrics": _compact_scalar_mapping_for_llm(
+            metrics,
+            allowed_keys=[
+                "trade_count",
+                "closed_trade_count",
+                "win_rate",
+                "avg_return_pct",
+                "avg_net_return_pct",
+                "total_return_pct",
+                "total_net_return_pct",
+                "profit_factor",
+                "avg_hold_duration_sec",
+            ],
+            max_text_len=80,
+        ),
+        "operator_view": {
+            "conclusion": _clip_text_for_llm(operator_view.get("conclusion"), max_len=180),
+            "review_points": [
+                _clip_text_for_llm(x, max_len=120)
+                for x in list(operator_view.get("review_points") or [])[:4]
+                if str(x or "").strip()
+            ],
+        },
+    }
+    for key in ("key_patterns", "repeat_patterns", "risk_notes", "cost_notes"):
+        values = src.get(key)
+        if isinstance(values, list):
+            out[key] = [_clip_text_for_llm(x, max_len=120) for x in values[:4] if str(x or "").strip()]
+    return {k: v for k, v in out.items() if v not in ({}, [], "", None)}
+
+
+def _compact_trade_read_model_for_llm(row: Any) -> Dict[str, Any]:
+    src = row if isinstance(row, dict) else {}
+    return _compact_scalar_mapping_for_llm(
+        src,
+        allowed_keys=[
+            "trade_id",
+            "symbol",
+            "entry_ts",
+            "exit_ts",
+            "entry_price",
+            "exit_price",
+            "qty",
+            "hold_duration_sec",
+            "pnl",
+            "pnl_pct",
+            "return_pct",
+            "net_return_pct",
+            "realized_pnl",
+            "realized_pnl_pct",
+            "kiwoom_pnl_pct",
+            "entry_reason",
+            "exit_reason",
+            "entry_pattern",
+            "exit_pattern",
+            "playbook",
+            "monitor_reason",
+        ],
+        max_text_len=120,
+    )
+
+
+def _compact_symbol_read_model_for_llm(row: Any) -> Dict[str, Any]:
+    src = row if isinstance(row, dict) else {}
+    out = _compact_scalar_mapping_for_llm(
+        src,
+        allowed_keys=[
+            "symbol",
+            "trade_count",
+            "closed_trade_count",
+            "win_count",
+            "loss_count",
+            "win_rate",
+            "avg_pnl_pct",
+            "avg_return",
+            "avg_hold_duration_sec",
+            "dominant_playbook",
+            "dominant_monitor_blocker",
+            "dominant_exit_reason",
+            "dominant_entry_reason",
+            "override_eligible",
+            "status",
+        ],
+        max_text_len=120,
+    )
+    out["repeated_failure_pattern"] = _compact_pattern_rows_for_llm(src.get("repeated_failure_pattern"), limit=3)
+    out["recent_success_pattern"] = _compact_pattern_rows_for_llm(src.get("recent_success_pattern"), limit=3)
+    data_quality = src.get("data_quality") if isinstance(src.get("data_quality"), dict) else {}
+    if data_quality:
+        out["data_quality"] = _compact_scalar_mapping_for_llm(
+            data_quality,
+            allowed_keys=["data_source", "unknown_fields_ratio", "status"],
+            max_text_len=80,
+        )
+    return {k: v for k, v in out.items() if v not in ({}, [], "", None)}
+
+
+def _compact_read_model_facts_for_llm(facts: Any) -> Dict[str, Any]:
+    src = facts if isinstance(facts, dict) else {}
+    recent_trades = [
+        compact
+        for compact in (_compact_trade_read_model_for_llm(row) for row in list(src.get("recent_trades") or [])[:3])
+        if compact
+    ]
+    symbol_patterns: Dict[str, Any] = {}
+    raw_patterns = src.get("symbol_patterns") if isinstance(src.get("symbol_patterns"), dict) else {}
+    for symbol, row in list(raw_patterns.items())[:5]:
+        compact = _compact_symbol_read_model_for_llm(row)
+        if compact:
+            symbol_patterns[str(symbol)] = compact
+    daily_summary = _operator_summary_for_llm(src.get("daily_summary"))
+    return {
+        "recent_trades": recent_trades,
+        "recent_trade_count": len(list(src.get("recent_trades") or [])),
+        "daily_summary": daily_summary,
+        "symbol_patterns": symbol_patterns,
+        "symbol_pattern_count": len(raw_patterns),
+    }
 
 
 def _load_deterministic_read_models(state: Dict[str, Any], candidates: List[str]) -> Dict[str, Any]:
@@ -1829,8 +2680,81 @@ def _load_deterministic_read_models(state: Dict[str, Any], candidates: List[str]
         "symbol_patterns": symbol_patterns
     }
 
+
+def _resolve_strategist_llm_call_kind(payload: Dict[str, Any]) -> str:
+    compact = payload if isinstance(payload, dict) else {}
+    context = compact.get("commander_refresh_context") if isinstance(compact.get("commander_refresh_context"), dict) else {}
+    if bool(context.get("requested")):
+        scope = str(context.get("refresh_scope") or "").strip().lower()
+        reason = str(context.get("reason") or "").strip().lower()
+        carry_state = str(context.get("carry_state") or "").strip().lower()
+        if (
+            "closeout" in scope
+            or "closeout" in reason
+            or "end_of_day" in scope
+            or "end_of_day" in reason
+            or "eod" in scope
+            or "eod" in reason
+            or "overnight_review" in scope
+            or "overnight_review" in reason
+            or "overnight" in reason
+            or reason in {"end_of_day_carry_review", "session_closeout_carry_review"}
+        ):
+            return "end_of_day_carry_review"
+        if (
+            "open_position" in scope
+            or "hold" in scope
+            or "position" in scope
+            or "hold" in reason
+            or "loss_threshold" in reason
+            or "preopen_carry" in reason
+            or carry_state
+        ):
+            return "stale_intraday_hold_review"
+        return "selected_symbol_tactical_refresh"
+    explicit = str(compact.get("resolved_call_kind") or compact.get("call_kind") or "").strip().lower()
+    if explicit in {
+        "selected_symbol_tactical_refresh",
+        "stale_intraday_hold_review",
+        "end_of_day_carry_review",
+        "market_strategy_frame",
+    }:
+        return explicit
+    return "market_strategy_frame"
+
+
+def _hide_stage1_symbol_memory(compact: Dict[str, Any]) -> None:
+    reason = "stage1_market_frame_excludes_symbol_memory"
+    if isinstance(compact.get("commander_refresh_context"), dict):
+        compact["commander_refresh_context"]["selected_symbol_memory"] = {}
+    read_model_facts = compact.get("read_model_facts") if isinstance(compact.get("read_model_facts"), dict) else {}
+    compact["read_model_facts"] = {
+        **dict(read_model_facts),
+        "symbol_patterns": {},
+        "symbol_pattern_count": 0,
+        "symbol_memory_visible_to_llm": False,
+        "symbol_memory_exclusion_reason": reason,
+    }
+    memory_packets = compact.get("memory_packets") if isinstance(compact.get("memory_packets"), dict) else {}
+    compact["memory_packets"] = {
+        **dict(memory_packets),
+        "symbol_memory_packet": {
+            "status": "excluded",
+            "visible_to_llm": False,
+            "reason": reason,
+        },
+    }
+    compact["memory_boundary"] = {
+        "stage": "stage1_market_frame",
+        "broad_memory_visible_to_llm": True,
+        "symbol_memory_visible_to_llm": False,
+        "reason": reason,
+    }
+
+
 def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     compact = dict(payload or {})
+    memory_usage_disabled = _strategy_memory_usage_disabled(compact)
     compact["global_sentiment_signal"] = _compact_global_signal_for_llm(compact.get("global_sentiment_signal"))
     news_ctx = compact.get("news_context") if isinstance(compact.get("news_context"), dict) else {}
     compact["news_context"] = {
@@ -1893,6 +2817,12 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
     }
     compact["news_query_targets"] = [str(x or "") for x in list(compact.get("news_query_targets") or [])[:8]]
     commander_refresh_context = compact.get("commander_refresh_context") if isinstance(compact.get("commander_refresh_context"), dict) else {}
+    selected_symbol_was_rank1_raw = commander_refresh_context.get("selected_symbol_was_rank1")
+    selected_symbol_was_rank1 = (
+        bool(selected_symbol_was_rank1_raw)
+        if selected_symbol_was_rank1_raw is not None
+        else int(commander_refresh_context.get("selected_rank") or 0) == 1
+    )
     compact["commander_refresh_context"] = {
         "requested": bool(commander_refresh_context.get("requested")),
         "reason": str(commander_refresh_context.get("reason") or ""),
@@ -1903,7 +2833,39 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
         "monitor_reason": str(commander_refresh_context.get("monitor_reason") or ""),
         "active_exit_axis": str(commander_refresh_context.get("active_exit_axis") or ""),
         "refresh_summary": str(commander_refresh_context.get("refresh_summary") or "")[:220],
+        "selected_rank": int(commander_refresh_context.get("selected_rank") or 0),
+        "selected_score": _round_optional(commander_refresh_context.get("selected_score"), 4),
+        "scanner_primary_candidate": dict(commander_refresh_context.get("scanner_primary_candidate") or {}),
+        "actual_selected_candidate": dict(
+            commander_refresh_context.get("actual_selected_candidate")
+            or commander_refresh_context.get("scanner_primary_candidate")
+            or {}
+        ),
+        "scanner_rank1_candidate": dict(commander_refresh_context.get("scanner_rank1_candidate") or {}),
+        "scanner_runner_ups": [
+            dict(row)
+            for row in list(commander_refresh_context.get("scanner_runner_ups") or [])[:4]
+            if isinstance(row, dict)
+        ],
+        "scanner_top_candidates": [
+            dict(row)
+            for row in list(commander_refresh_context.get("scanner_top_candidates") or [])[:5]
+            if isinstance(row, dict)
+        ],
+        "selected_symbol_was_rank1": bool(selected_symbol_was_rank1),
+        "stage2_context_quality": str(commander_refresh_context.get("stage2_context_quality") or ""),
+        "stage2_context_quality_reasons": [
+            str(reason or "")
+            for reason in list(commander_refresh_context.get("stage2_context_quality_reasons") or [])[:6]
+            if str(reason or "").strip()
+        ],
         "entry_state": dict(commander_refresh_context.get("entry_state") or {}),
+        "carry_state": str(commander_refresh_context.get("carry_state") or ""),
+        "carry_risk_bias": str(commander_refresh_context.get("carry_risk_bias") or ""),
+        "carry_risk_reason": str(commander_refresh_context.get("carry_risk_reason") or "")[:220],
+        "session_open_recovery_assessment": dict(
+            commander_refresh_context.get("session_open_recovery_assessment") or {}
+        ),
         "prior_monitor_entry_policy_summary": dict(commander_refresh_context.get("prior_monitor_entry_policy_summary") or {}),
         "current_monitor_entry_policy_summary": dict(commander_refresh_context.get("current_monitor_entry_policy_summary") or {}),
         "commander_horizon_policy": {
@@ -1951,6 +2913,23 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
             "reason": str(commander_refresh_context.get("reason") or ""),
             "scope": str(commander_refresh_context.get("refresh_scope") or ""),
             "selected_symbol": str(commander_refresh_context.get("selected_symbol") or ""),
+            "selected_rank": int(commander_refresh_context.get("selected_rank") or 0),
+            "selected_score": _round_optional(commander_refresh_context.get("selected_score"), 4),
+            "scanner_rank1_symbol": str(
+                (commander_refresh_context.get("scanner_rank1_candidate") or {}).get("symbol") or ""
+            )
+            if isinstance(commander_refresh_context.get("scanner_rank1_candidate"), dict)
+            else "",
+            "actual_selected_rank": int(
+                (commander_refresh_context.get("actual_selected_candidate") or {}).get("rank")
+                or commander_refresh_context.get("selected_rank")
+                or 0
+            )
+            if isinstance(commander_refresh_context.get("actual_selected_candidate"), dict)
+            else int(commander_refresh_context.get("selected_rank") or 0),
+            "selected_symbol_was_rank1": bool(selected_symbol_was_rank1),
+            "stage2_context_quality": str(commander_refresh_context.get("stage2_context_quality") or ""),
+            "runner_up_count": len(list(commander_refresh_context.get("scanner_runner_ups") or [])),
             "monitor_reason": str(commander_refresh_context.get("monitor_reason") or ""),
             "refresh_summary": str(commander_refresh_context.get("refresh_summary") or "")[:220],
         },
@@ -2020,19 +2999,51 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
         "entry_policy_delta": dict(monitor_memory_bias.get("entry_policy_delta") or {}),
         "risk_posture": str(monitor_memory_bias.get("risk_posture") or ""),
     }
-    compact["read_model_facts"] = payload.get("read_model_facts", {})
+    compact["read_model_facts"] = _compact_read_model_facts_for_llm(payload.get("read_model_facts", {}))
+    if memory_usage_disabled:
+        disabled_stub = {
+            "status": "disabled",
+            "visible_to_llm": False,
+            "reason": "commander_memory_usage_disabled",
+        }
+        compact["recent_strategy_feedback"] = dict(disabled_stub)
+        compact["reporter_feedback_packet"] = dict(disabled_stub)
+        compact["strategy_memory"] = dict(disabled_stub)
+        compact["read_model_facts"] = {
+            **disabled_stub,
+            "recent_trade_count": 0,
+            "symbol_pattern_count": 0,
+        }
+        compact["memory_packets"] = {
+            "daily_strategy_memory": dict(disabled_stub),
+            "weekly_strategy_memory": dict(disabled_stub),
+            "monthly_strategy_memory": dict(disabled_stub),
+            "symbol_memory_packet": dict(disabled_stub),
+        }
+        compact["scanner_memory_bias"] = {"enabled": False, "visible_to_llm": False}
+        compact["monitor_memory_bias"] = {"enabled": False, "visible_to_llm": False}
+        if isinstance(compact.get("commander_refresh_context"), dict):
+            compact["commander_refresh_context"]["selected_symbol_memory"] = {}
+        compact["memory_disabled_notice"] = (
+            "Memory-derived trade history and performance fields are hidden from the strategist LLM; "
+            "use only current market, scanner, monitor, refresh, and risk evidence."
+        )
+    compact["resolved_call_kind"] = _resolve_strategist_llm_call_kind(compact)
+    if not memory_usage_disabled and compact["resolved_call_kind"] == "market_strategy_frame":
+        _hide_stage1_symbol_memory(compact)
     return compact
 
 
 def _build_strategist_llm_repair_messages(payload: Dict[str, Any], raw_response: Any) -> List[Dict[str, str]]:
     compact_payload = _build_compact_strategist_llm_payload(payload)
+    call_kind = _resolve_strategist_llm_call_kind(compact_payload)
     system = (
         "You repair strategist outputs for an automated trading system. "
         "Return exactly one minified JSON object only, matching the required contract exactly. "
         "Do not add commentary, markdown, analysis, or explanations. "
         "If the previous draft contained prose, ignore it and generate a fresh JSON object."
     )
-    contract = {
+    base_contract = {
         "market_regime": "risk_on|neutral|risk_off",
         "market_sentiment": "bullish|neutral|bearish",
         "key_events": ["string"],
@@ -2102,6 +3113,7 @@ def _build_strategist_llm_repair_messages(payload: Dict[str, Any], raw_response:
         },
         "report_focus": ["theme_accuracy", "exit_quality", "overtrading"],
     }
+    contract = _stage_specific_llm_contract(call_kind, base_contract)
     raw = str(raw_response or "").strip()
     user = (
         "Fix or regenerate the strategist response as valid JSON.\n"
@@ -2168,6 +3180,19 @@ def _run_strategist_frame_llm(
         route_policy["response_format"] = {"type": "json_object"}
         
     compact_payload = _build_compact_strategist_llm_payload(payload)
+    refresh_context = (
+        compact_payload.get("commander_refresh_context")
+        if isinstance(compact_payload.get("commander_refresh_context"), dict)
+        else {}
+    )
+    if bool(refresh_context.get("requested")):
+        refresh_token_cap = max(1024, int(_env_int("STRATEGIST_REFRESH_MAX_TOKENS") or 4096))
+        if max_tokens > refresh_token_cap:
+            max_tokens = int(refresh_token_cap)
+            effective_config = dict(runtime.get("llm_execution_effective_config") or {})
+            effective_config["max_tokens"] = int(max_tokens)
+            effective_config["refresh_token_cap_applied"] = True
+            runtime["llm_execution_effective_config"] = effective_config
 
     llm_call_trace = {
         "primary_attempted": True,
@@ -2207,52 +3232,115 @@ def _run_strategist_frame_llm(
         active_model: str = "",
     ) -> Dict[str, Any]:
         try:
-            return write_llm_artifact_bundle(
+            call_kind = _resolve_strategist_llm_call_kind(compact_payload)
+            stage_descriptor = strategist_llm_stage_descriptor(call_kind)
+            stage_component = str(stage_descriptor.get("component") or "strategist_stage1_market_frame")
+            stage_index = int(stage_descriptor.get("stage_index") or 1)
+            stage_name = str(stage_descriptor.get("stage_name") or call_kind)
+            prompt_payload = {
+                "stage": str(stage or "theme_selection"),
+                "stage_index": int(stage_index),
+                "stage_name": stage_name,
+                "call_kind": call_kind,
+                "stage_component": stage_component,
+                "provider": "strategist_router",
+                "model": active_model,
+                "payload": dict(compact_payload),
+                "messages": [], # omitted for brevity in loop
+                "prompt_text": str(prompt_value or ""),
+                "temperature": float(temperature),
+                "max_tokens": int(max_tokens),
+                "timeout_sec": float(timeout_sec),
+                "retry_max": int(max_retries),
+                "retry_backoff_sec": float(retry_backoff_sec),
+                "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
+                "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
+                "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
+            }
+            response_payload = {
+                "stage": str(stage or "theme_selection"),
+                "stage_index": int(stage_index),
+                "stage_name": stage_name,
+                "call_kind": call_kind,
+                "stage_component": stage_component,
+                "provider": "strategist_router",
+                "model": active_model,
+                "status": str(status or ""),
+                "reason": str(reason or ""),
+                "repair_used": bool(repair),
+                "attempts": int(attempts_count),
+                "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
+                "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
+                "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
+                "response_text": str(response_value or ""),
+            }
+            meta_payload = {
+                "component": "strategist",
+                "llm_status": str(status or ""),
+                "status": str(status or ""),
+                "reason": str(reason or ""),
+                "model": active_model,
+                "attempts": int(attempts_count),
+                "repair_used": bool(repair),
+                "stage": str(stage or "theme_selection"),
+                "stage_index": int(stage_index),
+                "stage_name": stage_name,
+                "call_kind": call_kind,
+                "stage_component": stage_component,
+                "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
+                "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
+                "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
+            }
+            legacy_refs = write_llm_artifact_bundle(
                 state,
                 artifact_name="strategist",
-                prompt_payload={
-                    "stage": str(stage or "theme_selection"),
-                    "provider": "strategist_router",
-                    "model": active_model,
-                    "payload": dict(compact_payload),
-                    "messages": [], # omitted for brevity in loop
-                    "prompt_text": str(prompt_value or ""),
-                    "temperature": float(temperature),
-                    "max_tokens": int(max_tokens),
-                    "timeout_sec": float(timeout_sec),
-                    "retry_max": int(max_retries),
-                    "retry_backoff_sec": float(retry_backoff_sec),
-                    "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
-                    "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
-                    "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
-                },
-                response_payload={
-                    "stage": str(stage or "theme_selection"),
-                    "provider": "strategist_router",
-                    "model": active_model,
-                    "status": str(status or ""),
-                    "reason": str(reason or ""),
-                    "repair_used": bool(repair),
-                    "attempts": int(attempts_count),
-                    "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
-                    "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
-                    "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
-                    "response_text": str(response_value or ""),
-                },
+                prompt_payload=prompt_payload,
+                response_payload=response_payload,
+                meta_payload=meta_payload,
+            )
+            stage_refs = write_llm_artifact_bundle(
+                state,
+                artifact_name=stage_component,
+                prompt_payload={**dict(prompt_payload), "artifact_role": "stage_specific"},
+                response_payload={**dict(response_payload), "artifact_role": "stage_specific"},
                 meta_payload={
-                    "component": "strategist",
-                    "llm_status": str(status or ""),
-                    "status": str(status or ""),
-                    "reason": str(reason or ""),
-                    "model": active_model,
-                    "attempts": int(attempts_count),
-                    "repair_used": bool(repair),
-                    "stage": str(stage or "theme_selection"),
-                    "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
-                    "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
-                    "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
+                    **dict(meta_payload),
+                    "component": stage_component,
+                    "legacy_component": "strategist",
+                    "artifact_role": "stage_specific",
                 },
             )
+            manifest_refs = write_llm_stage_manifest_entry(
+                state,
+                {
+                    "stage_index": int(stage_index),
+                    "stage_name": stage_name,
+                    "call_kind": call_kind,
+                    "component": stage_component,
+                    "status": str(status or ""),
+                    "reason": str(reason or ""),
+                    "model": active_model,
+                    "prompt_ref": str(stage_refs.get("prompt_ref") or ""),
+                    "response_ref": str(stage_refs.get("response_ref") or ""),
+                    "meta_ref": str(stage_refs.get("meta_ref") or ""),
+                    "legacy_prompt_ref": str(legacy_refs.get("prompt_ref") or ""),
+                    "legacy_response_ref": str(legacy_refs.get("response_ref") or ""),
+                    "legacy_meta_ref": str(legacy_refs.get("meta_ref") or ""),
+                    "strategist_summary_md_ref": str(legacy_refs.get("strategist_summary_md_ref") or ""),
+                    "strategist_summary_json_ref": str(legacy_refs.get("strategist_summary_json_ref") or ""),
+                },
+            )
+            return {
+                **dict(legacy_refs),
+                "llm_stage_component": stage_component,
+                "llm_stage_index": int(stage_index),
+                "llm_stage_name": stage_name,
+                "llm_call_kind": call_kind,
+                "stage_prompt_ref": str(stage_refs.get("prompt_ref") or ""),
+                "stage_response_ref": str(stage_refs.get("response_ref") or ""),
+                "stage_meta_ref": str(stage_refs.get("meta_ref") or ""),
+                "llm_stage_manifest_ref": str(manifest_refs.get("llm_stage_manifest_ref") or ""),
+            }
         except Exception:
             return {}
 
@@ -2284,6 +3372,10 @@ def _run_strategist_frame_llm(
             stage_name = "theme_selection"
             
         prompt_text = _messages_to_prompt_text(messages)
+        llm_call_trace["prompt_chars"] = int(len(prompt_text))
+        llm_call_trace["compact_payload_chars"] = int(
+            len(json.dumps(compact_payload, ensure_ascii=False, separators=(",", ":")))
+        )
         
         try:
             record_llm_prompt(
@@ -2337,6 +3429,14 @@ def _run_strategist_frame_llm(
                         "response_ref": str(llm_artifacts.get("response_ref") or ""),
                         "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
                         "response_hash": str(llm_artifacts.get("response_hash") or ""),
+                        "llm_stage_component": str(llm_artifacts.get("llm_stage_component") or ""),
+                        "llm_stage_index": int(llm_artifacts.get("llm_stage_index") or 0),
+                        "llm_stage_name": str(llm_artifacts.get("llm_stage_name") or ""),
+                        "llm_call_kind": str(llm_artifacts.get("llm_call_kind") or ""),
+                        "stage_prompt_ref": str(llm_artifacts.get("stage_prompt_ref") or ""),
+                        "stage_response_ref": str(llm_artifacts.get("stage_response_ref") or ""),
+                        "stage_meta_ref": str(llm_artifacts.get("stage_meta_ref") or ""),
+                        "llm_stage_manifest_ref": str(llm_artifacts.get("llm_stage_manifest_ref") or ""),
                     }
                     
             last_raw = raw
@@ -2817,8 +3917,24 @@ def _extract_market_context_inputs(state: Dict[str, Any]) -> Dict[str, float]:
     market_ctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
     macro_ctx = state.get("macro_context") if isinstance(state.get("macro_context"), dict) else {}
     kiwoom_summary = state.get("kiwoom_market_summary") if isinstance(state.get("kiwoom_market_summary"), dict) else {}
+    global_signal = state.get("global_sentiment_signal") if isinstance(state.get("global_sentiment_signal"), dict) else {}
+    korea_indices = global_signal.get("korea_indices") if isinstance(global_signal.get("korea_indices"), dict) else {}
+    korea_avg_change_pct = _to_float(korea_indices.get("average_change_pct"), 0.0)
+    korea_breadth = (
+        _to_float(korea_indices.get("breadth"), 0.0)
+        if korea_indices.get("breadth") not in (None, "")
+        else None
+    )
     index_trend = _to_float(
-        market_ctx.get("index_trend") if market_ctx.get("index_trend") is not None else kiwoom_summary.get("index_trend"),
+        market_ctx.get("index_trend")
+        if market_ctx.get("index_trend") is not None
+        else (
+            kiwoom_summary.get("index_trend")
+            if kiwoom_summary.get("index_trend") is not None
+            else korea_avg_change_pct / 5.0
+            if korea_indices
+            else 0.0
+        ),
         0.0,
     )
     realized_vol = _to_float(
@@ -2834,6 +3950,8 @@ def _extract_market_context_inputs(state: Dict[str, Any]) -> Dict[str, float]:
     breadth_raw = market_ctx.get("market_breadth")
     if breadth_raw is None:
         breadth_raw = kiwoom_summary.get("market_breadth")
+    if breadth_raw is None and korea_breadth is not None:
+        breadth_raw = korea_breadth
     market_breadth = _to_float(breadth_raw, 0.0)
     if market_breadth > 1.0:
         market_breadth = _clamp(market_breadth / 100.0, -1.0, 1.0)
@@ -3461,6 +4579,260 @@ def _monitor_guidance(*, market_regime: str, playbook: str) -> str:
     if playbook == "breakout":
         return "hold_through_noise"
     return "quick_take_profit"
+
+
+_TACTICAL_STRATEGIES = (
+    "opening_gap_momentum",
+    "opening_range_breakout",
+    "leader_vwap_reclaim_pullback",
+    "volume_breakout",
+    "reversal_reclaim",
+    "cost_aware_scalp",
+    "defensive_observe",
+)
+
+_TACTICAL_STRATEGY_BY_PLAYBOOK = {
+    "breakout": "opening_range_breakout",
+    "pullback": "leader_vwap_reclaim_pullback",
+    "reversal": "reversal_reclaim",
+    "defensive": "defensive_observe",
+}
+
+_CANDIDATE_WATCH_DEFAULT_RANK = {
+    "defensive_observe": 3,
+    "leader_vwap_reclaim_pullback": 5,
+    "opening_gap_momentum": 7,
+    "opening_range_breakout": 7,
+    "volume_breakout": 7,
+    "reversal_reclaim": 5,
+    "cost_aware_scalp": 5,
+}
+
+_CANDIDATE_WATCH_CASCADE_ALLOWED_REASONS = (
+    "too_extended_from_vwap",
+    "breakout_not_ready",
+    "volume_insufficient",
+    "volume_confirmation_missing",
+    "below_vwap_reclaim_not_ready",
+    "pullback_below_vwap_reclaim_not_ready",
+    "pullback_not_mature",
+)
+
+_CANDIDATE_WATCH_CASCADE_BLOCKED_REASONS = (
+    "cost_filter_failed",
+    "risk_policy_block",
+    "closeout_window",
+    "open_position_present",
+    "daily_loss_limit",
+    "broker_truth_mismatch",
+    "data_quality_guard",
+    "buy_blocked_post_exit_cooldown",
+    "buy_blocked_closeout_window",
+)
+
+
+def _norm_playbook(value: Any, *, default: str = "") -> str:
+    raw = str(value or "").strip().lower()
+    if raw in ("breakout", "pullback", "reversal", "defensive"):
+        return raw
+    return str(default or "")
+
+
+def _default_tactical_strategy(playbook: str) -> str:
+    mode = _norm_playbook(playbook, default="defensive")
+    return str(_TACTICAL_STRATEGY_BY_PLAYBOOK.get(mode) or "defensive_observe")
+
+
+def _normalize_tactical_strategy(value: Any, *, playbook: str) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in _TACTICAL_STRATEGIES:
+        return raw
+    return _default_tactical_strategy(playbook)
+
+
+def _unit_score(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(_clamp(float(value), 0.0, 1.0))
+    except Exception:
+        return float(_clamp(default, 0.0, 1.0))
+
+
+def _deterministic_strategy_scores(
+    *,
+    playbook: str,
+    market_regime: str,
+    market_sentiment: str,
+    market_structure: str,
+    market_context_inputs: Dict[str, Any],
+) -> Dict[str, float]:
+    regime = str(market_regime or "").strip().lower()
+    sentiment = str(market_sentiment or "").strip().lower()
+    structure = str(market_structure or "").strip().lower()
+    index_trend = _to_float(market_context_inputs.get("index_trend"), 0.0)
+    breadth = _to_float(market_context_inputs.get("market_breadth"), 0.0)
+    realized_vol = _to_float(market_context_inputs.get("realized_volatility"), 0.0)
+    macro_risk = _to_float(market_context_inputs.get("macro_risk"), 0.0)
+
+    risk_on = 1.0 if regime == "risk_on" else 0.5 if regime == "neutral" else 0.0
+    bullish = 1.0 if sentiment == "bullish" else 0.5 if sentiment == "neutral" else 0.0
+    trend = _clamp(abs(index_trend), 0.0, 1.0)
+    positive_tape = _clamp((breadth + 1.0) / 2.0, 0.0, 1.0)
+    vol_penalty = _clamp(realized_vol / 0.08, 0.0, 1.0)
+    macro_penalty = _clamp(macro_risk, 0.0, 1.0)
+    trend_structure = 1.0 if structure.startswith("trend") else 0.35 if structure.startswith("range") else 0.0
+    range_structure = 1.0 if structure.startswith("range") else 0.35
+    high_vol = 1.0 if structure.startswith("high_volatility") else vol_penalty
+
+    scores = {
+        "opening_gap_momentum": (0.30 * risk_on) + (0.30 * bullish) + (0.25 * max(index_trend, 0.0)) + (0.15 * positive_tape),
+        "opening_range_breakout": (0.25 * risk_on) + (0.25 * bullish) + (0.30 * trend_structure) + (0.20 * positive_tape),
+        "leader_vwap_reclaim_pullback": (0.20 * risk_on) + (0.20 * bullish) + (0.30 * trend_structure) + (0.20 * positive_tape) + (0.10 * (1.0 - vol_penalty)),
+        "volume_breakout": (0.25 * risk_on) + (0.25 * bullish) + (0.25 * trend) + (0.15 * positive_tape) + (0.10 * (1.0 - macro_penalty)),
+        "reversal_reclaim": (0.25 * range_structure) + (0.25 * (1.0 - positive_tape)) + (0.20 * risk_on) + (0.15 * (1.0 - high_vol)) + (0.15 * bullish),
+        "cost_aware_scalp": (0.25 * risk_on) + (0.25 * bullish) + (0.20 * (1.0 - macro_penalty)) + (0.15 * trend_structure) + (0.15 * positive_tape),
+        "defensive_observe": (0.35 * (1.0 - risk_on)) + (0.25 * high_vol) + (0.25 * macro_penalty) + (0.15 * (1.0 - bullish)),
+    }
+    selected = _normalize_tactical_strategy("", playbook=playbook)
+    if selected in scores:
+        scores[selected] = max(float(scores[selected]), 0.55)
+    return {key: round(_unit_score(value), 4) for key, value in scores.items()}
+
+
+def _normalize_strategy_scores(
+    raw: Any,
+    *,
+    playbook: str,
+    market_regime: str,
+    market_sentiment: str,
+    market_structure: str,
+    market_context_inputs: Dict[str, Any],
+) -> Dict[str, float]:
+    scores = _deterministic_strategy_scores(
+        playbook=playbook,
+        market_regime=market_regime,
+        market_sentiment=market_sentiment,
+        market_structure=market_structure,
+        market_context_inputs=market_context_inputs,
+    )
+    if isinstance(raw, dict):
+        for key in _TACTICAL_STRATEGIES:
+            if key in raw:
+                scores[key] = round(_unit_score(raw.get(key), scores.get(key, 0.0)), 4)
+    return scores
+
+
+def _normalize_rejected_strategy_reasons(
+    raw: Any,
+    *,
+    tactical_strategy: str,
+    strategy_scores: Dict[str, float],
+) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            name = str(key or "").strip().lower()
+            if name not in _TACTICAL_STRATEGIES or name == tactical_strategy:
+                continue
+            reason = _clean_directive_reason(value, default="")
+            if reason:
+                out[name] = reason
+            if len(out) >= 6:
+                break
+    if out:
+        return out
+    selected_score = _unit_score(strategy_scores.get(tactical_strategy), 0.0)
+    ordered = sorted(
+        [
+            (name, _unit_score(score, 0.0))
+            for name, score in dict(strategy_scores or {}).items()
+            if name in _TACTICAL_STRATEGIES and name != tactical_strategy
+        ],
+        key=lambda row: row[1],
+        reverse=True,
+    )
+    for name, score in ordered[:4]:
+        if score <= selected_score:
+            out[name] = "score_below_selected_tactical_strategy"
+        else:
+            out[name] = "not_selected_after_playbook_and_risk_clamp"
+    return out
+
+
+def _sanitize_reason_list(raw: Any, defaults: Tuple[str, ...]) -> List[str]:
+    allowed = {str(x).strip() for x in defaults if str(x).strip()}
+    values = raw if isinstance(raw, list) else []
+    out: List[str] = []
+    for item in values:
+        text = str(item or "").strip().lower()
+        if text and text in allowed and text not in out:
+            out.append(text)
+    return out or list(defaults)
+
+
+def _normalize_candidate_watch_policy(
+    raw: Any,
+    *,
+    tactical_strategy: str,
+    playbook: str,
+    market_regime: str,
+    risk_tone: str,
+    trade_aggressiveness: str,
+) -> Dict[str, Any]:
+    src = dict(raw or {}) if isinstance(raw, dict) else {}
+    strategy = _normalize_tactical_strategy(tactical_strategy, playbook=playbook)
+    default_rank = int(_CANDIDATE_WATCH_DEFAULT_RANK.get(strategy, 5))
+    regime = str(market_regime or "").strip().lower()
+    tone = str(risk_tone or "").strip().lower()
+    aggr = str(trade_aggressiveness or "").strip().lower()
+
+    if regime == "risk_off" or strategy == "defensive_observe":
+        default_rank = min(default_rank, 3)
+    elif _norm_playbook(playbook) == "breakout" and aggr == "high" and regime in {"risk_on", "neutral"}:
+        default_rank = max(default_rank, 10 if regime == "risk_on" else 7)
+    elif _norm_playbook(playbook) == "pullback" and regime == "risk_on":
+        default_rank = max(default_rank, 7)
+    if tone == "conservative":
+        default_rank = min(default_rank, 5)
+
+    raw_rank = src.get("max_priority_rank")
+    max_rank = int(_clamp(_to_int(raw_rank, default_rank), 1, 10))
+    if regime == "risk_off":
+        max_rank = min(max_rank, 3)
+    if strategy == "defensive_observe":
+        max_rank = min(max_rank, 3)
+
+    raw_runner_ups = src.get("max_runner_ups")
+    max_runner_ups = int(_clamp(_to_int(raw_runner_ups, max(0, max_rank - 1)), 0, max(0, max_rank - 1)))
+    cascade_enabled_default = strategy != "defensive_observe" and max_runner_ups > 0
+    cascade_enabled = _is_trueish(src.get("cascade_enabled")) if src.get("cascade_enabled") is not None else cascade_enabled_default
+    if max_runner_ups <= 0 or strategy == "defensive_observe":
+        cascade_enabled = False
+
+    return {
+        "schema_version": "candidate_watch_policy.v1",
+        "source": "strategist_visibility_proposal",
+        "behavior_effect": "visibility_only",
+        "tactical_strategy": strategy,
+        "playbook": _norm_playbook(playbook, default="defensive"),
+        "market_regime": str(market_regime or ""),
+        "risk_tone": str(risk_tone or ""),
+        "trade_aggressiveness": str(trade_aggressiveness or ""),
+        "max_priority_rank": int(max_rank),
+        "max_runner_ups": int(max_runner_ups),
+        "cascade_enabled": bool(cascade_enabled),
+        "cascade_allowed_reasons": _sanitize_reason_list(
+            src.get("cascade_allowed_reasons"),
+            _CANDIDATE_WATCH_CASCADE_ALLOWED_REASONS,
+        ),
+        "cascade_blocked_reasons": _sanitize_reason_list(
+            src.get("cascade_blocked_reasons"),
+            _CANDIDATE_WATCH_CASCADE_BLOCKED_REASONS,
+        ),
+        "reason": _clean_directive_reason(
+            src.get("reason"),
+            default=f"{strategy}:proposed_watch_depth_visibility_only",
+        ),
+    }
 
 
 def _macro_stress_overlay(global_signal: Dict[str, Any]) -> Dict[str, Any]:
@@ -4277,8 +5649,10 @@ def _build_commander_context_summary(
         "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
         "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
         "observability_only": True,
+        "allow_behavior_translation": bool(commander_horizon_policy.get("allow_behavior_translation")),
         "do_not_force_hold": True,
         "decision_reason": str(commander_horizon_policy.get("decision_reason") or ""),
+        "behavior_translation": dict(commander_horizon_policy.get("behavior_translation") or {}),
     }
     strategist_refresh_context = {
         **dict(strategist_refresh_context or {}),
@@ -4582,6 +5956,27 @@ def _key_events(
             f"nasdaq={_to_float(components.get('nasdaq_ret'), 0.0) * 100.0:.2f}% "
             f"dow={_to_float(components.get('dow_ret'), 0.0) * 100.0:.2f}%"
         )
+    korea_indices = global_signal.get("korea_indices") if isinstance(global_signal.get("korea_indices"), dict) else {}
+    korea_rows = korea_indices.get("indices") if isinstance(korea_indices.get("indices"), dict) else {}
+    kospi = korea_rows.get("KOSPI") if isinstance(korea_rows.get("KOSPI"), dict) else {}
+    kosdaq = korea_rows.get("KOSDAQ") if isinstance(korea_rows.get("KOSDAQ"), dict) else {}
+    if kospi or kosdaq:
+        bits: List[str] = []
+        if kospi:
+            bits.append(
+                "kospi="
+                f"{_to_float(kospi.get('current'), 0.0):.2f}"
+                f"/prev={_to_float(kospi.get('previous_close'), 0.0):.2f}"
+                f"/chg={_to_float(kospi.get('change_pct'), 0.0):+.2f}%"
+            )
+        if kosdaq:
+            bits.append(
+                "kosdaq="
+                f"{_to_float(kosdaq.get('current'), 0.0):.2f}"
+                f"/prev={_to_float(kosdaq.get('previous_close'), 0.0):.2f}"
+                f"/chg={_to_float(kosdaq.get('change_pct'), 0.0):+.2f}%"
+            )
+        add("korea_indices " + " ".join(bits))
     fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
     if fear_index:
         add(
@@ -4664,10 +6059,27 @@ def _build_strategic_answers(
         if isinstance(commander_context.get("open_position_refresh_context"), dict)
         else {}
     )
+    strategist_refresh_context = (
+        dict(commander_context.get("strategist_refresh_context") or {})
+        if isinstance(commander_context.get("strategist_refresh_context"), dict)
+        else {}
+    )
+    refresh_context = (
+        dict(open_position_refresh_context)
+        if open_position_refresh_context
+        else dict(strategist_refresh_context)
+    )
     commander_horizon_policy = (
         dict(commander_context.get("commander_horizon_policy") or {})
         if isinstance(commander_context.get("commander_horizon_policy"), dict)
         else {}
+    )
+    selected_symbol = str(refresh_context.get("selected_symbol") or "")
+    selected_symbol_was_rank1_raw = refresh_context.get("selected_symbol_was_rank1")
+    selected_symbol_was_rank1 = (
+        bool(selected_symbol_was_rank1_raw)
+        if selected_symbol_was_rank1_raw is not None
+        else int(refresh_context.get("selected_rank") or 0) == 1
     )
     return {
         "q1_market_mode": market_regime,
@@ -4700,38 +6112,76 @@ def _build_strategic_answers(
         "q15_commander_refresh_context": {
             "requested": bool(commander_context.get("strategist_refresh_requested")),
             "reason": str(commander_context.get("strategist_refresh_reason") or ""),
-            "refresh_scope": str(open_position_refresh_context.get("refresh_scope") or ""),
-            "selected_symbol": str(open_position_refresh_context.get("selected_symbol") or ""),
-            "hold_repeat_count_max": int(open_position_refresh_context.get("hold_repeat_count_max") or 0),
-            "selected_hold_repeat_count": int(open_position_refresh_context.get("selected_hold_repeat_count") or 0),
-            "monitor_reason": str(open_position_refresh_context.get("monitor_reason") or ""),
-            "active_exit_axis": str(open_position_refresh_context.get("active_exit_axis") or ""),
-            "refresh_summary": str(open_position_refresh_context.get("refresh_summary") or ""),
-            "entry_state": dict(open_position_refresh_context.get("entry_state") or {}),
-            "carry_state": str(open_position_refresh_context.get("carry_state") or commander_context.get("carry_state") or ""),
+            "refresh_scope": str(refresh_context.get("refresh_scope") or ""),
+            "selected_symbol": selected_symbol,
+            "hold_repeat_count_max": int(refresh_context.get("hold_repeat_count_max") or 0),
+            "selected_hold_repeat_count": int(refresh_context.get("selected_hold_repeat_count") or 0),
+            "monitor_reason": str(refresh_context.get("monitor_reason") or ""),
+            "active_exit_axis": str(refresh_context.get("active_exit_axis") or ""),
+            "refresh_summary": str(refresh_context.get("refresh_summary") or ""),
+            "selected_rank": int(refresh_context.get("selected_rank") or 0),
+            "selected_score": _round_optional(refresh_context.get("selected_score"), 4),
+            "scanner_primary_candidate": dict(refresh_context.get("scanner_primary_candidate") or {}),
+            "actual_selected_candidate": dict(
+                refresh_context.get("actual_selected_candidate")
+                or refresh_context.get("scanner_primary_candidate")
+                or {}
+            ),
+            "scanner_rank1_candidate": dict(refresh_context.get("scanner_rank1_candidate") or {}),
+            "scanner_runner_ups": [
+                dict(row)
+                for row in list(refresh_context.get("scanner_runner_ups") or [])[:4]
+                if isinstance(row, dict)
+            ],
+            "scanner_top_candidates": [
+                dict(row)
+                for row in list(refresh_context.get("scanner_top_candidates") or [])[:5]
+                if isinstance(row, dict)
+            ],
+            "selected_symbol_was_rank1": bool(selected_symbol_was_rank1),
+            "stage2_context_quality": str(refresh_context.get("stage2_context_quality") or ""),
+            "stage2_context_quality_reasons": [
+                str(reason or "")
+                for reason in list(refresh_context.get("stage2_context_quality_reasons") or [])[:6]
+                if str(reason or "").strip()
+            ],
+            "entry_state": dict(refresh_context.get("entry_state") or {}),
+            "carry_state": str(refresh_context.get("carry_state") or commander_context.get("carry_state") or ""),
             "carry_risk_bias": str(
-                open_position_refresh_context.get("carry_risk_bias") or commander_context.get("carry_risk_bias") or ""
+                refresh_context.get("carry_risk_bias") or commander_context.get("carry_risk_bias") or ""
             ),
             "carry_risk_reason": str(
-                open_position_refresh_context.get("carry_risk_reason") or commander_context.get("carry_risk_reason") or ""
+                refresh_context.get("carry_risk_reason") or commander_context.get("carry_risk_reason") or ""
             ),
             "session_open_recovery_assessment": dict(
-                open_position_refresh_context.get("session_open_recovery_assessment")
+                refresh_context.get("session_open_recovery_assessment")
                 or commander_context.get("session_open_recovery_assessment")
                 or {}
             ),
             "prior_monitor_entry_policy_summary": dict(
-                (commander_context.get("strategist_refresh_context") or {}).get("prior_monitor_entry_policy_summary") or {}
+                refresh_context.get("prior_monitor_entry_policy_summary")
+                or strategist_refresh_context.get("prior_monitor_entry_policy_summary")
+                or {}
             )
-            if isinstance((commander_context.get("strategist_refresh_context") or {}).get("prior_monitor_entry_policy_summary"), dict)
+            if isinstance(
+                refresh_context.get("prior_monitor_entry_policy_summary")
+                or strategist_refresh_context.get("prior_monitor_entry_policy_summary"),
+                dict,
+            )
             else {},
             "current_monitor_entry_policy_summary": dict(
-                (commander_context.get("strategist_refresh_context") or {}).get("current_monitor_entry_policy_summary") or {}
+                refresh_context.get("current_monitor_entry_policy_summary")
+                or strategist_refresh_context.get("current_monitor_entry_policy_summary")
+                or {}
             )
-            if isinstance((commander_context.get("strategist_refresh_context") or {}).get("current_monitor_entry_policy_summary"), dict)
+            if isinstance(
+                refresh_context.get("current_monitor_entry_policy_summary")
+                or strategist_refresh_context.get("current_monitor_entry_policy_summary"),
+                dict,
+            )
             else {},
             "selected_symbol_memory": _build_symbol_refresh_memory_excerpt(
-                str(open_position_refresh_context.get("selected_symbol") or ""),
+                selected_symbol,
                 read_model_facts,
                 reports_root,
             ),
@@ -4887,6 +6337,8 @@ def _global_sentiment_breakdown_payload(global_signal: Dict[str, Any]) -> Dict[s
         ("sp500", "sp500_ret", 1.0, ""),
         ("nasdaq", "nasdaq_ret", 1.0, ""),
         ("dow", "dow_ret", 1.0, ""),
+        ("kospi", "kospi_ret", 1.0, ""),
+        ("kosdaq", "kosdaq_ret", 1.0, ""),
         ("vix", "vix_ret", -1.0, "higher VIX change reduces risk appetite"),
         (
             "vix_level",
@@ -4922,6 +6374,7 @@ def _global_sentiment_breakdown_payload(global_signal: Dict[str, Any]) -> Dict[s
         "reason": str(global_signal.get("reason") or ""),
         "raw_score": _round_optional(global_signal.get("raw_score"), 4),
         "index_moves": dict(global_signal.get("index_moves") or {}),
+        "korea_indices": dict(global_signal.get("korea_indices") or {}),
         "macro_moves": dict(global_signal.get("macro_moves") or {}),
         "fear_index": dict(fear_index or {}),
         "factor_contributions": contributions,
@@ -5301,6 +6754,13 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     trade_aggressiveness = _trade_aggressiveness(market_regime=market_regime, market_structure=market_structure)
     risk_tone = _risk_tone(trade_aggressiveness)
     monitor_guidance = _monitor_guidance(market_regime=market_regime, playbook=playbook)
+    pre_llm_market_regime = str(market_regime or "")
+    pre_llm_market_sentiment = str(market_sentiment or "")
+    pre_llm_market_structure = str(market_structure or "")
+    pre_llm_playbook = str(playbook or "")
+    pre_llm_monitor_guidance = str(monitor_guidance or "")
+    pre_llm_risk_tone = str(risk_tone or "")
+    pre_llm_trade_aggressiveness = str(trade_aggressiveness or "")
     monitor_policy = _monitor_policy(
         state=state,
         policy=policy,
@@ -5455,6 +6915,15 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     llm_overrides, llm_meta = _run_strategist_frame_llm(state=state, policy=policy, payload=llm_payload)
     manual_overrides = _extract_ai_overrides(state, policy)
     ai_overrides = {**dict(llm_overrides or {}), **dict(manual_overrides or {})}
+    llm_requested_playbook = _norm_playbook((llm_overrides or {}).get("playbook"))
+    requested_playbook = _norm_playbook(ai_overrides.get("playbook"))
+    requested_playbook_source = (
+        "manual_override"
+        if _norm_playbook((manual_overrides or {}).get("playbook"))
+        else "llm"
+        if llm_requested_playbook
+        else "deterministic"
+    )
     llm_required = _resolve_strategist_frame_llm_enabled(policy)
     llm_strict = _resolve_strategist_frame_llm_strict_enabled(policy)
     strategist_llm_blocked = bool(llm_required and llm_strict and str(llm_meta.get("status") or "") != "ok")
@@ -5636,6 +7105,28 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         themes=list(themes),
         fear_index=global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {},
     )
+    tactical_strategy = _normalize_tactical_strategy(ai_overrides.get("tactical_strategy"), playbook=playbook)
+    strategy_scores = _normalize_strategy_scores(
+        ai_overrides.get("strategy_scores"),
+        playbook=playbook,
+        market_regime=market_regime,
+        market_sentiment=market_sentiment,
+        market_structure=market_structure,
+        market_context_inputs=market_context_inputs,
+    )
+    rejected_strategy_reasons = _normalize_rejected_strategy_reasons(
+        ai_overrides.get("rejected_strategy_reasons"),
+        tactical_strategy=tactical_strategy,
+        strategy_scores=strategy_scores,
+    )
+    candidate_watch_policy = _normalize_candidate_watch_policy(
+        ai_overrides.get("candidate_watch_policy"),
+        tactical_strategy=tactical_strategy,
+        playbook=playbook,
+        market_regime=market_regime,
+        risk_tone=risk_tone,
+        trade_aggressiveness=trade_aggressiveness,
+    )
 
     if isinstance(ai_overrides.get("themes"), list) and list(ai_overrides.get("themes") or []):
         # Keep runtime theme/sector maps aligned with the final strategist frame
@@ -5780,6 +7271,19 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategy_policy["commander_context"] = dict(commander_context)
     strategy_policy["strategist_plan"] = dict(strategist_plan)
     strategy_policy["provenance"] = dict(policy_provenance)
+    market_policy = strategy_policy.get("market_policy") if isinstance(strategy_policy.get("market_policy"), dict) else {}
+    market_policy["pre_llm_playbook"] = pre_llm_playbook
+    market_policy["llm_requested_playbook"] = llm_requested_playbook
+    market_policy["requested_playbook"] = requested_playbook
+    market_policy["requested_playbook_source"] = requested_playbook_source
+    market_policy["final_playbook"] = playbook
+    market_policy["tactical_strategy"] = tactical_strategy
+    market_policy["strategy_scores"] = dict(strategy_scores)
+    market_policy["rejected_strategy_reasons"] = dict(rejected_strategy_reasons)
+    strategy_policy["market_policy"] = dict(market_policy)
+    scanner_policy = strategy_policy.get("scanner_policy") if isinstance(strategy_policy.get("scanner_policy"), dict) else {}
+    scanner_policy["candidate_watch_policy"] = dict(candidate_watch_policy)
+    strategy_policy["scanner_policy"] = dict(scanner_policy)
     if isinstance(ai_overrides.get("strategy_horizon_feedback"), dict):
         strategy_horizon_input = dict(ai_overrides.get("strategy_horizon_feedback") or {})
     else:
@@ -5963,6 +7467,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["news_query_targets"] = list(news_query_targets)
     strategist_output["news_collection_policy"] = dict(news_collection_policy)
     strategist_output["news_query_reasoning"] = news_query_reasoning
+    strategist_output["global_sentiment_signal"] = dict(global_signal)
+    strategist_output["korea_indices"] = dict(global_signal.get("korea_indices") or {})
     strategist_output["market_context_inputs"] = dict(market_context_inputs)
     strategist_output["theme_strength"] = dict(theme_strength)
     strategist_output["theme_strength_packet"] = dict(theme_strength_packet)
@@ -5985,6 +7491,21 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["reporter_feedback_summary"] = dict(compact_reporter_feedback)
     strategist_output["performance_summary"] = dict(performance_summary)
     strategist_output["playbook"] = playbook
+    strategist_output["pre_llm_market_regime"] = pre_llm_market_regime
+    strategist_output["pre_llm_market_sentiment"] = pre_llm_market_sentiment
+    strategist_output["pre_llm_market_structure"] = pre_llm_market_structure
+    strategist_output["pre_llm_playbook"] = pre_llm_playbook
+    strategist_output["pre_llm_monitor_guidance"] = pre_llm_monitor_guidance
+    strategist_output["pre_llm_risk_tone"] = pre_llm_risk_tone
+    strategist_output["pre_llm_trade_aggressiveness"] = pre_llm_trade_aggressiveness
+    strategist_output["llm_requested_playbook"] = llm_requested_playbook
+    strategist_output["requested_playbook"] = requested_playbook
+    strategist_output["requested_playbook_source"] = requested_playbook_source
+    strategist_output["final_playbook"] = playbook
+    strategist_output["tactical_strategy"] = tactical_strategy
+    strategist_output["strategy_scores"] = dict(strategy_scores)
+    strategist_output["rejected_strategy_reasons"] = dict(rejected_strategy_reasons)
+    strategist_output["candidate_watch_policy"] = dict(candidate_watch_policy)
     strategist_output["selected_playbook"] = strategist_plan.get("selected_playbook")
     strategist_output["candidate_hypotheses"] = list(strategist_plan.get("candidate_hypotheses") or [])
     strategist_output["symbol_constraints"] = dict(strategist_plan.get("symbol_constraints") or {})
@@ -6010,6 +7531,26 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["policy_rationale"] = policy_rationale
     strategist_output["policy_adjustment"] = dict(policy_adjustment)
     strategist_output["strategy_adjustment_directives"] = dict(strategy_adjustment_directives)
+    for stage_output_key in (
+        "selected_symbol_tactical_review",
+        "stale_intraday_hold_review",
+        "end_of_day_carry_review",
+    ):
+        if isinstance(ai_overrides.get(stage_output_key), dict):
+            strategist_output[stage_output_key] = dict(ai_overrides.get(stage_output_key) or {})
+    if ai_overrides.get("selected_symbol_decision") not in (None, ""):
+        strategist_output["selected_symbol_decision"] = str(ai_overrides.get("selected_symbol_decision") or "")
+        strategist_output["target_symbol"] = str(ai_overrides.get("target_symbol") or "")
+        strategist_output["target_rank"] = int(ai_overrides.get("target_rank") or 0)
+        strategist_output["runner_up_order"] = list(ai_overrides.get("runner_up_order") or [])
+        strategist_output["monitor_instruction"] = dict(ai_overrides.get("monitor_instruction") or {})
+        strategist_output["entry_policy_delta"] = dict(ai_overrides.get("entry_policy_delta") or {})
+        strategist_output["commander_actionability"] = str(ai_overrides.get("commander_actionability") or "")
+    if ai_overrides.get("hold_review_decision") not in (None, ""):
+        strategist_output["hold_review_decision"] = str(ai_overrides.get("hold_review_decision") or "")
+    if ai_overrides.get("portfolio_level_decision") not in (None, ""):
+        strategist_output["carry_review"] = list(ai_overrides.get("carry_review") or [])
+        strategist_output["portfolio_level_decision"] = str(ai_overrides.get("portfolio_level_decision") or "")
     strategist_output["policy_source"] = policy_source
     strategist_output["policy_validation_status"] = str(monitor_entry_policy_validation.get("status") or "ok")
     strategist_output["policy_fallback_used"] = bool(monitor_entry_policy_validation.get("fallback_used"))
@@ -6127,6 +7668,14 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "response_ref": str(llm_meta.get("response_ref") or ""),
         "prompt_hash": str(llm_meta.get("prompt_hash") or ""),
         "response_hash": str(llm_meta.get("response_hash") or ""),
+        "llm_stage_component": str(llm_meta.get("llm_stage_component") or ""),
+        "llm_stage_index": int(llm_meta.get("llm_stage_index") or 0),
+        "llm_stage_name": str(llm_meta.get("llm_stage_name") or ""),
+        "llm_call_kind": str(llm_meta.get("llm_call_kind") or ""),
+        "stage_prompt_ref": str(llm_meta.get("stage_prompt_ref") or ""),
+        "stage_response_ref": str(llm_meta.get("stage_response_ref") or ""),
+        "stage_meta_ref": str(llm_meta.get("stage_meta_ref") or ""),
+        "llm_stage_manifest_ref": str(llm_meta.get("llm_stage_manifest_ref") or ""),
         "llm_execution_profile_name": str(llm_meta.get("llm_execution_profile_name") or ""),
         "llm_execution_profile_source": str(llm_meta.get("llm_execution_profile_source") or ""),
         "llm_execution_effective_config": dict(llm_meta.get("llm_execution_effective_config") or {}),
@@ -6185,6 +7734,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "status": str(global_signal.get("status") or ""),
                 "source": str(global_signal.get("source") or ""),
                 "index_moves": dict(global_signal.get("index_moves") or {}),
+                "korea_indices": dict(global_signal.get("korea_indices") or {}),
                 "macro_moves": dict(global_signal.get("macro_moves") or {}),
                 "fear_index": dict(global_signal.get("fear_index") or {}),
             },

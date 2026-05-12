@@ -79,3 +79,27 @@ def test_resolve_event_log_path_prefers_explicit_env(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_event_logger.py::test_dummy")
     monkeypatch.setenv("EVENT_LOG_PATH", str(custom))
     assert resolve_event_log_path() == custom
+
+
+def test_event_logger_redirects_canonical_operator_log_during_pytest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EVENT_LOG_PATH", raising=False)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_event_logger.py::test_dummy")
+
+    logger = EventLogger(log_path=Path("data/logs/events.jsonl"))
+
+    assert str(logger.log_path).endswith("data\\logs\\dev\\testing\\pytest_events.jsonl")
+
+
+def test_event_logger_keeps_explicit_tmp_log_during_pytest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("EVENT_LOG_PATH", raising=False)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_event_logger.py::test_dummy")
+    log_path = tmp_path / "data" / "logs" / "events.jsonl"
+
+    logger = EventLogger(log_path=log_path)
+
+    assert logger.log_path == log_path

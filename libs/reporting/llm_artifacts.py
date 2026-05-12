@@ -11,6 +11,35 @@ def canonical_trade_day_root(reports_root: Path, day: str) -> Path:
     return Path(reports_root) / "trades" / str(day or "").strip()
 
 
+def iter_trade_dirs(trade_day_root: Path) -> List[Path]:
+    root = Path(trade_day_root)
+    if not root.exists() or not root.is_dir():
+        return []
+    found: Dict[str, Path] = {}
+    for path in root.rglob("TRD_*"):
+        if not path.is_dir():
+            continue
+        name = str(path.name or "").strip()
+        if not name.startswith("TRD_"):
+            continue
+        found[str(path.resolve())] = path
+    return sorted(found.values(), key=lambda item: (item.parent.name, item.name))
+
+
+def find_trade_dir(trade_day_root: Path, trade_id: str) -> Path | None:
+    normalized_trade_id = str(trade_id or "").strip()
+    if not normalized_trade_id:
+        return None
+    root = Path(trade_day_root)
+    direct = root / normalized_trade_id
+    if direct.exists() and direct.is_dir():
+        return direct
+    for trade_dir in iter_trade_dirs(root):
+        if trade_dir.name == normalized_trade_id:
+            return trade_dir
+    return None
+
+
 def _repo_root_from_reports_root(reports_root: Path) -> Path:
     root = Path(reports_root)
     if root.name == "reports":
@@ -22,7 +51,15 @@ def _looks_like_trade_day_dir(path: Path) -> bool:
     if not path.exists() or not path.is_dir():
         return False
     try:
-        return any(child.is_dir() and str(child.name or "").startswith("TRD_") for child in path.iterdir())
+        for child in path.iterdir():
+            if not child.is_dir():
+                continue
+            if str(child.name or "").startswith("TRD_"):
+                return True
+            for grandchild in child.iterdir():
+                if grandchild.is_dir() and str(grandchild.name or "").startswith("TRD_"):
+                    return True
+        return False
     except Exception:
         return False
 
@@ -525,15 +562,25 @@ def trade_artifact_paths(
     trade_id: str,
     *,
     prefer_existing_day_root: bool = False,
+    time_bucket: str | None = None,
 ) -> Dict[str, Path]:
     normalized_day = str(day or "").strip()
+    normalized_trade_id = str(trade_id or "").strip()
     trade_day_root = (
         resolve_trade_day_root(reports_root, normalized_day)
         if prefer_existing_day_root
         else canonical_trade_day_root(reports_root, normalized_day)
     )
-    trade_root = trade_day_root / str(trade_id or "").strip()
-    legacy_root = reports_root / "trades" / normalized_day[:4] / normalized_day[5:7] / str(trade_id or "").strip()
+    existing_trade_root = find_trade_dir(trade_day_root, normalized_trade_id)
+    if existing_trade_root is not None:
+        trade_root = existing_trade_root
+    else:
+        bucket = str(time_bucket or "").strip()
+        if bucket:
+            trade_root = trade_day_root / bucket / normalized_trade_id
+        else:
+            trade_root = trade_day_root / normalized_trade_id
+    legacy_root = reports_root / "trades" / normalized_day[:4] / normalized_day[5:7] / normalized_trade_id
     # Phase 3 primary structure (operator-facing):
     # reports/trades/<day>/<trade_id>/
     #   lifecycle_bundle.json, entry.json, hold.json, exit.json

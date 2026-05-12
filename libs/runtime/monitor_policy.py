@@ -48,6 +48,17 @@ def _to_bool(value: Any, default: bool) -> bool:
     return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _normalize_pct_unit_if_needed(field_name: str, parsed: float, lower: float, upper: float) -> tuple[float, str]:
+    if not str(field_name or "").endswith("_pct"):
+        return parsed, ""
+    if lower <= parsed <= upper:
+        return parsed, ""
+    converted = parsed / 100.0
+    if lower <= converted <= upper:
+        return converted, f"{field_name}:percent_unit_normalized:{parsed}->{converted}"
+    return parsed, ""
+
+
 def _dedupe_text_list(values: Any) -> list[str]:
     if values is None:
         return []
@@ -777,6 +788,10 @@ def normalize_monitor_entry_policy(
         value = source_mapping.get(field_name)
         parsed = _to_int(value, int(default_value)) if isinstance(default_value, int) else _to_float(value, float(default_value))
         lower, upper = bounds.get(field_name, (float("-inf"), float("inf")))
+        if not isinstance(default_value, int):
+            parsed, unit_issue = _normalize_pct_unit_if_needed(field_name, float(parsed), float(lower), float(upper))
+            if unit_issue:
+                issues.append(unit_issue)
         if field_name == "min_extended_from_vwap_pct" and parsed > upper:
             normalized[field_name] = float(upper)
             issues.append(f"{field_name}:clamped_to_upper_bound:{parsed}->{upper}")

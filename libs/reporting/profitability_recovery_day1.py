@@ -5,6 +5,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from libs.reporting.llm_artifacts import iter_trade_dirs as _iter_trade_dirs
+
 
 REQUIRED_EXECUTION_FIELDS = (
     "order_status",
@@ -30,7 +32,7 @@ def iter_trade_dirs(reports_root: Path, day: str) -> List[Path]:
     day_root = Path(reports_root) / "trades" / str(day)
     if not day_root.exists():
         return []
-    return sorted(path for path in day_root.iterdir() if path.is_dir())
+    return sorted(_iter_trade_dirs(day_root))
 
 
 def _artifact_path(trade_dir: Path, *candidates: str) -> Path:

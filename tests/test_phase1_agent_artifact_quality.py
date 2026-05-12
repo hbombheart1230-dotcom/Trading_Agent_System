@@ -19,6 +19,26 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
             "market_regime": "risk_on",
             "market_sentiment": "bullish",
             "playbook": "breakout",
+            "pre_llm_playbook": "defensive",
+            "llm_requested_playbook": "breakout",
+            "requested_playbook": "breakout",
+            "requested_playbook_source": "llm",
+            "final_playbook": "breakout",
+            "tactical_strategy": "opening_range_breakout",
+            "strategy_scores": {
+                "opening_range_breakout": 0.82,
+                "leader_vwap_reclaim_pullback": 0.61,
+                "defensive_observe": 0.14,
+            },
+            "rejected_strategy_reasons": {
+                "defensive_observe": "risk_on tape supports active watch",
+            },
+            "candidate_watch_policy": {
+                "max_priority_rank": 7,
+                "max_runner_ups": 4,
+                "cascade_enabled": True,
+                "behavior_effect": "visibility_only",
+            },
             "themes": ["semiconductor"],
             "avoid_themes": ["high_gap_speculative"],
             "reason_chain": ["fear eased", "breadth improved"],
@@ -68,6 +88,26 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
             "market_regime": "risk_on",
             "market_sentiment": "bullish",
             "playbook": "breakout",
+            "pre_llm_playbook": "defensive",
+            "llm_requested_playbook": "breakout",
+            "requested_playbook": "breakout",
+            "requested_playbook_source": "llm",
+            "final_playbook": "breakout",
+            "tactical_strategy": "opening_range_breakout",
+            "strategy_scores": {
+                "opening_range_breakout": 0.82,
+                "leader_vwap_reclaim_pullback": 0.61,
+                "defensive_observe": 0.14,
+            },
+            "rejected_strategy_reasons": {
+                "defensive_observe": "risk_on tape supports active watch",
+            },
+            "candidate_watch_policy": {
+                "max_priority_rank": 7,
+                "max_runner_ups": 4,
+                "cascade_enabled": True,
+                "behavior_effect": "visibility_only",
+            },
             "themes": ["semiconductor"],
             "avoid_themes": ["high_gap_speculative"],
             "strategy_policy": {
@@ -219,6 +259,11 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
     assert isinstance(artifact.get("global_sentiment_signal"), dict)
     assert artifact.get("candidate_symbols_hint") == ["005930", "000660", "003280"]
     assert artifact["decision_frame"]["playbook"] == "breakout"
+    assert artifact["tactical_strategy"] == "opening_range_breakout"
+    assert artifact["strategy_scores"]["opening_range_breakout"] == 0.82
+    assert artifact["candidate_watch_policy"]["max_priority_rank"] == 7
+    assert artifact["strategy_detail"]["pre_llm_playbook"] == "defensive"
+    assert artifact["strategy_detail"]["candidate_watch_policy"]["max_runner_ups"] == 4
     assert artifact["news_evidence_ranked"]["candidate_news_ranked"][0]["symbol"] == "005930"
     assert artifact["global_sentiment_signal"]["fear_index"]["level"] == 19.5
     assert artifact["news_evidence_missing"] is False

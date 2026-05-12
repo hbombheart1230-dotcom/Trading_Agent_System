@@ -5,6 +5,7 @@ from libs.reporting.trade_story_pipeline import (
     build_lifecycle_bundle,
     build_market_context_human,
     build_monitor_reason_human,
+    build_operator_conclusion_human,
     build_scanner_reason_human,
     enrich_filters_from_evidence,
     enrich_scanner_reason_from_evidence,
@@ -31,6 +32,21 @@ def test_build_execution_outcome_human_emits_korean_live_execution_summary() -> 
     assert out["summary"] == "005380 1주 매도 주문은 실거래로 체결됐고 체결 기준 가격은 537000.00였습니다."
     assert "Execution outcome:" not in "\n".join(str(row) for row in out["bullets"])
     assert any("주문 번호는 0123456였습니다." == row for row in out["bullets"])
+
+
+def test_operator_conclusion_treats_sell_outcome_as_closed_even_when_entry_execution_is_anchor() -> None:
+    out = build_operator_conclusion_human(
+        execution={"action": "BUY", "symbol": "005930", "qty": 10},
+        scanner_reason_human={"summary": "scanner"},
+        filters_human={},
+        monitor_reason_human={"summary": "monitor"},
+        execution_outcome_human={"summary": "005930 10주 매도 주문은 실거래로 체결됐습니다."},
+        reporter_status_human={"status": "linked"},
+    )
+
+    assert out["current_action"] == "SELL"
+    assert out["summary"].startswith("현재 판단은 청산 완료입니다.")
+    assert "진입 유지" not in out["summary"]
 
 
 def test_build_trade_story_input_from_bundle_synthesizes_execution_summary_from_lifecycle() -> None:

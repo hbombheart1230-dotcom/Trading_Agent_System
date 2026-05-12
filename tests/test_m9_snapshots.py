@@ -1,5 +1,6 @@
 from graphs.nodes.build_market_snapshot import build_market_snapshot
 from graphs.nodes.build_portfolio_snapshot import build_portfolio_snapshot
+from libs.read.kiwoom_portfolio_reader import _extract_cash
 from libs.read.price_reader import MockPriceReader
 from libs.read.portfolio_reader import MockPortfolioReader
 
@@ -27,6 +28,18 @@ def test_build_portfolio_snapshot_with_mock_portfolio():
     assert ps["positions"][0]["symbol"] == "005930"
     assert ps["positions"][0]["qty"] == 10
     assert ps["open_positions"] == 1
+
+
+def test_extract_cash_prefers_deposit_asset_over_zero_evaluation_amount():
+    payload = {
+        "tot_pur_amt": "000000000000000",
+        "tot_evlt_amt": "000000000000000",
+        "prsm_dpst_aset_amt": "000000100000000",
+        "acnt_evlt_remn_indv_tot": [],
+        "return_code": 0,
+    }
+
+    assert _extract_cash(payload) == 100000000.0
 
 
 def test_build_portfolio_snapshot_preserves_position_current_price():

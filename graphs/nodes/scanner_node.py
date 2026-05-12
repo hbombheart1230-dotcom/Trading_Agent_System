@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from graphs.nodes.skill_contracts import (
     CONTRACT_VERSION as SKILL_CONTRACT_VERSION,
+    account_order_is_pending,
     extract_account_orders_rows,
     extract_market_quotes,
     extract_minute_ohlcv_by_symbol,
@@ -50,11 +51,11 @@ def _norm_symbol(v: Any) -> str:
     return norm_symbol(v)
 
 
-def _to_float(v: Any) -> float:
+def _to_float(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)
     except Exception:
-        return 0.0
+        return float(default)
 
 
 def _is_trueish(v: Any) -> bool:
@@ -909,6 +910,9 @@ def _ranking_table_rows(rows: List[Dict[str, Any]], *, max_rows: int = 5) -> Lis
                 "entry_compatibility_score": float(_to_float(row.get("entry_compatibility_score"))),
                 "compatibility_bias": float(_to_float(row.get("compatibility_bias"))),
                 "compatibility_components": dict(row.get("compatibility_components") or {}),
+                "scanner_chart_fit_score": float(_to_float(row.get("scanner_chart_fit_score"))),
+                "scanner_chart_fit_authority": str(row.get("scanner_chart_fit_authority") or ""),
+                "scanner_chart_fit_components": dict(row.get("scanner_chart_fit_components") or {}),
                 "expected_monitor_block_reason": str(row.get("expected_monitor_block_reason") or ""),
                 "dominant_block_reason": str(row.get("dominant_block_reason") or ""),
                 "dominant_block_reason_ratio": float(_to_float(row.get("dominant_block_reason_ratio"))),
@@ -932,7 +936,7 @@ def _candidate_visibility_limit(policy: Dict[str, Any]) -> int:
     entry_control = policy.get("entry_control") if isinstance(policy.get("entry_control"), dict) else {}
     raw = entry_control.get("max_priority_rank") or policy.get("max_priority_rank") or 10
     value = int(_to_float(raw) or 10)
-    return int(min(10, max(5, value)))
+    return int(min(10, max(1, value)))
 
 
 def _log_scanner_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -955,6 +959,8 @@ def _extract_account_open_order_counts(state: Dict[str, Any]) -> Tuple[Dict[str,
     for r in rows:
         if not isinstance(r, dict):
             continue
+        if not account_order_is_pending(r):
+            continue
         symbol = _norm_symbol(r.get("symbol") or r.get("stk_cd") or r.get("code"))
         if not symbol:
             continue
@@ -965,6 +971,41 @@ def _extract_account_open_order_counts(state: Dict[str, Any]) -> Tuple[Dict[str,
 def _is_live_equity_symbol(symbol: str) -> bool:
     sym = _norm_symbol(symbol)
     return bool(sym) and sym.isdigit() and len(sym) == 6
+
+
+def _enforce_live_equity_symbols(state: Dict[str, Any], policy: Dict[str, Any]) -> bool:
+    for raw in (
+        policy.get("enforce_live_equity_symbols") if isinstance(policy, dict) else None,
+        state.get("enforce_live_equity_symbols") if isinstance(state, dict) else None,
+        os.getenv("SCANNER_ENFORCE_LIVE_EQUITY_SYMBOLS", ""),
+    ):
+        if raw not in (None, ""):
+            return _is_trueish(raw)
+    return not bool(os.getenv("PYTEST_CURRENT_TEST"))
+
+
+def _filter_live_equity_candidates(candidates: List[Any]) -> Tuple[List[Any], Dict[str, Any]]:
+    kept: List[Any] = []
+    excluded: List[str] = []
+    for item in list(candidates or []):
+        raw_symbol = item.get("symbol") if isinstance(item, dict) else item
+        symbol = _norm_symbol(raw_symbol)
+        if not _is_live_equity_symbol(symbol):
+            if symbol:
+                excluded.append(symbol)
+            continue
+        if isinstance(item, dict):
+            row = dict(item)
+            row["symbol"] = symbol
+            kept.append(row)
+        else:
+            kept.append(symbol)
+    return kept, {
+        "live_equity_symbol_filter_enabled": True,
+        "live_equity_symbol_excluded_count": int(len(excluded)),
+        "live_equity_symbol_excluded_symbols": excluded[:20],
+        "candidate_pool_after_live_equity_symbol_filter": int(len(kept)),
+    }
 
 
 def _should_auto_hydrate_scanner_skills(state: Dict[str, Any], candidates: List[Any]) -> bool:
@@ -2286,6 +2327,48 @@ def _calc_breakout_proximity(*, actual: float | None, minimum: float | None) -> 
     return _clamp(1.0 - abs(actual_num - minimum_num) / band, 0.0, 1.0)
 
 
+def _scanner_chart_fit_from_entry_result(result: Mapping[str, Any]) -> Dict[str, Any]:
+    chart_features = (
+        dict(result.get("chart_structure_features") or {})
+        if isinstance(result.get("chart_structure_features"), Mapping)
+        else {}
+    )
+    context = (
+        dict(chart_features.get("human_chart_context") or {})
+        if isinstance(chart_features.get("human_chart_context"), Mapping)
+        else {}
+    )
+    if not bool(context.get("available")):
+        return {
+            "available": False,
+            "chart_context_score": 0.5,
+            "exit_risk_score": 0.0,
+            "late_entry_risk": "",
+            "soft_penalty": 0.0,
+            "components": {},
+        }
+    late_entry_risk = str(context.get("late_entry_risk") or "").strip().lower()
+    late_penalty = {"high": 0.10, "medium": 0.05, "low": 0.02}.get(late_entry_risk, 0.0)
+    exit_risk_score = _clamp(_to_float(context.get("exit_risk_score")), 0.0, 1.0)
+    risk_penalty = 0.05 if exit_risk_score >= 0.55 else 0.0
+    return {
+        "available": True,
+        "chart_context_score": _clamp(_to_float(context.get("entry_chart_score"), 0.5), 0.0, 1.0),
+        "exit_risk_score": float(exit_risk_score),
+        "late_entry_risk": late_entry_risk,
+        "soft_penalty": float(late_penalty + risk_penalty),
+        "components": {
+            "vwap_reclaim_persistence": context.get("vwap_reclaim_persistence"),
+            "ma_bullish_persistence": context.get("ma_bullish_persistence"),
+            "volume_expansion_persistence": context.get("volume_expansion_persistence"),
+            "late_entry_risk": late_entry_risk,
+            "swing_low_above_vwap": bool(context.get("swing_low_above_vwap")),
+            "box_breakout_retest_hold": bool(context.get("box_breakout_retest_hold")),
+            "exit_risk_score": float(exit_risk_score),
+        },
+    }
+
+
 def _compute_entry_compatibility_signal(
     *,
     symbol: str,
@@ -2312,6 +2395,10 @@ def _compute_entry_compatibility_signal(
                 "breakout_readiness_score": 0.5,
                 "reclaim_proximity": 0.5,
             },
+            "scanner_chart_fit_score": 0.5,
+            "scanner_chart_fit_authority": "disabled_no_policy",
+            "scanner_chart_fit_components": {},
+            "scanner_chart_fit_penalty": 0.0,
             "expected_monitor_block_reason": "",
             "compatibility_source": "disabled",
             "triggered_path": "",
@@ -2389,13 +2476,25 @@ def _compute_entry_compatibility_signal(
     if breakout_gap_pct not in (None, ""):
         breakout_readiness_score = _clamp(1.0 - abs(min(0.0, _to_float(breakout_gap_pct))) / 0.03, 0.0, 1.0)
 
-    entry_compatibility_score = _clamp(
+    base_compatibility_score = _clamp(
         (0.45 * vwap_proximity_score)
         + (0.35 * volume_readiness_score)
         + (0.20 * breakout_readiness_score),
         0.0,
         1.0,
     )
+    chart_fit = _scanner_chart_fit_from_entry_result(result)
+    scanner_chart_fit_score = float(base_compatibility_score)
+    if bool(chart_fit.get("available")):
+        chart_context_score = _clamp(_to_float(chart_fit.get("chart_context_score"), 0.5), 0.0, 1.0)
+        scanner_chart_fit_score = _clamp(
+            (0.75 * base_compatibility_score)
+            + (0.25 * chart_context_score)
+            - _to_float(chart_fit.get("soft_penalty")),
+            0.0,
+            1.0,
+        )
+    entry_compatibility_score = scanner_chart_fit_score
     compatibility_score_pre_penalty = float(entry_compatibility_score)
     soft_penalty = 0.0
     volume_ratio_num = _to_float(volume_ratio) if volume_ratio not in (None, "") else None
@@ -2443,7 +2542,14 @@ def _compute_entry_compatibility_signal(
             "volume_readiness_score": float(volume_readiness_score),
             "breakout_readiness_score": float(breakout_readiness_score),
             "reclaim_proximity": float(reclaim_proximity),
+            "base_compatibility_score": float(base_compatibility_score),
+            "scanner_chart_fit_score": float(scanner_chart_fit_score),
+            "scanner_chart_fit_available": bool(chart_fit.get("available")),
         },
+        "scanner_chart_fit_score": float(scanner_chart_fit_score),
+        "scanner_chart_fit_authority": "soft_rank_bias_only",
+        "scanner_chart_fit_components": dict(chart_fit.get("components") or {}),
+        "scanner_chart_fit_penalty": float(_to_float(chart_fit.get("soft_penalty"))),
         "expected_monitor_block_reason": expected_monitor_block_reason,
         "compatibility_source": source,
         "triggered_path": str(result.get("entry_condition_path") or ""),
@@ -3154,6 +3260,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # M18-4: sentiment-aware scoring (offline-friendly)
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
     candidates, pool_meta = _resolve_scanner_candidates(state, policy)
+    if _enforce_live_equity_symbols(state, policy):
+        candidates, live_symbol_meta = _filter_live_equity_candidates(list(candidates or []))
+        pool_meta = dict(pool_meta)
+        pool_meta.update(dict(live_symbol_meta))
     run_id = str(state.get("run_id") or "").strip() or "scanner-unknown"
 
     mock: Optional[Mapping[str, Any]] = state.get("mock_scan_results")  # for tests
@@ -3699,6 +3809,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["entry_compatibility_score"] = float(compatibility_result.get("entry_compatibility_score") or 0.0)
         row["compatibility_bias"] = float(compatibility_bias)
         row["compatibility_components"] = dict(compatibility_result.get("compatibility_components") or {})
+        row["scanner_chart_fit_score"] = float(_to_float(compatibility_result.get("scanner_chart_fit_score")))
+        row["scanner_chart_fit_authority"] = str(compatibility_result.get("scanner_chart_fit_authority") or "")
+        row["scanner_chart_fit_components"] = dict(compatibility_result.get("scanner_chart_fit_components") or {})
+        row["scanner_chart_fit_penalty"] = float(_to_float(compatibility_result.get("scanner_chart_fit_penalty")))
         row["expected_monitor_block_reason"] = str(compatibility_result.get("expected_monitor_block_reason") or "")
         row["dominant_block_reason"] = str(compatibility_result.get("dominant_block_reason") or "")
         row["dominant_block_reason_ratio"] = float(_to_float(compatibility_result.get("dominant_block_reason_ratio")))
@@ -3736,6 +3850,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "skill_quote_price": quote_price_num,
                     "skill_open_orders": open_orders,
+                    "skill_open_orders_pending_only": True,
                     "quote_best_bid": _to_float(metrics.get("best_bid")),
                     "quote_best_ask": _to_float(metrics.get("best_ask")),
                     "quote_spread_bps": metrics.get("spread_bps"),
@@ -3761,6 +3876,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "entry_compatibility_score": compatibility_result.get("entry_compatibility_score"),
                     "compatibility_bias": compatibility_result.get("compatibility_bias"),
                     "compatibility_components": dict(compatibility_result.get("compatibility_components") or {}),
+                    "scanner_chart_fit_score": compatibility_result.get("scanner_chart_fit_score"),
+                    "scanner_chart_fit_authority": compatibility_result.get("scanner_chart_fit_authority"),
+                    "scanner_chart_fit_components": dict(compatibility_result.get("scanner_chart_fit_components") or {}),
                     "compatibility_source": compatibility_result.get("compatibility_source"),
                     "compat_vwap_distance_abs": compatibility_result.get("vwap_distance_abs"),
                     "compat_is_below_vwap": compatibility_result.get("is_below_vwap"),
@@ -3817,6 +3935,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "entry_compatibility_score": compatibility_result.get("entry_compatibility_score"),
                     "entry_compatibility_bias": compatibility_result.get("compatibility_bias"),
                     "compatibility_components": dict(compatibility_result.get("compatibility_components") or {}),
+                    "scanner_chart_fit_score": compatibility_result.get("scanner_chart_fit_score"),
+                    "scanner_chart_fit_authority": compatibility_result.get("scanner_chart_fit_authority"),
+                    "scanner_chart_fit_components": dict(compatibility_result.get("scanner_chart_fit_components") or {}),
+                    "scanner_chart_fit_penalty": compatibility_result.get("scanner_chart_fit_penalty"),
                     "expected_monitor_block_reason": compatibility_result.get("expected_monitor_block_reason"),
                     "dominant_block_reason": compatibility_result.get("dominant_block_reason"),
                     "dominant_block_reason_ratio": compatibility_result.get("dominant_block_reason_ratio"),
@@ -4011,6 +4133,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_compatibility_score": float(_to_float(r.get("entry_compatibility_score"))),
             "compatibility_bias": float(_to_float(r.get("compatibility_bias"))),
             "compatibility_components": dict(r.get("compatibility_components") or {}),
+            "scanner_chart_fit_score": float(_to_float(r.get("scanner_chart_fit_score"))),
+            "scanner_chart_fit_authority": str(r.get("scanner_chart_fit_authority") or ""),
+            "scanner_chart_fit_components": dict(r.get("scanner_chart_fit_components") or {}),
             "expected_monitor_block_reason": str(r.get("expected_monitor_block_reason") or ""),
             "dominant_block_reason": str(r.get("dominant_block_reason") or ""),
             "dominant_block_reason_ratio": float(_to_float(r.get("dominant_block_reason_ratio"))),
@@ -4139,6 +4264,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_compatibility_score": float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0,
         "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
         "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
+        "scanner_chart_fit_score": float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0,
+        "scanner_chart_fit_authority": str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else "",
+        "scanner_chart_fit_components": dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {},
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
         "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
         "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
@@ -4407,6 +4535,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_compatibility_score": float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0,
         "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
         "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
+        "scanner_chart_fit_score": float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0,
+        "scanner_chart_fit_authority": str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else "",
+        "scanner_chart_fit_components": dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {},
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
         "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
         "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
@@ -4481,6 +4612,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["entry_compatibility_score"] = float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0
         state["scanner_output"]["compatibility_bias"] = float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0
         state["scanner_output"]["compatibility_components"] = dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {}
+        state["scanner_output"]["scanner_chart_fit_score"] = float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0
+        state["scanner_output"]["scanner_chart_fit_authority"] = str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else ""
+        state["scanner_output"]["scanner_chart_fit_components"] = dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {}
         state["scanner_output"]["expected_monitor_block_reason"] = str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else ""
         state["scanner_output"]["dominant_block_reason"] = str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "")
         state["scanner_output"]["dominant_block_reason_ratio"] = float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio")))
@@ -4596,6 +4730,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_compatibility_score": float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0,
         "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
         "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
+        "scanner_chart_fit_score": float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0,
+        "scanner_chart_fit_authority": str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else "",
+        "scanner_chart_fit_components": dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {},
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
         "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
         "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),

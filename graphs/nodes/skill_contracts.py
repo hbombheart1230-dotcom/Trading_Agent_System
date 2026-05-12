@@ -12,6 +12,115 @@ def norm_symbol(v: Any) -> str:
     return normalize_symbol(v)
 
 
+def _to_int(v: Any, default: int = 0) -> int:
+    if v in (None, ""):
+        return int(default)
+    try:
+        text = str(v).strip().replace(",", "")
+        if not text:
+            return int(default)
+        return int(float(text))
+    except Exception:
+        return int(default)
+
+
+def _first_present(row: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in row and row.get(key) not in (None, ""):
+            return row.get(key)
+    return None
+
+
+def account_order_side(row: Dict[str, Any]) -> str:
+    raw = str(row.get("side") or row.get("io_tp_nm") or row.get("trde_tp") or "").strip()
+    upper = raw.upper()
+    if upper in {"BUY", "B", "2"} or "BUY" in upper or "\ub9e4\uc218" in raw or "\uf9cd\u317c\ub2d4" in raw:
+        return "BUY"
+    if upper in {"SELL", "S", "1"} or "SELL" in upper or "\ub9e4\ub3c4" in raw or "\uf9cd\u317b\ub8c4" in raw:
+        return "SELL"
+    return upper
+
+
+def account_order_quantity_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
+    order_qty = max(0, _to_int(_first_present(row, ("order_qty", "ord_qty", "qty")), 0))
+    filled_qty = max(0, _to_int(_first_present(row, ("filled_qty", "cntr_qty")), 0))
+    remaining_raw = _first_present(
+        row,
+        ("remaining_qty", "ord_remnq", "rmnd_qty", "unfilled_qty", "unfilled"),
+    )
+    remaining_qty = None if remaining_raw in (None, "") else max(0, _to_int(remaining_raw, 0))
+    return {
+        "order_qty": int(order_qty),
+        "filled_qty": int(filled_qty),
+        "remaining_qty": remaining_qty,
+    }
+
+
+def account_order_is_pending(row: Dict[str, Any]) -> bool:
+    if not isinstance(row, dict):
+        return False
+
+    qty = account_order_quantity_snapshot(row)
+    order_qty = int(qty.get("order_qty") or 0)
+    filled_qty = int(qty.get("filled_qty") or 0)
+    remaining_qty = qty.get("remaining_qty")
+
+    status_raw = " ".join(
+        str(row.get(key) or "")
+        for key in (
+            "status",
+            "acpt_tp",
+            "ord_st",
+            "data_send_end_tp",
+            "mdfy_cncl",
+            "mdfy_cncl_tp",
+            "fill_status",
+        )
+    )
+    status = status_raw.strip().upper()
+
+    terminal_tokens = (
+        "CANCEL",
+        "CANCELED",
+        "CANCELLED",
+        "REJECT",
+        "DENY",
+        "BLOCK",
+        "FILLED",
+        "DONE",
+        "COMPLETE",
+        "COMPLETED",
+        "\ucde8\uc18c",
+        "\uac70\ubd80",
+        "\uac70\uc808",
+        "\uc644\ub8cc",
+        "\u75cd\u2465\ub0fc",
+        "\u5ac4\uacd5",
+    )
+    nonterminal_tokens = (
+        "OPEN",
+        "WORKING",
+        "PENDING",
+        "ACCEPT",
+        "ACCEPTED",
+        "RECEIVED",
+        "\uc811\uc218",
+        "\ubb12\ub2d4",
+    )
+
+    if any(token and token in status for token in terminal_tokens):
+        return False
+    if "\uccb4\uacb0" in status and "\ubbf8\uccb4\uacb0" not in status:
+        return False
+    if remaining_qty is not None:
+        return int(remaining_qty) > 0
+    if order_qty > 0 and filled_qty >= order_qty:
+        return False
+    if order_qty > 0 and filled_qty < order_qty and any(token and token in status for token in nonterminal_tokens):
+        return True
+    return False
+
+
 def _get_skill_root(state: Dict[str, Any]) -> Dict[str, Any]:
     for k in ("skill_results", "skill_data", "skills"):
         v = state.get(k)

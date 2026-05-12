@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.reporting.llm_artifacts import iter_trade_dirs as _iter_trade_dirs_under_day
+
 
 def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
@@ -30,13 +32,13 @@ def _iter_trade_dirs(reports_root: Path, day: str = "") -> List[Path]:
         day_root = trades_root / day
         if not day_root.exists():
             return []
-        return sorted(path for path in day_root.iterdir() if path.is_dir())
+        return _iter_trade_dirs_under_day(day_root)
     out: List[Path] = []
     for path in sorted(trades_root.iterdir()):
         if not path.is_dir():
             continue
         if len(path.name) == 10 and path.name.count("-") == 2:
-            out.extend(sorted(child for child in path.iterdir() if child.is_dir()))
+            out.extend(_iter_trade_dirs_under_day(path))
     return out
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from libs.skills.dto import MinuteOHLCVDTO
 from libs.skills.runner import SkillRunResult
 
-from graphs.nodes.monitor_node import _extract_monitor_strategy_frame, monitor_node
+from graphs.nodes.monitor_node import _evaluate_entry_cost_filter, _extract_monitor_strategy_frame, monitor_node
 from libs.contracts.agent_outputs import build_monitor_output_artifact
 
 
@@ -92,6 +92,42 @@ class _FakeMinuteSkillRunnerSequence:
         }
 
 
+def test_monitor_refreshes_post_exit_shadow_watchlist_without_trade_intent():
+    rows = [
+        {"ts": 1000, "open": 70000, "high": 70100, "low": 69900, "close": 70050, "volume": 100},
+        {"ts": 1300, "open": 70050, "high": 70200, "low": 70000, "close": 70150, "volume": 120},
+    ]
+    runner = _FakeMinuteSkillRunner({"005930": rows})
+    state = {
+        "run_id": "post-exit-watch",
+        "tick_ts": 1320,
+        "skill_runner": runner,
+        "persisted_state": {
+            "post_exit_shadow_watchlist": {
+                "005930": {
+                    "symbol": "005930",
+                    "exit_epoch": 1000,
+                    "exit_price": 70000,
+                    "expires_epoch": 1000 + (90 * 60),
+                    "observability_only": True,
+                }
+            }
+        },
+    }
+
+    out = monitor_node(state)
+
+    assert out.get("intents") == []
+    refresh = out.get("post_exit_shadow_watchlist_refresh") or {}
+    assert refresh["observability_only"] is True
+    assert refresh["refreshed_symbols"] == ["005930"]
+    watch = ((out.get("persisted_state") or {}).get("post_exit_shadow_watchlist") or {}).get("005930") or {}
+    assert watch["latest_candle_ts"] == 1300
+    assert watch["post_exit_rows_available"] is True
+    cached = ((out.get("persisted_state") or {}).get("recent_minute_ohlcv_by_symbol") or {}).get("005930") or {}
+    assert cached["rows"][-1]["ts"] == 1300
+
+
 def _base_state() -> dict:
     return {
         "plan": {"thesis": "test"},
@@ -156,6 +192,10 @@ def _with_commander_numeric_policy(
 
 def _policy_with_entry_cooldown(seconds: int, base: dict | None = None) -> dict:
     out = dict(base or {})
+    if "entry_cost_filter" not in out:
+        out["entry_cost_filter"] = {"enabled": False, "require_directional_edge_evidence": False}
+    if "exit_policy" not in out:
+        out["exit_policy"] = {"use_eod_flat": False}
     monitor_policy = dict(out.get("monitor_policy") or {}) if isinstance(out.get("monitor_policy"), dict) else {}
     monitor_policy["entry_intent_cooldown_sec"] = int(seconds)
     out["monitor_policy"] = monitor_policy
@@ -330,18 +370,19 @@ def test_monitor_blocks_new_buy_when_open_position_guard_enabled(monkeypatch):
             "cash": 2_000_000.0,
             "positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0}],
         },
-        "policy": {},
+        "policy": {"exit_policy": {"use_eod_flat": False}},
     }
     out = monitor_node(state)
     assert out.get("intents") == []
     mon = out.get("monitor") or {}
     assert mon.get("open_position_count") == 1
     assert mon.get("buy_blocked_open_position") is True
-    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "buy_blocked_open_position"
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "max_positions_reached"
 
 
 def test_monitor_waits_when_open_position_guard_disabled_but_minute_candles_missing(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("RISK_MAX_POSITIONS", "3")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
 
     state = {
@@ -351,7 +392,7 @@ def test_monitor_waits_when_open_position_guard_disabled_but_minute_candles_miss
             "cash": 2_000_000.0,
             "positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0}],
         },
-        "policy": {},
+        "policy": {"exit_policy": {"use_eod_flat": False}},
     }
     out = monitor_node(state)
     assert out.get("intents") == []
@@ -371,6 +412,7 @@ def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monke
         "selected": {
             "symbol": "BBB",
             "price": 101.8,
+            "expected_move_pct": 0.018,
             "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
         },
         "minute_ohlcv_by_symbol": {
@@ -384,19 +426,32 @@ def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monke
             ]
         },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": _policy_with_entry_cooldown(0),
+        "policy": _policy_with_entry_cooldown(
+            0,
+            base={"entry_cost_filter": {"require_directional_edge_evidence": True}},
+        ),
     }
 
     out = monitor_node(state)
     intents = out.get("intents") or []
     assert len(intents) == 1
     assert intents[0]["side"] == "BUY"
+    assert intents[0]["price"] == 101.8
+    assert intents[0]["meta"]["price"] == 101.8
+    assert intents[0]["meta"]["order_price_source"] == "entry_cost_filter.price"
     monitor = out.get("monitor") or {}
     assert monitor.get("entry_evaluated") is True
     assert monitor.get("entry_triggered") is True
     assert monitor.get("entry_pattern") == "breakout_vwap_hold"
     assert monitor.get("cost_adjusted_edge_ok") is True
-    assert isinstance(monitor.get("entry_cost_filter"), dict)
+    entry_cost_filter = monitor.get("entry_cost_filter")
+    assert isinstance(entry_cost_filter, dict)
+    assert entry_cost_filter.get("effective_cost_drag_pct") == 0.009
+    assert entry_cost_filter.get("cost_floor_applied") is True
+    assert entry_cost_filter.get("required_gross_edge_pct") == 0.012
+    assert entry_cost_filter.get("directional_edge_available") is True
+    assert entry_cost_filter.get("edge_evidence_type") == "directional"
+    assert "selected.expected_move_pct" in str(entry_cost_filter.get("estimated_gross_edge_source") or "")
     assert intents[0]["meta"]["cost_adjusted_edge_ok"] is True
     assert isinstance(intents[0]["meta"]["entry_cost_filter"], dict)
 
@@ -410,6 +465,7 @@ def test_monitor_blocks_buy_when_cost_adjusted_edge_is_not_enough(monkeypatch):
         "selected": {
             "symbol": "BBB",
             "price": 101.8,
+            "expected_move_pct": 0.018,
             "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
         },
         "minute_ohlcv_by_symbol": {
@@ -447,6 +503,96 @@ def test_monitor_blocks_buy_when_cost_adjusted_edge_is_not_enough(monkeypatch):
     assert monitor.get("cost_adjusted_edge_ok") is False
     assert "cost_adjusted_edge_ok" in list(monitor.get("entry_failed_checks") or [])
     assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "cost_adjusted_edge_not_ready"
+
+
+def test_entry_cost_filter_rejects_volatility_proxy_without_directional_edge():
+    result = _evaluate_entry_cost_filter(
+        entry_info={
+            "metrics": {"current_price": 100.0},
+            "condition_scores": {"entry_quality_score": 1.0},
+        },
+        selected={
+            "symbol": "BBB",
+            "price": 100.0,
+            "features": {"engine_atr14": 4.0, "engine_volatility20": 0.035},
+        },
+        qty=10,
+        config={
+            "enabled": True,
+            "buy_fee_rate": 0.00015,
+            "sell_fee_rate": 0.00015,
+            "sell_tax_rate": 0.0018,
+            "min_buy_fee": 0.0,
+            "min_sell_fee": 0.0,
+            "max_cost_drag_pct": 0.006,
+            "round_trip_cost_floor_pct": 0.009,
+            "min_net_profit_buffer_pct": 0.003,
+            "min_cost_adjusted_edge_pct": 0.001,
+            "edge_scale_pct": 0.035,
+            "quality_proxy_max_edge_pct": 0.012,
+            "require_directional_edge_evidence": True,
+            "allow_volatility_proxy_edge": False,
+            "allow_quality_proxy_edge": False,
+            "proxy_edge_haircut": 0.35,
+            "min_proxy_quality_score": 0.80,
+            "min_estimated_gross_edge_pct": 0.0,
+        },
+    )
+
+    assert result["passed"] is False
+    assert result["directional_edge_available"] is False
+    assert result["proxy_edge_available"] is True
+    assert result["edge_evidence_type"] == ""
+    assert result["estimated_gross_edge_pct"] is None
+    assert "directional_edge_evidence_missing" in list(result.get("fail_reasons") or [])
+    assert "estimated_gross_edge_missing" in list(result.get("fail_reasons") or [])
+
+
+def test_entry_cost_filter_allows_triggered_signal_volatility_proxy():
+    result = _evaluate_entry_cost_filter(
+        entry_info={
+            "triggered": True,
+            "metrics": {"current_price": 100.0},
+            "condition_scores": {"confidence_score": 0.55, "confidence_threshold": 0.55},
+        },
+        selected={
+            "symbol": "BBB",
+            "price": 100.0,
+            "features": {"engine_atr14": 4.0, "engine_volatility20": 0.035},
+        },
+        qty=10,
+        config={
+            "enabled": True,
+            "buy_fee_rate": 0.00015,
+            "sell_fee_rate": 0.00015,
+            "sell_tax_rate": 0.0018,
+            "min_buy_fee": 0.0,
+            "min_sell_fee": 0.0,
+            "max_cost_drag_pct": 0.006,
+            "round_trip_cost_floor_pct": 0.009,
+            "min_net_profit_buffer_pct": 0.003,
+            "min_cost_adjusted_edge_pct": 0.001,
+            "edge_scale_pct": 0.035,
+            "quality_proxy_max_edge_pct": 0.012,
+            "require_directional_edge_evidence": True,
+            "allow_volatility_proxy_edge": False,
+            "allow_quality_proxy_edge": False,
+            "allow_triggered_signal_proxy_edge": True,
+            "triggered_proxy_confidence_tolerance": 0.0,
+            "proxy_edge_haircut": 0.35,
+            "min_proxy_quality_score": 0.80,
+            "min_estimated_gross_edge_pct": 0.0,
+        },
+    )
+
+    assert result["passed"] is True
+    assert result["edge_evidence_type"] == "proxy"
+    assert result["triggered_signal_proxy_edge_allowed"] is True
+    assert result["effective_directional_edge_required"] is False
+    assert result["effective_proxy_edge_allowed"] is True
+    assert result["estimated_gross_edge_pct"] == 0.01225
+    assert result["cost_adjusted_edge_pct"] == 0.00325
+    assert result["fail_reasons"] == []
 
 
 def test_monitor_skips_buy_when_intraday_entry_signal_not_confirmed(monkeypatch):
@@ -1082,6 +1228,38 @@ def test_monitor_blocks_new_buy_inside_closeout_window(monkeypatch):
     assert blocker_surface.get("eod_flat_cutoff_min") == 10
 
 
+def test_monitor_blocks_new_buy_inside_entry_closeout_buffer(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": _entry_breakout_rows()},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {
+            **_policy_with_entry_cooldown(0),
+            "exit_policy": {"use_eod_flat": True, "eod_flat_cutoff_min": 10},
+        },
+        "market_context": {"minutes_to_close": 10.5},
+    }
+
+    out = monitor_node(state)
+    mon = out.get("monitor") or {}
+
+    assert out.get("intents") == []
+    assert mon.get("buy_blocked_closeout_window") is True
+    assert mon.get("entry_guard_reason") == "buy_blocked_closeout_window"
+    assert mon.get("minutes_to_close") == 10.5
+    assert mon.get("eod_flat_cutoff_min") == 10
+    assert mon.get("buy_closeout_cutoff_min") == 15
+    assert mon.get("closeout_window_active") is True
+
+
 def test_monitor_blocks_new_buy_inside_closeout_window_when_market_context_missing_but_tick_ts_near_close(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "true")
@@ -1371,16 +1549,20 @@ def test_monitor_crosschecks_account_unrealized_pnl_and_uses_more_conservative_e
     assert float(exit_info.get("account_mark_price") or 0.0) == 95.5
     assert round(float(exit_info.get("raw_pnl_ratio") or 0.0), 4) == -0.03
     assert round(float(exit_info.get("pnl_ratio") or 0.0), 4) == -0.045
+    assert round(float(exit_info.get("stop_pnl_ratio") or 0.0), 4) == -0.03
+    assert exit_info.get("cost_drag_pressure") is True
+    assert exit_info.get("stop_loss_cost_drag_blocked") is True
+    assert str(exit_info.get("hold_block_reason") or "") == "stop_loss_cost_drag_only"
     assert exit_info.get("pnl_crosscheck_applied") is True
     assert str(exit_info.get("pnl_crosscheck_reason") or "") == "account_unrealized_pnl_more_conservative"
     intents = out.get("intents") or []
-    assert len(intents) == 1
-    assert intents[0]["side"] == "SELL"
+    assert len(intents) == 0
     artifact = build_monitor_output_artifact(out)
     assert float(artifact.get("effective_price") or 0.0) == 95.5
     assert float(artifact.get("account_mark_price") or 0.0) == 95.5
     assert round(float(artifact.get("account_pnl_ratio") or 0.0), 4) == -0.045
     assert artifact.get("pnl_crosscheck_applied") is True
+    assert artifact.get("stop_loss_cost_drag_blocked") is True
 
 
 def test_monitor_prefers_direct_account_pnl_ratio_when_present():
@@ -1620,6 +1802,55 @@ def test_monitor_can_approve_overnight_carry_near_close(monkeypatch):
     assert overnight.get("005930", {}).get("approved") is True
 
 
+def test_monitor_blocks_default_weekend_carry_on_friday(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setenv("EXIT_POLICY_USE_EOD_FLAT", "true")
+    monkeypatch.setenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "10")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "tick_ts_iso": "2026-05-08T06:22:00+00:00",
+        "selected": {
+            "symbol": "005930",
+            "price": 100.9,
+            "features": {
+                "engine_volatility20": 0.02,
+                "engine_trend_strength": 0.8,
+                "engine_vwap_distance": 0.02,
+            },
+        },
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 3600}],
+        },
+        "policy": {"use_exit_policy": True, "exit_policy": {"use_eod_flat": True, "eod_flat_cutoff_min": 10}},
+        "market_context": {"minutes_to_close": 8},
+        "playbook": "breakout",
+        "monitor_guidance": "hold_through_noise",
+        "risk_tone": "balanced",
+        "persisted_state": {},
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("eod_carry_evaluated") is True
+    assert exit_info.get("eod_carry_approved") is False
+    assert exit_info.get("eod_carry_weekend") is True
+    assert "weekend_carry_not_allowed:friday" in list(exit_info.get("eod_carry_blockers") or [])
+    persisted = out.get("persisted_state") or {}
+    overnight = persisted.get("overnight_decision_by_symbol") or {}
+    decision = overnight.get("005930") or {}
+    assert decision.get("approved") is False
+    assert decision.get("weekend_carry") is True
+    assert decision.get("holding_gap_days") == 3
+
+
 def test_monitor_flattens_near_close_when_overnight_carry_is_not_approved(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
@@ -1710,6 +1941,59 @@ def test_monitor_evaluates_overnight_carry_when_selected_missing_but_position_op
     persisted = out.get("persisted_state") or {}
     overnight = persisted.get("overnight_decision_by_symbol") or {}
     assert overnight.get("005930", {}).get("approved") is True
+
+
+def test_monitor_persists_eod_carry_decisions_for_all_open_positions(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setenv("EXIT_POLICY_USE_EOD_FLAT", "true")
+    monkeypatch.setenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "10")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "005930",
+            "price": 100.7,
+            "features": {
+                "engine_volatility20": 0.02,
+                "engine_trend_strength": 0.24,
+                "engine_vwap_distance": 0.003,
+            },
+        },
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [
+                {"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 3600, "current_price": 100.7},
+                {"symbol": "000660", "qty": 1, "avg_price": 100.0, "hold_sec": 3600, "current_price": 100.8},
+            ],
+        },
+        "feature_engine": {
+            "by_symbol": {
+                "000660": {
+                    "engine_trend_strength": 0.25,
+                    "engine_vwap_distance": 0.004,
+                }
+            }
+        },
+        "policy": {"use_exit_policy": True, "exit_policy": {"use_eod_flat": True, "eod_flat_cutoff_min": 10}},
+        "market_context": {"minutes_to_close": 8},
+        "playbook": "breakout",
+        "monitor_guidance": "hold_through_noise",
+        "risk_tone": "balanced",
+        "persisted_state": {},
+    }
+
+    out = monitor_node(state)
+
+    exit_info = out.get("monitor_exit") or {}
+    assert set(exit_info.get("eod_carry_sweep_symbols") or []) == {"000660", "005930"}
+    persisted = out.get("persisted_state") or {}
+    overnight = persisted.get("overnight_decision_by_symbol") or {}
+    assert set(overnight.keys()) == {"000660", "005930"}
+    assert overnight["005930"]["approved"] is True
+    assert overnight["000660"]["approved"] is True
 
 
 def test_monitor_flags_overnight_carry_anomaly_when_minutes_to_close_missing(monkeypatch):
@@ -1977,6 +2261,12 @@ def test_monitor_stop_take_env_are_fallback_only(monkeypatch):
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,
             "take_profit_pct": 0.05,
+            "partial_take_profit_pct": 0.0,
+            "profit_ladder_levels_pct": [],
+            "risk_reward_take_profit_r": 0.0,
+            "risk_reward_take_profit_rungs": [],
+            "volume_exhaustion_take_profit_min_pct": 0.0,
+            "opening_gap_profit_take_min_pct": 0.0,
         },
     }
     out = monitor_node(state)
@@ -2923,13 +3213,13 @@ def test_monitor_peak_drawdown_exit_uses_persisted_peak(monkeypatch):
     assert float(exit_info.get("peak_drawdown") or 0.0) <= -0.05
     assert float(exit_info.get("max_runup_pct") or 0.0) >= 0.08
     assert float(exit_info.get("final_peak_drawdown_ratio") or 0.0) <= -0.05
-    assert str(exit_info.get("peak_drawdown_source") or "") == "effective_price_vs_peak_price"
+    assert str(exit_info.get("peak_drawdown_source") or "") == "raw_price_vs_peak_price"
     assert str(exit_info.get("exit_trigger_metric_name") or "") == "peak_drawdown_ratio"
     assert float(exit_info.get("exit_trigger_metric_value") or 0.0) <= -0.05
-    assert str(exit_info.get("exit_trigger_metric_source") or "") == "effective_price_vs_peak_price"
+    assert str(exit_info.get("exit_trigger_metric_source") or "") == "raw_price_vs_peak_price"
     artifact = build_monitor_output_artifact(out)
     assert float(artifact.get("final_peak_drawdown_ratio") or 0.0) <= -0.05
-    assert str(artifact.get("peak_drawdown_source") or "") == "effective_price_vs_peak_price"
+    assert str(artifact.get("peak_drawdown_source") or "") == "raw_price_vs_peak_price"
     assert str(artifact.get("exit_trigger_metric_name") or "") == "peak_drawdown_ratio"
     assert float(artifact.get("exit_trigger_metric_value") or 0.0) <= -0.05
 
@@ -2976,6 +3266,43 @@ def test_monitor_peak_drawdown_requires_confirmation_and_does_not_bypass_guard(m
     assert int(exit2.get("exit_confirm_count") or 0) >= 2
 
 
+def test_monitor_peak_drawdown_profit_protection_urgent_bypasses_extra_confirmation(monkeypatch):
+    state = _with_commander_numeric_policy(
+        _base_state(),
+        min_hold_seconds=0,
+        sell_sec=0,
+        confirm_ticks=1,
+    )
+    state["selected"]["price"] = 100.6
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
+    }
+    state["persisted_state"] = {
+        "position_peak_price": {"005930": 101.8},
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "peak_drawdown_exit_pct": 0.005,
+        "confirm_required_for_peak_drawdown": 2,
+        "take_profit_pct": 0.0,
+        "cost_aware_profit_floor_enabled": True,
+        "round_trip_cost_floor_pct": 0.009,
+        "min_net_profit_buffer_pct": 0.003,
+    }
+
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") == "peak_drawdown"
+    assert bool(exit_info.get("peak_drawdown_profit_protection_urgent")) is True
+    assert int(exit_info.get("peak_drawdown_confirm_ticks") or 0) == 1
+    assert int(exit_info.get("exit_confirm_count") or 0) == 1
+
+
 def _entry_cascade_test_state() -> dict:
     return {
         "plan": {"thesis": "cascade test"},
@@ -2987,7 +3314,10 @@ def _entry_cascade_test_state() -> dict:
         ],
         "scanner_output": {"quote_data_diagnostic": {"zero_quote_metric_symbols": []}},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {"use_exit_policy": False},
+        "policy": {
+            "use_exit_policy": False,
+            "entry_cost_filter": {"enabled": False, "require_directional_edge_evidence": False},
+        },
         "tick_ts": 1772850000,
     }
 
@@ -3061,6 +3391,13 @@ def test_monitor_falls_back_to_runner_up_when_top_pick_waits(monkeypatch):
     handoff = out.get("scanner_monitor_handoff") or {}
     assert handoff.get("scanner_selected_symbol") == "AAA"
     assert handoff.get("monitor_selected_symbol") == "BBB"
+    focus = (out.get("monitor_output") or {}).get("monitor_focus_context") or {}
+    assert focus.get("scanner_selected_symbol") == "AAA"
+    assert focus.get("entry_final_symbol") == "BBB"
+    assert focus.get("position_focus_symbol") == ""
+    artifact = build_monitor_output_artifact(out)
+    assert artifact.get("monitor_focus_mode") == "entry_candidate_focus"
+    assert artifact.get("entry_final_symbol") == "BBB"
 
 
 def test_monitor_falls_back_to_runner_up_when_top_pick_reclaim_waits(monkeypatch):
@@ -3166,7 +3503,50 @@ def test_monitor_does_not_fallback_when_open_position_exists(monkeypatch):
     assert out.get("intents") == []
     cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
     assert cascade.get("attempted") is False
-    assert cascade.get("blocked_reason") == "open_position_present"
+    assert cascade.get("blocked_reason") == "max_positions_reached"
+
+
+def test_monitor_cascades_from_held_top_pick_when_capacity_remains(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
+    monkeypatch.setenv("RISK_MAX_POSITIONS", "3")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    def _fake_selected(state, symbol, selected, *, position=None):
+        return {"symbol": symbol, "price": 100.0, "features": {"candidate_symbol": symbol}}
+
+    monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._ensure_monitor_minute_ohlcv_for_symbol",
+        lambda state, symbol, timeframe_minutes, now_epoch, prefer_fresh_runner=False: state,
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        if sym == "AAA":
+            return {"enabled": True, "evaluated": True, "triggered": True, "reason": "breakout", "pattern": "breakout", "thresholds": {"intent_cooldown_sec": 0}}
+        return {"enabled": True, "evaluated": True, "triggered": True, "reason": "pullback", "pattern": "pullback", "thresholds": {"intent_cooldown_sec": 0}}
+
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+
+    state = _entry_cascade_test_state()
+    state["portfolio_snapshot"] = {"cash": 2_000_000.0, "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0}]}
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "BBB"
+    monitor = out.get("monitor") or {}
+    assert monitor.get("open_position_count") == 1
+    assert monitor.get("max_positions") == 3
+    assert monitor.get("buy_blocked_same_symbol") is False
+    cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
+    assert cascade.get("attempted") is True
+    assert cascade.get("fallback_from_symbol") == "AAA"
+    assert cascade.get("fallback_to_symbol") == "BBB"
 
 
 def test_monitor_allows_zero_quote_metric_runner_up_and_reaches_third_candidate(monkeypatch):
@@ -3660,7 +4040,7 @@ def test_monitor_vwap_breakdown_exit_uses_feature_signal(monkeypatch):
     state = _base_state()
     state["selected"] = {
         "symbol": "005930",
-        "price": 101.0,
+        "price": 101.3,
         "features": {"engine_vwap_distance": -0.01},
     }
     state["portfolio_snapshot"] = {

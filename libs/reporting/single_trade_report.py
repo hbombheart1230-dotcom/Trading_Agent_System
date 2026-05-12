@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List
 
 from libs.reporting.llm_artifacts import (
     build_compact_input_artifact,
+    iter_trade_dirs,
     persist_llm_artifact_refs,
     trade_artifact_paths,
     write_json,
@@ -277,7 +278,7 @@ def _matching_trade_dirs(trade_day_root: Path, symbol: str) -> Iterable[Path]:
     return sorted(
         (
             path
-            for path in trade_day_root.iterdir()
+            for path in iter_trade_dirs(trade_day_root)
             if path.is_dir() and pattern.match(path.name)
         ),
         key=lambda path: path.name,

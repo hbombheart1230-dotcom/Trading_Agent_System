@@ -41,6 +41,25 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
     return float(numerator) / float(denominator)
 
 
+def _state_from_count(count: int, *, window: int = 3) -> str:
+    if count >= window:
+        return "strong"
+    if count >= max(2, window - 1):
+        return "partial"
+    if count >= 1:
+        return "weak"
+    return "absent"
+
+
+def _average(values: Sequence[float]) -> float:
+    items = [float(value) for value in list(values or [])]
+    return sum(items) / float(len(items)) if items else 0.0
+
+
+def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(float(lo), min(float(hi), float(value)))
+
+
 def _empty_feature_groups() -> Dict[str, Dict[str, Any]]:
     return {
         "structure": {
@@ -71,6 +90,12 @@ def empty_chart_structure_features(*, notes: Sequence[Any] | None = None) -> Dic
         "schema_version": SCHEMA_VERSION,
         "available": False,
         **_empty_feature_groups(),
+        "human_chart_context": {
+            "schema_version": "human_chart_context.v1",
+            "available": False,
+            "entry_chart_score": 0.0,
+            "exit_risk_score": 0.0,
+        },
         "notes": [],
     }
     if notes:
@@ -251,6 +276,129 @@ def build_chart_structure_features(
         continuity_momentum["momentum_decay"] = "mild"
     else:
         continuity_momentum["momentum_decay"] = "none"
+
+    vwap_values = [_to_float(row.get("vwap"), current_vwap_value) for row in rows]
+    last3_closes = closes[-3:]
+    last3_vwaps = vwap_values[-3:]
+    above_vwap_count = sum(
+        1 for close, vwap in zip(last3_closes, last3_vwaps) if float(vwap) > 0.0 and float(close) >= float(vwap)
+    )
+    below_vwap_count = sum(
+        1 for close, vwap in zip(last3_closes, last3_vwaps) if float(vwap) > 0.0 and float(close) < float(vwap)
+    )
+
+    bullish_ma_count = 0
+    bearish_ma_count = 0
+    for idx in range(max(5, len(closes) - 2), len(closes) + 1):
+        window = closes[:idx]
+        w_ma2 = _moving_average(window, 2)
+        w_ma3 = _moving_average(window, 3)
+        w_ma5 = _moving_average(window, 5)
+        if w_ma2 is None or w_ma3 is None or w_ma5 is None:
+            continue
+        if w_ma2 > w_ma3 > w_ma5:
+            bullish_ma_count += 1
+        elif w_ma2 < w_ma3 < w_ma5:
+            bearish_ma_count += 1
+
+    prior_volume_baseline = _average(volumes[-8:-3]) if len(volumes) >= 8 else _average(volumes[:-3])
+    volume_expansion_streak = 0
+    if prior_volume_baseline > 0.0:
+        volume_expansion_streak = sum(1 for volume in volumes[-3:] if volume >= prior_volume_baseline * 1.10)
+    elif volume_ratio_value >= 1.5:
+        volume_expansion_streak = 2
+    elif volume_ratio_value >= 1.0:
+        volume_expansion_streak = 1
+
+    recent_high_gap_pct = _safe_ratio(current_close - recent_high_value, recent_high_value) if recent_high_value > 0.0 else None
+    vwap_distance_pct = _safe_ratio(current_close - current_vwap_value, current_vwap_value) if current_vwap_value > 0.0 else None
+    if bool(too_extended) or (vwap_distance_pct is not None and vwap_distance_pct >= 0.035):
+        late_entry_risk = "high"
+    elif (
+        (recent_high_gap_pct is not None and recent_high_gap_pct >= 0.018)
+        or (vwap_distance_pct is not None and vwap_distance_pct >= 0.022)
+    ):
+        late_entry_risk = "medium"
+    elif (
+        (recent_high_gap_pct is not None and recent_high_gap_pct >= 0.008)
+        or (vwap_distance_pct is not None and vwap_distance_pct >= 0.012)
+    ):
+        late_entry_risk = "low"
+    else:
+        late_entry_risk = "none"
+
+    swing_low_above_vwap = bool(
+        current_vwap_value > 0.0
+        and recent_low_value > 0.0
+        and recent_low_value >= current_vwap_value * 0.995
+        and current_close >= current_vwap_value
+    )
+    higher_low_continuation = bool(len(last3_lows) >= 3 and last3_lows[-1] >= last3_lows[-2] >= last3_lows[-3])
+    box_breakout_retest_hold = bool(
+        recent_high_value > 0.0
+        and support_resistance["resistance_break_confirmed"] in {"attempting", "confirmed"}
+        and current_low >= recent_high_value * 0.995
+        and current_close >= recent_high_value * 0.998
+    )
+    swing_low_break = bool(recent_low_value > 0.0 and current_low < recent_low_value * 0.997)
+    lower_high_failure = bool(len(last3_highs) >= 3 and last3_highs[-1] <= last3_highs[-2] <= last3_highs[-3] and close_delta < 0.0)
+
+    vwap_state = _state_from_count(above_vwap_count, window=3)
+    vwap_breakdown_state = _state_from_count(below_vwap_count, window=3)
+    ma_bullish_state = _state_from_count(bullish_ma_count, window=3)
+    ma_bearish_state = _state_from_count(bearish_ma_count, window=3)
+    volume_state = _state_from_count(volume_expansion_streak, window=3)
+
+    entry_score = 0.0
+    entry_score += {"strong": 0.24, "partial": 0.16, "weak": 0.06, "absent": 0.0}.get(vwap_state, 0.0)
+    entry_score += {"strong": 0.18, "partial": 0.12, "weak": 0.04, "absent": 0.0}.get(ma_bullish_state, 0.0)
+    entry_score += {"strong": 0.18, "partial": 0.12, "weak": 0.05, "absent": 0.0}.get(volume_state, 0.0)
+    if support_resistance["resistance_break_confirmed"] == "confirmed":
+        entry_score += 0.16
+    elif support_resistance["resistance_break_confirmed"] == "attempting":
+        entry_score += 0.08
+    if swing_low_above_vwap:
+        entry_score += 0.08
+    if higher_low_continuation:
+        entry_score += 0.08
+    if box_breakout_retest_hold:
+        entry_score += 0.08
+    entry_score -= {"high": 0.22, "medium": 0.12, "low": 0.04, "none": 0.0}.get(late_entry_risk, 0.0)
+
+    exit_risk_score = 0.0
+    exit_risk_score += {"strong": 0.28, "partial": 0.18, "weak": 0.08, "absent": 0.0}.get(vwap_breakdown_state, 0.0)
+    exit_risk_score += {"strong": 0.22, "partial": 0.14, "weak": 0.06, "absent": 0.0}.get(ma_bearish_state, 0.0)
+    if swing_low_break:
+        exit_risk_score += 0.25
+    if lower_high_failure:
+        exit_risk_score += 0.12
+    if support_resistance["failed_breakout"] in {"suspected", "confirmed"}:
+        exit_risk_score += 0.16
+
+    out["human_chart_context"] = {
+        "schema_version": "human_chart_context.v1",
+        "available": True,
+        "vwap_reclaim_persistence": vwap_state,
+        "vwap_reclaim_persistence_count": int(above_vwap_count),
+        "vwap_breakdown_persistence": vwap_breakdown_state,
+        "vwap_breakdown_persistence_count": int(below_vwap_count),
+        "ma_bullish_persistence": ma_bullish_state,
+        "ma_bullish_persistence_count": int(bullish_ma_count),
+        "ma_bearish_persistence": ma_bearish_state,
+        "ma_bearish_persistence_count": int(bearish_ma_count),
+        "volume_expansion_persistence": volume_state,
+        "volume_expansion_streak": int(volume_expansion_streak),
+        "recent_high_gap_pct": float(recent_high_gap_pct) if recent_high_gap_pct is not None else None,
+        "vwap_distance_pct": float(vwap_distance_pct) if vwap_distance_pct is not None else None,
+        "late_entry_risk": late_entry_risk,
+        "swing_low_above_vwap": bool(swing_low_above_vwap),
+        "higher_low_continuation": bool(higher_low_continuation),
+        "box_breakout_retest_hold": bool(box_breakout_retest_hold),
+        "swing_low_break": bool(swing_low_break),
+        "lower_high_failure": bool(lower_high_failure),
+        "entry_chart_score": round(_clamp(entry_score), 4),
+        "exit_risk_score": round(_clamp(exit_risk_score), 4),
+    }
 
     notes: List[str] = []
     if len(rows) < 5:

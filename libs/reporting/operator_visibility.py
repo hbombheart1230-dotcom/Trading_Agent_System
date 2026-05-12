@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
+from libs.reporting.event_log_reader import iter_jsonl_events
 from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.narrative_axes import build_narrative_explanation, narrative_axis_policy
 from libs.reporting.report_metadata import (
@@ -872,7 +873,8 @@ def build_operator_daily_summary_payload(
     report_dir.mkdir(parents=True, exist_ok=True)
 
     rows: List[Dict[str, Any]] = []
-    for raw in _iter_jsonl(events_path):
+    source_rows = iter_jsonl_events(events_path, day=day) if day else _iter_jsonl(events_path)
+    for raw in source_rows:
         ts = raw.get("ts") or (raw.get("payload") or {}).get("ts")
         rows.append({**raw, "_epoch": _to_epoch(ts), "_day": _utc_day(ts)})
 

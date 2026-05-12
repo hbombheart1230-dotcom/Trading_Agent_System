@@ -158,3 +158,157 @@ def test_strategist_llm_summary_surfaces_canonical_memory_and_news(tmp_path: Pat
     assert "### 메모리 사용" in md
     assert "### 뉴스 사용" in md
     assert "휴대폰_RF부품" in md
+
+
+def test_strategist_llm_summary_surfaces_strategy_detail_from_canonical(tmp_path: Path) -> None:
+    response_path = tmp_path / "reports" / "llm" / "2026-05-06" / "run-2" / "strategist" / "response.json"
+    response_path.parent.mkdir(parents=True)
+    response_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "run_id": "run-2",
+                "day": "2026-05-06",
+                "response_text": json.dumps(
+                    {
+                        "playbook": "defensive",
+                        "selected_themes": [],
+                        "tactical_strategy": "defensive_observe",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    canonical_path = tmp_path / "reports" / "canonical" / "2026-05-06" / "run-2" / "strategist.json"
+    canonical_path.parent.mkdir(parents=True)
+    canonical_path.write_text(
+        json.dumps(
+            {
+                "playbook": "breakout",
+                "pre_llm_playbook": "defensive",
+                "llm_requested_playbook": "breakout",
+                "requested_playbook": "breakout",
+                "requested_playbook_source": "llm",
+                "final_playbook": "breakout",
+                "tactical_strategy": "opening_range_breakout",
+                "strategy_scores": {
+                    "opening_range_breakout": 0.82,
+                    "defensive_observe": 0.18,
+                },
+                "rejected_strategy_reasons": {
+                    "defensive_observe": "risk_on tape supports active watch",
+                },
+                "candidate_watch_policy": {
+                    "behavior_effect": "visibility_only",
+                    "max_priority_rank": 7,
+                    "max_runner_ups": 4,
+                    "cascade_enabled": True,
+                    "reason": "breakout tape supports rank expansion",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_strategist_llm_summary_payload(response_path)
+    md = render_strategist_llm_summary_markdown(payload)
+
+    detail = payload["strategy_detail"]
+    assert detail["pre_llm_playbook"] == "defensive"
+    assert detail["llm_requested_playbook"] == "breakout"
+    assert detail["final_playbook"] == "breakout"
+    assert detail["tactical_strategy"] == "opening_range_breakout"
+    assert detail["candidate_watch_policy"]["max_priority_rank"] == 7
+    assert "### 전략 디테일" in md
+    assert "전략 강화 필드: 적용됨" in md
+    assert "플레이북 흐름: defensive -> breakout -> breakout (source=llm)" in md
+    assert "선택 전술: opening_range_breakout" in md
+    assert "opening_range_breakout" in md
+    assert "후보 감시 제안: 7위까지 / 차순위 4개 / cascade 활성" in md
+    assert "#### 전략 점수" in md
+    assert "opening_range_breakout: 0.82 (선택)" in md
+    assert "defensive_observe: 0.18" in md
+    assert "#### 탈락 전략 이유" in md
+    assert "defensive_observe: risk_on tape supports active watch" in md
+    assert "strategy_scores:" not in md
+    assert "rejected_strategy_reasons:" not in md
+    assert "candidate_watch_reason" not in md
+    assert "breakout tape supports rank expansion" not in md
+
+
+def test_strategist_llm_summary_renders_stage3_hold_review_without_market_frame_blanks(tmp_path: Path) -> None:
+    run_id = "c" * 32
+    response_path = (
+        tmp_path
+        / "reports"
+        / "llm"
+        / "2026-05-11"
+        / "trade_executed"
+        / run_id
+        / "strategist_stage3_hold_review"
+        / "response.json"
+    )
+    response_path.parent.mkdir(parents=True)
+    response_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "model": "test-model",
+                "run_id": run_id,
+                "day": "2026-05-11",
+                "stage_index": 3,
+                "stage_name": "stale_intraday_hold_review",
+                "call_kind": "stale_intraday_hold_review",
+                "stage_component": "strategist_stage3_hold_review",
+                "response_text": json.dumps(
+                    {
+                        "hold_review_decision": "tighten_exit",
+                        "exit_pressure": "medium",
+                        "thesis_status": "weakened",
+                        "monitor_adjustment": {
+                            "tighten_stop": True,
+                            "tighten_time_decay": True,
+                            "allow_profit_recovery_wait": False,
+                            "next_check_minutes": 5,
+                        },
+                        "priority_exit_triggers": ["vwap_breakdown", "time_decay"],
+                        "next_check_minutes": 5,
+                        "reason": "현재 포지션의 테제가 약화되어 출구 조건을 강화합니다.",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    canonical_path = tmp_path / "reports" / "canonical" / "2026-05-11" / run_id / "strategist.json"
+    canonical_path.parent.mkdir(parents=True)
+    canonical_path.write_text(
+        json.dumps(
+            {
+                "final_playbook": "pullback",
+                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "candidate_watch_policy": {"max_priority_rank": 5, "max_runner_ups": 4, "cascade_enabled": True},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    md_path, _json_path, payload = generate_strategist_llm_summary(response_path)
+    md = md_path.read_text(encoding="utf-8")
+
+    assert payload["source_canonical_strategist_json"] == str(canonical_path)
+    assert payload["stage_decision"]["decision"] == "tighten_exit"
+    assert payload["operator_readout"]["headline"] == "stale_intraday_hold_review / decision=tighten_exit"
+    assert "Stage-Specific LLM Output" in md
+    assert "decision: **tighten_exit**" in md
+    assert "priority_exit_triggers: vwap_breakdown, time_decay" in md
+    assert "현재 포지션의 테제가 약화" in md
+    assert "Market-frame fields" in md
+    assert "theme=none" not in md

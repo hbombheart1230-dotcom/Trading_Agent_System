@@ -13,6 +13,39 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _first_positive(*values: Any) -> Optional[float]:
+    for value in values:
+        num = _safe_float(value)
+        if num is not None and num > 0:
+            return float(num)
+    return None
+
+
+def _exit_monitor_reference_price(payload: Mapping[str, Any], execution_details: Mapping[str, Any]) -> Optional[float]:
+    monitor_context = payload.get("monitor_context") if isinstance(payload.get("monitor_context"), Mapping) else {}
+    quote_snapshot = (
+        execution_details.get("quote_snapshot")
+        if isinstance(execution_details.get("quote_snapshot"), Mapping)
+        else {}
+    )
+    return _first_positive(
+        monitor_context.get("current_price"),
+        monitor_context.get("price"),
+        quote_snapshot.get("current_price"),
+        quote_snapshot.get("best_bid"),
+        quote_snapshot.get("best_ask"),
+    )
+
+
 def stable_json_text(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -21,6 +54,51 @@ def payload_fingerprint(payload: Any) -> str:
     import hashlib
 
     return hashlib.sha256(stable_json_text(payload).encode("utf-8")).hexdigest()
+
+
+def _backfill_execution_fields(payload: Dict[str, Any], execution_details: Mapping[str, Any]) -> Dict[str, Any]:
+    out = dict(payload or {})
+    details = dict(execution_details or {})
+    for key in ("order_id", "order_status", "filled_qty", "avg_price", "filled_price"):
+        if out.get(key) in (None, "") and details.get(key) not in (None, ""):
+            out[key] = details.get(key)
+    is_sell = str(out.get("action") or details.get("action") or "").strip().upper() == "SELL"
+    monitor_exit_price = _exit_monitor_reference_price(out, details) if is_sell else None
+    broker_fill_price = _first_positive(details.get("filled_price"), details.get("broker_fill_price"))
+    if out.get("price") in (None, ""):
+        if broker_fill_price is not None:
+            out["price"] = broker_fill_price
+        elif is_sell and monitor_exit_price is not None:
+            out["price"] = monitor_exit_price
+            out.setdefault("price_basis", "monitor_current_price_fallback")
+        else:
+            for key in ("avg_price", "broker_buy_price"):
+                if details.get(key) not in (None, ""):
+                    out["price"] = details.get(key)
+                    break
+    elif is_sell and broker_fill_price is None and monitor_exit_price is not None:
+        existing_price = _safe_float(out.get("price"))
+        avg_price = _safe_float(details.get("avg_price") if details.get("avg_price") not in (None, "") else out.get("avg_price"))
+        if (
+            existing_price is not None
+            and avg_price is not None
+            and abs(existing_price - avg_price) < 0.5
+            and abs(existing_price - monitor_exit_price) >= 0.5
+        ):
+            out["price"] = monitor_exit_price
+            out.setdefault("price_basis", "monitor_current_price_fallback")
+    for key in (
+        "broker_realized_pnl",
+        "broker_realized_pnl_pct",
+        "broker_fee",
+        "broker_tax",
+        "broker_day_truth_source",
+        "broker_day_match_mode",
+        "broker_day_authoritative",
+    ):
+        if out.get(key) in (None, "") and details.get(key) not in (None, ""):
+            out[key] = details.get(key)
+    return out
 
 
 _AI_REPORT_FINGERPRINT_IGNORED_STORY_KEYS = {
@@ -431,6 +509,7 @@ def build_live_trade_bundle_payloads(
         entry_payload.get("execution_details"),
         entry_execution_details,
     )
+    entry_payload = _backfill_execution_fields(entry_payload, entry_payload.get("execution_details") or {})
     holding_payload.setdefault("hold_duration", holding_phase_observability.get("hold_duration"))
     holding_payload.setdefault("hold_duration_sec", holding_phase_observability.get("hold_duration_sec"))
     holding_payload.setdefault("holding_phase_summary", holding_phase_observability.get("holding_phase_summary"))
@@ -459,6 +538,7 @@ def build_live_trade_bundle_payloads(
         exit_payload.get("execution_details"),
         exit_execution_details,
     )
+    exit_payload = _backfill_execution_fields(exit_payload, exit_payload.get("execution_details") or {})
 
     normalized_lifecycle = dict(lifecycle_obj)
     normalized_lifecycle["entry"] = dict(entry_payload)

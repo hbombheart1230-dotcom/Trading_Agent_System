@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from libs.core.symbols import normalize_symbol
+from libs.reporting.llm_artifacts import iter_trade_dirs
 from libs.reporting.trade_fallback_text import (
     ENTRY_REASON_NOT_CAPTURED,
     EXIT_REASON_NOT_CAPTURED,
@@ -141,9 +142,7 @@ def _load_existing_open_lifecycle_candidates(
     candidates: Dict[str, List[Dict[str, Any]]] = {}
     if not day_root.exists():
         return candidates
-    for trade_dir in day_root.iterdir():
-        if not trade_dir.is_dir():
-            continue
+    for trade_dir in iter_trade_dirs(day_root):
         lifecycle_path = trade_dir / "lifecycle_bundle.json"
         if not lifecycle_path.exists():
             continue

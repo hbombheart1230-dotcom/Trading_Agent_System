@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-from libs.reporting.llm_artifacts import resolve_trade_day_root
+from libs.reporting.llm_artifacts import iter_trade_dirs, resolve_trade_day_root
 
 
 def _normalize_day(day: Optional[str]) -> str:
@@ -148,7 +148,12 @@ def _trade_report_paths(reports_root: Path, day: str) -> list[Path]:
     trade_root = resolve_trade_day_root(reports_root, day)
     if not trade_root.exists():
         return []
-    return sorted(path for path in trade_root.glob("TRD_*/reports/ai_trade_report.json") if path.is_file())
+    return sorted(
+        path
+        for trade_dir in iter_trade_dirs(trade_root)
+        for path in [trade_dir / "reports" / "ai_trade_report.json"]
+        if path.is_file()
+    )
 
 
 def _build_trade_report_feedback_summary(reports_root: Path, day: str) -> Dict[str, Any]:
@@ -415,9 +420,27 @@ def _build_insight_summary(
     parts: list[str] = []
     route_total = _safe_total(route_analysis.get("route_selected_total") if isinstance(route_analysis.get("route_selected_total"), dict) else {})
     if route_total > 0:
-        monitor_only = _safe_int((route_analysis.get("route_selected_total") or {}).get("monitor_only"), 0) if isinstance(route_analysis.get("route_selected_total"), dict) else 0
-        cached = _safe_int((route_analysis.get("route_selected_total") or {}).get("cached_strategist"), 0) if isinstance(route_analysis.get("route_selected_total"), dict) else 0
-        parts.append(f"Route mix is led by monitor_only {monitor_only}/{route_total} and cached_strategist {cached}/{route_total}.")
+        route_counts = route_analysis.get("route_selected_total") if isinstance(route_analysis.get("route_selected_total"), dict) else {}
+        monitor_only = _safe_int((route_counts or {}).get("monitor_only"), 0)
+        cached = _safe_int((route_counts or {}).get("cached_strategist"), 0)
+        leader = ""
+        leader_count = 0
+        if isinstance(route_counts, dict):
+            leader, leader_count = max(
+                ((str(name), _safe_int(count, 0)) for name, count in route_counts.items()),
+                key=lambda item: item[1],
+                default=("", 0),
+            )
+        if leader and leader_count > 0:
+            parts.append(
+                f"Route mix is led by {leader} {leader_count}/{route_total}; "
+                f"monitor_only {monitor_only}/{route_total}, cached_strategist {cached}/{route_total}."
+            )
+        else:
+            parts.append(
+                f"Route mix recorded {route_total} routed decisions; "
+                f"monitor_only {monitor_only}/{route_total}, cached_strategist {cached}/{route_total}."
+            )
     if blocker_analysis:
         top = blocker_analysis[0]
         parts.append(f"Top blocker is {top.get('blocker')} ({top.get('count')}).")

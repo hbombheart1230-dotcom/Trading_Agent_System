@@ -81,6 +81,53 @@ def test_strategy_policy_max_position_qty_blocks_entry(monkeypatch):
     assert int(res.details["max_position_qty"]) == 2
 
 
+def test_strategy_policy_max_position_notional_blocks_entry(monkeypatch):
+    s = make_settings(monkeypatch)
+    sup = Supervisor(s)
+    res = sup.allow(
+        "buy",
+        {
+            "order": {"action": "BUY", "symbol": "000660", "qty": 1, "price": 1_300_000},
+            "strategy_policy": {
+                "entry_policy": {
+                    "position_sizing": {
+                        "max_position_qty": 10,
+                        "max_position_notional": 1_000_000,
+                        "min_position_qty": 1,
+                        "lot_size": 1,
+                    }
+                }
+            },
+        },
+    )
+    assert res.allow is False
+    assert "max position notional" in res.reason.lower()
+    assert res.details["policy_guard"] == "max_position_notional"
+
+
+def test_strategy_policy_max_position_notional_blocks_when_price_missing(monkeypatch):
+    s = make_settings(monkeypatch)
+    sup = Supervisor(s)
+    res = sup.allow(
+        "buy",
+        {
+            "order": {"action": "BUY", "symbol": "000660", "qty": 1},
+            "strategy_policy": {
+                "entry_policy": {
+                    "position_sizing": {
+                        "max_position_qty": 10,
+                        "max_position_notional": 1_000_000,
+                        "min_position_qty": 1,
+                        "lot_size": 1,
+                    }
+                }
+            },
+        },
+    )
+    assert res.allow is False
+    assert res.details["policy_guard"] == "max_position_notional_price_missing"
+
+
 def test_strategy_policy_lot_size_blocks_entry(monkeypatch):
     s = make_settings(monkeypatch)
     sup = Supervisor(s)

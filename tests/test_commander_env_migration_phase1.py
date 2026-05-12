@@ -132,6 +132,9 @@ def test_commander_injects_behavior_policy_defaults_into_applied_policy(monkeypa
         "COMMANDER_MEMORY_USAGE_DISABLED",
         "STRATEGIST_MEMORY_USAGE_DISABLED",
         "STRATEGY_MEMORY_PERSIST_ENABLED",
+        "MAX_ORDER_QTY",
+        "MAX_ORDER_NOTIONAL",
+        "MAX_QTY",
     }
     for key in temporary_keys:
         monkeypatch.delenv(key, raising=False)
@@ -190,9 +193,22 @@ def test_commander_injects_behavior_policy_defaults_into_applied_policy(monkeypa
     assert (((applied.get("monitor") or {}).get("entry") or {}).get("block_buy_when_open_position")) is True
     assert ((((applied.get("monitor") or {}).get("entry") or {}).get("scoring") or {}).get("enabled")) is False
     assert ((((applied.get("monitor") or {}).get("entry") or {}).get("scoring") or {}).get("shadow_mode")) is True
+    position_sizing = (((applied.get("monitor") or {}).get("entry") or {}).get("position_sizing") or {})
+    assert position_sizing.get("enabled") is True
+    assert position_sizing.get("risk_per_trade_ratio") == 0.01
+    assert position_sizing.get("position_notional_ratio") == 0.50
+    assert position_sizing.get("max_position_qty") == 10
+    assert position_sizing.get("max_position_notional") == 1_000_000.0
+    assert position_sizing.get("min_position_qty") == 1
+    assert position_sizing.get("lot_size") == 1
     assert "reporter.ai_review.enabled" in list(((applied.get("policy_sources") or {}).get("commander_owned_fields") or []))
     for key in temporary_keys:
         assert os.getenv(key) is None
     commander_decision = out.get("commander_decision") or {}
     assert (commander_decision.get("commander_applied_policy_summary") or {}).get("strategist_strict_mode") is True
+    assert (commander_decision.get("commander_applied_policy_summary") or {}).get("position_sizing_enabled") is True
+    assert (commander_decision.get("commander_applied_policy_summary") or {}).get("position_sizing_max_position_qty") == 10
+    assert (
+        commander_decision.get("commander_applied_policy_summary") or {}
+    ).get("position_sizing_max_position_notional") == 1_000_000.0
     assert (commander_decision.get("policy_sources") or {}).get("commander_owned_fields")

@@ -1,13 +1,20 @@
 ﻿from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from libs.reporting.event_log_reader import iter_jsonl_events
+from libs.reporting.llm_artifacts import resolve_trade_day_root
 from libs.reporting.llm_artifacts import symbol_artifact_paths
-from libs.reporting.operator_period_summary import generate_operator_symbol_summary_artifact
+from libs.reporting.operator_period_summary import (
+    _operator_pattern_name,
+    _operator_reason_name,
+    generate_operator_symbol_summary_artifact,
+)
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -116,7 +123,7 @@ def _iter_trade_lifecycles(reports_root: Path) -> Iterable[Tuple[Path, Dict[str,
 
     def _gen() -> Iterable[Tuple[Path, Dict[str, Any]]]:
         seen_trade_ids: set[str] = set()
-        for path in sorted(trades_root.glob("*/*/lifecycle/trade_lifecycle.json")):
+        for path in sorted(trades_root.rglob("lifecycle/trade_lifecycle.json")):
             obj = _read_json(path)
             if obj:
                 trade_id = str(obj.get("trade_id") or "").strip()
@@ -124,7 +131,38 @@ def _iter_trade_lifecycles(reports_root: Path) -> Iterable[Tuple[Path, Dict[str,
                     seen_trade_ids.add(trade_id)
                 yield path, obj
 
-        for path in sorted(trades_root.glob("*/*/lifecycle_bundle.json")):
+        for path in sorted(trades_root.rglob("lifecycle_bundle.json")):
+            bundle = _read_json(path)
+            if not bundle:
+                continue
+            trade_id = str(bundle.get("trade_id") or "").strip()
+            if trade_id and trade_id in seen_trade_ids:
+                continue
+            normalized = _normalize_lifecycle_bundle(bundle)
+            if normalized:
+                if trade_id:
+                    seen_trade_ids.add(trade_id)
+                yield path, normalized
+
+    return _gen()
+
+
+def _iter_trade_lifecycles_for_day(reports_root: Path, day: str) -> Iterable[Tuple[Path, Dict[str, Any]]]:
+    day_root = resolve_trade_day_root(reports_root, str(day or "").strip())
+    if not day_root.exists():
+        return []
+
+    def _gen() -> Iterable[Tuple[Path, Dict[str, Any]]]:
+        seen_trade_ids: set[str] = set()
+        for path in sorted(day_root.rglob("lifecycle/trade_lifecycle.json")):
+            obj = _read_json(path)
+            if obj:
+                trade_id = str(obj.get("trade_id") or "").strip()
+                if trade_id:
+                    seen_trade_ids.add(trade_id)
+                yield path, obj
+
+        for path in sorted(day_root.rglob("lifecycle_bundle.json")):
             bundle = _read_json(path)
             if not bundle:
                 continue
@@ -205,7 +243,66 @@ def _contains_any(text: str, needles: List[str]) -> bool:
     return any(needle in lowered for needle in needles)
 
 
+def _clean_symbol_reason(value: Any, *, axis: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if axis == "entry" and (
+        lowered.startswith("entry reason was not captured")
+        or lowered.startswith("entry evidence was not captured")
+        or lowered.startswith("entry context was recovered")
+    ):
+        return ""
+    if axis == "exit" and (
+        "position is still open" in lowered
+        or "포지션은 아직 열려" in text
+        or "청산 근거가 누락" in text
+    ):
+        return ""
+    return _operator_reason_name(text)
+
+
+def _clean_symbol_pattern(value: Any, *, axis: str, fallback_reason: Any = "") -> str:
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if lowered.startswith("scanner selected ") or lowered.startswith("entry reason was not captured") or lowered.startswith("entry evidence was not captured"):
+        return ""
+    if lowered.startswith("entry context was recovered"):
+        return ""
+    return _operator_pattern_name(value, axis=axis, fallback_reason=fallback_reason)
+
+
+def _clean_symbol_code(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.lower() in {"", "unknown", "none", "null", "-"}:
+        return ""
+    return text
+
+
+def _clean_symbol_free_text(value: Any, *, entry_reason: str = "", exit_reason: str = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "scanner selected" in text:
+        return entry_reason or _clean_symbol_reason(text, axis="entry")
+    if "sell was triggered" in text:
+        return exit_reason or _clean_symbol_reason(text, axis="exit")
+    if "trigger_type=trailing_stop" in lowered or "trailing_stop" in lowered:
+        return text.replace("trigger_type=trailing_stop", "청산축=추적 손절").replace("trailing_stop", "추적 손절")
+    if text.lower() == "unknown":
+        return ""
+    return text
+
+
 def _classify_entry_pattern(text: str) -> str:
+    if _contains_any(text, ["돌파"]):
+        return "breakout"
+    if _contains_any(text, ["눌림", "풀백"]):
+        return "pullback"
+    if _contains_any(text, ["재회복"]):
+        return "reclaim"
     if _contains_any(text, ["breakout"]):
         return "breakout"
     if _contains_any(text, ["reclaim"]):
@@ -218,19 +315,107 @@ def _classify_entry_pattern(text: str) -> str:
 
 
 def _classify_exit_pattern(text: str) -> str:
+    if _contains_any(text, ["장중 저점"]):
+        return "intraday_low_break"
+    if _contains_any(text, ["vwap 이탈"]):
+        return "vwap_breakdown"
+    if _contains_any(text, ["고점 대비"]):
+        return "peak_drawdown"
+    if _contains_any(text, ["손절"]):
+        return "hard_stop"
+    if _contains_any(text, ["익절", "목표 수익"]):
+        return "take_profit"
+    if _contains_any(text, ["intraday_low_break"]):
+        return "intraday_low_break"
     if _contains_any(text, ["vwap_breakdown"]):
         return "vwap_breakdown"
     if _contains_any(text, ["trend_breakdown"]):
         return "trend_breakdown"
     if _contains_any(text, ["peak_drawdown"]):
         return "peak_drawdown"
-    if _contains_any(text, ["hard_stop"]):
+    if _contains_any(text, ["hard_stop", "stop_loss"]):
         return "hard_stop"
     if _contains_any(text, ["trailing_stop"]):
         return "trailing_stop"
     if _contains_any(text, ["take_profit"]):
         return "take_profit"
     return "unknown"
+
+
+def _dict_at(root: Dict[str, Any], *keys: str) -> Dict[str, Any]:
+    cur: Any = root
+    for key in keys:
+        if not isinstance(cur, dict):
+            return {}
+        cur = cur.get(key)
+    return cur if isinstance(cur, dict) else {}
+
+
+def _summary_input_path_for_report(report_path: Path) -> Path:
+    return Path(report_path).with_name("ai_trade_summary_input.json")
+
+
+def _actual_entry_reason_from_artifacts(
+    *,
+    report_path: Path,
+    report_entry_summary: str,
+    bundle: Dict[str, Any],
+    feedback: Dict[str, Any],
+) -> str:
+    summary_input = _read_json(_summary_input_path_for_report(report_path))
+    decision_flow = summary_input.get("decision_flow") if isinstance(summary_input.get("decision_flow"), dict) else {}
+    for value in (
+        decision_flow.get("monitor_fallback_reason"),
+        decision_flow.get("actual_entry_reason"),
+        decision_flow.get("entry_trigger"),
+        _dict_at(bundle, "lifecycle", "entry", "monitor_context").get("trigger_type"),
+        _dict_at(bundle, "lifecycle", "entry", "monitor_context").get("entry_reason"),
+        _dict_at(bundle, "entry", "monitor_context").get("trigger_type"),
+        _dict_at(bundle, "entry", "monitor_context").get("entry_reason"),
+        feedback.get("entry_reason"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+
+    # Older reports only stored this inside a Korean sentence in summary text.
+    for source in (decision_flow.get("entry_confidence"), decision_flow.get("entry_reason"), report_entry_summary):
+        text = str(source or "")
+        for pattern in (
+            r"실제 트리거는\s+(.+?)(?:였|이었|입니다|였습니다)",
+            r"실제 엔트리 경로는\s+(.+?)(?:였|이었|입니다|였습니다)",
+            r"실제 엔트리는\s+(.+?)(?:에서\s+확정|로\s+확정|으로\s+확정)",
+        ):
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1).strip(" .")
+    return ""
+
+
+def _should_prefer_artifact_entry_reason(raw_reason: Any, artifact_reason: Any) -> bool:
+    artifact_text = str(artifact_reason or "").strip()
+    if not artifact_text:
+        return False
+    raw_text = str(raw_reason or "").strip()
+    if not raw_text:
+        return True
+    lowered = raw_text.lower()
+    return lowered.startswith("scanner selected ") or lowered.startswith("entry evidence was not captured")
+
+
+def _clean_lifecycle_summary(
+    *,
+    trade_id: str,
+    status: str,
+    entry_reason: str,
+    exit_reason: str,
+) -> str:
+    pieces = [f"거래 {trade_id}" if trade_id else "거래", f"상태 {status or '미기록'}"]
+    if entry_reason:
+        pieces.append(f"진입 {entry_reason}")
+    if exit_reason:
+        pieces.append(f"청산 {exit_reason}")
+    return " / ".join(pieces)
 
 
 def _extract_trade_artifact_snapshot(
@@ -270,24 +455,33 @@ def _extract_trade_artifact_snapshot(
         report_shared_facts.get("pnl_pct"),
     )
     entry_reason_text = str(report_entry.get("summary") or "").strip()
+    actual_entry_reason_text = _actual_entry_reason_from_artifacts(
+        report_path=Path(report_path),
+        report_entry_summary=entry_reason_text,
+        bundle=bundle,
+        feedback=feedback,
+    )
     exit_reason_text = str(shared_facts.get("exit_reason") or "").strip()
     if not exit_reason_text:
         exit_reason_text = str(report_final.get("summary") or "").strip()
-    entry_pattern_type = str(feedback.get("entry_pattern_type") or "").strip() or _classify_entry_pattern(entry_reason_text)
+    entry_pattern_type = str(feedback.get("entry_pattern_type") or "").strip() or _classify_entry_pattern(actual_entry_reason_text or entry_reason_text)
     exit_pattern_type = str(feedback.get("exit_pattern_type") or "").strip() or _classify_exit_pattern(exit_reason_text)
+    clean_entry_reason = _clean_symbol_reason(actual_entry_reason_text or entry_reason_text, axis="entry")
+    clean_exit_reason = _clean_symbol_reason(exit_reason_text, axis="exit")
     return {
-        "report_headline": str(report_executive.get("headline") or report.get("headline") or "").strip(),
-        "report_executive_summary": str(report_executive.get("summary") or "").strip(),
+        "report_headline": _clean_symbol_free_text(report_executive.get("headline") or report.get("headline"), entry_reason=clean_entry_reason, exit_reason=clean_exit_reason),
+        "report_executive_summary": _clean_symbol_free_text(report_executive.get("summary"), entry_reason=clean_entry_reason, exit_reason=clean_exit_reason),
         "report_market_summary": str(report_market.get("summary") or "").strip(),
-        "report_entry_summary": entry_reason_text,
-        "report_final_conclusion": str(report_final.get("summary") or "").strip(),
-        "brief_headline": str(brief.get("headline") or "").strip(),
-        "brief_executive_summary": str(brief.get("executive_summary") or "").strip(),
-        "brief_risk_summary": str(brief.get("risk_summary") or "").strip(),
+        "report_entry_summary": clean_entry_reason,
+        "actual_entry_reason": clean_entry_reason,
+        "report_final_conclusion": _clean_symbol_free_text(report_final.get("summary"), entry_reason=clean_entry_reason, exit_reason=clean_exit_reason),
+        "brief_headline": _clean_symbol_free_text(brief.get("headline"), entry_reason=clean_entry_reason, exit_reason=clean_exit_reason),
+        "brief_executive_summary": _clean_symbol_free_text(brief.get("executive_summary"), entry_reason=clean_entry_reason, exit_reason=clean_exit_reason),
+        "brief_risk_summary": _clean_symbol_free_text(brief.get("risk_summary"), entry_reason=clean_entry_reason, exit_reason=clean_exit_reason),
         "brief_next_checkpoints": _list_text(brief.get("next_checkpoints"), limit=3),
-        "entry_pattern_type": entry_pattern_type or "unknown",
-        "exit_pattern_type": exit_pattern_type or "unknown",
-        "thesis_invalidation_code": str(feedback.get("thesis_invalidation_code") or "unknown").strip() or "unknown",
+        "entry_pattern_type": _clean_symbol_pattern(entry_pattern_type, axis="entry", fallback_reason=clean_entry_reason),
+        "exit_pattern_type": _clean_symbol_pattern(exit_pattern_type, axis="exit", fallback_reason=clean_exit_reason),
+        "thesis_invalidation_code": _clean_symbol_code(feedback.get("thesis_invalidation_code")),
         "improvement_tags": _list_text(feedback.get("improvement_tags"), limit=6),
         "review_flags": _list_text(feedback.get("review_flags"), limit=6),
         "artifact_result_pct": artifact_result_pct,
@@ -346,6 +540,25 @@ def _build_history_index(reports_root: Path, symbol: str) -> List[Dict[str, Any]
         result_pct = _result_pct_from_lifecycle(obj)
         if result_pct is None:
             result_pct = _safe_float(artifact_snapshot.get("artifact_result_pct"))
+        raw_entry_reason = str(summary.get("entry_reason_human") or "")
+        artifact_entry_reason = str(artifact_snapshot.get("actual_entry_reason") or "")
+        entry_reason_raw = (
+            artifact_entry_reason
+            if _should_prefer_artifact_entry_reason(raw_entry_reason, artifact_entry_reason)
+            else raw_entry_reason
+        )
+        entry_reason = _clean_symbol_reason(entry_reason_raw, axis="entry")
+        exit_reason = _clean_symbol_reason(summary.get("exit_reason_human"), axis="exit")
+        entry_pattern_type = _clean_symbol_pattern(
+            artifact_snapshot.get("entry_pattern_type"),
+            axis="entry",
+            fallback_reason=entry_reason,
+        )
+        exit_pattern_type = _clean_symbol_pattern(
+            artifact_snapshot.get("exit_pattern_type"),
+            axis="exit",
+            fallback_reason=exit_reason,
+        )
         history.append(
             {
                 "trade_id": trade_id,
@@ -354,9 +567,14 @@ def _build_history_index(reports_root: Path, symbol: str) -> List[Dict[str, Any]
                 "status": trade_status,
                 "last_status": trade_status,
                 "last_action": last_action,
-                "entry_reason": str(summary.get("entry_reason_human") or ""),
-                "exit_reason": str(summary.get("exit_reason_human") or ""),
-                "lifecycle_summary": str(summary.get("lifecycle_summary_human") or ""),
+                "entry_reason": entry_reason,
+                "exit_reason": exit_reason,
+                "lifecycle_summary": _clean_lifecycle_summary(
+                    trade_id=trade_id,
+                    status=trade_status,
+                    entry_reason=entry_reason,
+                    exit_reason=exit_reason,
+                ),
                 "operator_conclusion": str(summary.get("operator_conclusion_human") or ""),
                 "playbook": str((((entry.get("strategist_context") or {}) if isinstance(entry.get("strategist_context"), dict) else {}).get("playbook")) or ""),
                 "hold_seconds": _hold_seconds_from_lifecycle(obj),
@@ -371,15 +589,15 @@ def _build_history_index(reports_root: Path, symbol: str) -> List[Dict[str, Any]
                 "report_headline": str(artifact_snapshot.get("report_headline") or ""),
                 "report_executive_summary": str(artifact_snapshot.get("report_executive_summary") or ""),
                 "report_market_summary": str(artifact_snapshot.get("report_market_summary") or ""),
-                "report_entry_summary": str(artifact_snapshot.get("report_entry_summary") or ""),
+                "report_entry_summary": str(artifact_snapshot.get("report_entry_summary") or entry_reason or ""),
                 "report_final_conclusion": str(artifact_snapshot.get("report_final_conclusion") or ""),
                 "brief_headline": str(artifact_snapshot.get("brief_headline") or ""),
                 "brief_executive_summary": str(artifact_snapshot.get("brief_executive_summary") or ""),
                 "brief_risk_summary": str(artifact_snapshot.get("brief_risk_summary") or ""),
                 "brief_next_checkpoints": list(artifact_snapshot.get("brief_next_checkpoints") or []),
-                "entry_pattern_type": str(artifact_snapshot.get("entry_pattern_type") or "unknown"),
-                "exit_pattern_type": str(artifact_snapshot.get("exit_pattern_type") or "unknown"),
-                "thesis_invalidation_code": str(artifact_snapshot.get("thesis_invalidation_code") or "unknown"),
+                "entry_pattern_type": entry_pattern_type,
+                "exit_pattern_type": exit_pattern_type,
+                "thesis_invalidation_code": _clean_symbol_code(artifact_snapshot.get("thesis_invalidation_code")),
                 "improvement_tags": list(artifact_snapshot.get("improvement_tags") or []),
                 "review_flags": list(artifact_snapshot.get("review_flags") or []),
             }
@@ -409,7 +627,9 @@ def _collect_symbol_event_insights(events_path: Path, symbol: str) -> Dict[str, 
             if decision == "WAIT" and reason:
                 wait_reasons[reason] += 1
             elif decision == "BUY" and reason:
-                entry_reasons[reason] += 1
+                clean_reason = _clean_symbol_reason(reason, axis="entry")
+                if clean_reason:
+                    entry_reasons[clean_reason] += 1
             continue
 
         if stage == "monitor" and event in {"exit_decision_detail", "state_transition"}:
@@ -419,7 +639,9 @@ def _collect_symbol_event_insights(events_path: Path, symbol: str) -> Dict[str, 
                 continue
             reason = str(detail.get("final_reason") or detail.get("current_reason") or detail.get("triggered_rule") or "").strip()
             if reason:
-                exit_reasons[reason] += 1
+                clean_reason = _clean_symbol_reason(reason, axis="exit")
+                if clean_reason:
+                    exit_reasons[clean_reason] += 1
 
     return {
         "recent_wait_reasons": [name for name, _count in wait_reasons.most_common(5)],
@@ -440,11 +662,15 @@ def _pattern_rows(history: List[Dict[str, Any]], *, positive: bool) -> List[str]
             continue
         if (not positive) and result_pct >= 0:
             continue
-        pattern_type = str(row.get("entry_pattern_type") or "").strip()
-        if pattern_type and pattern_type != "unknown":
+        pattern_type = _clean_symbol_pattern(
+            row.get("entry_pattern_type"),
+            axis="entry",
+            fallback_reason=row.get("entry_reason"),
+        )
+        if pattern_type:
             counter[pattern_type] += 1
             continue
-        reason = str(row.get("entry_reason") or "").strip()
+        reason = _clean_symbol_reason(row.get("entry_reason"), axis="entry")
         if reason:
             counter[reason] += 1
     return [name for name, _count in counter.most_common(5)]
@@ -500,11 +726,15 @@ def _derive_dominant_exit_failure_axis(history: List[Dict[str, Any]]) -> str:
         result_pct = _safe_float(row.get("result_pct"))
         if status != "closed" or result_pct is None or result_pct >= 0:
             continue
-        exit_pattern = str(row.get("exit_pattern_type") or "").strip()
-        if exit_pattern and exit_pattern != "unknown":
+        exit_pattern = _clean_symbol_pattern(
+            row.get("exit_pattern_type"),
+            axis="exit",
+            fallback_reason=row.get("exit_reason"),
+        )
+        if exit_pattern:
             counter[exit_pattern] += 1
             continue
-        exit_reason = str(row.get("exit_reason") or "").strip()
+        exit_reason = _clean_symbol_reason(row.get("exit_reason"), axis="exit")
         if exit_reason:
             counter[exit_reason] += 1
     if not counter:
@@ -602,7 +832,7 @@ def build_symbol_memory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             "spread_bps_p50": None,
             "spread_bps_p90": None,
             "slippage_bps_p50": None,
-            "execution_risk_level": "unknown",
+            "execution_risk_level": "not_available",
         },
         "monitor_patterns": {
             "repeated_blockers": repeated_blockers,
@@ -638,14 +868,14 @@ def build_symbol_trade_summary(events_path: Path, reports_root: Path, symbol: st
         if len(recent_playbooks) >= 5:
             break
     history_entry_reasons = [
-        str(row.get("entry_reason") or "").strip()
+        _clean_symbol_reason(row.get("entry_reason"), axis="entry")
         for row in reversed(history)
-        if str(row.get("entry_reason") or "").strip()
+        if _clean_symbol_reason(row.get("entry_reason"), axis="entry")
     ]
     history_exit_reasons = [
-        str(row.get("exit_reason") or "").strip()
+        _clean_symbol_reason(row.get("exit_reason"), axis="exit")
         for row in reversed(history)
-        if str(row.get("exit_reason") or "").strip()
+        if _clean_symbol_reason(row.get("exit_reason"), axis="exit")
     ]
     recent_trade_headlines = [
         str(row.get("brief_headline") or row.get("report_headline") or "").strip()
@@ -658,14 +888,14 @@ def build_symbol_trade_summary(events_path: Path, reports_root: Path, symbol: st
         if str(row.get("brief_executive_summary") or row.get("report_final_conclusion") or "").strip()
     ]
     entry_pattern_types = [
-        str(row.get("entry_pattern_type") or "").strip()
+        _clean_symbol_pattern(row.get("entry_pattern_type"), axis="entry", fallback_reason=row.get("entry_reason"))
         for row in reversed(history)
-        if str(row.get("entry_pattern_type") or "").strip() and str(row.get("entry_pattern_type") or "").strip() != "unknown"
+        if _clean_symbol_pattern(row.get("entry_pattern_type"), axis="entry", fallback_reason=row.get("entry_reason"))
     ]
     exit_pattern_types = [
-        str(row.get("exit_pattern_type") or "").strip()
+        _clean_symbol_pattern(row.get("exit_pattern_type"), axis="exit", fallback_reason=row.get("exit_reason"))
         for row in reversed(history)
-        if str(row.get("exit_pattern_type") or "").strip() and str(row.get("exit_pattern_type") or "").strip() != "unknown"
+        if _clean_symbol_pattern(row.get("exit_pattern_type"), axis="exit", fallback_reason=row.get("exit_reason"))
     ]
     improvement_tag_counter: Counter[str] = Counter()
     review_flag_counter: Counter[str] = Counter()
@@ -731,7 +961,7 @@ def build_symbol_trade_summary(events_path: Path, reports_root: Path, symbol: st
 def build_daily_trade_index(reports_root: Path, day: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     target_day = str(day or "").strip()
-    for _path, obj in _iter_trade_lifecycles(reports_root):
+    for _path, obj in _iter_trade_lifecycles_for_day(reports_root, target_day):
         if str(obj.get("day") or "").strip() != target_day:
             continue
         summary = obj.get("summary") if isinstance(obj.get("summary"), dict) else {}
@@ -745,26 +975,32 @@ def build_daily_trade_index(reports_root: Path, day: str) -> List[Dict[str, Any]
                 "status": str(obj.get("status") or ""),
                 "entry_run_id": str(entry.get("run_id") or ""),
                 "exit_run_id": str(exit_row.get("run_id") or ""),
-                "entry_reason": str(summary.get("entry_reason_human") or ""),
-                "exit_reason": str(summary.get("exit_reason_human") or ""),
+                "entry_reason": _clean_symbol_reason(summary.get("entry_reason_human"), axis="entry"),
+                "exit_reason": _clean_symbol_reason(summary.get("exit_reason_human"), axis="exit"),
             }
         )
     out.sort(key=lambda row: (str(row.get("symbol") or ""), str(row.get("trade_id") or "")))
     return out
 
 
-def collect_symbols_for_day(events_path: Path, reports_root: Path, day: str) -> List[str]:
+def collect_symbols_for_day(
+    events_path: Path,
+    reports_root: Path,
+    day: str,
+    trade_index: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
     target_day = str(day or "").strip()
     symbols: List[str] = []
     seen: set[str] = set()
 
-    for row in build_daily_trade_index(reports_root, target_day):
+    index_rows = trade_index if trade_index is not None else build_daily_trade_index(reports_root, target_day)
+    for row in index_rows:
         symbol = str(row.get("symbol") or "").strip().upper()
         if symbol and symbol not in seen:
             seen.add(symbol)
             symbols.append(symbol)
 
-    for row in _iter_jsonl(events_path):
+    for row in iter_jsonl_events(events_path, day=target_day):
         ts_day = datetime.fromtimestamp(_to_epoch(row.get("ts") or (row.get("payload") or {}).get("ts")), tz=timezone.utc).strftime("%Y-%m-%d") if _to_epoch(row.get("ts") or (row.get("payload") or {}).get("ts")) > 0 else ""
         if ts_day != target_day:
             continue

@@ -103,6 +103,29 @@ def test_audit_reports_trades_health_treats_empty_strategist_fallback_as_placeho
     assert out["issue_counts"].get("llm_fallback", 0) == 0
 
 
+def test_audit_reports_trades_health_reads_hour_bucketed_trade_dirs(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    trade_root = reports_root / "trades" / "2026-03-19" / "0900" / "TRD_20260319_005930_01"
+
+    _write_json(
+        trade_root / "lifecycle_bundle.json",
+        {
+            "trade_id": "TRD_20260319_005930_01",
+            "trade_lifecycle_status": "closed",
+            "ai_report_diagnostics": {"report_status": "available"},
+        },
+    )
+    _write_json(trade_root / "_provenance.json", {})
+    _write_json(trade_root / "_health.json", {})
+    _write_json(trade_root / "_artifact_links.json", {})
+    _write_json(trade_root / "reports" / "ai_trade_report_llm_response.json", {"status": "ok"})
+
+    out = audit_reports_trades_health(reports_root, day="2026-03-19")
+
+    assert out["trade_dir_count"] == 1
+    assert out["llm_status_counts"]["ai_trade_report:ok"] == 1
+
+
 def test_audit_reports_trades_health_downgrades_recovered_ai_report_to_info(tmp_path: Path) -> None:
     reports_root = tmp_path / "reports"
     trade_root = reports_root / "trades" / "2026-03-19" / "TRD_20260319_000660_05"

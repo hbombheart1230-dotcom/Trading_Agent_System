@@ -17,6 +17,9 @@ from typing import Any, Dict
 
 from graphs.nodes.skill_contracts import (
     CONTRACT_VERSION as SKILL_CONTRACT_VERSION,
+    account_order_is_pending,
+    account_order_side,
+    extract_account_orders_rows,
     extract_market_quotes,
     extract_minute_ohlcv_by_symbol,
     extract_order_status,
@@ -58,6 +61,9 @@ from libs.runtime.position_sizing import evaluate_position_size
 from libs.runtime.strategy_horizon_feedback import build_exit_vs_strategy_intent
 from libs.strategies.contracts import coerce_strategist_output
 
+POST_EXIT_SHADOW_WATCH_MAX_SYMBOLS = 3
+POST_EXIT_SHADOW_WATCH_WINDOW_SEC = 90 * 60
+
 
 def _to_int(v: Any) -> int:
     try:
@@ -82,11 +88,11 @@ def _memory_bias_observation_only(state: Dict[str, Any] | None = None) -> bool:
     return False
 
 
-def _to_float(v: Any) -> float:
+def _to_float(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)
     except Exception:
-        return 0.0
+        return float(default)
 
 
 def _optional_float(v: Any) -> float | None:
@@ -134,6 +140,32 @@ def _monitor_runtime_clock_input_present(state: Dict[str, Any]) -> bool:
     if _to_int(state.get("tick_ts")) > 0:
         return True
     return any(str(state.get(key) or "").strip() for key in ("tick_ts_iso", "ts", "now_iso", "started_at"))
+
+
+def _carry_calendar_context(state: Dict[str, Any]) -> Dict[str, Any]:
+    if not _monitor_runtime_clock_input_present(state):
+        return {
+            "calendar_known": False,
+            "date_kst": "",
+            "weekday": None,
+            "weekday_name": "",
+            "weekend_carry": False,
+            "holding_gap_days": 1,
+            "reason": "runtime_clock_missing",
+        }
+    dt_kst = _monitor_runtime_dt_kst(state)
+    weekday = int(dt_kst.weekday())
+    weekday_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    weekend_carry = weekday == 4
+    return {
+        "calendar_known": True,
+        "date_kst": dt_kst.date().isoformat(),
+        "weekday": weekday,
+        "weekday_name": weekday_names[weekday] if 0 <= weekday < len(weekday_names) else "",
+        "weekend_carry": bool(weekend_carry),
+        "holding_gap_days": 3 if weekend_carry else 1,
+        "reason": "friday_weekend_gap" if weekend_carry else "regular_overnight",
+    }
 
 
 def _ensure_entry_market_context_clock_fields(
@@ -255,9 +287,22 @@ def _resolve_entry_candidate_cascade_config(entry_control: Dict[str, Any]) -> Di
         max_priority_rank = int(_clamp(_to_float(raw_runner_ups) + 1, 1, 10))
     else:
         max_priority_rank = 10
+    max_runner_ups = int(max(0, max_priority_rank - 1))
+    if raw_runner_ups not in (None, ""):
+        max_runner_ups = int(_clamp(_to_float(raw_runner_ups), 0, max_runner_ups))
+    cascade_enabled = (
+        _is_trueish(entry_control.get("cascade_enabled"))
+        if isinstance(entry_control, dict) and entry_control.get("cascade_enabled") not in (None, "")
+        else max_runner_ups > 0
+    )
+    if not cascade_enabled:
+        max_runner_ups = 0
     return {
         "max_priority_rank": int(max_priority_rank),
-        "max_runner_ups": int(max(0, max_priority_rank - 1)),
+        "max_runner_ups": int(max_runner_ups),
+        "cascade_enabled": bool(cascade_enabled and max_runner_ups > 0),
+        "cascade_allowed_reasons": list((entry_control or {}).get("cascade_allowed_reasons") or []),
+        "cascade_blocked_reasons": list((entry_control or {}).get("cascade_blocked_reasons") or []),
         "source": str((entry_control or {}).get("source") or "default"),
         "mode": str((entry_control or {}).get("mode") or "default"),
     }
@@ -997,6 +1042,100 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
     return state
 
 
+def _active_post_exit_shadow_watches(state: Dict[str, Any], *, now_epoch: int) -> Dict[str, Dict[str, Any]]:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    raw = persisted.get("post_exit_shadow_watchlist")
+    rows = list(raw.values()) if isinstance(raw, dict) else list(raw) if isinstance(raw, list) else []
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = _norm_symbol(row.get("symbol"))
+        if not symbol:
+            continue
+        exit_epoch = _to_int(row.get("exit_epoch") or row.get("sold_epoch") or row.get("ts"))
+        if exit_epoch <= 0:
+            continue
+        expires_epoch = _to_int(row.get("expires_epoch")) or int(exit_epoch + POST_EXIT_SHADOW_WATCH_WINDOW_SEC)
+        if now_epoch > 0 and expires_epoch > 0 and now_epoch > expires_epoch:
+            continue
+        normalized = dict(row)
+        normalized["symbol"] = symbol
+        normalized["exit_epoch"] = int(exit_epoch)
+        normalized["expires_epoch"] = int(expires_epoch)
+        normalized["observability_only"] = True
+        out[symbol] = normalized
+    return out
+
+
+def _refresh_post_exit_shadow_watchlist_minute_rows(state: Dict[str, Any], *, now_epoch: int) -> Dict[str, Any]:
+    watches = _active_post_exit_shadow_watches(state, now_epoch=now_epoch)
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    if not watches:
+        if isinstance(persisted.get("post_exit_shadow_watchlist"), (dict, list)):
+            persisted.pop("post_exit_shadow_watchlist", None)
+            state["persisted_state"] = persisted
+        state["post_exit_shadow_watchlist_refresh"] = {
+            "enabled": True,
+            "observability_only": True,
+            "watch_count": 0,
+            "refreshed_symbols": [],
+            "reason": "no_active_watches",
+        }
+        return state
+
+    refreshed_symbols: list[str] = []
+    refresh_rows: list[Dict[str, Any]] = []
+    for symbol, watch in sorted(watches.items(), key=lambda item: int((item[1] or {}).get("exit_epoch") or 0), reverse=True):
+        if len(refreshed_symbols) >= POST_EXIT_SHADOW_WATCH_MAX_SYMBOLS:
+            break
+        state = _ensure_monitor_minute_ohlcv_for_symbol(
+            state,
+            symbol=symbol,
+            timeframe_minutes=1,
+            now_epoch=int(now_epoch or 0),
+            prefer_fresh_runner=False,
+        )
+        minute_rows_by_symbol, minute_meta = extract_minute_ohlcv_by_symbol(state)
+        rows = minute_rows_by_symbol.get(symbol) if isinstance(minute_rows_by_symbol, dict) else []
+        latest_ts = _latest_row_ts(rows) if isinstance(rows, list) else None
+        fetch_meta = (
+            dict(state.get("monitor_minute_ohlcv_fetch") or {})
+            if isinstance(state.get("monitor_minute_ohlcv_fetch"), dict)
+            else {}
+        )
+        updated_watch = dict(watch)
+        updated_watch["last_refresh_epoch"] = int(now_epoch or 0)
+        updated_watch["latest_candle_ts"] = latest_ts
+        updated_watch["minute_source"] = str((minute_meta or {}).get("source") or fetch_meta.get("source") or "")
+        updated_watch["post_exit_rows_available"] = bool(latest_ts and latest_ts >= _to_int(watch.get("exit_epoch")))
+        watches[symbol] = updated_watch
+        refreshed_symbols.append(symbol)
+        refresh_rows.append(
+            {
+                "symbol": symbol,
+                "latest_candle_ts": latest_ts,
+                "row_count": len(rows) if isinstance(rows, list) else 0,
+                "minute_refetch_attempted": bool(fetch_meta.get("minute_refetch_attempted")),
+                "minute_refetch_succeeded": bool(fetch_meta.get("minute_refetch_succeeded")),
+                "minute_refetch_reason": str(fetch_meta.get("minute_refetch_reason") or ""),
+                "post_exit_rows_available": bool(updated_watch.get("post_exit_rows_available")),
+            }
+        )
+
+    persisted["post_exit_shadow_watchlist"] = watches
+    state["persisted_state"] = persisted
+    state["post_exit_shadow_watchlist_refresh"] = {
+        "enabled": True,
+        "observability_only": True,
+        "watch_count": len(watches),
+        "refreshed_symbols": refreshed_symbols,
+        "rows": refresh_rows,
+        "reason": "refreshed_active_watches" if refreshed_symbols else "no_symbols_refreshed",
+    }
+    return state
+
+
 def _resolve_min_hold_sec(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
     applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
     raw = (
@@ -1114,6 +1253,52 @@ def _resolve_post_exit_cooldown_sec(state: Dict[str, Any], policy: Dict[str, Any
         return 180
 
 
+def _resolve_max_positions(state: Dict[str, Any], policy: Dict[str, Any] | None = None) -> int:
+    for value in (
+        ((state.get("risk_context") or {}).get("max_positions") if isinstance(state.get("risk_context"), dict) else None),
+        ((state.get("risk") or {}).get("max_positions") if isinstance(state.get("risk"), dict) else None),
+        ((policy or {}).get("risk_max_positions") if isinstance(policy, dict) else None),
+        os.getenv("RISK_MAX_POSITIONS"),
+    ):
+        try:
+            if value not in (None, ""):
+                return max(1, int(float(value)))
+        except Exception:
+            continue
+    return 1
+
+
+def _pending_order_symbols_from_account_orders(state: Dict[str, Any], *, side: str = "") -> set[str]:
+    try:
+        rows, _meta = extract_account_orders_rows(state)
+    except Exception:
+        return set()
+    side_filter = str(side or "").strip().upper()
+    out: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or not account_order_is_pending(row):
+            continue
+        if side_filter and account_order_side(row) != side_filter:
+            continue
+        symbol = _norm_symbol(row.get("symbol") or row.get("stk_cd") or row.get("pdno") or row.get("code"))
+        if not symbol:
+            continue
+        out.add(symbol)
+    return out
+
+
+def _pending_buy_symbols_from_account_orders(state: Dict[str, Any]) -> set[str]:
+    return _pending_order_symbols_from_account_orders(state, side="BUY")
+
+
+def _features_pending_order_count(features: Dict[str, Any]) -> int:
+    if not isinstance(features, dict):
+        return 0
+    if not bool(features.get("skill_open_orders_pending_only")):
+        return 0
+    return max(0, _to_int(features.get("skill_open_orders")))
+
+
 def _resolve_block_buy_when_open_position(
     state: Dict[str, Any],
     policy: Dict[str, Any],
@@ -1140,20 +1325,41 @@ def _resolve_entry_closeout_window_guard(
     policy: Dict[str, Any],
 ) -> Dict[str, Any]:
     exit_policy = _resolve_exit_policy_config(state, policy)
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    applied_entry = (
+        ((applied_policy.get("monitor") or {}).get("entry") or {})
+        if isinstance((applied_policy.get("monitor") or {}).get("entry"), dict)
+        else {}
+    )
+    policy_entry = (
+        ((policy.get("monitor") or {}).get("entry") or {})
+        if isinstance((policy.get("monitor") or {}).get("entry"), dict)
+        else {}
+    )
     market_ctx = _ensure_entry_market_context_clock_fields(state)
     minutes_to_close = _optional_float(market_ctx.get("minutes_to_close"))
     use_eod_flat = bool(exit_policy.get("use_eod_flat"))
     cutoff_min = int(_to_float(exit_policy.get("eod_flat_cutoff_min") or 10))
+    buy_cutoff_raw = (
+        applied_entry.get("buy_closeout_cutoff_min")
+        if applied_entry.get("buy_closeout_cutoff_min") not in (None, "")
+        else policy_entry.get("buy_closeout_cutoff_min")
+    )
+    buy_cutoff_min = int(_optional_float(buy_cutoff_raw) or max(15.0, float(cutoff_min)))
+    if buy_cutoff_min <= 0:
+        buy_cutoff_min = max(15, int(cutoff_min))
+    buy_cutoff_min = max(int(cutoff_min), int(buy_cutoff_min))
     active = bool(
         use_eod_flat
         and minutes_to_close is not None
         and minutes_to_close >= 0.0
-        and minutes_to_close <= float(cutoff_min)
+        and minutes_to_close <= float(buy_cutoff_min)
     )
     return {
         "active": active,
         "minutes_to_close": minutes_to_close,
         "cutoff_min": int(cutoff_min),
+        "buy_cutoff_min": int(buy_cutoff_min),
         "use_eod_flat": bool(use_eod_flat),
         "reason": "buy_blocked_closeout_window" if active else "",
     }
@@ -1213,6 +1419,18 @@ def _resolve_entry_cost_filter_config(
         "min_buy_fee": _config_float(config, "min_buy_fee", "MONITOR_ENTRY_MIN_BUY_FEE", 0.0),
         "min_sell_fee": _config_float(config, "min_sell_fee", "MONITOR_ENTRY_MIN_SELL_FEE", 0.0),
         "max_cost_drag_pct": _config_float(config, "max_cost_drag_pct", "MONITOR_ENTRY_MAX_COST_DRAG_PCT", 0.006),
+        "round_trip_cost_floor_pct": _config_float(
+            config,
+            "round_trip_cost_floor_pct",
+            "MONITOR_ENTRY_ROUND_TRIP_COST_FLOOR_PCT",
+            0.009,
+        ),
+        "min_net_profit_buffer_pct": _config_float(
+            config,
+            "min_net_profit_buffer_pct",
+            "MONITOR_ENTRY_MIN_NET_PROFIT_BUFFER_PCT",
+            0.003,
+        ),
         "min_cost_adjusted_edge_pct": _config_float(
             config,
             "min_cost_adjusted_edge_pct",
@@ -1220,6 +1438,54 @@ def _resolve_entry_cost_filter_config(
             0.001,
         ),
         "edge_scale_pct": _config_float(config, "edge_scale_pct", "MONITOR_ENTRY_EDGE_SCALE_PCT", 0.035),
+        "quality_proxy_max_edge_pct": _config_float(
+            config,
+            "quality_proxy_max_edge_pct",
+            "MONITOR_ENTRY_QUALITY_PROXY_MAX_EDGE_PCT",
+            0.012,
+        ),
+        "require_directional_edge_evidence": _config_bool(
+            config,
+            "require_directional_edge_evidence",
+            "MONITOR_ENTRY_REQUIRE_DIRECTIONAL_EDGE_EVIDENCE",
+            True,
+        ),
+        "allow_volatility_proxy_edge": _config_bool(
+            config,
+            "allow_volatility_proxy_edge",
+            "MONITOR_ENTRY_ALLOW_VOLATILITY_PROXY_EDGE",
+            False,
+        ),
+        "allow_quality_proxy_edge": _config_bool(
+            config,
+            "allow_quality_proxy_edge",
+            "MONITOR_ENTRY_ALLOW_QUALITY_PROXY_EDGE",
+            False,
+        ),
+        "allow_triggered_signal_proxy_edge": _config_bool(
+            config,
+            "allow_triggered_signal_proxy_edge",
+            "MONITOR_ENTRY_ALLOW_TRIGGERED_SIGNAL_PROXY_EDGE",
+            True,
+        ),
+        "triggered_proxy_confidence_tolerance": _config_float(
+            config,
+            "triggered_proxy_confidence_tolerance",
+            "MONITOR_ENTRY_TRIGGERED_PROXY_CONFIDENCE_TOLERANCE",
+            0.0,
+        ),
+        "proxy_edge_haircut": _config_float(
+            config,
+            "proxy_edge_haircut",
+            "MONITOR_ENTRY_PROXY_EDGE_HAIRCUT",
+            0.35,
+        ),
+        "min_proxy_quality_score": _config_float(
+            config,
+            "min_proxy_quality_score",
+            "MONITOR_ENTRY_MIN_PROXY_QUALITY_SCORE",
+            0.80,
+        ),
         "min_estimated_gross_edge_pct": _config_float(
             config,
             "min_estimated_gross_edge_pct",
@@ -1253,17 +1519,168 @@ def _evaluate_entry_cost_filter(
     sell_tax = float(notional) * _to_float(config.get("sell_tax_rate")) if notional > 0.0 else 0.0
     total_cost = float(buy_fee + sell_fee + sell_tax)
     cost_drag_pct = float(total_cost / notional) if notional > 0.0 else None
-    estimated_gross_edge_pct = (
-        max(
-            _to_float(config.get("min_estimated_gross_edge_pct")),
-            max(0.0, quality_score - 0.50) * _to_float(config.get("edge_scale_pct")),
-        )
-        if quality_available
+    round_trip_cost_floor_pct = _to_float(config.get("round_trip_cost_floor_pct"))
+    effective_cost_drag_pct = (
+        max(float(cost_drag_pct), float(round_trip_cost_floor_pct))
+        if cost_drag_pct is not None
+        else float(round_trip_cost_floor_pct)
+        if round_trip_cost_floor_pct > 0.0
         else None
     )
+
+    features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
+
+    def _as_ratio(v: Any) -> float:
+        x = _to_float(v)
+        if x <= 0.0:
+            return 0.0
+        if x > 1.0:
+            x = x / 100.0
+        return float(x)
+
+    def _ratio_from_price(v: Any) -> float:
+        target = _to_float(v)
+        if price <= 0.0 or target <= price:
+            return 0.0
+        return float((target / price) - 1.0)
+
+    directional_candidates: list[tuple[str, float]] = []
+    proxy_candidates: list[tuple[str, float]] = []
+    directional_ratio_keys = (
+        "expected_gross_edge_pct",
+        "expected_move_pct",
+        "target_move_pct",
+        "target_profit_pct",
+        "take_profit_pct",
+    )
+    proxy_ratio_keys = (
+        "recent_realized_move_pct",
+        "recent_range_pct",
+        "intraday_range_pct",
+    )
+    directional_price_keys = (
+        "target_price",
+        "resistance_price",
+        "target_resistance_price",
+        "upper_resistance_price",
+    )
+    for source_name, source in (("selected", selected), ("metrics", metrics), ("features", features)):
+        if not isinstance(source, dict):
+            continue
+        for key in directional_ratio_keys:
+            ratio = _as_ratio(source.get(key))
+            if ratio > 0.0:
+                directional_candidates.append((f"{source_name}.{key}", ratio))
+        for key in directional_price_keys:
+            ratio = _ratio_from_price(source.get(key))
+            if ratio > 0.0:
+                directional_candidates.append((f"{source_name}.{key}", ratio))
+        for key in proxy_ratio_keys:
+            ratio = _as_ratio(source.get(key))
+            if ratio > 0.0:
+                proxy_candidates.append((f"{source_name}.{key}", ratio))
+
+    atr = _to_float(features.get("engine_atr14") or features.get("atr14") or metrics.get("atr14"))
+    if atr > 0.0 and price > 0.0:
+        proxy_candidates.append(("features.atr14_ratio", float(atr / price)))
+    volatility_ratio = _as_ratio(features.get("engine_volatility20") or features.get("volatility20"))
+    if volatility_ratio > 0.0:
+        proxy_candidates.append(("features.volatility20", volatility_ratio))
+
+    quality_proxy_raw = (
+        max(0.0, quality_score - 0.50) * _to_float(config.get("edge_scale_pct"))
+        if quality_available
+        else 0.0
+    )
+    quality_proxy_cap = _to_float(config.get("quality_proxy_max_edge_pct"))
+    quality_proxy_edge_pct = (
+        min(float(quality_proxy_raw), float(quality_proxy_cap))
+        if quality_proxy_cap > 0.0
+        else float(quality_proxy_raw)
+    )
+    quality_modifier = float(0.50 + (0.50 * quality_score)) if quality_available else 0.0
+    min_estimated_gross_edge_pct = _to_float(config.get("min_estimated_gross_edge_pct"))
+    require_directional_edge_evidence = bool(config.get("require_directional_edge_evidence"))
+    allow_volatility_proxy_edge = bool(config.get("allow_volatility_proxy_edge"))
+    allow_quality_proxy_edge = bool(config.get("allow_quality_proxy_edge"))
+    allow_triggered_signal_proxy_edge = bool(config.get("allow_triggered_signal_proxy_edge"))
+    proxy_edge_haircut = _clamp(_to_float(config.get("proxy_edge_haircut")), 0.0, 1.0)
+    min_proxy_quality_score = _clamp(_to_float(config.get("min_proxy_quality_score")), 0.0, 1.0)
+    confidence_score = _to_float(scores.get("confidence_score") if scores.get("confidence_score") not in (None, "") else metrics.get("confidence_score"))
+    confidence_threshold = _to_float(
+        scores.get("confidence_threshold")
+        if scores.get("confidence_threshold") not in (None, "")
+        else metrics.get("confidence_threshold")
+    )
+    confidence_tolerance = max(0.0, _to_float(config.get("triggered_proxy_confidence_tolerance")))
+    estimated_gross_edge_source = ""
+    edge_evidence_type = ""
+    directional_candidates = [(name, value) for name, value in directional_candidates if value > 0.0]
+    proxy_candidates = [(name, value) for name, value in proxy_candidates if value > 0.0]
+    proxy_quality_ok = bool((not quality_available) or quality_score >= min_proxy_quality_score)
+    confidence_gate_ok = bool(
+        confidence_threshold <= 0.0
+        or (
+            confidence_score > 0.0
+            and confidence_score + confidence_tolerance >= confidence_threshold
+        )
+    )
+    triggered_signal_proxy_allowed = bool(
+        allow_triggered_signal_proxy_edge
+        and bool(entry_info.get("triggered"))
+        and confidence_gate_ok
+        and proxy_candidates
+        and proxy_quality_ok
+    )
+    effective_allow_volatility_proxy_edge = bool(allow_volatility_proxy_edge or triggered_signal_proxy_allowed)
+    effective_require_directional_edge_evidence = bool(
+        require_directional_edge_evidence and not triggered_signal_proxy_allowed
+    )
+    if directional_candidates and quality_available:
+        candidate_name, candidate_value = min(directional_candidates, key=lambda row: float(row[1]))
+        estimated_gross_edge_pct = max(
+            float(min_estimated_gross_edge_pct),
+            float(candidate_value) * float(quality_modifier),
+        )
+        estimated_gross_edge_source = f"{candidate_name}*quality_modifier"
+        edge_evidence_type = "directional"
+    elif directional_candidates:
+        candidate_name, candidate_value = min(directional_candidates, key=lambda row: float(row[1]))
+        estimated_gross_edge_pct = max(float(min_estimated_gross_edge_pct), float(candidate_value))
+        estimated_gross_edge_source = str(candidate_name)
+        edge_evidence_type = "directional"
+    elif effective_allow_volatility_proxy_edge and proxy_candidates and proxy_quality_ok:
+        candidate_name, candidate_value = min(proxy_candidates, key=lambda row: float(row[1]))
+        proxy_modifier = float(proxy_edge_haircut)
+        if quality_available:
+            proxy_modifier *= float(quality_modifier)
+        estimated_gross_edge_pct = max(
+            float(min_estimated_gross_edge_pct),
+            float(candidate_value) * proxy_modifier,
+        )
+        estimated_gross_edge_source = f"{candidate_name}*proxy_haircut"
+        if quality_available:
+            estimated_gross_edge_source = f"{estimated_gross_edge_source}*quality_modifier"
+        edge_evidence_type = "proxy"
+    elif allow_quality_proxy_edge and quality_available and proxy_quality_ok:
+        estimated_gross_edge_pct = max(float(min_estimated_gross_edge_pct), float(quality_proxy_edge_pct))
+        estimated_gross_edge_source = (
+            "quality_proxy_capped"
+            if quality_proxy_edge_pct < quality_proxy_raw
+            else "quality_proxy"
+        )
+        edge_evidence_type = "quality_proxy"
+    else:
+        estimated_gross_edge_pct = None
+
     cost_adjusted_edge_pct = (
-        float(estimated_gross_edge_pct - float(cost_drag_pct))
-        if estimated_gross_edge_pct is not None and cost_drag_pct is not None
+        float(estimated_gross_edge_pct - float(effective_cost_drag_pct))
+        if estimated_gross_edge_pct is not None and effective_cost_drag_pct is not None
+        else None
+    )
+    required_gross_edge_pct = (
+        float(effective_cost_drag_pct) + _to_float(config.get("min_net_profit_buffer_pct"))
+        if effective_cost_drag_pct is not None
         else None
     )
     fail_reasons = []
@@ -1272,6 +1689,16 @@ def _evaluate_entry_cost_filter(
             fail_reasons.append("cost_filter_price_or_qty_missing")
         if cost_drag_pct is not None and cost_drag_pct > _to_float(config.get("max_cost_drag_pct")):
             fail_reasons.append("cost_drag_too_high")
+        if effective_require_directional_edge_evidence and edge_evidence_type != "directional":
+            fail_reasons.append("directional_edge_evidence_missing")
+        if estimated_gross_edge_pct is None:
+            fail_reasons.append("estimated_gross_edge_missing")
+        if (
+            estimated_gross_edge_pct is not None
+            and required_gross_edge_pct is not None
+            and estimated_gross_edge_pct < required_gross_edge_pct
+        ):
+            fail_reasons.append("estimated_gross_edge_below_cost_floor")
         if cost_adjusted_edge_pct is not None and cost_adjusted_edge_pct < _to_float(config.get("min_cost_adjusted_edge_pct")):
             fail_reasons.append("cost_adjusted_edge_below_min")
 
@@ -1290,9 +1717,57 @@ def _evaluate_entry_cost_filter(
         "sell_tax_est": round(sell_tax, 4),
         "round_trip_cost_est": round(total_cost, 4),
         "cost_drag_pct": round(float(cost_drag_pct), 6) if cost_drag_pct is not None else None,
+        "round_trip_cost_floor_pct": round(float(round_trip_cost_floor_pct), 6),
+        "effective_cost_drag_pct": (
+            round(float(effective_cost_drag_pct), 6) if effective_cost_drag_pct is not None else None
+        ),
+        "cost_floor_applied": bool(
+            cost_drag_pct is not None
+            and effective_cost_drag_pct is not None
+            and effective_cost_drag_pct > cost_drag_pct
+        ),
+        "min_net_profit_buffer_pct": float(config.get("min_net_profit_buffer_pct") or 0.0),
+        "required_gross_edge_pct": (
+            round(float(required_gross_edge_pct), 6) if required_gross_edge_pct is not None else None
+        ),
         "entry_quality_available": bool(quality_available),
         "entry_quality_score": round(float(quality_score), 4),
+        "quality_modifier": round(float(quality_modifier), 6),
+        "quality_proxy_edge_pct": round(float(quality_proxy_edge_pct), 6),
+        "directional_edge_required": bool(require_directional_edge_evidence),
+        "effective_directional_edge_required": bool(effective_require_directional_edge_evidence),
+        "directional_edge_available": bool(directional_candidates),
+        "proxy_edge_available": bool(proxy_candidates),
+        "proxy_edge_allowed": bool(allow_volatility_proxy_edge),
+        "effective_proxy_edge_allowed": bool(effective_allow_volatility_proxy_edge),
+        "quality_proxy_edge_allowed": bool(allow_quality_proxy_edge),
+        "triggered_signal_proxy_edge_allowed": bool(triggered_signal_proxy_allowed),
+        "allow_triggered_signal_proxy_edge": bool(allow_triggered_signal_proxy_edge),
+        "confidence_score": round(float(confidence_score), 4) if confidence_score > 0.0 else None,
+        "confidence_threshold": round(float(confidence_threshold), 4) if confidence_threshold > 0.0 else None,
+        "triggered_proxy_confidence_tolerance": round(float(confidence_tolerance), 6),
+        "proxy_quality_ok": bool(proxy_quality_ok),
+        "proxy_edge_haircut": round(float(proxy_edge_haircut), 6),
+        "min_proxy_quality_score": round(float(min_proxy_quality_score), 6),
+        "edge_evidence_type": str(edge_evidence_type),
         "estimated_gross_edge_pct": round(float(estimated_gross_edge_pct), 6) if estimated_gross_edge_pct is not None else None,
+        "estimated_gross_edge_source": str(estimated_gross_edge_source),
+        "directional_edge_candidates": [
+            {"source": str(name), "pct": round(float(value), 6)}
+            for name, value in directional_candidates[:8]
+        ],
+        "proxy_edge_candidates": [
+            {"source": str(name), "pct": round(float(value), 6)}
+            for name, value in proxy_candidates[:8]
+        ],
+        "expected_move_candidates": [
+            {"source": str(name), "pct": round(float(value), 6), "evidence_type": "directional"}
+            for name, value in directional_candidates[:8]
+        ]
+        + [
+            {"source": str(name), "pct": round(float(value), 6), "evidence_type": "proxy"}
+            for name, value in proxy_candidates[:8]
+        ],
         "cost_adjusted_edge_pct": round(float(cost_adjusted_edge_pct), 6) if cost_adjusted_edge_pct is not None else None,
         "max_cost_drag_pct": float(config.get("max_cost_drag_pct") or 0.0),
         "min_cost_adjusted_edge_pct": float(config.get("min_cost_adjusted_edge_pct") or 0.0),
@@ -1323,6 +1798,34 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         "hard_stop_pct": "hard_stop_pct",
         "stop_loss_pct": "stop_loss_pct",
         "take_profit_pct": "take_profit_pct",
+        "partial_take_profit_pct": "partial_take_profit_pct",
+        "partial_take_profit_fraction": "partial_take_profit_fraction",
+        "profit_ladder_levels_pct": "profit_ladder_levels_pct",
+        "profit_ladder_fraction": "profit_ladder_fraction",
+        "risk_reward_take_profit_r": "risk_reward_take_profit_r",
+        "risk_reward_take_profit_rungs": "risk_reward_take_profit_rungs",
+        "risk_reward_take_profit_fraction": "risk_reward_take_profit_fraction",
+        "risk_reward_take_profit_min_pct": "risk_reward_take_profit_min_pct",
+        "vwap_extension_take_profit_pct": "vwap_extension_take_profit_pct",
+        "vwap_extension_take_profit_min_pct": "vwap_extension_take_profit_min_pct",
+        "resistance_take_profit_near_pct": "resistance_take_profit_near_pct",
+        "resistance_take_profit_min_pct": "resistance_take_profit_min_pct",
+        "profit_time_stop_sec": "profit_time_stop_sec",
+        "profit_time_stop_min_pct": "profit_time_stop_min_pct",
+        "profit_time_stop_peak_giveback_pct": "profit_time_stop_peak_giveback_pct",
+        "volume_exhaustion_take_profit_min_pct": "volume_exhaustion_take_profit_min_pct",
+        "volume_exhaustion_volume_ratio_max": "volume_exhaustion_volume_ratio_max",
+        "volume_exhaustion_strength_max": "volume_exhaustion_strength_max",
+        "opening_gap_profit_take_min_pct": "opening_gap_profit_take_min_pct",
+        "opening_gap_profit_take_window_sec": "opening_gap_profit_take_window_sec",
+        "opening_gap_profit_take_fraction": "opening_gap_profit_take_fraction",
+        "cost_aware_profit_floor_enabled": "cost_aware_profit_floor_enabled",
+        "round_trip_cost_floor_pct": "round_trip_cost_floor_pct",
+        "min_net_profit_buffer_pct": "min_net_profit_buffer_pct",
+        "cost_aware_profit_floor_pct": "cost_aware_profit_floor_pct",
+        "cost_aware_profit_floor_use_expected_exit": "cost_aware_profit_floor_use_expected_exit",
+        "sell_slippage_buffer_pct": "sell_slippage_buffer_pct",
+        "min_expected_net_profit_pct": "min_expected_net_profit_pct",
         "max_hold_sec": "max_hold_sec",
         "time_stop_sec": "time_stop_sec",
         "trailing_stop_pct": "trailing_stop_pct",
@@ -1434,6 +1937,36 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         out["profit_protection_activation_pct"] = 0.008
     if out.get("peak_drawdown_mode") in (None, ""):
         out["peak_drawdown_mode"] = "profit_protection"
+    profit_defaults = {
+        "cost_aware_profit_floor_enabled": True,
+        "round_trip_cost_floor_pct": 0.009,
+        "min_net_profit_buffer_pct": 0.003,
+        "cost_aware_profit_floor_pct": 0.012,
+        "partial_take_profit_pct": 0.012,
+        "partial_take_profit_fraction": 0.50,
+        "profit_ladder_levels_pct": [0.012, 0.016, 0.020],
+        "profit_ladder_fraction": 0.34,
+        "risk_reward_take_profit_r": 1.0,
+        "risk_reward_take_profit_rungs": [1.0, 1.5, 2.0],
+        "risk_reward_take_profit_fraction": 0.34,
+        "risk_reward_take_profit_min_pct": 0.012,
+        "vwap_extension_take_profit_pct": 0.030,
+        "vwap_extension_take_profit_min_pct": 0.012,
+        "resistance_take_profit_near_pct": 0.003,
+        "resistance_take_profit_min_pct": 0.012,
+        "profit_time_stop_sec": 900,
+        "profit_time_stop_min_pct": 0.012,
+        "profit_time_stop_peak_giveback_pct": 0.003,
+        "volume_exhaustion_take_profit_min_pct": 0.012,
+        "volume_exhaustion_volume_ratio_max": 0.80,
+        "volume_exhaustion_strength_max": 0.75,
+        "opening_gap_profit_take_min_pct": 0.012,
+        "opening_gap_profit_take_window_sec": 1200,
+        "opening_gap_profit_take_fraction": 1.0,
+    }
+    for key, value in profit_defaults.items():
+        if out.get(key) in (None, ""):
+            out[key] = value
     out.setdefault("policy_source", str(out.get("effective_policy_source") or "monitor_exit_policy_effective"))
     out.setdefault("effective_policy_source", str(out.get("policy_source") or "monitor_exit_policy_effective"))
     return out
@@ -1458,6 +1991,11 @@ def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategy_policy.get("market_policy"), dict)
         else {}
     )
+    strategy_monitor_policy = (
+        dict(strategy_policy.get("monitor_policy") or {})
+        if isinstance(strategy_policy.get("monitor_policy"), dict)
+        else {}
+    )
     commander_context = (
         dict(strategy_policy.get("commander_context") or {})
         if isinstance(strategy_policy.get("commander_context"), dict)
@@ -1473,6 +2011,18 @@ def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategy_policy.get("provenance"), dict)
         else {}
     )
+    commander_horizon_policy = {}
+    for candidate in (
+        state.get("commander_horizon_policy"),
+        strategy_policy.get("commander_horizon_policy"),
+        strategy_monitor_policy.get("commander_horizon_policy"),
+        strategy_monitor_policy.get("horizon_policy"),
+        commander_context.get("commander_horizon_policy"),
+        strategist_output.get("commander_horizon_policy"),
+    ):
+        if isinstance(candidate, dict) and candidate:
+            commander_horizon_policy = dict(candidate)
+            break
     return {
         "playbook": str(
             state.get("playbook")
@@ -1500,6 +2050,9 @@ def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, Any]:
             or ""
         ).strip().lower(),
         "commander_context": commander_context,
+        "commander_horizon_policy": commander_horizon_policy,
+        "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or strategy_monitor_policy.get("strategy_horizon") or strategist_output.get("strategy_horizon") or "").strip(),
+        "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or "").strip(),
         "strategist_plan": strategist_plan,
         "policy_provenance": policy_provenance,
     }
@@ -1646,6 +2199,28 @@ def _build_monitor_policy_trace(
             "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
             "exit_trigger_metric_value": exit_info.get("exit_trigger_metric_value"),
             "exit_trigger_metric_source": str(exit_info.get("exit_trigger_metric_source") or ""),
+            "gross_pnl_ratio": exit_info.get("gross_pnl_ratio"),
+            "technical_pnl_ratio": exit_info.get("technical_pnl_ratio"),
+            "stop_pnl_ratio": exit_info.get("stop_pnl_ratio"),
+            "stop_pnl_ratio_source": str(exit_info.get("stop_pnl_ratio_source") or ""),
+            "hard_stop_pnl_ratio": exit_info.get("hard_stop_pnl_ratio"),
+            "hard_stop_pnl_ratio_source": str(exit_info.get("hard_stop_pnl_ratio_source") or ""),
+            "cost_drag_pressure": bool(exit_info.get("cost_drag_pressure")),
+            "cost_drag_pressure_pct": exit_info.get("cost_drag_pressure_pct"),
+            "cost_drag_pressure_reason": str(exit_info.get("cost_drag_pressure_reason") or ""),
+            "stop_loss_cost_drag_blocked": bool(exit_info.get("stop_loss_cost_drag_blocked")),
+            "stop_loss_cost_drag_blocked_reason": str(exit_info.get("stop_loss_cost_drag_blocked_reason") or ""),
+            "cost_aware_profit_floor_enabled": bool(exit_info.get("cost_aware_profit_floor_enabled")),
+            "cost_aware_profit_floor_pct": exit_info.get("cost_aware_profit_floor_pct"),
+            "cost_aware_profit_floor_met": bool(exit_info.get("cost_aware_profit_floor_met")),
+            "cost_aware_profit_floor_gap_pct": exit_info.get("cost_aware_profit_floor_gap_pct"),
+            "cost_aware_profit_floor_blocked": bool(exit_info.get("cost_aware_profit_floor_blocked")),
+            "protective_exit_floor_blocked": bool(exit_info.get("protective_exit_floor_blocked")),
+            "protective_exit_floor_blocked_reason": str(exit_info.get("protective_exit_floor_blocked_reason") or ""),
+            "protective_exit_hard_invalidation": bool(exit_info.get("protective_exit_hard_invalidation")),
+            "protective_exit_hard_invalidation_reason": str(
+                exit_info.get("protective_exit_hard_invalidation_reason") or ""
+            ),
             "exit_plan": exit_plan,
             "monitor_mission": monitor_mission,
         },
@@ -1710,6 +2285,22 @@ def _apply_monitor_strategy_frame(
 
     playbook = str(frame.get("playbook") or "").strip().lower()
     mode = str(frame.get("monitor_guidance") or "").strip().lower()
+    horizon_policy = (
+        dict(frame.get("commander_horizon_policy") or {})
+        if isinstance(frame.get("commander_horizon_policy"), dict)
+        else {}
+    )
+    behavior_translation = (
+        dict(horizon_policy.get("behavior_translation") or {})
+        if isinstance(horizon_policy.get("behavior_translation"), dict)
+        else {}
+    )
+    strategy_horizon = str(
+        horizon_policy.get("strategy_horizon")
+        or frame.get("strategy_horizon")
+        or behavior_translation.get("strategy_horizon")
+        or ""
+    ).strip().lower()
     if not mode:
         if playbook == "breakout":
             mode = "hold_through_noise"
@@ -1754,6 +2345,21 @@ def _apply_monitor_strategy_frame(
         confirm = max(1, confirm - 1)
         adjustments.append("trade_aggressiveness:high")
 
+    if bool(behavior_translation.get("applied")) or strategy_horizon:
+        if strategy_horizon == "scalp":
+            min_hold = max(0, min(min_hold, 180))
+            confirm = 1
+            cooldown = max(30, min(cooldown, 120))
+            adjustments.append("strategy_horizon:scalp_hold_controls")
+        elif strategy_horizon == "intraday":
+            confirm = max(1, min(confirm, 3))
+            adjustments.append("strategy_horizon:intraday_hold_controls")
+        elif strategy_horizon in {"overnight_probe", "1_2day_swing"}:
+            min_hold += 600 if strategy_horizon == "overnight_probe" else 900
+            confirm = max(confirm, 2)
+            cooldown += 120
+            adjustments.append(f"strategy_horizon:{strategy_horizon}_hold_controls")
+
     return {
         "min_hold_sec": max(0, int(min_hold)),
         "sell_cooldown_sec": max(0, int(cooldown)),
@@ -1762,6 +2368,9 @@ def _apply_monitor_strategy_frame(
         "monitor_guidance": mode,
         "risk_tone": tone,
         "trade_aggressiveness": aggr,
+        "strategy_horizon": strategy_horizon,
+        "source_strategy_horizon": str(horizon_policy.get("source_strategy_horizon") or frame.get("source_strategy_horizon") or ""),
+        "horizon_behavior_translation": dict(behavior_translation),
         "adjustments": list(adjustments),
     }
 
@@ -1836,6 +2445,31 @@ def _apply_exit_policy_strategy_frame(
             "hard_stop_pct",
             "stop_loss_pct",
             "take_profit_pct",
+            "partial_take_profit_pct",
+            "partial_take_profit_fraction",
+            "profit_ladder_levels_pct",
+            "profit_ladder_fraction",
+            "risk_reward_take_profit_r",
+            "risk_reward_take_profit_rungs",
+            "risk_reward_take_profit_fraction",
+            "risk_reward_take_profit_min_pct",
+            "vwap_extension_take_profit_pct",
+            "vwap_extension_take_profit_min_pct",
+            "resistance_take_profit_near_pct",
+            "resistance_take_profit_min_pct",
+            "profit_time_stop_sec",
+            "profit_time_stop_min_pct",
+            "profit_time_stop_peak_giveback_pct",
+            "volume_exhaustion_take_profit_min_pct",
+            "volume_exhaustion_volume_ratio_max",
+            "volume_exhaustion_strength_max",
+            "opening_gap_profit_take_min_pct",
+            "opening_gap_profit_take_window_sec",
+            "opening_gap_profit_take_fraction",
+            "cost_aware_profit_floor_enabled",
+            "round_trip_cost_floor_pct",
+            "min_net_profit_buffer_pct",
+            "cost_aware_profit_floor_pct",
             "max_hold_sec",
             "time_stop_sec",
             "trailing_stop_pct",
@@ -1855,6 +2489,25 @@ def _apply_exit_policy_strategy_frame(
             if strategist_exit_policy.get(key) not in (None, ""):
                 out[key] = strategist_exit_policy.get(key)
         adjustments.append("strategist_exit_policy_override")
+
+    commander_horizon_policy = {}
+    for candidate in (
+        state.get("commander_horizon_policy"),
+        strategy_policy.get("commander_horizon_policy"),
+        strategy_monitor_policy.get("commander_horizon_policy"),
+        strategy_monitor_policy.get("horizon_policy"),
+        frame.get("commander_horizon_policy") if isinstance(frame, dict) else {},
+    ):
+        if isinstance(candidate, dict) and candidate:
+            commander_horizon_policy = dict(candidate)
+            break
+    behavior_translation = (
+        dict(commander_horizon_policy.get("behavior_translation") or {})
+        if isinstance(commander_horizon_policy.get("behavior_translation"), dict)
+        else {}
+    )
+    if not behavior_translation and isinstance(frame, dict) and isinstance(frame.get("horizon_behavior_translation"), dict):
+        behavior_translation = dict(frame.get("horizon_behavior_translation") or {})
 
     raw_playbook = str(
         state.get("playbook")
@@ -1882,7 +2535,7 @@ def _apply_exit_policy_strategy_frame(
     tone = raw_tone or str(frame.get("risk_tone") or "").strip().lower()
     aggr = raw_aggr or str(frame.get("trade_aggressiveness") or "").strip().lower()
 
-    if not strategist_exit_policy and not any((raw_playbook, raw_guidance, raw_tone, raw_aggr)):
+    if not strategist_exit_policy and not commander_horizon_policy and not any((raw_playbook, raw_guidance, raw_tone, raw_aggr)):
         return {"policy": out, "adjustments": adjustments}
 
     features = selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {}
@@ -1916,6 +2569,46 @@ def _apply_exit_policy_strategy_frame(
         take_profit_pct = 0.05
     trailing_stop_pct = _to_float(out.get("trailing_stop_pct"))
     vol_expansion_ratio = _to_float(out.get("vol_expansion_ratio"))
+    risk_reward_take_profit_r = _to_float(out.get("risk_reward_take_profit_r"))
+    vwap_extension_take_profit_min_pct = _to_float(out.get("vwap_extension_take_profit_min_pct"))
+    profit_time_stop_sec = _to_int(out.get("profit_time_stop_sec"))
+    max_hold_sec = _to_int(out.get("max_hold_sec"))
+
+    strategy_horizon = str(
+        commander_horizon_policy.get("strategy_horizon")
+        or frame.get("strategy_horizon")
+        or behavior_translation.get("strategy_horizon")
+        or ""
+    ).strip().lower()
+    expected_window = (
+        dict(commander_horizon_policy.get("expected_hold_window") or {})
+        if isinstance(commander_horizon_policy.get("expected_hold_window"), dict)
+        else {}
+    )
+    if bool(behavior_translation.get("applied")) or strategy_horizon:
+        if strategy_horizon == "scalp":
+            take_profit_pct *= 0.88
+            trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.85)
+            if risk_reward_take_profit_r > 0.0:
+                risk_reward_take_profit_r = min(risk_reward_take_profit_r, 0.85)
+            profit_time_stop_sec = 300 if profit_time_stop_sec <= 0 else min(profit_time_stop_sec, 300)
+            max_hold_sec = 900 if max_hold_sec <= 0 else min(max_hold_sec, 900)
+            adjustments.append("strategy_horizon:scalp_exit_policy")
+        elif strategy_horizon == "intraday":
+            if profit_time_stop_sec <= 0:
+                profit_time_stop_sec = 900
+            window_max = _to_int(expected_window.get("max_sec"))
+            if window_max > 0:
+                max_hold_sec = window_max if max_hold_sec <= 0 else min(max_hold_sec, window_max)
+            adjustments.append("strategy_horizon:intraday_exit_policy")
+        elif strategy_horizon in {"overnight_probe", "1_2day_swing"}:
+            take_profit_pct *= 1.10 if strategy_horizon == "overnight_probe" else 1.18
+            trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.70)
+            window_max = _to_int(expected_window.get("max_sec"))
+            if window_max > 0:
+                max_hold_sec = max(max_hold_sec, window_max)
+            out["allow_overnight_from_strategy_horizon"] = bool(behavior_translation.get("overnight_allowed"))
+            adjustments.append(f"strategy_horizon:{strategy_horizon}_exit_policy")
 
     if playbook == "breakout":
         take_profit_pct *= 1.10
@@ -1944,6 +2637,12 @@ def _apply_exit_policy_strategy_frame(
     elif guidance == "quick_take_profit":
         take_profit_pct *= 0.90
         trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.80)
+        if risk_reward_take_profit_r > 0.0:
+            risk_reward_take_profit_r = min(risk_reward_take_profit_r, 0.85)
+        if vwap_extension_take_profit_min_pct > 0.0:
+            vwap_extension_take_profit_min_pct = min(vwap_extension_take_profit_min_pct, 0.004)
+        if profit_time_stop_sec > 0:
+            profit_time_stop_sec = min(profit_time_stop_sec, 600)
         adjustments.append("monitor_guidance:quick_take_profit_exit")
     elif guidance == "defensive_exit":
         stop_loss_pct *= 0.95
@@ -2017,6 +2716,19 @@ def _apply_exit_policy_strategy_frame(
     out["take_profit_pct"] = float(take_profit_pct)
     out["trailing_stop_pct"] = float(trailing_stop_pct)
     out["vol_expansion_ratio"] = float(vol_expansion_ratio)
+    if risk_reward_take_profit_r > 0.0:
+        out["risk_reward_take_profit_r"] = float(_clamp(risk_reward_take_profit_r, 0.0, 3.0))
+    if vwap_extension_take_profit_min_pct > 0.0:
+        out["vwap_extension_take_profit_min_pct"] = float(_clamp(vwap_extension_take_profit_min_pct, 0.001, 0.05))
+    if profit_time_stop_sec > 0:
+        out["profit_time_stop_sec"] = int(profit_time_stop_sec)
+    if max_hold_sec > 0:
+        out["max_hold_sec"] = int(max_hold_sec)
+    if strategy_horizon:
+        out["strategy_horizon"] = strategy_horizon
+        out["source_strategy_horizon"] = str(commander_horizon_policy.get("source_strategy_horizon") or frame.get("source_strategy_horizon") or "")
+        out["horizon_behavior_translation_applied"] = bool(behavior_translation.get("applied"))
+        out["horizon_exit_policy_bias"] = str(behavior_translation.get("exit_policy_bias") or "")
     return {"policy": out, "adjustments": adjustments}
 
 
@@ -2124,6 +2836,28 @@ def _monitor_watch_axes(thresholds: Dict[str, Any]) -> list[str]:
         out.append("Adaptive stop")
     if _to_float(thresholds.get("take_profit_pct")) > 0.0:
         out.append("Take profit")
+    if _is_trueish(thresholds.get("cost_aware_profit_floor_enabled")) and _to_float(
+        thresholds.get("cost_aware_profit_floor_pct")
+    ) > 0.0:
+        out.append("Cost-aware profit floor")
+    if _to_float(thresholds.get("partial_take_profit_pct")) > 0.0:
+        out.append("Partial take profit")
+    if isinstance(thresholds.get("profit_ladder_levels_pct"), list) and thresholds.get("profit_ladder_levels_pct"):
+        out.append("Profit ladder")
+    if _to_float(thresholds.get("risk_reward_take_profit_r")) > 0.0:
+        out.append("Risk/reward take profit")
+    elif isinstance(thresholds.get("risk_reward_take_profit_rungs"), list) and thresholds.get("risk_reward_take_profit_rungs"):
+        out.append("Risk/reward take profit")
+    if _to_float(thresholds.get("vwap_extension_take_profit_pct")) > 0.0:
+        out.append("VWAP extension take profit")
+    if _to_float(thresholds.get("resistance_take_profit_near_pct")) > 0.0:
+        out.append("Resistance take profit")
+    if _to_float(thresholds.get("volume_exhaustion_take_profit_min_pct")) > 0.0:
+        out.append("Volume exhaustion take profit")
+    if _to_float(thresholds.get("opening_gap_profit_take_min_pct")) > 0.0:
+        out.append("Opening gap profit take")
+    if _to_float(thresholds.get("profit_time_stop_sec")) > 0.0:
+        out.append("Time-decay profit exit")
     if _to_float(thresholds.get("trailing_stop_pct")) > 0.0:
         out.append("Trailing stop")
     if _to_float(thresholds.get("peak_drawdown_exit_pct")) > 0.0:
@@ -2394,6 +3128,202 @@ def _build_sizing_risk_context(state: Dict[str, Any], selected: Dict[str, Any], 
     return rc
 
 
+def _resolve_position_sizing_config(
+    state: Dict[str, Any],
+    *,
+    policy: Dict[str, Any],
+    strategy_policy: Dict[str, Any],
+) -> tuple[bool, Dict[str, Any]]:
+    def _merge(candidate: Any, out: Dict[str, Any]) -> None:
+        if isinstance(candidate, dict):
+            out.update(dict(candidate))
+
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    applied_monitor = applied_policy.get("monitor") if isinstance(applied_policy.get("monitor"), dict) else {}
+    applied_entry = applied_monitor.get("entry") if isinstance(applied_monitor.get("entry"), dict) else {}
+    strategy_entry = strategy_policy.get("entry_policy") if isinstance(strategy_policy.get("entry_policy"), dict) else {}
+
+    sizing_policy: Dict[str, Any] = {}
+    _merge(applied_entry.get("position_sizing"), sizing_policy)
+    _merge(applied_policy.get("position_sizing"), sizing_policy)
+    _merge(strategy_entry.get("position_sizing"), sizing_policy)
+    _merge(policy.get("position_sizing"), sizing_policy)
+    _merge(state.get("position_sizing"), sizing_policy)
+
+    for key in (
+        "risk_per_trade_ratio",
+        "stop_loss_pct",
+        "use_structure_stop_loss",
+        "use_structure_stop_loss_for_sizing",
+        "min_structure_stop_loss_pct",
+        "invalidation_price",
+        "stop_price",
+        "structural_stop_price",
+        "position_notional_ratio",
+        "max_position_qty",
+        "max_order_qty",
+        "max_position_notional",
+        "max_order_notional",
+        "min_position_qty",
+        "lot_size",
+    ):
+        if key in policy and policy.get(key) not in (None, ""):
+            sizing_policy[key] = policy.get(key)
+
+    explicit_enabled = None
+    if state.get("use_position_sizing") is not None:
+        explicit_enabled = _is_trueish(state.get("use_position_sizing"))
+    elif policy.get("use_position_sizing") is not None:
+        explicit_enabled = _is_trueish(policy.get("use_position_sizing"))
+
+    enabled = bool(explicit_enabled) if explicit_enabled is not None else _is_trueish(sizing_policy.get("enabled"))
+    return bool(enabled), sizing_policy
+
+
+def _is_falseish(v: Any) -> bool:
+    return str(v or "").strip().lower() in ("0", "false", "no", "n", "off")
+
+
+def _entry_context_float(
+    selected: Dict[str, Any],
+    entry_info: Dict[str, Any],
+    key: str,
+) -> tuple[float, str]:
+    metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
+    features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
+    candidates = [
+        (metrics.get(key), f"entry.metrics.{key}"),
+        (selected.get(key), f"selected.{key}"),
+        (features.get(key), f"selected.features.{key}"),
+    ]
+    if key == "prior_bar_low":
+        candidates.append((selected.get("_monitor_prior_bar_low"), "selected._monitor_prior_bar_low"))
+    for raw, source in candidates:
+        value = _to_float(raw)
+        if value > 0.0:
+            return float(value), source
+    return 0.0, ""
+
+
+def _derive_position_sizing_stop_context(
+    *,
+    state: Dict[str, Any],
+    symbol: str,
+    selected: Dict[str, Any],
+    entry_info: Dict[str, Any],
+    price: float | None,
+    sizing_policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    px = _to_float(price)
+    out: Dict[str, Any] = {
+        "applied": False,
+        "reason": "unavailable",
+        "stop_loss_pct": None,
+        "invalidation_price": None,
+        "stop_loss_source": "",
+        "raw_stop_loss_pct": None,
+        "min_structure_stop_loss_pct": None,
+        "candidates": [],
+    }
+    if px <= 0.0:
+        out["reason"] = "price_unavailable"
+        return out
+    if _is_falseish(sizing_policy.get("use_structure_stop_loss_for_sizing")) or _is_falseish(
+        sizing_policy.get("use_structure_stop_loss")
+    ):
+        out["reason"] = "disabled_by_policy"
+        return out
+
+    candidates: list[Dict[str, Any]] = []
+
+    def add_candidate(name: str, raw: Any, source: str, *, explicit: bool = False) -> None:
+        anchor = _to_float(raw)
+        if anchor <= 0.0 or anchor >= px:
+            return
+        pct = (px - anchor) / px
+        if pct <= 0.0:
+            return
+        candidates.append(
+            {
+                "name": str(name),
+                "price": float(anchor),
+                "stop_loss_pct": float(pct),
+                "source": str(source),
+                "explicit": bool(explicit),
+            }
+        )
+
+    for key in ("invalidation_price", "stop_price", "structural_stop_price"):
+        add_candidate(key, sizing_policy.get(key), f"position_sizing.{key}", explicit=True)
+        add_candidate(key, selected.get(key), f"selected.{key}", explicit=True)
+    explicit_candidates = [row for row in candidates if bool(row.get("explicit"))]
+    if explicit_candidates:
+        chosen = max(explicit_candidates, key=lambda row: float(row.get("price") or 0.0))
+    else:
+        metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
+        text_bits = [
+            str(entry_info.get("pattern") or ""),
+            str(entry_info.get("reason") or ""),
+            str(entry_info.get("entry_condition_path") or ""),
+            " ".join(str(x or "") for x in list(entry_info.get("signal_chain") or [])),
+            " ".join(str(x or "") for x in list(entry_info.get("entry_condition_paths_passed") or [])),
+        ]
+        entry_text = " ".join(text_bits).lower()
+        vwap, vwap_source = _entry_context_float(selected, entry_info, "vwap")
+        thresholds = entry_info.get("thresholds") if isinstance(entry_info.get("thresholds"), dict) else {}
+        reclaim_tolerance_pct = max(0.0, _to_float(thresholds.get("reclaim_tolerance_pct")))
+        if vwap > 0.0:
+            add_candidate("vwap_floor", vwap * (1.0 - reclaim_tolerance_pct), f"{vwap_source}.reclaim_tolerance")
+        for key in ("breakout_level", "recent_high", "prior_bar_high", "prior_bar_low", "current_low"):
+            value, source = _entry_context_float(selected, entry_info, key)
+            if value > 0.0:
+                add_candidate(key, value, source)
+
+        has_breakout = "breakout" in entry_text
+        has_vwap = "vwap" in entry_text or bool(metrics.get("vwap_structure_ok"))
+        has_pullback = "pullback" in entry_text or "rebound" in entry_text
+        preferred_names: set[str] = set()
+        if has_breakout:
+            preferred_names.update({"breakout_level", "recent_high", "vwap_floor", "prior_bar_low"})
+        if has_vwap:
+            preferred_names.update({"vwap_floor", "prior_bar_low", "current_low"})
+        if has_pullback:
+            preferred_names.update({"prior_bar_low", "current_low", "vwap_floor"})
+        scoped = [row for row in candidates if str(row.get("name") or "") in preferred_names] if preferred_names else []
+        chosen_pool = scoped or candidates
+        if not chosen_pool:
+            out["reason"] = "no_structure_anchor_below_price"
+            return out
+        chosen = max(chosen_pool, key=lambda row: float(row.get("price") or 0.0))
+
+    raw_stop_loss_pct = float(chosen.get("stop_loss_pct") or 0.0)
+    if raw_stop_loss_pct <= 0.0:
+        out["reason"] = "invalid_structure_stop_loss_pct"
+        return out
+    min_stop_loss_pct = max(0.0, _to_float(sizing_policy.get("min_structure_stop_loss_pct")))
+    if min_stop_loss_pct <= 0.0:
+        min_stop_loss_pct = 0.008
+    stop_loss_pct = max(raw_stop_loss_pct, min_stop_loss_pct)
+    invalidation_price = float(px * (1.0 - stop_loss_pct)) if stop_loss_pct > raw_stop_loss_pct else float(chosen["price"])
+    stop_loss_source = str(chosen.get("source") or chosen.get("name") or "structure")
+    if stop_loss_pct > raw_stop_loss_pct:
+        stop_loss_source = f"{stop_loss_source}:min_structure_stop_floor"
+
+    out.update(
+        {
+            "applied": True,
+            "reason": "structure_stop_loss_derived",
+            "stop_loss_pct": float(stop_loss_pct),
+            "invalidation_price": float(invalidation_price),
+            "stop_loss_source": stop_loss_source,
+            "raw_stop_loss_pct": float(raw_stop_loss_pct),
+            "min_structure_stop_loss_pct": float(min_stop_loss_pct),
+            "candidates": candidates[:8],
+        }
+    )
+    return out
+
+
 def _position_by_symbol(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     snapshot = state.get("portfolio_snapshot")
@@ -2464,6 +3394,42 @@ def _position_hold_seconds(state: Dict[str, Any], symbol: str, position: Dict[st
     return 0
 
 
+def _apply_position_entry_risk_to_exit_policy(
+    state: Dict[str, Any],
+    symbol: str,
+    exit_policy_map: Dict[str, Any],
+) -> Dict[str, Any]:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    risk_map = (
+        persisted.get("position_entry_risk_by_symbol")
+        if isinstance(persisted.get("position_entry_risk_by_symbol"), dict)
+        else {}
+    )
+    entry_risk = risk_map.get(_norm_symbol(symbol)) if isinstance(risk_map, dict) else {}
+    if not isinstance(entry_risk, dict):
+        return exit_policy_map
+    entry_stop = _to_float(entry_risk.get("stop_loss_pct"))
+    if entry_stop <= 0.0:
+        return exit_policy_map
+
+    out = dict(exit_policy_map or {})
+    current_stop = _to_float(out.get("stop_loss_pct"))
+    if current_stop <= 0.0 or entry_stop < current_stop:
+        out["stop_loss_pct"] = float(entry_stop)
+        out["position_entry_risk_applied"] = True
+    else:
+        out["position_entry_risk_applied"] = False
+    out["position_entry_stop_loss_pct"] = float(entry_stop)
+    out["position_entry_stop_loss_source"] = str(entry_risk.get("stop_loss_source") or entry_risk.get("source") or "")
+    if entry_risk.get("invalidation_price") not in (None, ""):
+        out["position_entry_invalidation_price"] = entry_risk.get("invalidation_price")
+    if entry_risk.get("raw_structure_stop_loss_pct") not in (None, ""):
+        out["position_entry_raw_structure_stop_loss_pct"] = entry_risk.get("raw_structure_stop_loss_pct")
+    if entry_risk.get("min_structure_stop_loss_pct") not in (None, ""):
+        out["position_entry_min_structure_stop_loss_pct"] = entry_risk.get("min_structure_stop_loss_pct")
+    return out
+
+
 def _preview_exit_decision_for_symbol(
     *,
     state: Dict[str, Any],
@@ -2508,6 +3474,21 @@ def _preview_exit_decision_for_symbol(
         hold_sec = _to_int(state.get("position_hold_sec"))
 
     exit_policy_map = dict(exit_policy_base or {})
+    quotes, _quote_meta = extract_market_quotes(state)
+    quote = quotes.get(_norm_symbol(symbol)) if isinstance(quotes.get(_norm_symbol(symbol)), dict) else {}
+    if quote:
+        for source_key, policy_key in (
+            ("best_bid", "expected_exit_best_bid"),
+            ("bid", "expected_exit_best_bid"),
+            ("bid_price", "expected_exit_best_bid"),
+            ("best_ask", "expected_exit_best_ask"),
+            ("ask", "expected_exit_best_ask"),
+            ("ask_price", "expected_exit_best_ask"),
+            ("spread_bps", "expected_exit_spread_bps"),
+        ):
+            value = quote.get(source_key)
+            if value not in (None, "") and _to_float(value) > 0.0:
+                exit_policy_map.setdefault(policy_key, value)
     if position.get("peak_price") is not None:
         exit_policy_map.setdefault("peak_price", position.get("peak_price"))
     elif position.get("high_water_mark") is not None:
@@ -2525,6 +3506,40 @@ def _preview_exit_decision_for_symbol(
         exit_policy_map.setdefault("vwap_distance", features.get("engine_vwap_distance"))
     if features.get("engine_trend_strength") is not None:
         exit_policy_map.setdefault("trend_strength", features.get("engine_trend_strength"))
+    for signal_key in (
+        "volume_ratio",
+        "execution_strength",
+        "trade_strength",
+        "previous_close",
+        "open_gap_pct",
+        "prev_close_distance_pct",
+        "opening_gap_chase_observed",
+        "minutes_since_session_open",
+    ):
+        value = selected_for_exit.get(signal_key)
+        if value in (None, ""):
+            value = features.get(signal_key)
+        if value in (None, ""):
+            entry_info = state.get("monitor_entry") if isinstance(state.get("monitor_entry"), dict) else {}
+            entry_metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
+            value = entry_metrics.get(signal_key)
+        if value not in (None, ""):
+            exit_policy_map.setdefault(signal_key, value)
+    for resistance_key in (
+        "resistance_price",
+        "target_resistance_price",
+        "upper_resistance_price",
+        "day_high",
+        "intraday_high",
+        "recent_high",
+        "breakout_level",
+        "prior_bar_high",
+    ):
+        value = selected_for_exit.get(resistance_key)
+        if value in (None, ""):
+            value = features.get(resistance_key)
+        if value not in (None, "") and _to_float(value) > 0.0:
+            exit_policy_map.setdefault(resistance_key, value)
     prior_bar_low = _to_float(selected_for_exit.get("_monitor_prior_bar_low"))
     if prior_bar_low > 0.0:
         exit_policy_map.setdefault("prior_bar_low", prior_bar_low)
@@ -2532,11 +3547,34 @@ def _preview_exit_decision_for_symbol(
         policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
         if policy.get("exit_policy_baseline_volatility") is not None:
             exit_policy_map.setdefault("baseline_volatility", policy.get("exit_policy_baseline_volatility"))
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    partial_taken_map = (
+        persisted.get("partial_take_profit_taken_by_symbol")
+        if isinstance(persisted.get("partial_take_profit_taken_by_symbol"), dict)
+        else {}
+    )
+    if partial_taken_map.get(symbol) not in (None, ""):
+        exit_policy_map.setdefault("partial_take_profit_taken", True)
+    ladder_taken_map = (
+        persisted.get("profit_ladder_taken_levels_by_symbol")
+        if isinstance(persisted.get("profit_ladder_taken_levels_by_symbol"), dict)
+        else {}
+    )
+    if isinstance(ladder_taken_map.get(symbol), list):
+        exit_policy_map.setdefault("profit_ladder_taken_levels", list(ladder_taken_map.get(symbol) or []))
+    rr_taken_map = (
+        persisted.get("risk_reward_take_profit_taken_rungs_by_symbol")
+        if isinstance(persisted.get("risk_reward_take_profit_taken_rungs_by_symbol"), dict)
+        else {}
+    )
+    if isinstance(rr_taken_map.get(symbol), list):
+        exit_policy_map.setdefault("risk_reward_take_profit_taken_rungs", list(rr_taken_map.get(symbol) or []))
     if state.get("emergency_halt") is not None:
         exit_policy_map.setdefault("emergency_halt", state.get("emergency_halt"))
     mctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
     if mctx.get("minutes_to_close") is not None:
         exit_policy_map.setdefault("minutes_to_close", mctx.get("minutes_to_close"))
+    exit_policy_map = _apply_position_entry_risk_to_exit_policy(state, symbol, exit_policy_map)
     exit_policy_map = apply_account_pnl_crosscheck_context(
         exit_policy_map,
         position=position,
@@ -2560,6 +3598,10 @@ def _preview_exit_decision_for_symbol(
     decision["_pnl_ratio"] = _to_float(decision.get("pnl_ratio"))
     decision["_price_source"] = str(price_source or "unavailable")
     decision["_feature_source"] = str(feature_source or "none")
+    decision["position_entry_risk_applied"] = bool(exit_policy_map.get("position_entry_risk_applied"))
+    decision["position_entry_stop_loss_pct"] = exit_policy_map.get("position_entry_stop_loss_pct")
+    decision["position_entry_stop_loss_source"] = str(exit_policy_map.get("position_entry_stop_loss_source") or "")
+    decision["position_entry_invalidation_price"] = exit_policy_map.get("position_entry_invalidation_price")
     return decision
 
 
@@ -2626,12 +3668,34 @@ def _exit_reason_priority(reason: str) -> int:
         "vwap_breakdown": 66,
         "volatility_expansion": 65,
         "trailing_stop": 60,
+        "volume_exhaustion_take_profit": 59,
+        "opening_gap_profit_take": 59,
+        "vwap_extension_take_profit": 58,
+        "resistance_take_profit": 57,
+        "risk_reward_take_profit": 56,
+        "profit_ladder": 55,
+        "partial_take_profit": 55,
+        "time_decay_profit_exit": 55,
         "take_profit": 50,
         "hold": 10,
         "price_unavailable": 5,
         "no_position": 0,
     }
     return int(order.get(r, 1))
+
+
+def _is_soft_profit_exit_reason(reason: Any) -> bool:
+    return str(reason or "").strip().lower() in {
+        "take_profit",
+        "partial_take_profit",
+        "profit_ladder",
+        "risk_reward_take_profit",
+        "vwap_extension_take_profit",
+        "resistance_take_profit",
+        "volume_exhaustion_take_profit",
+        "opening_gap_profit_take",
+        "time_decay_profit_exit",
+    }
 
 
 def _persist_overnight_decision(
@@ -2679,6 +3743,13 @@ def _evaluate_overnight_carry_decision(
     cutoff_min = int(_to_float(thresholds.get("eod_flat_cutoff_min") or exit_policy_base.get("eod_flat_cutoff_min") or 10))
     use_eod_flat = bool(exit_policy_base.get("use_eod_flat"))
     qty = max(0, _to_int(position.get("qty")))
+    calendar_context = _carry_calendar_context(state)
+    weekend_carry = bool(calendar_context.get("weekend_carry"))
+    allow_weekend_carry = (
+        _is_trueish(exit_policy_base.get("allow_weekend_carry"))
+        or _is_trueish(frame.get("allow_weekend_carry"))
+        or _is_trueish(state.get("allow_weekend_carry"))
+    )
     out: Dict[str, Any] = {
         "evaluated": False,
         "approved": False,
@@ -2699,6 +3770,10 @@ def _evaluate_overnight_carry_decision(
         "playbook": str(frame.get("playbook") or ""),
         "monitor_guidance": str(frame.get("monitor_guidance") or ""),
         "risk_tone": str(frame.get("risk_tone") or ""),
+        "carry_calendar": dict(calendar_context),
+        "weekend_carry": bool(weekend_carry),
+        "allow_weekend_carry": bool(allow_weekend_carry),
+        "holding_gap_days": int(calendar_context.get("holding_gap_days") or 1),
     }
     if qty <= 0 or (not use_eod_flat) or minutes_to_close is None or minutes_to_close < 0.0 or minutes_to_close > float(cutoff_min):
         if qty > 0 and bool(use_eod_flat) and minutes_to_close is None:
@@ -2738,7 +3813,12 @@ def _evaluate_overnight_carry_decision(
     blockers: list[str] = []
     positives: list[str] = []
     if bool(risk_decision.get("triggered")):
-        blockers.append(f"underlying_exit_signal:{str(risk_decision.get('reason') or 'unknown')}")
+        risk_reason = str(risk_decision.get("reason") or "unknown")
+        if _is_soft_profit_exit_reason(risk_reason):
+            positives.append(f"soft_profit_exit_available:{risk_reason}")
+            out["non_eod_triggered"] = False
+        else:
+            blockers.append(f"underlying_exit_signal:{risk_reason}")
     if str(frame.get("monitor_guidance") or "").strip().lower() == "defensive_exit":
         blockers.append("monitor_guidance:defensive_exit")
     if str(frame.get("playbook") or "").strip().lower() == "defensive":
@@ -2771,6 +3851,37 @@ def _evaluate_overnight_carry_decision(
         else:
             positives.append(f"peak_drawdown_ok:{peak_drawdown:.4f}")
 
+    if weekend_carry:
+        if not allow_weekend_carry:
+            blockers.append("weekend_carry_not_allowed:friday")
+        else:
+            weekend_pnl_floor = _optional_float(exit_policy_base.get("weekend_carry_min_pnl_ratio"))
+            if weekend_pnl_floor is None:
+                weekend_pnl_floor = _optional_float(frame.get("weekend_carry_min_pnl_ratio"))
+            if weekend_pnl_floor is None:
+                weekend_pnl_floor = 0.005
+            weekend_trend_floor = _optional_float(exit_policy_base.get("weekend_carry_min_trend_strength"))
+            if weekend_trend_floor is None:
+                weekend_trend_floor = _optional_float(frame.get("weekend_carry_min_trend_strength"))
+            if weekend_trend_floor is None:
+                weekend_trend_floor = 0.15
+            if pnl_ratio is None or pnl_ratio < float(weekend_pnl_floor):
+                blockers.append(f"weekend_pnl_buffer_insufficient:{(pnl_ratio if pnl_ratio is not None else 0.0):.4f}")
+            else:
+                positives.append(f"weekend_pnl_buffer_ok:{pnl_ratio:.4f}")
+            if trend_strength is None or trend_strength < float(weekend_trend_floor):
+                blockers.append(
+                    f"weekend_trend_buffer_insufficient:{(trend_strength if trend_strength is not None else 0.0):.4f}"
+                )
+            else:
+                positives.append(f"weekend_trend_buffer_ok:{trend_strength:.4f}")
+            if vwap_distance is None or vwap_distance < 0.0:
+                blockers.append(
+                    f"weekend_vwap_buffer_insufficient:{(vwap_distance if vwap_distance is not None else 0.0):.4f}"
+                )
+            else:
+                positives.append(f"weekend_vwap_buffer_ok:{vwap_distance:.4f}")
+
     playbook = str(frame.get("playbook") or "").strip().lower()
     if playbook in ("breakout", "pullback"):
         positives.append(f"playbook:{playbook}")
@@ -2789,6 +3900,68 @@ def _evaluate_overnight_carry_decision(
         out["action"] = "flatten_before_close"
         out["reason"] = str(blockers[0] if blockers else "carry_conditions_not_met")
     return out
+
+
+def _persist_eod_carry_decisions_for_open_positions(
+    *,
+    state: Dict[str, Any],
+    pos_map: Dict[str, Dict[str, Any]],
+    selected: Dict[str, Any] | None,
+    exit_policy_base: Dict[str, Any],
+    frame: Dict[str, Any],
+    now_epoch: int,
+) -> Dict[str, Any]:
+    rows: list[Dict[str, Any]] = []
+    selected_symbol = _norm_symbol((selected or {}).get("symbol")) if isinstance(selected, dict) else ""
+    for sym, pos in sorted(pos_map.items()):
+        symbol = _norm_symbol(sym)
+        if not symbol or max(0, _to_int((pos or {}).get("qty"))) <= 0:
+            continue
+        selected_for_symbol = selected if selected_symbol == symbol else {"symbol": symbol}
+        decision = _preview_exit_decision_for_symbol(
+            state=state,
+            symbol=symbol,
+            position=pos,
+            selected=selected_for_symbol,
+            exit_policy_base=exit_policy_base,
+        )
+        hold_sec = _to_int(decision.get("_hold_sec"))
+        if hold_sec <= 0:
+            hold_sec = _position_hold_seconds(state, symbol, pos)
+        eod_carry = _evaluate_overnight_carry_decision(
+            state=state,
+            symbol=symbol,
+            position=pos,
+            selected=selected_for_symbol,
+            exit_policy_base=exit_policy_base,
+            primary_decision=decision,
+            frame=frame,
+            hold_sec=hold_sec,
+        )
+        if not bool(eod_carry.get("evaluated")):
+            continue
+        payload = {
+            "approved": bool(eod_carry.get("approved")),
+            "action": str(eod_carry.get("action") or ""),
+            "reason": str(eod_carry.get("reason") or ""),
+            "minutes_to_close": eod_carry.get("minutes_to_close"),
+            "cutoff_min": eod_carry.get("cutoff_min"),
+            "positive_signals": list(eod_carry.get("positive_signals") or []),
+            "blockers": list(eod_carry.get("blockers") or []),
+            "carry_calendar": dict(eod_carry.get("carry_calendar") or {}),
+            "weekend_carry": bool(eod_carry.get("weekend_carry")),
+            "allow_weekend_carry": bool(eod_carry.get("allow_weekend_carry")),
+            "holding_gap_days": eod_carry.get("holding_gap_days"),
+            "decided_at_epoch": int(now_epoch),
+            "symbol": str(symbol or ""),
+        }
+        _persist_overnight_decision(state, symbol=symbol, decision=payload)
+        rows.append(payload)
+    return {
+        "evaluated_count": len(rows),
+        "symbols": [str(row.get("symbol") or "") for row in rows],
+        "decisions": rows,
+    }
 
 
 def _select_exit_symbol(
@@ -2946,6 +4119,22 @@ def _feature_alias_map(feature_row: Dict[str, Any], *, quote: Dict[str, Any] | N
         "engine_cross_section_rank": row.get("engine_cross_section_rank", row.get("cross_section_rank")),
         "engine_regime": row.get("engine_regime", row.get("regime")),
         "engine_signal_score": row.get("engine_signal_score", row.get("signal_score")),
+        "volume_ratio": row.get("volume_ratio", row.get("engine_volume_ratio")),
+        "execution_strength": row.get("execution_strength", row.get("trade_strength")),
+        "trade_strength": row.get("trade_strength"),
+        "previous_close": row.get("previous_close"),
+        "open_gap_pct": row.get("open_gap_pct"),
+        "prev_close_distance_pct": row.get("prev_close_distance_pct"),
+        "opening_gap_chase_observed": row.get("opening_gap_chase_observed"),
+        "minutes_since_session_open": row.get("minutes_since_session_open"),
+        "recent_high": row.get("recent_high"),
+        "breakout_level": row.get("breakout_level"),
+        "prior_bar_high": row.get("prior_bar_high"),
+        "day_high": row.get("day_high", row.get("high_price")),
+        "intraday_high": row.get("intraday_high"),
+        "resistance_price": row.get("resistance_price"),
+        "target_resistance_price": row.get("target_resistance_price"),
+        "upper_resistance_price": row.get("upper_resistance_price"),
     }
     if q:
         quote_price = q.get("price")
@@ -3165,37 +4354,45 @@ def _evaluate_monitor_entry_candidate(
 ) -> Dict[str, Any]:
     symbol = _norm_symbol(selected.get("symbol"))
     qty = 1
-    use_position_sizing = _is_trueish(state.get("use_position_sizing")) or _is_trueish(policy.get("use_position_sizing"))
-    if use_position_sizing:
-        px = _resolve_price(state, symbol, selected)
-        cash = _resolve_cash(state)
-        sizing_risk_context = _build_sizing_risk_context(state, selected, symbol)
-        sz = evaluate_position_size(
-            price=px,
-            cash=cash if cash > 0.0 else None,
-            policy=policy.get("position_sizing") if isinstance(policy.get("position_sizing"), dict) else policy,
-            risk_context=sizing_risk_context,
+    max_positions = _resolve_max_positions(state, policy)
+    held_symbols = {
+        _norm_symbol(sym)
+        for sym, row in all_pos_map.items()
+        if _norm_symbol(sym) and max(0, _to_int((row or {}).get("qty"))) > 0
+    }
+    pending_buy_symbols = _pending_buy_symbols_from_account_orders(state)
+    selected_already_held = bool(symbol and symbol in held_symbols)
+    selected_features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
+    selected_pending_buy = bool(
+        symbol
+        and (
+            symbol in pending_buy_symbols
+            or _features_pending_order_count(selected_features) > 0
         )
-        qty = max(0, _to_int(sz.get("qty")))
-        sizing_info: Dict[str, Any] = {
-            "enabled": True,
-            "evaluated": bool(sz.get("evaluated")),
-            "qty": int(qty),
-            "reason": str(sz.get("reason") or ""),
-            "price": sz.get("price"),
-            "cash": sz.get("cash"),
-            "inputs": sz.get("inputs") if isinstance(sz.get("inputs"), dict) else {},
-        }
-    else:
-        sizing_info = {
-            "enabled": False,
-            "evaluated": False,
-            "qty": 1,
-            "reason": "disabled",
-            "price": None,
-            "cash": None,
-            "inputs": {},
-        }
+    )
+    strategist_output_for_sizing = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    strategy_policy_for_sizing = (
+        dict(strategist_output_for_sizing.get("strategy_policy") or {})
+        if isinstance(strategist_output_for_sizing.get("strategy_policy"), dict)
+        else dict(state.get("strategy_policy") or {})
+        if isinstance(state.get("strategy_policy"), dict)
+        else {}
+    )
+    use_position_sizing, position_sizing_policy = _resolve_position_sizing_config(
+        state,
+        policy=policy,
+        strategy_policy=strategy_policy_for_sizing,
+    )
+    sizing_info: Dict[str, Any] = {
+        "enabled": bool(use_position_sizing),
+        "evaluated": False,
+        "qty": 1 if not use_position_sizing else 0,
+        "reason": "pending" if use_position_sizing else "disabled",
+        "price": None,
+        "cash": None,
+        "inputs": {},
+        "stop_context": {},
+    }
 
     persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
     last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
@@ -3280,9 +4477,16 @@ def _evaluate_monitor_entry_candidate(
     entry_info["closeout_window_guard"] = dict(closeout_window_guard)
     entry_info["minutes_to_close"] = closeout_window_guard.get("minutes_to_close")
     entry_info["eod_flat_cutoff_min"] = int(closeout_window_guard.get("cutoff_min") or 0)
+    entry_info["buy_closeout_cutoff_min"] = int(closeout_window_guard.get("buy_cutoff_min") or 0)
     entry_info["closeout_window_active"] = bool(closeout_window_guard.get("active"))
     entry_info["symbol"] = symbol
     entry_info["selected_symbol"] = symbol
+    entry_info["max_positions"] = int(max_positions)
+    entry_info["multi_position_capacity_remaining"] = max(0, int(max_positions) - int(open_position_count))
+    entry_info["held_symbols"] = sorted(held_symbols)
+    entry_info["pending_buy_symbols"] = sorted(pending_buy_symbols)
+    entry_info["selected_symbol_already_held"] = bool(selected_already_held)
+    entry_info["selected_symbol_pending_buy"] = bool(selected_pending_buy)
     if commander_entry_control:
         entry_info["commander_entry_control"] = dict(commander_entry_control)
     entry_info["applied_policy"] = dict(entry_info.get("applied_policy") or entry_info.get("thresholds") or entry_policy.to_dict())
@@ -3365,6 +4569,42 @@ def _evaluate_monitor_entry_candidate(
     entry_info["metrics"] = entry_metrics
     entry_info["minute_source_meta"] = dict(minute_ohlcv_meta or {})
     entry_info["minute_fetch_meta"] = minute_fetch_meta
+    if use_position_sizing:
+        px = _resolve_price(state, symbol, selected)
+        cash = _resolve_cash(state)
+        sizing_risk_context = _build_sizing_risk_context(state, selected, symbol)
+        effective_sizing_policy = dict(position_sizing_policy if position_sizing_policy else policy)
+        stop_context = _derive_position_sizing_stop_context(
+            state=state,
+            symbol=symbol,
+            selected=selected,
+            entry_info=entry_info,
+            price=px,
+            sizing_policy=effective_sizing_policy,
+        )
+        if bool(stop_context.get("applied")):
+            effective_sizing_policy["stop_loss_pct"] = stop_context.get("stop_loss_pct")
+            effective_sizing_policy["stop_loss_source"] = stop_context.get("stop_loss_source")
+            effective_sizing_policy["invalidation_price"] = stop_context.get("invalidation_price")
+            effective_sizing_policy["raw_structure_stop_loss_pct"] = stop_context.get("raw_stop_loss_pct")
+            effective_sizing_policy["min_structure_stop_loss_pct"] = stop_context.get("min_structure_stop_loss_pct")
+        sz = evaluate_position_size(
+            price=px,
+            cash=cash if cash > 0.0 else None,
+            policy=effective_sizing_policy,
+            risk_context=sizing_risk_context,
+        )
+        qty = max(0, _to_int(sz.get("qty")))
+        sizing_info = {
+            "enabled": True,
+            "evaluated": bool(sz.get("evaluated")),
+            "qty": int(qty),
+            "reason": str(sz.get("reason") or ""),
+            "price": sz.get("price"),
+            "cash": sz.get("cash"),
+            "inputs": sz.get("inputs") if isinstance(sz.get("inputs"), dict) else {},
+            "stop_context": dict(stop_context),
+        }
     entry_cost_filter_config = _resolve_entry_cost_filter_config(
         state=state,
         policy=policy,
@@ -3400,9 +4640,21 @@ def _evaluate_monitor_entry_candidate(
     entry_guard_reason = ""
     buy_blocked_open_position = False
     buy_blocked_closeout_window = False
-    if bool(block_buy_open_position) and open_position_count > 0:
+    buy_blocked_same_symbol = False
+    buy_blocked_pending_buy = False
+    max_positions_reached = bool(open_position_count >= max_positions)
+    if selected_already_held:
         entry_guard_blocked = True
-        entry_guard_reason = "buy_blocked_open_position"
+        entry_guard_reason = "same_symbol_position_open"
+        buy_blocked_open_position = True
+        buy_blocked_same_symbol = True
+    elif selected_pending_buy:
+        entry_guard_blocked = True
+        entry_guard_reason = "same_symbol_pending_buy"
+        buy_blocked_pending_buy = True
+    elif max_positions_reached:
+        entry_guard_blocked = True
+        entry_guard_reason = "max_positions_reached"
         buy_blocked_open_position = True
     elif bool(closeout_window_guard.get("active")):
         entry_guard_blocked = True
@@ -3425,6 +4677,9 @@ def _evaluate_monitor_entry_candidate(
 
     entry_info["guard_blocked"] = bool(entry_guard_blocked)
     entry_info["guard_reason"] = str(entry_guard_reason)
+    entry_info["buy_blocked_same_symbol"] = bool(buy_blocked_same_symbol)
+    entry_info["buy_blocked_pending_buy"] = bool(buy_blocked_pending_buy)
+    entry_info["max_positions_reached"] = bool(max_positions_reached)
     entry_info["legacy_fallback_used"] = False
     entry_info["decision"] = "WAIT"
     entry_info["cascade_candidate"] = str(plan.get("cascade_candidate") or "")
@@ -3448,6 +4703,9 @@ def _evaluate_monitor_entry_candidate(
         "entry_guard_blocked": bool(entry_guard_blocked),
         "entry_guard_reason": str(entry_guard_reason),
         "buy_blocked_open_position": bool(buy_blocked_open_position),
+        "buy_blocked_same_symbol": bool(buy_blocked_same_symbol),
+        "buy_blocked_pending_buy": bool(buy_blocked_pending_buy),
+        "max_positions_reached": bool(max_positions_reached),
         "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
         "buy_blocked_closeout_window": bool(buy_blocked_closeout_window),
         "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
@@ -3497,6 +4755,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     all_pos_map = _position_by_symbol(state)
     _ensure_position_peak_price_map(state, all_pos_map)
     open_position_count = sum(1 for row in all_pos_map.values() if max(0, _to_int((row or {}).get("qty"))) > 0)
+    max_positions = _resolve_max_positions(state, policy)
+    held_symbols_for_entry = {
+        _norm_symbol(sym)
+        for sym, row in all_pos_map.items()
+        if _norm_symbol(sym) and max(0, _to_int((row or {}).get("qty"))) > 0
+    }
+    pending_buy_symbols_for_entry = _pending_buy_symbols_from_account_orders(state)
     block_buy_open_position = _resolve_block_buy_when_open_position(state, policy, monitor_policy)
     post_exit_cooldown_sec = _resolve_post_exit_cooldown_sec(state, policy, monitor_policy)
     strategy_frame = _extract_monitor_strategy_frame(state)
@@ -3565,6 +4830,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_policy_input["entry_control"] = dict(commander_entry_control)
     entry_policy_origin = str(entry_policy_contract.get("selected_source") or "monitor_policy")
     buy_blocked_open_position = False
+    buy_blocked_same_symbol = False
+    buy_blocked_pending_buy = False
+    max_positions_reached = bool(open_position_count >= max_positions)
     buy_blocked_post_exit_cooldown = False
     buy_blocked_closeout_window = False
     post_exit_cooldown_remaining_sec = 0
@@ -3597,6 +4865,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(entry_cooldown_map, dict):
         entry_cooldown_map = {}
     now_epoch_for_entry = _resolve_now_epoch(state)
+    state = _refresh_post_exit_shadow_watchlist_minute_rows(
+        state,
+        now_epoch=now_epoch_for_entry,
+    )
     try:
         record_raw_input(
             run_id=run_id,
@@ -3667,13 +4939,18 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     }
     scanner_selected_snapshot = dict(selected) if isinstance(selected, dict) else {}
     entry_cascade_config = _resolve_entry_candidate_cascade_config(commander_entry_control)
+    entry_cascade_max_rank = int(entry_cascade_config.get("max_priority_rank") if entry_cascade_config.get("max_priority_rank") not in (None, "") else 10)
+    entry_cascade_max_runner_ups = int(entry_cascade_config.get("max_runner_ups") if entry_cascade_config.get("max_runner_ups") not in (None, "") else 9)
     entry_candidate_cascade: Dict[str, Any] = {
         "attempted": False,
         "eligible": False,
         "reason": "",
         "top_pick_symbol": "",
-        "max_priority_rank": int(entry_cascade_config.get("max_priority_rank") or 10),
-        "max_runner_ups": int(entry_cascade_config.get("max_runner_ups") or 9),
+        "max_priority_rank": int(entry_cascade_max_rank),
+        "max_runner_ups": int(entry_cascade_max_runner_ups),
+        "cascade_enabled": bool(entry_cascade_config.get("cascade_enabled", True)),
+        "cascade_allowed_reasons": list(entry_cascade_config.get("cascade_allowed_reasons") or []),
+        "cascade_blocked_reasons": list(entry_cascade_config.get("cascade_blocked_reasons") or []),
         "control_source": str(entry_cascade_config.get("source") or "default"),
         "control_mode": str(entry_cascade_config.get("mode") or "default"),
         "runner_up_symbols": [],
@@ -3681,6 +4958,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "fallback_used": False,
         "fallback_to_symbol": "",
         "fallback_trace": [],
+        "open_position_count": int(open_position_count),
+        "max_positions": int(max_positions),
+        "capacity_remaining": max(0, int(max_positions) - int(open_position_count)),
+        "excluded_symbols": sorted(held_symbols_for_entry | pending_buy_symbols_for_entry),
     }
     if isinstance(selected, dict) and selected.get("symbol"):
         top_pick_result = _evaluate_monitor_entry_candidate(
@@ -3710,6 +4991,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_guard_blocked = bool(top_pick_result.get("entry_guard_blocked"))
         entry_guard_reason = str(top_pick_result.get("entry_guard_reason") or "")
         buy_blocked_open_position = bool(top_pick_result.get("buy_blocked_open_position"))
+        buy_blocked_same_symbol = bool(top_pick_result.get("buy_blocked_same_symbol"))
+        buy_blocked_pending_buy = bool(top_pick_result.get("buy_blocked_pending_buy"))
+        max_positions_reached = bool(top_pick_result.get("max_positions_reached"))
         buy_blocked_post_exit_cooldown = bool(top_pick_result.get("buy_blocked_post_exit_cooldown"))
         buy_blocked_closeout_window = bool(top_pick_result.get("buy_blocked_closeout_window"))
         post_exit_cooldown_remaining_sec = int(top_pick_result.get("post_exit_cooldown_remaining_sec") or 0)
@@ -3720,16 +5004,26 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_signal_detected = bool(top_pick_result.get("entry_signal_detected"))
         symbol = str(top_pick_result.get("symbol") or "")
         qty = int(top_pick_result.get("qty") or 0)
+        entry_candidate_cascade["top_pick_symbol"] = symbol
+        entry_candidate_cascade["top_pick_triggered"] = bool(entry_info.get("triggered"))
+        entry_candidate_cascade["top_pick_reason"] = str(entry_info.get("reason") or "")
+        entry_candidate_cascade["top_pick_guard_blocked"] = bool(entry_guard_blocked)
 
         cascade_plan = build_entry_candidate_cascade_plan(
             selected_symbol=symbol,
             ranked_candidates=[row for row in list(state.get("ranked_candidates") or []) if isinstance(row, dict)],
             scanner_output=state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {},
             open_position_count=open_position_count,
+            max_positions=max_positions,
             entry_guard_blocked=entry_guard_blocked,
+            entry_guard_reason=entry_guard_reason,
             entry_triggered=bool(entry_info.get("triggered")),
             entry_reason=str(entry_info.get("reason") or ""),
-            max_runner_ups=int(entry_cascade_config.get("max_runner_ups") or 9),
+            max_runner_ups=int(entry_cascade_max_runner_ups),
+            cascade_enabled=bool(entry_cascade_config.get("cascade_enabled", True)),
+            cascade_allowed_reasons=list(entry_cascade_config.get("cascade_allowed_reasons") or []),
+            cascade_blocked_reasons=list(entry_cascade_config.get("cascade_blocked_reasons") or []),
+            excluded_symbols=sorted(held_symbols_for_entry | pending_buy_symbols_for_entry),
         )
         entry_candidate_cascade.update(dict(cascade_plan))
         fallback_trace = list(entry_candidate_cascade.get("fallback_trace") or [])
@@ -3777,6 +5071,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 fallback_trace.append(
                     {
                         "symbol": runner_symbol,
+                        "rank": runner_row.get("rank") or runner_row.get("priority_rank"),
+                        "score_total": runner_row.get("score_total") or runner_row.get("score"),
                         "triggered": bool(runner_entry.get("triggered")),
                         "reason": str(runner_entry.get("reason") or ""),
                         "primary_failure_axis": str(runner_entry.get("primary_failure_axis") or ""),
@@ -3807,6 +5103,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 entry_candidate_cascade["fallback_used"] = True
                 entry_candidate_cascade["fallback_to_symbol"] = runner_symbol
+                entry_candidate_cascade["fallback_to_rank"] = runner_row.get("rank") or runner_row.get("priority_rank")
                 entry_candidate_cascade["fallback_from_symbol"] = symbol
                 selected = dict(runner_result.get("selected") or runner_selected)
                 sizing_info = dict(runner_result.get("sizing_info") or sizing_info)
@@ -3814,6 +5111,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 entry_guard_blocked = bool(runner_result.get("entry_guard_blocked"))
                 entry_guard_reason = str(runner_result.get("entry_guard_reason") or "")
                 buy_blocked_open_position = bool(runner_result.get("buy_blocked_open_position"))
+                buy_blocked_same_symbol = bool(runner_result.get("buy_blocked_same_symbol"))
+                buy_blocked_pending_buy = bool(runner_result.get("buy_blocked_pending_buy"))
+                max_positions_reached = bool(runner_result.get("max_positions_reached"))
                 buy_blocked_post_exit_cooldown = bool(runner_result.get("buy_blocked_post_exit_cooldown"))
                 buy_blocked_closeout_window = bool(runner_result.get("buy_blocked_closeout_window"))
                 post_exit_cooldown_remaining_sec = int(runner_result.get("post_exit_cooldown_remaining_sec") or 0)
@@ -3827,17 +5127,53 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 entry_info["fallback_to_symbol"] = runner_symbol
                 break
         entry_candidate_cascade["fallback_trace"] = fallback_trace
+        entry_candidate_cascade["final_selected_symbol"] = symbol
+        entry_candidate_cascade["final_selected_rank"] = (
+            entry_candidate_cascade.get("fallback_to_rank")
+            or selected.get("rank")
+            or selected.get("priority_rank")
+            or selected.get("scanner_rank")
+        )
 
         if symbol and qty > 0 and not entry_guard_blocked and bool(entry_info.get("intent_submitted")):
+            entry_metrics_for_order = (
+                dict(entry_info.get("metrics") or {})
+                if isinstance(entry_info.get("metrics"), dict)
+                else {}
+            )
+            entry_cost_filter_for_order = (
+                dict(entry_info.get("entry_cost_filter") or {})
+                if isinstance(entry_info.get("entry_cost_filter"), dict)
+                else {}
+            )
+            order_price_source = ""
+            order_price = 0.0
+            for source_name, candidate in (
+                ("entry_cost_filter.price", entry_cost_filter_for_order.get("price")),
+                ("selected.price", selected.get("price")),
+                ("entry.metrics.current_price", entry_metrics_for_order.get("current_price")),
+                ("entry.metrics.price", entry_metrics_for_order.get("price")),
+                ("sizing.price", sizing_info.get("price")),
+            ):
+                candidate_price = _to_float(candidate)
+                if candidate_price > 0.0:
+                    order_price = float(candidate_price)
+                    order_price_source = source_name
+                    break
             intent = {
                 "symbol": symbol,
                 "side": "BUY",
                 "qty": int(qty),
+                "price": order_price if order_price > 0.0 else None,
                 "thesis": str(plan.get("thesis") or ""),
                 "meta": {
                     "score": selected.get("score"),
                     "risk_score": selected.get("risk_score"),
                     "confidence": selected.get("confidence"),
+                    "price": order_price if order_price > 0.0 else None,
+                    "current_price": order_price if order_price > 0.0 else None,
+                    "price_source": order_price_source,
+                    "order_price_source": order_price_source,
                     "entry_signal_source": "monitor_intraday_entry",
                     "entry_pattern": str(entry_info.get("pattern") or ""),
                     "entry_reason": str(entry_info.get("reason") or ""),
@@ -3887,11 +5223,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             intents = [intent]
         else:
             intents = []
-    if bool(intents) and block_buy_open_position and open_position_count > 0:
+    if bool(intents) and open_position_count >= max_positions:
         intents = []
         buy_blocked_open_position = True
         entry_info["guard_blocked"] = True
-        entry_info["guard_reason"] = "buy_blocked_open_position"
+        entry_info["guard_reason"] = "max_positions_reached"
+        entry_info["max_positions_reached"] = True
         entry_info["decision"] = "WAIT"
     state["_monitor_entry_cooldown_until"] = entry_cooldown_map
     if isinstance(selected, dict) and selected.get("symbol"):
@@ -4028,6 +5365,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 exit_policy_guard_adjustments.append(
                     f"commander_memory_bias_exit:{str((row or {}).get('field') or '')}:{(row or {}).get('from')}->{(row or {}).get('to')}"
                 )
+        now_epoch = _resolve_now_epoch(state)
+        eod_carry_sweep = _persist_eod_carry_decisions_for_open_positions(
+            state=state,
+            pos_map=pos_map,
+            selected=selected_snapshot,
+            exit_policy_base=effective_exit_policy_base,
+            frame=frame_applied,
+            now_epoch=now_epoch,
+        )
         symbol = _select_exit_symbol(
             selected_symbol,
             pos_map,
@@ -4040,10 +5386,19 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if symbol and symbol != selected_symbol:
             selected_for_exit = {"symbol": symbol}
         features = selected_for_exit.get("features") if isinstance(selected_for_exit.get("features"), dict) else {}
+        pending_order_symbols_for_exit = _pending_order_symbols_from_account_orders(state)
+        selected_pending_order_for_exit = bool(
+            symbol
+            and (
+                _norm_symbol(symbol) in pending_order_symbols_for_exit
+                or _features_pending_order_count(features) > 0
+            )
+        )
         pos = pos_map.get(symbol, {})
         qty = max(0, _to_int(pos.get("qty")))
-        # When a position is already held for monitored symbol, suppress fresh BUY intents.
-        if qty > 0:
+        entry_intent_symbol = _norm_symbol((intents[0] or {}).get("symbol")) if intents else ""
+        # Suppress fresh BUY only when it targets the same symbol as an existing position.
+        if qty > 0 and entry_intent_symbol and entry_intent_symbol == _norm_symbol(symbol):
             intents = []
         decision = _preview_exit_decision_for_symbol(
             state=state,
@@ -4055,7 +5410,6 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         avg_price = _to_float(decision.get("_avg_price"))
         price = decision.get("_price")
         hold_sec = _to_int(decision.get("_hold_sec"))
-        now_epoch = _resolve_now_epoch(state)
         if hold_sec <= 0:
             hold_sec = _position_hold_seconds(state, symbol, pos)
         eod_carry = _evaluate_overnight_carry_decision(
@@ -4083,6 +5437,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "cutoff_min": eod_carry.get("cutoff_min"),
                     "positive_signals": list(eod_carry.get("positive_signals") or []),
                     "blockers": list(eod_carry.get("blockers") or []),
+                    "carry_calendar": dict(eod_carry.get("carry_calendar") or {}),
+                    "weekend_carry": bool(eod_carry.get("weekend_carry")),
+                    "allow_weekend_carry": bool(eod_carry.get("allow_weekend_carry")),
+                    "holding_gap_days": eod_carry.get("holding_gap_days"),
                     "decided_at_epoch": int(now_epoch),
                     "symbol": str(symbol or ""),
                 },
@@ -4141,6 +5499,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 1,
                 _to_int(decision_thresholds.get("confirm_required_for_peak_drawdown") or 2),
             )
+            if bool(decision.get("peak_drawdown_profit_protection_urgent")):
+                peak_drawdown_confirm_ticks = 1
             effective_confirm_ticks = max(effective_confirm_ticks, peak_drawdown_confirm_ticks)
 
         if exit_signal_detected:
@@ -4152,7 +5512,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 sell_guard_blocked = True
                 sell_guard_reason = "sell_guard_execution_pending"
                 monitor_reason = "pending_exit_lock"
-            elif int(features.get("skill_open_orders") or 0) > 0:
+            elif selected_pending_order_for_exit:
                 sell_guard_blocked = True
                 sell_guard_reason = "sell_guard_open_order_pending"
                 monitor_reason = "pending_exit_lock"
@@ -4235,9 +5595,22 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "qty": int(qty),
             "pnl_ratio": decision.get("pnl_ratio"),
             "raw_pnl_ratio": decision.get("raw_pnl_ratio"),
+            "gross_pnl_ratio": decision.get("gross_pnl_ratio"),
+            "technical_pnl_ratio": decision.get("technical_pnl_ratio"),
             "effective_pnl_ratio": decision.get("effective_pnl_ratio"),
+            "stop_pnl_ratio": decision.get("stop_pnl_ratio"),
+            "stop_pnl_ratio_source": str(decision.get("stop_pnl_ratio_source") or ""),
+            "hard_stop_pnl_ratio": decision.get("hard_stop_pnl_ratio"),
+            "hard_stop_pnl_ratio_source": str(decision.get("hard_stop_pnl_ratio_source") or ""),
+            "cost_drag_pressure": bool(decision.get("cost_drag_pressure")),
+            "cost_drag_pressure_pct": decision.get("cost_drag_pressure_pct"),
+            "cost_drag_pressure_reason": str(decision.get("cost_drag_pressure_reason") or ""),
+            "stop_loss_cost_drag_blocked": bool(decision.get("stop_loss_cost_drag_blocked")),
+            "stop_loss_cost_drag_blocked_reason": str(decision.get("stop_loss_cost_drag_blocked_reason") or ""),
             "price": price,
             "raw_price": decision.get("raw_price"),
+            "technical_price": decision.get("technical_price"),
+            "technical_price_source": str(decision.get("technical_price_source") or ""),
             "effective_price": decision.get("effective_price"),
             "avg_price": avg_price if avg_price > 0.0 else None,
             "peak_price": decision.get("_peak_price"),
@@ -4263,15 +5636,64 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 else dict(decision.get("thresholds") or {})
             ),
             "exit_threshold_source": str(decision.get("exit_threshold_source") or ""),
+            "cost_aware_profit_floor_enabled": bool(decision.get("cost_aware_profit_floor_enabled")),
+            "round_trip_cost_floor_pct": decision_thresholds.get("round_trip_cost_floor_pct"),
+            "min_net_profit_buffer_pct": decision_thresholds.get("min_net_profit_buffer_pct"),
+            "cost_aware_profit_floor_pct": decision.get("cost_aware_profit_floor_pct"),
+            "cost_aware_profit_floor_met": bool(decision.get("cost_aware_profit_floor_met")),
+            "cost_aware_profit_floor_gap_pct": decision.get("cost_aware_profit_floor_gap_pct"),
+            "cost_aware_profit_floor_blocked": bool(decision.get("cost_aware_profit_floor_blocked")),
+            "expected_exit_price": decision.get("expected_exit_price"),
+            "expected_exit_price_source": str(decision.get("expected_exit_price_source") or ""),
+            "expected_exit_price_fallback_used": bool(decision.get("expected_exit_price_fallback_used")),
+            "expected_exit_slippage_buffer_pct": decision.get("expected_exit_slippage_buffer_pct"),
+            "expected_exit_pnl_ratio": decision.get("expected_exit_pnl_ratio"),
+            "expected_exit_net_pnl_ratio": decision.get("expected_exit_net_pnl_ratio"),
+            "expected_exit_profit_floor_met": bool(decision.get("expected_exit_profit_floor_met")),
+            "expected_exit_profit_floor_gap_pct": decision.get("expected_exit_profit_floor_gap_pct"),
+            "expected_exit_profit_floor_blocked": bool(decision.get("expected_exit_profit_floor_blocked")),
+            "expected_exit_profit_floor_blocked_reason": str(
+                decision.get("expected_exit_profit_floor_blocked_reason") or ""
+            ),
+            "protective_exit_floor_blocked": bool(decision.get("protective_exit_floor_blocked")),
+            "protective_exit_floor_blocked_reason": str(decision.get("protective_exit_floor_blocked_reason") or ""),
+            "protective_exit_hard_invalidation": bool(decision.get("protective_exit_hard_invalidation")),
+            "protective_exit_hard_invalidation_reason": str(
+                decision.get("protective_exit_hard_invalidation_reason") or ""
+            ),
             "max_runup_pct": decision.get("max_runup_pct"),
             "peak_drawdown_from_peak": decision.get("peak_drawdown_from_peak"),
             "peak_drawdown_armed": bool(decision.get("peak_drawdown_armed")),
             "peak_drawdown_mode": str(decision.get("peak_drawdown_mode") or ""),
+            "peak_drawdown_profit_protection_urgent": bool(decision.get("peak_drawdown_profit_protection_urgent")),
+            "peak_drawdown_profit_protection_reason": str(decision.get("peak_drawdown_profit_protection_reason") or ""),
             "final_peak_drawdown_ratio": decision.get("final_peak_drawdown_ratio"),
             "peak_drawdown_source": str(decision.get("peak_drawdown_source") or ""),
             "exit_trigger_metric_name": str(decision.get("exit_trigger_metric_name") or ""),
             "exit_trigger_metric_value": decision.get("exit_trigger_metric_value"),
             "exit_trigger_metric_source": str(decision.get("exit_trigger_metric_source") or ""),
+            "risk_reward_take_profit_target_pct": decision.get("risk_reward_take_profit_target_pct"),
+            "risk_reward_take_profit_rung": decision.get("risk_reward_take_profit_rung"),
+            "resistance_price": decision.get("resistance_price"),
+            "resistance_price_source": str(decision.get("resistance_price_source") or ""),
+            "resistance_distance_pct": decision.get("resistance_distance_pct"),
+            "profit_time_stop_peak_giveback_pct": decision.get("profit_time_stop_peak_giveback_pct"),
+            "partial_exit": bool(decision.get("partial_exit")),
+            "exit_qty": decision.get("exit_qty"),
+            "exit_qty_fraction": decision.get("exit_qty_fraction"),
+            "partial_take_profit_taken": bool(decision.get("partial_take_profit_taken")),
+            "profit_ladder_level_pct": decision.get("profit_ladder_level_pct"),
+            "profit_ladder_level_index": decision.get("profit_ladder_level_index"),
+            "volume_ratio": decision.get("volume_ratio"),
+            "execution_strength": decision.get("execution_strength"),
+            "trade_strength": decision.get("trade_strength"),
+            "opening_gap_chase_observed": bool(decision.get("opening_gap_chase_observed")),
+            "open_gap_pct": decision.get("open_gap_pct"),
+            "prev_close_distance_pct": decision.get("prev_close_distance_pct"),
+            "position_entry_risk_applied": bool(decision.get("position_entry_risk_applied")),
+            "position_entry_stop_loss_pct": decision.get("position_entry_stop_loss_pct"),
+            "position_entry_stop_loss_source": str(decision.get("position_entry_stop_loss_source") or ""),
+            "position_entry_invalidation_price": decision.get("position_entry_invalidation_price"),
             "effective_exit_policy": dict(effective_exit_policy_base),
             "hold_sec": hold_sec if hold_sec > 0 else None,
             "trailing_drawdown": decision.get("trailing_drawdown"),
@@ -4306,6 +5728,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "monitor_guidance": str(frame_applied.get("monitor_guidance") or ""),
             "risk_tone": str(frame_applied.get("risk_tone") or ""),
             "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
+            "strategy_horizon": str(frame_applied.get("strategy_horizon") or ""),
+            "source_strategy_horizon": str(frame_applied.get("source_strategy_horizon") or ""),
+            "horizon_behavior_translation": dict(frame_applied.get("horizon_behavior_translation") or {}),
             "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
             "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
             "monitor_memory_bias_observation_only": bool(monitor_memory_bias_observation_only),
@@ -4323,10 +5748,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "eod_carry_reason": str(eod_carry.get("reason") or ""),
             "eod_carry_positive_signals": list(eod_carry.get("positive_signals") or []),
             "eod_carry_blockers": list(eod_carry.get("blockers") or []),
+            "eod_carry_weekend": bool(eod_carry.get("weekend_carry")),
+            "eod_carry_allow_weekend": bool(eod_carry.get("allow_weekend_carry")),
+            "eod_carry_holding_gap_days": eod_carry.get("holding_gap_days"),
+            "eod_carry_calendar": dict(eod_carry.get("carry_calendar") or {}),
             "eod_carry_non_eod_reason": str(eod_carry.get("non_eod_reason") or ""),
             "eod_carry_non_eod_triggered": bool(eod_carry.get("non_eod_triggered")),
             "eod_carry_anomaly": bool(eod_carry.get("anomaly")),
             "eod_carry_anomaly_reason": str(eod_carry.get("anomaly_reason") or ""),
+            "eod_carry_sweep_evaluated_count": int(eod_carry_sweep.get("evaluated_count") or 0),
+            "eod_carry_sweep_symbols": list(eod_carry_sweep.get("symbols") or []),
             "entry_evaluated": bool(entry_info.get("evaluated")),
             "entry_triggered": bool(entry_info.get("triggered")),
             "entry_reason": str(entry_info.get("reason") or ""),
@@ -4369,19 +5800,41 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
         exit_info["exit_vs_strategy_intent"] = dict(exit_vs_strategy_intent)
         if bool(exit_signal_detected) and not bool(sell_guard_blocked) and qty > 0:
+            exit_order_qty = max(1, min(int(qty), _to_int(decision.get("exit_qty") or qty)))
+            exit_info["exit_qty"] = int(exit_order_qty)
             intents = [
                 {
                     "symbol": symbol,
                     "side": "SELL",
-                    "qty": int(qty),
+                    "qty": int(exit_order_qty),
                     "thesis": str(plan.get("thesis") or ""),
                     "meta": {
                         "exit_reason": str(decision.get("reason") or ""),
+                        "exit_qty": int(exit_order_qty),
+                        "position_qty": int(qty),
+                        "partial_exit": bool(decision.get("partial_exit")),
+                        "exit_qty_fraction": decision.get("exit_qty_fraction"),
+                        "profit_ladder_level_pct": decision.get("profit_ladder_level_pct"),
+                        "profit_ladder_level_index": decision.get("profit_ladder_level_index"),
+                        "risk_reward_take_profit_rung": decision.get("risk_reward_take_profit_rung"),
                         "pnl_ratio": decision.get("pnl_ratio"),
                         "raw_pnl_ratio": decision.get("raw_pnl_ratio"),
+                        "gross_pnl_ratio": decision.get("gross_pnl_ratio"),
+                        "technical_pnl_ratio": decision.get("technical_pnl_ratio"),
                         "effective_pnl_ratio": decision.get("effective_pnl_ratio"),
+                        "stop_pnl_ratio": decision.get("stop_pnl_ratio"),
+                        "stop_pnl_ratio_source": str(decision.get("stop_pnl_ratio_source") or ""),
+                        "hard_stop_pnl_ratio": decision.get("hard_stop_pnl_ratio"),
+                        "hard_stop_pnl_ratio_source": str(decision.get("hard_stop_pnl_ratio_source") or ""),
+                        "cost_drag_pressure": bool(decision.get("cost_drag_pressure")),
+                        "cost_drag_pressure_pct": decision.get("cost_drag_pressure_pct"),
+                        "cost_drag_pressure_reason": str(decision.get("cost_drag_pressure_reason") or ""),
+                        "stop_loss_cost_drag_blocked": bool(decision.get("stop_loss_cost_drag_blocked")),
+                        "stop_loss_cost_drag_blocked_reason": str(decision.get("stop_loss_cost_drag_blocked_reason") or ""),
                         "avg_price": avg_price if avg_price > 0.0 else None,
                         "price": price,
+                        "technical_price": decision.get("technical_price"),
+                        "technical_price_source": str(decision.get("technical_price_source") or ""),
                         "effective_price": decision.get("effective_price"),
                         "account_current_price": decision.get("account_current_price"),
                         "account_mark_price": decision.get("account_mark_price"),
@@ -4404,6 +5857,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "monitor_guidance": str(frame_applied.get("monitor_guidance") or ""),
                         "risk_tone": str(frame_applied.get("risk_tone") or ""),
                         "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
+                        "strategy_horizon": str(frame_applied.get("strategy_horizon") or ""),
+                        "source_strategy_horizon": str(frame_applied.get("source_strategy_horizon") or ""),
+                        "horizon_behavior_translation": dict(frame_applied.get("horizon_behavior_translation") or {}),
                         "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
                         "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
                         "exit_vs_strategy_intent": dict(exit_vs_strategy_intent),
@@ -4453,11 +5909,24 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_vs_strategy_intent": dict(exit_info.get("exit_vs_strategy_intent") or {}),
         "exit_pnl_ratio": exit_info.get("pnl_ratio"),
         "exit_raw_pnl_ratio": exit_info.get("raw_pnl_ratio"),
+        "exit_gross_pnl_ratio": exit_info.get("gross_pnl_ratio"),
+        "exit_technical_pnl_ratio": exit_info.get("technical_pnl_ratio"),
         "exit_effective_pnl_ratio": exit_info.get("effective_pnl_ratio"),
+        "exit_stop_pnl_ratio": exit_info.get("stop_pnl_ratio"),
+        "exit_stop_pnl_ratio_source": str(exit_info.get("stop_pnl_ratio_source") or ""),
+        "exit_hard_stop_pnl_ratio": exit_info.get("hard_stop_pnl_ratio"),
+        "exit_hard_stop_pnl_ratio_source": str(exit_info.get("hard_stop_pnl_ratio_source") or ""),
+        "exit_cost_drag_pressure": bool(exit_info.get("cost_drag_pressure")),
+        "exit_cost_drag_pressure_pct": exit_info.get("cost_drag_pressure_pct"),
+        "exit_cost_drag_pressure_reason": str(exit_info.get("cost_drag_pressure_reason") or ""),
+        "exit_stop_loss_cost_drag_blocked": bool(exit_info.get("stop_loss_cost_drag_blocked")),
+        "exit_stop_loss_cost_drag_blocked_reason": str(exit_info.get("stop_loss_cost_drag_blocked_reason") or ""),
         "exit_symbol": exit_info.get("symbol"),
         "exit_symbol_fallback": bool(exit_info.get("exit_symbol_fallback")),
-        "exit_qty": int(exit_info.get("qty") or 0),
+        "exit_qty": int(exit_info.get("exit_qty") or exit_info.get("qty") or 0),
         "exit_raw_price": exit_info.get("raw_price"),
+        "exit_technical_price": exit_info.get("technical_price"),
+        "exit_technical_price_source": str(exit_info.get("technical_price_source") or ""),
         "exit_effective_price": exit_info.get("effective_price"),
         "exit_effective_price_source": str(exit_info.get("effective_price_source") or ""),
         "exit_account_current_price": exit_info.get("account_current_price"),
@@ -4476,6 +5945,31 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
         "exit_sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
         "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
+        "cost_aware_profit_floor_enabled": bool(exit_info.get("cost_aware_profit_floor_enabled")),
+        "round_trip_cost_floor_pct": exit_info.get("round_trip_cost_floor_pct"),
+        "min_net_profit_buffer_pct": exit_info.get("min_net_profit_buffer_pct"),
+        "cost_aware_profit_floor_pct": exit_info.get("cost_aware_profit_floor_pct"),
+        "cost_aware_profit_floor_met": bool(exit_info.get("cost_aware_profit_floor_met")),
+        "cost_aware_profit_floor_gap_pct": exit_info.get("cost_aware_profit_floor_gap_pct"),
+        "cost_aware_profit_floor_blocked": bool(exit_info.get("cost_aware_profit_floor_blocked")),
+        "exit_expected_exit_price": exit_info.get("expected_exit_price"),
+        "exit_expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
+        "exit_expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
+        "exit_expected_exit_slippage_buffer_pct": exit_info.get("expected_exit_slippage_buffer_pct"),
+        "exit_expected_exit_pnl_ratio": exit_info.get("expected_exit_pnl_ratio"),
+        "exit_expected_exit_net_pnl_ratio": exit_info.get("expected_exit_net_pnl_ratio"),
+        "exit_expected_exit_profit_floor_met": bool(exit_info.get("expected_exit_profit_floor_met")),
+        "exit_expected_exit_profit_floor_gap_pct": exit_info.get("expected_exit_profit_floor_gap_pct"),
+        "exit_expected_exit_profit_floor_blocked": bool(exit_info.get("expected_exit_profit_floor_blocked")),
+        "exit_expected_exit_profit_floor_blocked_reason": str(
+            exit_info.get("expected_exit_profit_floor_blocked_reason") or ""
+        ),
+        "protective_exit_floor_blocked": bool(exit_info.get("protective_exit_floor_blocked")),
+        "protective_exit_floor_blocked_reason": str(exit_info.get("protective_exit_floor_blocked_reason") or ""),
+        "protective_exit_hard_invalidation": bool(exit_info.get("protective_exit_hard_invalidation")),
+        "protective_exit_hard_invalidation_reason": str(
+            exit_info.get("protective_exit_hard_invalidation_reason") or ""
+        ),
         "eod_carry_evaluated": bool(exit_info.get("eod_carry_evaluated")),
         "eod_carry_approved": bool(exit_info.get("eod_carry_approved")),
         "eod_carry_action": str(exit_info.get("eod_carry_action") or ""),
@@ -4484,15 +5978,31 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "position_sizing_evaluated": bool(sizing_info.get("evaluated")),
         "position_sizing_qty": int(sizing_info.get("qty") or 0),
         "position_sizing_reason": str(sizing_info.get("reason") or ""),
+        "position_sizing_stop_loss_pct": (sizing_info.get("inputs") or {}).get("stop_loss_pct")
+        if isinstance(sizing_info.get("inputs"), dict)
+        else None,
+        "position_sizing_stop_loss_source": str(
+            ((sizing_info.get("inputs") or {}).get("stop_loss_source") if isinstance(sizing_info.get("inputs"), dict) else "")
+            or ""
+        ),
+        "position_sizing_invalidation_price": (sizing_info.get("inputs") or {}).get("invalidation_price")
+        if isinstance(sizing_info.get("inputs"), dict)
+        else None,
         "open_position_count": int(open_position_count),
+        "max_positions": int(max_positions),
+        "multi_position_capacity_remaining": max(0, int(max_positions) - int(open_position_count)),
         "block_buy_when_open_position": bool(block_buy_open_position),
         "buy_blocked_open_position": bool(buy_blocked_open_position),
+        "buy_blocked_same_symbol": bool(buy_blocked_same_symbol),
+        "buy_blocked_pending_buy": bool(buy_blocked_pending_buy),
+        "max_positions_reached": bool(max_positions_reached),
         "buy_blocked_closeout_window": bool(buy_blocked_closeout_window),
         "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
         "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
         "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
         "minutes_to_close": entry_info.get("minutes_to_close"),
         "eod_flat_cutoff_min": int(entry_info.get("eod_flat_cutoff_min") or 0),
+        "buy_closeout_cutoff_min": int(entry_info.get("buy_closeout_cutoff_min") or 0),
         "closeout_window_active": bool(entry_info.get("closeout_window_active")),
         "entry_evaluated": bool(entry_info.get("evaluated")),
         "entry_triggered": bool(entry_info.get("triggered")),
@@ -4561,33 +6071,29 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_intent_cooldown_until": entry_info.get("intent_cooldown_until"),
         "entry_candidate_cascade": dict(entry_candidate_cascade),
     }
+    if bool(exit_info.get("enabled")) and bool(exit_info.get("exit_signal_detected")):
+        monitor_entry_exit_reason = str(exit_info.get("reason") or "")
+    elif bool(buy_blocked_post_exit_cooldown):
+        monitor_entry_exit_reason = "post_exit_cooldown"
+    elif bool(buy_blocked_closeout_window):
+        monitor_entry_exit_reason = "buy_blocked_closeout_window"
+    elif bool(buy_blocked_pending_buy):
+        monitor_entry_exit_reason = "same_symbol_pending_buy"
+    elif bool(buy_blocked_same_symbol):
+        monitor_entry_exit_reason = "same_symbol_position_open"
+    elif bool(max_positions_reached and buy_blocked_open_position):
+        monitor_entry_exit_reason = "max_positions_reached"
+    elif bool(buy_blocked_open_position):
+        monitor_entry_exit_reason = "buy_blocked_open_position"
+    elif bool(entry_info.get("guard_blocked")):
+        monitor_entry_exit_reason = str(entry_info.get("guard_reason") or "")
+    else:
+        monitor_entry_exit_reason = str(entry_info.get("reason") or "entry_wait")
     state["monitor_output"] = {
         "selected_symbol": (selected.get("symbol") if isinstance(selected, dict) else None),
         "intent_side": (str(intents[0].get("side")) if intents else "NOOP"),
         "intent_qty": (int(intents[0].get("qty") or 0) if intents else 0),
-        "entry_exit_reason": (
-            str(exit_info.get("reason") or "")
-            if bool(exit_info.get("enabled")) and bool(exit_info.get("exit_signal_detected"))
-            else (
-                "post_exit_cooldown"
-                if bool(buy_blocked_post_exit_cooldown)
-                else (
-                "buy_blocked_closeout_window"
-                if bool(buy_blocked_closeout_window)
-                else (
-                "buy_blocked_open_position"
-                if bool(buy_blocked_open_position)
-                else (
-                    str(entry_info.get("guard_reason") or "")
-                    if bool(entry_info.get("guard_blocked"))
-                    else (
-                        str(entry_info.get("reason") or "entry_wait")
-                    )
-                )
-                )
-                )
-            )
-        ),
+        "entry_exit_reason": monitor_entry_exit_reason,
         "entry_candidate_cascade": dict(entry_candidate_cascade),
         "entry_lane": str(entry_info.get("entry_lane") or "strict"),
         "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
@@ -4698,6 +6204,31 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
         "exit_trigger_metric_value": exit_info.get("exit_trigger_metric_value"),
         "exit_trigger_metric_source": str(exit_info.get("exit_trigger_metric_source") or ""),
+        "cost_aware_profit_floor_enabled": bool(exit_info.get("cost_aware_profit_floor_enabled")),
+        "round_trip_cost_floor_pct": exit_info.get("round_trip_cost_floor_pct"),
+        "min_net_profit_buffer_pct": exit_info.get("min_net_profit_buffer_pct"),
+        "cost_aware_profit_floor_pct": exit_info.get("cost_aware_profit_floor_pct"),
+        "cost_aware_profit_floor_met": bool(exit_info.get("cost_aware_profit_floor_met")),
+        "cost_aware_profit_floor_gap_pct": exit_info.get("cost_aware_profit_floor_gap_pct"),
+        "cost_aware_profit_floor_blocked": bool(exit_info.get("cost_aware_profit_floor_blocked")),
+        "expected_exit_price": exit_info.get("expected_exit_price"),
+        "expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
+        "expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
+        "expected_exit_slippage_buffer_pct": exit_info.get("expected_exit_slippage_buffer_pct"),
+        "expected_exit_pnl_ratio": exit_info.get("expected_exit_pnl_ratio"),
+        "expected_exit_net_pnl_ratio": exit_info.get("expected_exit_net_pnl_ratio"),
+        "expected_exit_profit_floor_met": bool(exit_info.get("expected_exit_profit_floor_met")),
+        "expected_exit_profit_floor_gap_pct": exit_info.get("expected_exit_profit_floor_gap_pct"),
+        "expected_exit_profit_floor_blocked": bool(exit_info.get("expected_exit_profit_floor_blocked")),
+        "expected_exit_profit_floor_blocked_reason": str(
+            exit_info.get("expected_exit_profit_floor_blocked_reason") or ""
+        ),
+        "protective_exit_floor_blocked": bool(exit_info.get("protective_exit_floor_blocked")),
+        "protective_exit_floor_blocked_reason": str(exit_info.get("protective_exit_floor_blocked_reason") or ""),
+        "protective_exit_hard_invalidation": bool(exit_info.get("protective_exit_hard_invalidation")),
+        "protective_exit_hard_invalidation_reason": str(
+            exit_info.get("protective_exit_hard_invalidation_reason") or ""
+        ),
         "vwap_distance_pct": exit_info.get("vwap_distance"),
         "volatility_regime": str(exit_info.get("volatility_regime") or ""),
         "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
@@ -4780,6 +6311,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     }
     state["monitor_posture"] = current_posture
     state["monitor_threshold_snapshot"] = dict(threshold_snapshot)
+    if isinstance(state.get("monitor"), dict):
+        state["monitor"]["threshold_snapshot"] = dict(threshold_snapshot)
+        state["monitor"]["exit_stop_loss_pct"] = threshold_snapshot.get("stop_loss_pct")
+        state["monitor"]["exit_effective_stop_loss_pct"] = threshold_snapshot.get("effective_stop_loss_pct")
+        state["monitor"]["position_entry_risk_applied"] = bool(exit_info.get("position_entry_risk_applied"))
+        state["monitor"]["position_entry_stop_loss_pct"] = exit_info.get("position_entry_stop_loss_pct")
+        state["monitor"]["position_entry_stop_loss_source"] = str(exit_info.get("position_entry_stop_loss_source") or "")
+        state["monitor"]["position_entry_invalidation_price"] = exit_info.get("position_entry_invalidation_price")
     state["monitor_state_transition"] = {
         "previous_posture": previous_posture,
         "current_posture": current_posture,
@@ -4873,8 +6412,98 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         eod_flat_cutoff_min=entry_info.get("eod_flat_cutoff_min"),
     )
     state["monitor_entry_blocker_surface"] = dict(entry_blocker_surface)
+    scanner_selected_symbol = str(
+        scanner_monitor_handoff.get("scanner_selected_symbol")
+        or (scanner_selected_snapshot.get("symbol") if isinstance(scanner_selected_snapshot, dict) else "")
+        or ""
+    ).strip()
+    entry_candidate_symbol = str(
+        entry_info.get("selected_symbol")
+        or entry_info.get("symbol")
+        or ((selected or {}).get("symbol") if isinstance(selected, dict) else "")
+        or ""
+    ).strip()
+    entry_final_symbol = str(
+        entry_candidate_cascade.get("final_selected_symbol")
+        or ((selected or {}).get("symbol") if isinstance(selected, dict) else "")
+        or entry_candidate_symbol
+        or ""
+    ).strip()
+    position_focus_symbol = str(exit_info.get("symbol") or "").strip()
+    monitor_output_symbol = str(monitor_symbol or position_focus_symbol or entry_final_symbol or "").strip()
+    entry_cost_filter_snapshot = (
+        dict(entry_info.get("entry_cost_filter") or {})
+        if isinstance(entry_info.get("entry_cost_filter"), dict)
+        else {}
+    )
+    if position_focus_symbol and entry_final_symbol and position_focus_symbol != entry_final_symbol:
+        monitor_focus_mode = "entry_candidate_and_position_focus"
+    elif position_focus_symbol:
+        monitor_focus_mode = "position_focus"
+    elif entry_final_symbol:
+        monitor_focus_mode = "entry_candidate_focus"
+    else:
+        monitor_focus_mode = "no_symbol_focus"
+    monitor_focus_context = {
+        "schema_version": "monitor.focus_context.v1",
+        "focus_mode": monitor_focus_mode,
+        "scanner_selected_symbol": scanner_selected_symbol,
+        "entry_candidate_symbol": entry_candidate_symbol,
+        "entry_final_symbol": entry_final_symbol,
+        "position_focus_symbol": position_focus_symbol,
+        "monitor_output_symbol": monitor_output_symbol,
+        "open_position_count": int(open_position_count),
+        "max_positions": int(max_positions),
+        "capacity_remaining": max(0, int(max_positions) - int(open_position_count)),
+        "held_symbols": sorted(held_symbols_for_entry),
+        "pending_buy_symbols": sorted(pending_buy_symbols_for_entry),
+        "entry_evaluated": bool(entry_info.get("evaluated")),
+        "entry_decision": final_entry_decision,
+        "entry_triggered": bool(entry_info.get("triggered")),
+        "entry_intent_submitted": bool(buy_submitted),
+        "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
+        "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
+        "entry_reason": str(entry_info.get("reason") or ""),
+        "entry_primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
+        "entry_cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
+        "entry_cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
+        "entry_cost_drag_pct": entry_info.get("cost_drag_pct"),
+        "entry_cost_filter": dict(entry_cost_filter_snapshot),
+        "exit_evaluated": bool(exit_info.get("evaluated")),
+        "exit_triggered": bool(exit_info.get("triggered")),
+        "exit_reason": str(exit_info.get("reason") or ""),
+        "exit_monitor_reason": str(exit_info.get("monitor_reason") or ""),
+        "exit_active_axis": str(exit_info.get("active_exit_axis") or ""),
+    }
+    state["monitor_focus_context"] = dict(monitor_focus_context)
+    if isinstance(state.get("monitor"), dict):
+        state["monitor"]["monitor_focus_context"] = dict(monitor_focus_context)
+        state["monitor"]["entry_candidate_symbol"] = entry_candidate_symbol
+        state["monitor"]["entry_final_symbol"] = entry_final_symbol
+        state["monitor"]["position_focus_symbol"] = position_focus_symbol
+        state["monitor"]["monitor_focus_mode"] = monitor_focus_mode
     if isinstance(state.get("monitor_output"), dict):
         state["monitor_output"]["entry_blocker_surface"] = dict(entry_blocker_surface)
+        state["monitor_output"]["monitor_focus_context"] = dict(monitor_focus_context)
+        state["monitor_output"]["scanner_selected_symbol"] = scanner_selected_symbol
+        state["monitor_output"]["entry_candidate_symbol"] = entry_candidate_symbol
+        state["monitor_output"]["entry_final_symbol"] = entry_final_symbol
+        state["monitor_output"]["position_focus_symbol"] = position_focus_symbol
+        state["monitor_output"]["monitor_output_symbol"] = monitor_output_symbol
+        state["monitor_output"]["monitor_focus_mode"] = monitor_focus_mode
+        state["monitor_output"]["entry_candidate_decision"] = final_entry_decision
+        state["monitor_output"]["entry_candidate_reason"] = str(
+            entry_info.get("guard_reason") or entry_info.get("reason") or "entry_wait"
+        )
+        state["monitor_output"]["entry_candidate_primary_failure_axis"] = str(
+            entry_info.get("primary_failure_axis") or ""
+        )
+        state["monitor_output"]["entry_candidate_cost_adjusted_edge_ok"] = bool(
+            entry_info.get("cost_adjusted_edge_ok")
+        )
+        state["monitor_output"]["entry_candidate_cost_adjusted_edge_pct"] = entry_info.get("cost_adjusted_edge_pct")
+        state["monitor_output"]["entry_candidate_cost_drag_pct"] = entry_info.get("cost_drag_pct")
+        state["monitor_output"]["entry_candidate_cost_filter"] = dict(entry_cost_filter_snapshot)
     _emit_monitor_event(
         state,
         name="entry_blocker_surface",
@@ -4938,6 +6567,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_monitor_handoff": dict(scanner_monitor_handoff),
         "entry_candidate_cascade": dict(entry_candidate_cascade),
         "entry_blocker_surface": dict(entry_blocker_surface),
+        "monitor_focus_context": dict(monitor_focus_context),
+        "scanner_selected_symbol": scanner_selected_symbol,
+        "entry_candidate_symbol": entry_candidate_symbol,
+        "entry_final_symbol": entry_final_symbol,
+        "position_focus_symbol": position_focus_symbol,
+        "monitor_output_symbol": monitor_output_symbol,
+        "monitor_focus_mode": monitor_focus_mode,
         "entry_threshold": entry_info.get("entry_threshold"),
         "score_passed": bool(entry_info.get("score_passed")),
         "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
@@ -5019,8 +6655,21 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "triggered_rule": str(exit_info.get("reason") or ""),
         "pnl_ratio": exit_info.get("pnl_ratio"),
         "raw_pnl_ratio": exit_info.get("raw_pnl_ratio"),
+        "gross_pnl_ratio": exit_info.get("gross_pnl_ratio"),
+        "technical_pnl_ratio": exit_info.get("technical_pnl_ratio"),
         "effective_pnl_ratio": exit_info.get("effective_pnl_ratio"),
+        "stop_pnl_ratio": exit_info.get("stop_pnl_ratio"),
+        "stop_pnl_ratio_source": str(exit_info.get("stop_pnl_ratio_source") or ""),
+        "hard_stop_pnl_ratio": exit_info.get("hard_stop_pnl_ratio"),
+        "hard_stop_pnl_ratio_source": str(exit_info.get("hard_stop_pnl_ratio_source") or ""),
+        "cost_drag_pressure": bool(exit_info.get("cost_drag_pressure")),
+        "cost_drag_pressure_pct": exit_info.get("cost_drag_pressure_pct"),
+        "cost_drag_pressure_reason": str(exit_info.get("cost_drag_pressure_reason") or ""),
+        "stop_loss_cost_drag_blocked": bool(exit_info.get("stop_loss_cost_drag_blocked")),
+        "stop_loss_cost_drag_blocked_reason": str(exit_info.get("stop_loss_cost_drag_blocked_reason") or ""),
         "price": exit_info.get("price"),
+        "technical_price": exit_info.get("technical_price"),
+        "technical_price_source": str(exit_info.get("technical_price_source") or ""),
         "effective_price": exit_info.get("effective_price"),
         "account_mark_price": exit_info.get("account_mark_price"),
         "account_mark_price_source": str(exit_info.get("account_mark_price_source") or ""),
@@ -5049,6 +6698,52 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
         "exit_trigger_metric_value": exit_info.get("exit_trigger_metric_value"),
         "exit_trigger_metric_source": str(exit_info.get("exit_trigger_metric_source") or ""),
+        "cost_aware_profit_floor_enabled": bool(exit_info.get("cost_aware_profit_floor_enabled")),
+        "round_trip_cost_floor_pct": exit_info.get("round_trip_cost_floor_pct"),
+        "min_net_profit_buffer_pct": exit_info.get("min_net_profit_buffer_pct"),
+        "cost_aware_profit_floor_pct": exit_info.get("cost_aware_profit_floor_pct"),
+        "cost_aware_profit_floor_met": bool(exit_info.get("cost_aware_profit_floor_met")),
+        "cost_aware_profit_floor_gap_pct": exit_info.get("cost_aware_profit_floor_gap_pct"),
+        "cost_aware_profit_floor_blocked": bool(exit_info.get("cost_aware_profit_floor_blocked")),
+        "expected_exit_price": exit_info.get("expected_exit_price"),
+        "expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
+        "expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
+        "expected_exit_slippage_buffer_pct": exit_info.get("expected_exit_slippage_buffer_pct"),
+        "expected_exit_pnl_ratio": exit_info.get("expected_exit_pnl_ratio"),
+        "expected_exit_net_pnl_ratio": exit_info.get("expected_exit_net_pnl_ratio"),
+        "expected_exit_profit_floor_met": bool(exit_info.get("expected_exit_profit_floor_met")),
+        "expected_exit_profit_floor_gap_pct": exit_info.get("expected_exit_profit_floor_gap_pct"),
+        "expected_exit_profit_floor_blocked": bool(exit_info.get("expected_exit_profit_floor_blocked")),
+        "expected_exit_profit_floor_blocked_reason": str(
+            exit_info.get("expected_exit_profit_floor_blocked_reason") or ""
+        ),
+        "protective_exit_floor_blocked": bool(exit_info.get("protective_exit_floor_blocked")),
+        "protective_exit_floor_blocked_reason": str(exit_info.get("protective_exit_floor_blocked_reason") or ""),
+        "protective_exit_hard_invalidation": bool(exit_info.get("protective_exit_hard_invalidation")),
+        "protective_exit_hard_invalidation_reason": str(
+            exit_info.get("protective_exit_hard_invalidation_reason") or ""
+        ),
+        "risk_reward_take_profit_target_pct": exit_info.get("risk_reward_take_profit_target_pct"),
+        "risk_reward_take_profit_rung": exit_info.get("risk_reward_take_profit_rung"),
+        "resistance_price": exit_info.get("resistance_price"),
+        "resistance_price_source": str(exit_info.get("resistance_price_source") or ""),
+        "resistance_distance_pct": exit_info.get("resistance_distance_pct"),
+        "profit_time_stop_peak_giveback_pct": exit_info.get("profit_time_stop_peak_giveback_pct"),
+        "partial_exit": bool(exit_info.get("partial_exit")),
+        "exit_qty": exit_info.get("exit_qty"),
+        "exit_qty_fraction": exit_info.get("exit_qty_fraction"),
+        "profit_ladder_level_pct": exit_info.get("profit_ladder_level_pct"),
+        "profit_ladder_level_index": exit_info.get("profit_ladder_level_index"),
+        "volume_ratio": exit_info.get("volume_ratio"),
+        "execution_strength": exit_info.get("execution_strength"),
+        "trade_strength": exit_info.get("trade_strength"),
+        "opening_gap_chase_observed": bool(exit_info.get("opening_gap_chase_observed")),
+        "open_gap_pct": exit_info.get("open_gap_pct"),
+        "prev_close_distance_pct": exit_info.get("prev_close_distance_pct"),
+        "position_entry_risk_applied": bool(exit_info.get("position_entry_risk_applied")),
+        "position_entry_stop_loss_pct": exit_info.get("position_entry_stop_loss_pct"),
+        "position_entry_stop_loss_source": str(exit_info.get("position_entry_stop_loss_source") or ""),
+        "position_entry_invalidation_price": exit_info.get("position_entry_invalidation_price"),
         "sell_submitted": bool(sell_submitted),
         "sell_skipped_reason": sell_skipped_reason,
         "final_reason": current_reason,
@@ -5105,6 +6800,44 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["exit_trigger_metric_name"] = str(exit_info.get("exit_trigger_metric_name") or "")
         state["monitor_output"]["exit_trigger_metric_value"] = exit_info.get("exit_trigger_metric_value")
         state["monitor_output"]["exit_trigger_metric_source"] = str(exit_info.get("exit_trigger_metric_source") or "")
+        state["monitor_output"]["exit_gross_pnl_ratio"] = exit_info.get("gross_pnl_ratio")
+        state["monitor_output"]["exit_technical_pnl_ratio"] = exit_info.get("technical_pnl_ratio")
+        state["monitor_output"]["exit_stop_pnl_ratio"] = exit_info.get("stop_pnl_ratio")
+        state["monitor_output"]["exit_stop_pnl_ratio_source"] = str(exit_info.get("stop_pnl_ratio_source") or "")
+        state["monitor_output"]["exit_hard_stop_pnl_ratio"] = exit_info.get("hard_stop_pnl_ratio")
+        state["monitor_output"]["exit_hard_stop_pnl_ratio_source"] = str(
+            exit_info.get("hard_stop_pnl_ratio_source") or ""
+        )
+        state["monitor_output"]["exit_cost_drag_pressure"] = bool(exit_info.get("cost_drag_pressure"))
+        state["monitor_output"]["exit_cost_drag_pressure_pct"] = exit_info.get("cost_drag_pressure_pct")
+        state["monitor_output"]["exit_cost_drag_pressure_reason"] = str(exit_info.get("cost_drag_pressure_reason") or "")
+        state["monitor_output"]["exit_stop_loss_cost_drag_blocked"] = bool(
+            exit_info.get("stop_loss_cost_drag_blocked")
+        )
+        state["monitor_output"]["exit_stop_loss_cost_drag_blocked_reason"] = str(
+            exit_info.get("stop_loss_cost_drag_blocked_reason") or ""
+        )
+        state["monitor_output"]["risk_reward_take_profit_target_pct"] = exit_info.get("risk_reward_take_profit_target_pct")
+        state["monitor_output"]["risk_reward_take_profit_rung"] = exit_info.get("risk_reward_take_profit_rung")
+        state["monitor_output"]["resistance_price"] = exit_info.get("resistance_price")
+        state["monitor_output"]["resistance_price_source"] = str(exit_info.get("resistance_price_source") or "")
+        state["monitor_output"]["resistance_distance_pct"] = exit_info.get("resistance_distance_pct")
+        state["monitor_output"]["profit_time_stop_peak_giveback_pct"] = exit_info.get("profit_time_stop_peak_giveback_pct")
+        state["monitor_output"]["partial_exit"] = bool(exit_info.get("partial_exit"))
+        state["monitor_output"]["exit_qty"] = exit_info.get("exit_qty")
+        state["monitor_output"]["exit_qty_fraction"] = exit_info.get("exit_qty_fraction")
+        state["monitor_output"]["profit_ladder_level_pct"] = exit_info.get("profit_ladder_level_pct")
+        state["monitor_output"]["profit_ladder_level_index"] = exit_info.get("profit_ladder_level_index")
+        state["monitor_output"]["volume_ratio"] = exit_info.get("volume_ratio")
+        state["monitor_output"]["execution_strength"] = exit_info.get("execution_strength")
+        state["monitor_output"]["trade_strength"] = exit_info.get("trade_strength")
+        state["monitor_output"]["opening_gap_chase_observed"] = bool(exit_info.get("opening_gap_chase_observed"))
+        state["monitor_output"]["open_gap_pct"] = exit_info.get("open_gap_pct")
+        state["monitor_output"]["prev_close_distance_pct"] = exit_info.get("prev_close_distance_pct")
+        state["monitor_output"]["position_entry_risk_applied"] = bool(exit_info.get("position_entry_risk_applied"))
+        state["monitor_output"]["position_entry_stop_loss_pct"] = exit_info.get("position_entry_stop_loss_pct")
+        state["monitor_output"]["position_entry_stop_loss_source"] = str(exit_info.get("position_entry_stop_loss_source") or "")
+        state["monitor_output"]["position_entry_invalidation_price"] = exit_info.get("position_entry_invalidation_price")
         state["monitor_output"]["received_policy"] = dict(entry_info.get("received_policy") or entry_received_policy or {})
         state["monitor_output"]["received_policy_source"] = str(entry_info.get("received_policy_source") or entry_policy_origin or "")
         state["monitor_output"]["policy_contract"] = dict(entry_info.get("policy_contract") or entry_policy_contract or {})
@@ -5285,6 +7018,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
             "minutes_to_close": entry_info.get("minutes_to_close"),
             "eod_flat_cutoff_min": int(entry_info.get("eod_flat_cutoff_min") or 0),
+            "buy_closeout_cutoff_min": int(entry_info.get("buy_closeout_cutoff_min") or 0),
             "closeout_window_active": bool(entry_info.get("closeout_window_active")),
             "entry_blocker_surface": dict(entry_blocker_surface),
         },
@@ -5326,6 +7060,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "position_sizing_evaluated": bool(sizing_info.get("evaluated")),
             "position_sizing_qty": int(sizing_info.get("qty") or 0),
             "position_sizing_reason": str(sizing_info.get("reason") or ""),
+            "position_sizing_stop_loss_pct": (sizing_info.get("inputs") or {}).get("stop_loss_pct")
+            if isinstance(sizing_info.get("inputs"), dict)
+            else None,
+            "position_sizing_stop_loss_source": str(
+                ((sizing_info.get("inputs") or {}).get("stop_loss_source") if isinstance(sizing_info.get("inputs"), dict) else "")
+                or ""
+            ),
+            "position_sizing_invalidation_price": (sizing_info.get("inputs") or {}).get("invalidation_price")
+            if isinstance(sizing_info.get("inputs"), dict)
+            else None,
             "open_position_count": int(open_position_count),
             "block_buy_when_open_position": bool(block_buy_open_position),
             "buy_blocked_open_position": bool(buy_blocked_open_position),
@@ -5335,6 +7079,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
             "minutes_to_close": entry_info.get("minutes_to_close"),
             "eod_flat_cutoff_min": int(entry_info.get("eod_flat_cutoff_min") or 0),
+            "buy_closeout_cutoff_min": int(entry_info.get("buy_closeout_cutoff_min") or 0),
             "closeout_window_active": bool(entry_info.get("closeout_window_active")),
             "entry_evaluated": bool(entry_info.get("evaluated")),
             "entry_triggered": bool(entry_info.get("triggered")),
@@ -5394,6 +7139,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "monitor_guidance": str(exit_info.get("monitor_guidance") or ""),
             "risk_tone": str(exit_info.get("risk_tone") or ""),
             "trade_aggressiveness": str(exit_info.get("trade_aggressiveness") or ""),
+            "strategy_horizon": str(exit_info.get("strategy_horizon") or ""),
+            "source_strategy_horizon": str(exit_info.get("source_strategy_horizon") or ""),
+            "horizon_behavior_translation": dict(exit_info.get("horizon_behavior_translation") or {}),
             "strategy_frame_adjustments": list(exit_info.get("strategy_frame_adjustments") or []),
             "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
             "entry_evaluated": bool(entry_info.get("evaluated")),
@@ -5478,6 +7226,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
                 "minutes_to_close": entry_info.get("minutes_to_close"),
                 "eod_flat_cutoff_min": int(entry_info.get("eod_flat_cutoff_min") or 0),
+                "buy_closeout_cutoff_min": int(entry_info.get("buy_closeout_cutoff_min") or 0),
                 "closeout_window_active": bool(entry_info.get("closeout_window_active")),
                 "entry_evaluated": bool(entry_info.get("evaluated")),
                 "entry_triggered": bool(entry_info.get("triggered")),

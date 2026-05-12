@@ -32,6 +32,45 @@ _DEFAULT_EXIT_GUIDANCE = {
 
 _LONG_HORIZONS = {"overnight_probe", "1_2day_swing"}
 
+_HORIZON_BEHAVIOR_TRANSLATION = {
+    "scalp": {
+        "scanner_scope_bias": "narrow_fast_ready_candidates",
+        "monitor_review_cadence_sec": 60,
+        "stale_hold_review_sec": 600,
+        "hold_control_bias": "short_min_hold_fast_confirmation",
+        "exit_policy_bias": "fast_profit_lock",
+        "profit_management": "tight_profit_floor_and_fast_time_stop",
+        "overnight_allowed": False,
+    },
+    "intraday": {
+        "scanner_scope_bias": "balanced_intraday_candidates",
+        "monitor_review_cadence_sec": 180,
+        "stale_hold_review_sec": 1800,
+        "hold_control_bias": "balanced_intraday_confirmation",
+        "exit_policy_bias": "cost_aware_intraday_profit_capture",
+        "profit_management": "cost_floor_then_ladder_or_trail",
+        "overnight_allowed": False,
+    },
+    "overnight_probe": {
+        "scanner_scope_bias": "quality_candidates_that_can_survive_noise",
+        "monitor_review_cadence_sec": 600,
+        "stale_hold_review_sec": 7200,
+        "hold_control_bias": "longer_noise_allowance_without_forced_hold",
+        "exit_policy_bias": "carry_review_before_eod_flat",
+        "profit_management": "protect_hard_risk_allow_larger_target",
+        "overnight_allowed": True,
+    },
+    "1_2day_swing": {
+        "scanner_scope_bias": "higher_quality_multi_session_candidates",
+        "monitor_review_cadence_sec": 900,
+        "stale_hold_review_sec": 14400,
+        "hold_control_bias": "multi_session_noise_allowance_without_forced_hold",
+        "exit_policy_bias": "wide_target_with_hard_invalidation",
+        "profit_management": "protect_hard_risk_allow_swing_target",
+        "overnight_allowed": True,
+    },
+}
+
 _HARD_EXIT_REASON_MARKERS = (
     "hard_stop",
     "stop_loss",
@@ -181,6 +220,38 @@ def _format_epoch(value: float | None) -> str:
     return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
 
 
+def _build_horizon_behavior_translation(
+    horizon: str,
+    *,
+    source_horizon: str | None = None,
+    owner: str = "commander",
+    applied: bool = True,
+    live_validation_mode: bool = True,
+) -> dict[str, Any]:
+    resolved = str(horizon or "intraday").strip()
+    if resolved not in _ALLOWED_HORIZONS:
+        resolved = "intraday"
+    base = dict(_HORIZON_BEHAVIOR_TRANSLATION.get(resolved) or _HORIZON_BEHAVIOR_TRANSLATION["intraday"])
+    return {
+        "schema_version": "horizon_behavior_translation.v1",
+        "owner": str(owner or "commander"),
+        "applied": bool(applied),
+        "behavior_change_scope": "hold_controls_exit_policy_reporting",
+        "strategy_horizon": resolved,
+        "source_strategy_horizon": str(source_horizon or resolved),
+        "scanner_scope_bias": str(base.get("scanner_scope_bias") or ""),
+        "monitor_review_cadence_sec": int(base.get("monitor_review_cadence_sec") or 180),
+        "stale_hold_review_sec": int(base.get("stale_hold_review_sec") or 1800),
+        "hold_control_bias": str(base.get("hold_control_bias") or ""),
+        "exit_policy_bias": str(base.get("exit_policy_bias") or ""),
+        "profit_management": str(base.get("profit_management") or ""),
+        "overnight_allowed": bool(base.get("overnight_allowed")),
+        "force_hold": False,
+        "do_not_force_hold": True,
+        "live_validation_mode": bool(live_validation_mode),
+    }
+
+
 def _choose_default_horizon(*, playbook: str = "", monitor_guidance: str = "", trade_aggressiveness: str = "") -> str:
     guidance = str(monitor_guidance or "").strip().lower()
     playbook_text = str(playbook or "").strip().lower()
@@ -257,6 +328,13 @@ def build_strategy_horizon_feedback(
         or "respect_existing_exit_policy",
         "do_not_force_hold": True,
     }
+    behavior_translation = _build_horizon_behavior_translation(
+        horizon,
+        source_horizon=horizon,
+        owner="strategist",
+        applied=False,
+        live_validation_mode=True,
+    )
     return {
         "schema_version": "strategy_horizon_feedback.v1",
         "observability_only": True,
@@ -265,6 +343,7 @@ def build_strategy_horizon_feedback(
         "exit_guidance": exit_guidance,
         "invalidation_conditions": _as_list(raw_obj.get("invalidation_conditions"), limit=8),
         "monitor_handoff": monitor_handoff,
+        "behavior_translation": behavior_translation,
         "playbook": str(playbook or raw_obj.get("playbook") or "").strip(),
         "monitor_guidance": str(monitor_guidance or raw_obj.get("monitor_guidance") or "").strip(),
         "trade_aggressiveness": str(trade_aggressiveness or raw_obj.get("trade_aggressiveness") or "").strip(),
@@ -350,6 +429,13 @@ def build_commander_horizon_policy(
     expected_hold_window = dict(proposal.get("expected_hold_window") or {})
     if operational_horizon != source_horizon or not expected_hold_window:
         expected_hold_window = dict(_DEFAULT_WINDOWS.get(operational_horizon, _DEFAULT_WINDOWS["intraday"]))
+    behavior_translation = _build_horizon_behavior_translation(
+        operational_horizon,
+        source_horizon=source_horizon,
+        owner="commander",
+        applied=True,
+        live_validation_mode=live_validation_mode,
+    )
     decision_reason = "commander_accepts_strategist_horizon_proposal_observability_only"
     if operational_horizon != source_horizon:
         decision_reason = "commander_caps_long_horizon_during_live_validation_observability_only"
@@ -360,15 +446,26 @@ def build_commander_horizon_policy(
         "owner": "commander",
         "observability_only": True,
         "allow_behavior_change": False,
+        "allow_behavior_translation": True,
         "do_not_force_hold": True,
         "live_validation_mode": bool(live_validation_mode),
         "strategy_horizon": operational_horizon,
         "expected_hold_window": expected_hold_window,
         "exit_guidance": dict(proposal.get("exit_guidance") or {}),
         "invalidation_conditions": list(proposal.get("invalidation_conditions") or []),
+        "behavior_translation": behavior_translation,
         "monitor_handoff": {
             **_as_dict(proposal.get("monitor_handoff")),
             "do_not_force_hold": True,
+            "review_cadence_sec": int(behavior_translation.get("monitor_review_cadence_sec") or 180),
+            "stale_hold_review_sec": int(behavior_translation.get("stale_hold_review_sec") or 1800),
+            "hold_control_bias": str(behavior_translation.get("hold_control_bias") or ""),
+            "exit_policy_bias": str(behavior_translation.get("exit_policy_bias") or ""),
+        },
+        "scanner_handoff": {
+            "scanner_scope_bias": str(behavior_translation.get("scanner_scope_bias") or ""),
+            "strategy_horizon": operational_horizon,
+            "source_strategy_horizon": source_horizon,
         },
         "source_strategy_horizon": source_horizon,
         "source_expected_hold_window": dict(proposal.get("expected_hold_window") or {}),
@@ -561,6 +658,7 @@ def build_exit_vs_strategy_intent(
             or strategist_proposal.get("expected_hold_window")
             or expected
         ),
+        "behavior_translation": dict(horizon.get("behavior_translation") or {}),
         "commander_horizon_policy": dict(commander_horizon),
         "strategist_horizon_proposal": dict(strategist_proposal),
         "commander_decision_reason": str(horizon.get("decision_reason") or ""),
@@ -638,10 +736,12 @@ def build_post_exit_shadow_placeholder(
     exit_price = (
         details.get("filled_price")
         if details.get("filled_price") not in (None, "")
-        else details.get("avg_price")
-        if details.get("avg_price") not in (None, "")
         else exit_monitor.get("current_price")
         if exit_monitor.get("current_price") not in (None, "")
+        else exit_monitor.get("price")
+        if exit_monitor.get("price") not in (None, "")
+        else details.get("avg_price")
+        if details.get("avg_price") not in (None, "")
         else None
     )
     return {

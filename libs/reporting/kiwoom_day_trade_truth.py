@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import os
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -159,6 +160,45 @@ def _build_match_payload(
     }
 
 
+def _build_split_match_payload(
+    rows: List[Mapping[str, Any]],
+    *,
+    symbol: str,
+    row_count: int,
+    match_mode: str,
+    filled_qty: int,
+    filled_price: float | None,
+    buy_price: float | None,
+) -> Dict[str, Any]:
+    realized_values = [_safe_float(row.get("realized_pnl")) for row in rows]
+    fee_values = [_safe_int(row.get("fee")) for row in rows]
+    tax_values = [_safe_int(row.get("tax")) for row in rows]
+    realized_pnl = sum(float(value) for value in realized_values if value is not None)
+    fee = sum(int(value) for value in fee_values if value is not None)
+    tax = sum(int(value) for value in tax_values if value is not None)
+    pnl_ratio = None
+    if buy_price not in (None, 0) and filled_qty not in (None, 0):
+        try:
+            pnl_ratio = float(realized_pnl) / (float(buy_price) * float(filled_qty))
+        except Exception:
+            pnl_ratio = None
+    return {
+        "symbol": normalize_symbol(symbol, allow_test_symbols=True),
+        "filled_qty": int(filled_qty),
+        "filled_price": filled_price,
+        "buy_price": buy_price,
+        "realized_pnl": float(realized_pnl),
+        "pnl_ratio": pnl_ratio,
+        "fee": int(fee),
+        "tax": int(tax),
+        "source": "kiwoom.ka10077",
+        "match_mode": match_mode,
+        "row_count": int(row_count),
+        "source_row_count": int(len(rows)),
+        "authoritative": True,
+    }
+
+
 def _match_detail_row(
     rows: List[Dict[str, Any]],
     *,
@@ -202,6 +242,64 @@ def _match_detail_row(
 
     exact_qty_price_matches = [row for row in symbol_rows if _exact_qty_and_price(row)]
     exact_qty_matches = [row for row in symbol_rows if _exact_qty(row)]
+
+    def _match_split_weighted_sell_price() -> Dict[str, Any]:
+        if qty_value is None or price_value is None or buy_price_value is None:
+            return {}
+        candidates = [
+            row
+            for row in symbol_rows
+            if _safe_int(row.get("filled_qty")) is not None
+            and _safe_float(row.get("filled_price")) is not None
+            and _price_matches(row.get("buy_price"), buy_price_value)
+        ]
+        if len(candidates) <= 1 or len(candidates) > 24:
+            return {}
+        target_qty = int(qty_value)
+        for size in range(2, len(candidates) + 1):
+            for subset in itertools.combinations(candidates, size):
+                subset_qty = sum(int(_safe_int(row.get("filled_qty")) or 0) for row in subset)
+                if subset_qty != target_qty:
+                    continue
+                weighted_sell = sum(
+                    float(_safe_float(row.get("filled_price")) or 0.0)
+                    * int(_safe_int(row.get("filled_qty")) or 0)
+                    for row in subset
+                ) / float(target_qty)
+                if not _price_matches(weighted_sell, price_value):
+                    continue
+                return _build_split_match_payload(
+                    list(subset),
+                    symbol=normalized_symbol,
+                    row_count=row_count,
+                    match_mode="symbol_split_buy_weighted_sell_qty_exact",
+                    filled_qty=target_qty,
+                    filled_price=price_value,
+                    buy_price=buy_price_value,
+                )
+        return {}
+
+    if qty_value is not None and price_value is not None and buy_price_value is not None:
+        split_matches = [
+            row
+            for row in symbol_rows
+            if _price_matches(row.get("filled_price"), price_value)
+            and _price_matches(row.get("buy_price"), buy_price_value)
+        ]
+        split_qty = sum(int(_safe_int(row.get("filled_qty")) or 0) for row in split_matches)
+        if len(split_matches) > 1 and split_qty == int(qty_value):
+            return _build_split_match_payload(
+                split_matches,
+                symbol=normalized_symbol,
+                row_count=row_count,
+                match_mode="symbol_split_buy_sell_qty_exact",
+                filled_qty=int(qty_value),
+                filled_price=price_value,
+                buy_price=buy_price_value,
+            )
+        weighted_split_match = _match_split_weighted_sell_price()
+        if weighted_split_match:
+            return weighted_split_match
 
     def _match_buy_anchor(
         candidates: List[Dict[str, Any]],

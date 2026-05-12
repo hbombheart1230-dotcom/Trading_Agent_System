@@ -67,11 +67,11 @@ def _extract_cash(payload: Dict[str, Any]) -> float:
                     "cash",
                     "dnca_tot_amt",
                     "prvs_rcdl_excc_amt",
+                    "prsm_dpst_aset_amt",
+                    "day_stk_asst",
+                    "dbst_bal",
                     "tot_evlu_amt",
                     "tot_evlt_amt",
-                    "dbst_bal",
-                    "day_stk_asst",
-                    "prsm_dpst_aset_amt",
                 ],
             )
             if v is not None:

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from .performance_aggregator import (
     aggregate_performance_from_reports_root,
+    extract_truth_outcome_from_bundle,
     load_lifecycle_bundles,
     performance_artifact_paths,
 )
@@ -32,6 +33,10 @@ def _extract_playbook(bundle: Dict[str, Any]) -> str:
 
 
 def _extract_return(bundle: Dict[str, Any]) -> Optional[float]:
+    truth = extract_truth_outcome_from_bundle(bundle)
+    if bool(truth.get("available")):
+        value = truth.get("return")
+        return float(value) if value not in (None, "") else None
     trade_outcome = bundle.get("trade_outcome") if isinstance(bundle.get("trade_outcome"), dict) else {}
     candidates = [
         trade_outcome.get("return_pct"),
@@ -171,4 +176,3 @@ def build_playbook_stats_from_reports_root(
 ) -> Dict[str, Any]:
     _ = aggregate_performance_from_reports_root(Path(reports_root), day=day)
     return write_playbook_stats(Path(reports_root), day=day, recent_window=recent_window)
-

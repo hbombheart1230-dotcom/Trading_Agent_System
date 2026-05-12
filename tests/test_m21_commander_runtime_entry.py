@@ -5,7 +5,11 @@ from typing import Any, Dict
 from graphs.commander_runtime import (
     _attach_commander_applied_policy,
     _assess_open_position_commander_override,
+    _build_commander_decision,
     _ensure_market_context_clock_fields,
+    _intent_from_monitor_state,
+    _normalize_candidate_watch_proposal_for_commander,
+    _post_scanner_candidate_snapshot,
     _resolve_commander_behavior_policy,
     _run_integrated_chain,
     _should_use_cached_strategist_from_commander_skip,
@@ -16,6 +20,160 @@ from graphs.commander_runtime import (
     run_commander_runtime,
 )
 from graphs.commander_runtime import _run_preopen_phase
+
+
+def test_candidate_watch_proposal_merges_default_cascade_reasons() -> None:
+    proposal = _normalize_candidate_watch_proposal_for_commander(
+        {
+            "max_priority_rank": 5,
+            "max_runner_ups": 4,
+            "cascade_enabled": True,
+            "cascade_allowed_reasons": ["below_vwap_reclaim_not_ready"],
+            "cascade_blocked_reasons": ["risk_policy_block"],
+        }
+    )
+
+    assert "below_vwap_reclaim_not_ready" in proposal["cascade_allowed_reasons"]
+    assert "pullback_not_mature" in proposal["cascade_allowed_reasons"]
+    assert "volume_confirmation_missing" in proposal["cascade_allowed_reasons"]
+    assert "risk_policy_block" in proposal["cascade_blocked_reasons"]
+    assert "open_position_present" in proposal["cascade_blocked_reasons"]
+
+
+def test_post_scanner_snapshot_keeps_scanner_rank1_separate_from_actual_selected() -> None:
+    snapshot = _post_scanner_candidate_snapshot(
+        {
+            "selected": {"symbol": "078890"},
+            "scanner_output": {
+                "ranked_candidates": [
+                    {
+                        "rank": 1,
+                        "symbol": "033170",
+                        "score_total": 1.326388,
+                        "score_breakdown": {"turnover": 0.44, "volume": 0.31},
+                        "risk_score": 0.07,
+                        "confidence": 0.94,
+                        "why": "rank 1 score leader",
+                    },
+                    {
+                        "rank": 2,
+                        "symbol": "078890",
+                        "score_total": 1.322114,
+                        "risk_score": 0.05,
+                        "confidence": 0.91,
+                        "selection_reason_with_bias": "runner-up selected after cascade",
+                    },
+                    {"rank": 3, "symbol": "000660", "score_total": 1.01},
+                ]
+            },
+        },
+        "078890",
+    )
+
+    assert snapshot["scanner_rank1_candidate"]["symbol"] == "033170"
+    assert snapshot["scanner_rank1_candidate"]["rank"] == 1
+    assert snapshot["scanner_rank1_candidate"]["score"] == 1.326388
+    assert snapshot["selected_candidate"]["symbol"] == "078890"
+    assert snapshot["selected_candidate"]["rank"] == 2
+    assert snapshot["selected_candidate"]["score"] == 1.322114
+    assert snapshot["selected_symbol_was_rank1"] is False
+    assert snapshot["stage2_context_quality"] == "complete"
+    assert snapshot["runner_ups"][0]["symbol"] == "033170"
+
+
+def test_commander_keeps_candidate_expansion_when_status_blocked_but_capacity_available() -> None:
+    state = {
+        "runtime_phase": "session",
+        "portfolio_preflight": {"applied": True, "blocked": False, "phase": "session"},
+        "portfolio_snapshot": {
+            "cash": 100_000_000.0,
+            "positions": [{"symbol": "000660", "qty": 1, "avg_price": 1_859_000.0}],
+        },
+        "risk_context": {"max_positions": 3},
+        "mock_monitor_feedback": {
+            "dominant_blocker": "volume_confirmation_missing",
+            "blocker_count": 6,
+            "failure_streak": 6,
+            "near_ready_flag": True,
+            "avg_distance_to_ready": 0.8,
+        },
+        "strategist_output": {
+            "playbook": "pullback",
+            "tactical_strategy": "leader_vwap_reclaim_pullback",
+            "candidate_watch_policy": {
+                "source": "strategist_visibility_proposal",
+                "behavior_effect": "visibility_only",
+                "playbook": "pullback",
+                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "max_priority_rank": 1,
+                "max_runner_ups": 0,
+                "cascade_enabled": False,
+            },
+        },
+    }
+
+    decision = _build_commander_decision(
+        state,
+        mode_value="integrated_chain",
+        phase_value="session",
+        status_value="preflight_blocked",
+        path_value="integrated_chain",
+    )
+
+    entry_control = decision["entry_control"]
+    assert decision["risk_mode"] == "balanced"
+    assert entry_control["mode"] == "expand_when_market_ok"
+    assert entry_control["max_priority_rank"] == 10
+    assert entry_control["max_runner_ups"] == 9
+    assert entry_control["candidate_watch_policy_effect"] == "commander_expanded_repeated_blocker"
+
+
+def test_monitor_sell_intent_uses_monitor_meta_price_before_market_snapshot() -> None:
+    intent = _intent_from_monitor_state(
+        {
+            "intents": [
+                {
+                    "side": "SELL",
+                    "symbol": "018880",
+                    "qty": 275,
+                    "meta": {
+                        "price": 5440,
+                        "effective_price": 5351.38,
+                        "avg_price": 5394,
+                    },
+                }
+            ],
+            "market_snapshot": {"symbol": "018880", "price": 5394},
+        }
+    )
+
+    assert intent["action"] == "SELL"
+    assert intent["price"] == 5440
+    assert intent["meta"]["avg_price"] == 5394
+
+
+def test_monitor_buy_intent_uses_entry_price_fallback_before_market_snapshot() -> None:
+    intent = _intent_from_monitor_state(
+        {
+            "intents": [
+                {
+                    "side": "BUY",
+                    "symbol": "078890",
+                    "qty": 338,
+                    "meta": {
+                        "entry_metrics": {"current_price": 8850},
+                        "entry_cost_filter": {"price": 8850},
+                    },
+                }
+            ],
+            "market_snapshot": {"symbol": "005930", "price": 268500},
+        }
+    )
+
+    assert intent["action"] == "BUY"
+    assert intent["symbol"] == "078890"
+    assert intent["qty"] == 338
+    assert intent["price"] == 8850
 
 
 def test_m21_runtime_entry_defaults_to_graph_spine():
@@ -516,6 +674,25 @@ def test_m21_session_closeout_fast_path_activates_inside_eod_cutoff():
     assert payload["open_position_count"] == 1
 
 
+def test_m21_session_closeout_fast_path_uses_buy_buffer_before_eod_cutoff():
+    enabled, payload = _should_use_session_closeout_fast_path(
+        {
+            "runtime_phase": "session",
+            "market_context": {"minutes_to_close": 10.5},
+            "applied_policy": {
+                "monitor": {"exit": {"eod_flat": {"enabled": True, "cutoff_min": 10}}},
+            },
+            "portfolio_snapshot": {"positions": []},
+        }
+    )
+
+    assert enabled is True
+    assert payload["reason"] == "session_closeout_window"
+    assert payload["minutes_to_close"] == 10.5
+    assert payload["cutoff_min"] == 10
+    assert payload["buy_cutoff_min"] == 15
+
+
 def test_m21_session_closeout_fast_path_backfills_minutes_to_close_from_tick_ts():
     enabled, payload = _should_use_session_closeout_fast_path(
         {
@@ -644,6 +821,148 @@ def test_m21_integrated_chain_prefers_closeout_guard_over_cached_or_full_cycle(m
     assert "session_closeout_window" in str((out.get("commander_decision") or {}).get("decision_summary") or "")
     assert (out.get("commander_decision") or {}).get("llm_policy") == "SKIP"
     assert called == {"strategist": 0, "scanner": 0, "monitor": 1}
+
+
+def test_m21_integrated_chain_closeout_guard_runs_stage4_carry_review_for_held_position(monkeypatch):
+    import graphs.nodes.build_portfolio_snapshot as portfolio_mod
+    import graphs.nodes.build_risk_context as risk_mod
+    import graphs.nodes.decision_node as decision_mod
+    import graphs.nodes.monitor_node as monitor_mod
+    import graphs.nodes.scanner_node as scanner_mod
+    import graphs.nodes.strategist_node as strategist_mod
+
+    called = {"strategist": 0, "scanner": 0, "monitor": 0}
+    captured: Dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        portfolio_mod,
+        "build_portfolio_snapshot",
+        lambda state: {
+            **state,
+            "portfolio_snapshot": {
+                "cash": 1000.0,
+                "positions": [
+                    {
+                        "symbol": "005930",
+                        "qty": 1,
+                        "avg_price": 70000.0,
+                        "current_price": 70100.0,
+                        "position_age_seconds": 3600,
+                    }
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(risk_mod, "build_risk_context", lambda state: state)
+
+    def _strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["strategist"] += 1
+        captured.update(dict(state.get("commander_decision") or {}))
+        state["strategist_llm"] = {"status": "disabled", "reason": "test"}
+        state["strategist_output"] = {"playbook": "defensive", "monitor_guidance": "defensive_exit"}
+        return state
+
+    def _scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["scanner"] += 1
+        raise AssertionError("scanner should not run inside session closeout guard")
+
+    def _monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["monitor"] += 1
+        state["intents"] = []
+        state["monitor_output"] = {"intent_side": "NOOP", "entry_exit_reason": "closeout_review_only"}
+        return state
+
+    monkeypatch.setattr(strategist_mod, "strategist_node", _strategist)
+    monkeypatch.setattr(scanner_mod, "scanner_node", _scanner)
+    monkeypatch.setattr(monitor_mod, "monitor_node", _monitor)
+    monkeypatch.setattr(decision_mod, "decision_node", lambda state: {**state, "decision": "reject"})
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-closeout-stage4",
+            "runtime_phase": "session",
+            "market_context": {"minutes_to_close": 5},
+            "applied_policy": {
+                "monitor": {"exit": {"eod_flat": {"enabled": True, "cutoff_min": 10}}},
+            },
+        },
+        execute_fn=lambda state: state,
+    )
+
+    refresh_context = dict(captured.get("strategist_refresh_context") or {})
+    assert out["path"] == "integrated_chain_closeout_guard"
+    assert captured["strategist_refresh_requested"] is True
+    assert captured["strategist_refresh_reason"] == "session_closeout_carry_review"
+    assert refresh_context["refresh_scope"] == "session_closeout_carry_review"
+    assert refresh_context["selected_symbol"] == "005930"
+    assert (out.get("commander_shadow_runtime") or {}).get("stage4_carry_review_requested") is True
+    assert called == {"strategist": 1, "scanner": 0, "monitor": 1}
+
+
+def test_m21_integrated_chain_closeout_cancels_pending_buy_before_monitor(monkeypatch):
+    import graphs.nodes.build_portfolio_snapshot as portfolio_mod
+    import graphs.nodes.build_risk_context as risk_mod
+    import graphs.nodes.monitor_node as monitor_mod
+
+    called = {"monitor": 0, "execute": 0}
+
+    monkeypatch.setattr(
+        portfolio_mod,
+        "build_portfolio_snapshot",
+        lambda state: {**state, "portfolio_snapshot": {"cash": 1000.0, "positions": []}},
+    )
+    monkeypatch.setattr(risk_mod, "build_risk_context", lambda state: state)
+
+    def _monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["monitor"] += 1
+        raise AssertionError("pending BUY cancel should run before monitor closeout")
+
+    def _execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["execute"] += 1
+        state["execution"] = {
+            "allowed": True,
+            "ok": True,
+            "order": dict((state.get("decision_packet") or {}).get("intent") or {}),
+            "reason": "session_closeout_pending_buy_cancel",
+        }
+        return state
+
+    monkeypatch.setattr(monitor_mod, "monitor_node", _monitor)
+
+    out = _run_integrated_chain(
+        {
+            "runtime_phase": "session",
+            "market_context": {"minutes_to_close": 10.5},
+            "applied_policy": {
+                "monitor": {"exit": {"eod_flat": {"enabled": True, "cutoff_min": 10}}},
+            },
+            "skill_results": {
+                "account.orders": {
+                    "rows": [
+                        {
+                            "ord_no": "0155825",
+                            "stk_cd": "A036540",
+                            "io_tp_nm": "현금매수",
+                            "ord_qty": "10",
+                            "cntr_qty": "0",
+                            "ord_remnq": "10",
+                            "acpt_tp": "접수",
+                        }
+                    ]
+                }
+            },
+        },
+        execute_fn=_execute,
+    )
+
+    intent = (out.get("decision_packet") or {}).get("intent") or {}
+    assert out["path"] == "integrated_chain_closeout_guard"
+    assert called == {"monitor": 0, "execute": 1}
+    assert intent["action"] == "CANCEL"
+    assert intent["symbol"] == "036540"
+    assert intent["orig_ord_no"] == "0155825"
+    assert intent["order_api_id"] == "kt10003"
+    assert (out.get("commander_pending_buy_cancel") or {}).get("detected") is True
 
 
 def test_m21_runtime_entry_uses_env_mode_when_state_missing(monkeypatch):
@@ -1399,6 +1718,176 @@ def test_m31_integrated_chain_uses_monitor_only_fast_path_when_holding(monkeypat
     ]
 
 
+def test_m31_integrated_chain_checks_open_position_exit_before_full_cycle_when_capacity_available(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1_000_000.0,
+            "positions": [
+                {"symbol": "073490", "qty": 10, "avg_price": 53_000.0, "current_price": 53_500.0}
+            ],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        state["risk_context"] = {"max_positions": 3, "open_positions": 1}
+        return state
+
+    def fake_hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("hydrate_monitor_symbol_features")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        state["strategist_output"] = {"market_regime": "supportive"}
+        state["strategist_llm"] = {"status": "disabled"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        state["selected"] = {"symbol": "005930"}
+        state["scanner_output"] = {"selected_symbol": "005930"}
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        symbol = str((state.get("selected") or {}).get("symbol") or "")
+        calls.append(f"monitor:{symbol}")
+        if bool((state.get("selected") or {}).get("_pre_entry_exit_sweep_selected")):
+            assert symbol == "073490"
+            assert (state.get("runtime_fast_path") or {}).get("reason") == "pre_entry_open_position_exit_check"
+        else:
+            assert symbol == "005930"
+        state["intents"] = []
+        state["monitor_output"] = {"intent_side": "NOOP", "selected_symbol": symbol}
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("RISK_MAX_POSITIONS", "3")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.commander_runtime._hydrate_monitor_symbol_features", fake_hydrate_monitor_symbol_features)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain({"commander_post_scanner_refresh_enabled": False}, execute_fn=lambda state: state)
+
+    assert out["path"] == "integrated_chain"
+    assert out["commander_pre_entry_exit_sweep"]["result"] == "no_exit_signal"
+    assert out["commander_pre_entry_exit_sweep"]["focus_symbol"] == "073490"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "hydrate_monitor_symbol_features",
+        "monitor:073490",
+        "decision",
+        "strategist",
+        "scanner",
+        "hydrate_monitor_symbol_features",
+        "monitor:005930",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_pre_entry_exit_sweep_executes_sell_before_scanner(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1_000_000.0,
+            "positions": [
+                {"symbol": "073490", "qty": 10, "avg_price": 53_000.0, "current_price": 53_900.0}
+            ],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        state["risk_context"] = {"max_positions": 3, "open_positions": 1}
+        return state
+
+    def fake_hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("hydrate_monitor_symbol_features")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        assert (state.get("selected") or {}).get("symbol") == "073490"
+        state["intents"] = [{"side": "SELL", "symbol": "073490", "qty": 10, "price": 53_900.0}]
+        state["monitor_output"] = {"intent_side": "SELL", "selected_symbol": "073490"}
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "approve"
+        return state
+
+    def fake_execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("execute")
+        state["execution"] = {
+            "ok": True,
+            "order": {"action": "SELL", "symbol": "073490", "qty": 10, "price": 53_900.0},
+        }
+        return state
+
+    def fake_reporter_node(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("reporter")
+        return {"ok": True, "status": "generated"}
+
+    def fake_update_state_after_execution(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("update_state_after_execution")
+        return state
+
+    monkeypatch.setenv("RISK_MAX_POSITIONS", "3")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.commander_runtime._hydrate_monitor_symbol_features", fake_hydrate_monitor_symbol_features)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+    monkeypatch.setattr("graphs.nodes.reporter_node.reporter_node", fake_reporter_node)
+    monkeypatch.setattr(
+        "graphs.nodes.update_state_after_execution.update_state_after_execution",
+        fake_update_state_after_execution,
+    )
+
+    out = _run_integrated_chain({}, execute_fn=fake_execute)
+
+    assert out["path"] == "integrated_chain_pre_entry_exit_sweep"
+    assert out["commander_pre_entry_exit_sweep"]["result"] == "executed_exit"
+    assert out["decision_packet"]["intent"]["action"] == "SELL"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "hydrate_monitor_symbol_features",
+        "monitor",
+        "decision",
+        "execute",
+        "reporter",
+        "update_state_after_execution",
+    ]
+
+
 def test_m31_integrated_chain_monitor_only_hydrates_held_symbols_before_monitor(monkeypatch):
     calls: list[str] = []
 
@@ -1774,6 +2263,51 @@ def test_commander_open_position_override_surfaces_overnight_carry_control():
     assert out["positions"][0]["overnight_carry_approved"] is True
 
 
+def test_commander_open_position_override_prioritizes_unresolved_closeout_flatten():
+    state: Dict[str, Any] = {
+        "tick_ts": 1776643620,
+        "portfolio_snapshot": {
+            "positions": [
+                {
+                    "symbol": "005930",
+                    "qty": 1,
+                    "avg_price": 100.0,
+                    "current_price": 101.0,
+                    "position_age_seconds": 259200,
+                },
+                {
+                    "symbol": "078890",
+                    "qty": 338,
+                    "avg_price": 8770.0,
+                    "current_price": 8700.0,
+                },
+            ]
+        },
+        "persisted_state": {
+            "overnight_decision_by_symbol": {
+                "005930": {"approved": True, "reason": "carry_overnight_approved"}
+            },
+            "closeout_backup_liquidation": {
+                "mode": "broker_truth_unresolved_positions_retained",
+                "unresolved_flatten_symbols": ["078890"],
+                "requires_next_open_flatten": True,
+            },
+        },
+    }
+
+    out = _assess_open_position_commander_override(state)
+
+    assert out["override_triggered"] is True
+    assert out["override_action"] == "force_exit_review"
+    assert out["override_reason"] == "closeout_unresolved_flatten_required"
+    assert out["carry_risk_reason"] == "closeout_unresolved_flatten_required"
+    assert out["closeout_unresolved_flatten_required"] is True
+    flagged = [row for row in out["positions"] if row["symbol"] == "078890"][0]
+    assert flagged["carry_state"] == "multi_session_stale"
+    assert flagged["carry_risk_bias"] == "urgent_exit_review"
+    assert flagged["closeout_unresolved_flatten_required"] is True
+
+
 def test_commander_open_position_override_derives_carry_from_entry_epoch_map():
     now_epoch = 1_777_334_789  # 2026-04-28 09:06:29 KST
     state: Dict[str, Any] = {
@@ -2053,6 +2587,85 @@ def test_m31_integrated_chain_urgent_carry_risk_forces_monitor_only_even_when_bu
     ]
 
 
+def test_m31_integrated_chain_monitor_only_selects_unresolved_closeout_symbol(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [
+                {
+                    "symbol": "005930",
+                    "qty": 1,
+                    "avg_price": 100.0,
+                    "current_price": 101.0,
+                    "position_age_seconds": 259200,
+                },
+                {
+                    "symbol": "078890",
+                    "qty": 338,
+                    "avg_price": 8770.0,
+                    "current_price": 8700.0,
+                },
+            ],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        assert (state.get("selected") or {}).get("symbol") == "078890"
+        state["intents"] = []
+        state["decision"] = "hold"
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "monitor_block_buy_when_open_position": False,
+            "applied_policy": {
+                "commander": {"route": {"monitor_only_when_holding": True}},
+                "monitor": {"entry": {"block_buy_when_open_position": False}},
+            },
+            "persisted_state": {
+                "overnight_decision_by_symbol": {
+                    "005930": {"approved": True, "reason": "carry_overnight_approved"}
+                },
+                "closeout_backup_liquidation": {
+                    "mode": "broker_truth_unresolved_positions_retained",
+                    "unresolved_flatten_symbols": ["078890"],
+                    "requires_next_open_flatten": True,
+                },
+            },
+        },
+        execute_fn=lambda state: state,
+    )
+
+    assert out["path"] == "integrated_chain_monitor_only"
+    assert out["runtime_fast_path"]["reason"] == "holding_position_force_exit_review_monitor_only"
+    assert out["runtime_fast_path"]["override_reason"] == "closeout_unresolved_flatten_required"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "monitor",
+        "decision",
+    ]
+
+
 def test_commander_behavior_policy_tightens_same_session_repeated_loss_near_close():
     policy = _resolve_commander_behavior_policy(
         {
@@ -2255,6 +2868,9 @@ def test_m31_integrated_chain_repeated_hold_refresh_records_policy_delta(monkeyp
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
+        "hydrate_monitor_symbol_features",
+        "monitor",
+        "decision",
         "strategist",
         "scanner",
         "hydrate_monitor_symbol_features",
@@ -3383,17 +3999,19 @@ def test_m31_integrated_chain_keeps_cache_when_only_transition_threshold_signal_
     )
 
     refresh_context = (out.get("commander_decision") or {}).get("strategist_refresh_context") or {}
-    assert out["path"] == "integrated_chain_cached_frame"
-    assert (out.get("runtime_fast_path") or {}).get("reason") == "commander_skip_cached_strategist"
+    assert out["path"] == "integrated_chain"
+    assert (out.get("runtime_fast_path") or {}).get("reason") == "post_scanner_selected_symbol_refresh"
     assert (out.get("commander_shadow_runtime") or {}).get("pre_buy_refresh_requested") is False
-    assert (out.get("commander_decision") or {}).get("strategist_refresh_requested") is False
-    assert (out.get("commander_decision") or {}).get("strategist_refresh_reason") == "transition_readiness_threshold"
-    assert refresh_context.get("reason") == "cache_too_fresh_for_refresh"
-    assert refresh_context.get("fresh_cache_signal_override") is False
-    assert refresh_context.get("cache_freshness_gate_bypassed") is False
+    assert (out.get("commander_shadow_runtime") or {}).get("post_scanner_refresh_requested") is True
+    assert (out.get("commander_decision") or {}).get("strategist_refresh_requested") is True
+    assert (out.get("commander_decision") or {}).get("strategist_refresh_reason") == "selected_symbol_tactical_refresh"
+    assert refresh_context.get("refresh_scope") == "selected_symbol_tactical_refresh"
+    assert refresh_context.get("post_scanner_refresh_required") is True
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
+        "scanner",
+        "strategist",
         "scanner",
         "monitor",
         "decision",
@@ -3681,6 +4299,9 @@ def test_m31_integrated_chain_hydrates_held_symbols_before_monitor_after_scanner
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
+        "hydrate_monitor_symbol_features",
+        "monitor",
+        "decision",
         "strategist",
         "scanner",
         "hydrate_monitor_symbol_features",

@@ -7,6 +7,8 @@ import time
 from libs.core.symbols import normalize_symbol
 from libs.reporting.reasoning_trace import build_reasoning_provenance, build_reasoning_trace_from_summaries
 
+POST_EXIT_SHADOW_WATCH_WINDOW_SEC = 90 * 60
+
 
 def _as_int(value, default: int = 0) -> int:  # type: ignore[no-untyped-def]
     try:
@@ -108,6 +110,43 @@ def _normalize_position_peak_price(raw, open_symbols=None):  # type: ignore[no-u
     return out
 
 
+def _sanitize_closeout_unresolved_flatten_state(ps: dict) -> None:
+    open_symbols = {
+        normalize_symbol(row.get("symbol"))
+        for row in list(ps.get("mock_positions") or [])
+        if isinstance(row, dict) and normalize_symbol(row.get("symbol")) and _as_int(row.get("qty"), 0) > 0
+    }
+    unresolved_map = ps.get("closeout_unresolved_flatten_by_symbol")
+    if isinstance(unresolved_map, dict):
+        filtered_map = {
+            normalize_symbol(key): value
+            for key, value in unresolved_map.items()
+            if normalize_symbol(key) in open_symbols
+        }
+        if filtered_map:
+            ps["closeout_unresolved_flatten_by_symbol"] = filtered_map
+        else:
+            ps.pop("closeout_unresolved_flatten_by_symbol", None)
+
+    closeout = ps.get("closeout_backup_liquidation")
+    if not isinstance(closeout, dict):
+        return
+    unresolved = [
+        symbol
+        for symbol in (normalize_symbol(x) for x in list(closeout.get("unresolved_flatten_symbols") or []))
+        if symbol and symbol in open_symbols
+    ]
+    closeout["unresolved_flatten_symbols"] = list(unresolved)
+    closeout["unresolved_flatten_requires_next_open_symbols"] = list(unresolved)
+    closeout["requires_next_open_flatten"] = bool(unresolved)
+    if not unresolved and str(closeout.get("mode") or "") == "broker_truth_unresolved_positions_retained":
+        closeout["mode"] = "broker_truth_unresolved_positions_cleared"
+        closeout["reason"] = "closeout_unresolved_positions_cleared_after_sell"
+        closeout["symbols"] = []
+        closeout["qty_total"] = 0
+    ps["closeout_backup_liquidation"] = closeout
+
+
 def _normalize_position_entry_epoch_map(raw, open_symbols=None):  # type: ignore[no-untyped-def]
     out = {}
     allowed = None
@@ -125,6 +164,121 @@ def _normalize_position_entry_epoch_map(raw, open_symbols=None):  # type: ignore
         if epoch > 0:
             out[symbol] = int(epoch)
     return out
+
+
+def _normalize_position_entry_risk_map(raw, open_symbols=None):  # type: ignore[no-untyped-def]
+    out = {}
+    allowed = None
+    if isinstance(open_symbols, (list, set, tuple)):
+        allowed = {normalize_symbol(sym) for sym in open_symbols if normalize_symbol(sym)}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        symbol = normalize_symbol(key)
+        if not symbol:
+            continue
+        if allowed is not None and symbol not in allowed:
+            continue
+        if not isinstance(value, dict):
+            continue
+        stop_loss_pct = _as_float(value.get("stop_loss_pct"), 0.0)
+        if stop_loss_pct <= 0.0:
+            continue
+        row = {
+            "symbol": symbol,
+            "stop_loss_pct": float(stop_loss_pct),
+            "source": str(value.get("source") or "entry_sizing").strip(),
+        }
+        for src_key, dst_key in (
+            ("stop_loss_source", "stop_loss_source"),
+            ("invalidation_price", "invalidation_price"),
+            ("raw_structure_stop_loss_pct", "raw_structure_stop_loss_pct"),
+            ("min_structure_stop_loss_pct", "min_structure_stop_loss_pct"),
+            ("sizing_price", "sizing_price"),
+            ("risk_budget", "risk_budget"),
+            ("notional_budget", "notional_budget"),
+            ("qty_by_risk", "qty_by_risk"),
+            ("qty_by_notional", "qty_by_notional"),
+            ("recorded_epoch", "recorded_epoch"),
+        ):
+            raw_value = value.get(src_key)
+            if raw_value in (None, ""):
+                continue
+            if src_key in {"stop_loss_source", "source"}:
+                row[dst_key] = str(raw_value).strip()
+            elif src_key in {"qty_by_risk", "qty_by_notional", "recorded_epoch"}:
+                row[dst_key] = _as_int(raw_value, 0)
+            else:
+                row[dst_key] = float(_as_float(raw_value, 0.0))
+        out[symbol] = row
+    return out
+
+
+def _extract_entry_risk_from_order(order: dict, *, symbol: str, now_epoch: int) -> dict:  # type: ignore[no-untyped-def]
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    sizing = meta.get("sizing") if isinstance(meta.get("sizing"), dict) else {}
+    inputs = sizing.get("inputs") if isinstance(sizing.get("inputs"), dict) else {}
+    stop_loss_pct = _as_float(
+        inputs.get("stop_loss_pct")
+        if inputs.get("stop_loss_pct") not in (None, "")
+        else meta.get("position_sizing_stop_loss_pct"),
+        0.0,
+    )
+    if stop_loss_pct <= 0.0:
+        return {}
+    row = {
+        "symbol": symbol,
+        "stop_loss_pct": float(stop_loss_pct),
+        "stop_loss_source": str(
+            inputs.get("stop_loss_source") or meta.get("position_sizing_stop_loss_source") or "entry_sizing"
+        ).strip(),
+        "source": "buy_execution_sizing",
+        "recorded_epoch": int(now_epoch),
+    }
+    for key in (
+        "invalidation_price",
+        "raw_structure_stop_loss_pct",
+        "min_structure_stop_loss_pct",
+        "risk_budget",
+        "notional_budget",
+        "qty_by_risk",
+        "qty_by_notional",
+    ):
+        raw = inputs.get(key)
+        if raw in (None, ""):
+            continue
+        if key in {"qty_by_risk", "qty_by_notional"}:
+            row[key] = _as_int(raw, 0)
+        else:
+            row[key] = float(_as_float(raw, 0.0))
+    sizing_price = _as_float(sizing.get("price") if sizing.get("price") not in (None, "") else inputs.get("price"), 0.0)
+    if sizing_price > 0.0:
+        row["sizing_price"] = float(sizing_price)
+    return row
+
+
+def _remember_position_entry_risk_progress(ps: dict, ex: dict, *, now_epoch: int) -> None:
+    side = _extract_trade_side(ex)
+    order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+    symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd"))
+    if not symbol or side not in {"BUY", "SELL"}:
+        return
+    risk_map = _normalize_position_entry_risk_map(ps.get("position_entry_risk_by_symbol"))
+    if side == "BUY":
+        row = _extract_entry_risk_from_order(order, symbol=symbol, now_epoch=now_epoch)
+        if row:
+            risk_map[symbol] = row
+    else:
+        meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+        partial_exit = str(meta.get("partial_exit") or "").strip().lower() in ("1", "true", "yes", "y", "on")
+        exit_qty = _as_int(meta.get("exit_qty") or order.get("qty"), 0)
+        position_qty = _as_int(meta.get("position_qty"), 0)
+        if (not partial_exit) or (position_qty > 0 and exit_qty >= position_qty):
+            risk_map.pop(symbol, None)
+    if risk_map:
+        ps["position_entry_risk_by_symbol"] = risk_map
+    else:
+        ps.pop("position_entry_risk_by_symbol", None)
 
 
 def _normalize_position_strategy_context(raw, open_symbols=None):  # type: ignore[no-untyped-def]
@@ -249,6 +403,46 @@ def _resolve_mock_fill_price(state: dict, ex: dict, symbol: str) -> float:
     return 0.0
 
 
+def _resolve_post_exit_watch_exit_price(state: dict, ex: dict, symbol: str) -> tuple[float, str]:
+    order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+    payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
+    broker_result = ex.get("broker_result") if isinstance(ex.get("broker_result"), dict) else {}
+    payload_broker_result = (
+        payload.get("broker_result")
+        if isinstance(payload.get("broker_result"), dict)
+        else {}
+    )
+    candidates = [
+        ("payload.filled_price", payload.get("filled_price")),
+        ("payload.avg_price", payload.get("avg_price")),
+        ("payload.broker_fill_price", payload.get("broker_fill_price")),
+        ("payload.cntr_uv", payload.get("cntr_uv")),
+        ("payload.avg_fill_price", payload.get("avg_fill_price")),
+        ("payload.fill_price", payload.get("fill_price")),
+        ("payload.executed_price", payload.get("executed_price")),
+        ("order.filled_price", order.get("filled_price")),
+        ("order.avg_price", order.get("avg_price")),
+        ("order.avg_fill_price", order.get("avg_fill_price")),
+        ("order.fill_price", order.get("fill_price")),
+        ("broker_result.filled_price", broker_result.get("filled_price")),
+        ("broker_result.avg_price", broker_result.get("avg_price")),
+        ("broker_result.cntr_uv", broker_result.get("cntr_uv")),
+        ("broker_result.price", broker_result.get("price")),
+        ("payload.broker_result.filled_price", payload_broker_result.get("filled_price")),
+        ("payload.broker_result.avg_price", payload_broker_result.get("avg_price")),
+        ("payload.broker_result.cntr_uv", payload_broker_result.get("cntr_uv")),
+        ("payload.broker_result.price", payload_broker_result.get("price")),
+    ]
+    for source, value in candidates:
+        px = _as_float(value, 0.0)
+        if px > 0.0:
+            return float(px), source
+    fallback = _resolve_mock_fill_price(state, ex, symbol)
+    if fallback > 0.0:
+        return float(fallback), "fallback.mock_fill_price"
+    return 0.0, ""
+
+
 def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
     order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
     action = str(order.get("action") or "").strip().upper()
@@ -265,6 +459,7 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
     peak_map = _normalize_position_peak_price(ps.get("position_peak_price"), by_symbol.keys())
     strategy_context_map = _normalize_position_strategy_context(ps.get("position_strategy_context"), by_symbol.keys())
     entry_epoch_map = _normalize_position_entry_epoch_map(ps.get("position_entry_epoch_by_symbol"), by_symbol.keys())
+    entry_risk_map = _normalize_position_entry_risk_map(ps.get("position_entry_risk_by_symbol"), by_symbol.keys())
     for sym, row in by_symbol.items():
         row_epoch = _as_int(row.get("position_entry_epoch"), 0)
         if row_epoch > 0 and _as_int(entry_epoch_map.get(sym), 0) <= 0:
@@ -301,6 +496,9 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
                 "generated_epoch": _as_int(time.time(), 0),
                 "source": "buy_execution",
             }
+        entry_risk = _extract_entry_risk_from_order(order, symbol=symbol, now_epoch=now_epoch)
+        if entry_risk:
+            entry_risk_map[symbol] = entry_risk
     else:
         prev_qty = _as_int(cur.get("qty"), 0)
         if prev_qty <= 0:
@@ -318,6 +516,7 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
             peak_map.pop(symbol, None)
             strategy_context_map.pop(symbol, None)
             entry_epoch_map.pop(symbol, None)
+            entry_risk_map.pop(symbol, None)
         else:
             cur["qty"] = new_qty
             by_symbol[symbol] = cur
@@ -351,6 +550,14 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
         ps["position_entry_epoch_by_symbol"] = final_entry_epoch_map
     else:
         ps.pop("position_entry_epoch_by_symbol", None)
+    final_entry_risk_map = _normalize_position_entry_risk_map(
+        entry_risk_map,
+        [row.get("symbol") for row in final_positions],
+    )
+    if final_entry_risk_map:
+        ps["position_entry_risk_by_symbol"] = final_entry_risk_map
+    else:
+        ps.pop("position_entry_risk_by_symbol", None)
 
 
 def _extract_trade_side(ex: dict) -> str:
@@ -359,6 +566,152 @@ def _extract_trade_side(ex: dict) -> str:
     if side in ("BUY", "SELL"):
         return side
     return ""
+
+
+def _normalize_post_exit_shadow_watchlist(raw, *, now_epoch: int = 0):  # type: ignore[no-untyped-def]
+    rows = []
+    if isinstance(raw, dict):
+        rows = list(raw.values())
+    elif isinstance(raw, list):
+        rows = list(raw)
+    out = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = normalize_symbol(row.get("symbol"))
+        if not symbol:
+            continue
+        exit_epoch = _as_int(row.get("exit_epoch") or row.get("sold_epoch") or row.get("ts"), 0)
+        if exit_epoch <= 0:
+            continue
+        expires_epoch = _as_int(row.get("expires_epoch"), exit_epoch + POST_EXIT_SHADOW_WATCH_WINDOW_SEC)
+        if now_epoch > 0 and expires_epoch > 0 and now_epoch > expires_epoch:
+            continue
+        normalized = dict(row)
+        normalized["symbol"] = symbol
+        normalized["exit_epoch"] = int(exit_epoch)
+        normalized["expires_epoch"] = int(expires_epoch)
+        normalized["observability_only"] = True
+        out[symbol] = normalized
+    return out
+
+
+def _remember_post_exit_shadow_watch(ps: dict, ex: dict, state: dict, *, now_epoch: int) -> None:
+    side = _extract_trade_side(ex)
+    order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+    symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd"))
+    if not symbol:
+        return
+    watchlist = _normalize_post_exit_shadow_watchlist(
+        ps.get("post_exit_shadow_watchlist"),
+        now_epoch=int(now_epoch),
+    )
+    if side == "BUY":
+        watchlist.pop(symbol, None)
+    elif side == "SELL":
+        payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
+        exit_price, exit_price_source = _resolve_post_exit_watch_exit_price(state, ex, symbol)
+        qty = _as_int(order.get("qty") or payload.get("qty") or payload.get("filled_qty"), 0)
+        row = {
+            "schema_version": "post_exit_shadow_watch.v1",
+            "observability_only": True,
+            "symbol": symbol,
+            "exit_epoch": int(now_epoch),
+            "exit_price": float(exit_price) if exit_price > 0.0 else None,
+            "exit_price_source": str(exit_price_source or ""),
+            "qty": int(qty) if qty > 0 else None,
+            "created_epoch": int(now_epoch),
+            "last_refresh_epoch": 0,
+            "latest_candle_ts": None,
+            "expires_epoch": int(now_epoch + POST_EXIT_SHADOW_WATCH_WINDOW_SEC),
+            "source": "execution_sell",
+        }
+        trade_id = str(payload.get("trade_id") or state.get("trade_id") or "").strip()
+        if trade_id:
+            row["trade_id"] = trade_id
+        watchlist[symbol] = row
+    if watchlist:
+        ps["post_exit_shadow_watchlist"] = watchlist
+    else:
+        ps.pop("post_exit_shadow_watchlist", None)
+
+
+def _remember_profit_take_progress(ps: dict, ex: dict, *, now_epoch: int) -> None:
+    side = _extract_trade_side(ex)
+    order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+    symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd"))
+    if not symbol:
+        return
+    if side == "BUY":
+        partial_map = ps.get("partial_take_profit_taken_by_symbol")
+        if isinstance(partial_map, dict):
+            partial_map.pop(symbol, None)
+            if partial_map:
+                ps["partial_take_profit_taken_by_symbol"] = partial_map
+            else:
+                ps.pop("partial_take_profit_taken_by_symbol", None)
+        ladder_map = ps.get("profit_ladder_taken_levels_by_symbol")
+        if isinstance(ladder_map, dict):
+            ladder_map.pop(symbol, None)
+            if ladder_map:
+                ps["profit_ladder_taken_levels_by_symbol"] = ladder_map
+            else:
+                ps.pop("profit_ladder_taken_levels_by_symbol", None)
+        rr_map = ps.get("risk_reward_take_profit_taken_rungs_by_symbol")
+        if isinstance(rr_map, dict):
+            rr_map.pop(symbol, None)
+            if rr_map:
+                ps["risk_reward_take_profit_taken_rungs_by_symbol"] = rr_map
+            else:
+                ps.pop("risk_reward_take_profit_taken_rungs_by_symbol", None)
+        return
+    if side != "SELL":
+        return
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    reason = str(meta.get("exit_reason") or meta.get("reason") or order.get("reason") or "").strip()
+    if reason == "partial_take_profit":
+        partial_map = ps.get("partial_take_profit_taken_by_symbol")
+        if not isinstance(partial_map, dict):
+            partial_map = {}
+        partial_map[symbol] = {
+            "symbol": symbol,
+            "taken_epoch": int(now_epoch),
+            "exit_qty": _as_int(meta.get("exit_qty") or order.get("qty"), 0),
+            "position_qty": _as_int(meta.get("position_qty"), 0),
+            "pnl_ratio": _as_float(meta.get("pnl_ratio"), 0.0),
+            "source": "execution_sell",
+        }
+        ps["partial_take_profit_taken_by_symbol"] = partial_map
+    if reason == "profit_ladder":
+        level = _as_float(meta.get("profit_ladder_level_pct"), 0.0)
+        if level > 0.0:
+            ladder_map = ps.get("profit_ladder_taken_levels_by_symbol")
+            if not isinstance(ladder_map, dict):
+                ladder_map = {}
+            levels = [
+                _as_float(x, 0.0)
+                for x in list(ladder_map.get(symbol) or [])
+                if _as_float(x, 0.0) > 0.0
+            ]
+            if round(level, 6) not in {round(x, 6) for x in levels}:
+                levels.append(float(level))
+            ladder_map[symbol] = sorted(levels)
+            ps["profit_ladder_taken_levels_by_symbol"] = ladder_map
+    if reason == "risk_reward_take_profit":
+        rung = _as_float(meta.get("risk_reward_take_profit_rung"), 0.0)
+        if rung > 0.0:
+            rr_map = ps.get("risk_reward_take_profit_taken_rungs_by_symbol")
+            if not isinstance(rr_map, dict):
+                rr_map = {}
+            rungs = [
+                _as_float(x, 0.0)
+                for x in list(rr_map.get(symbol) or [])
+                if _as_float(x, 0.0) > 0.0
+            ]
+            if round(rung, 6) not in {round(x, 6) for x in rungs}:
+                rungs.append(float(rung))
+            rr_map[symbol] = sorted(rungs)
+            ps["risk_reward_take_profit_taken_rungs_by_symbol"] = rr_map
 
 
 def _extract_broker_code(ex: dict) -> str:
@@ -856,6 +1209,9 @@ def update_state_after_execution(state: dict) -> dict:
             trade_symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd"))
             if trade_symbol:
                 ps["last_trade_symbol"] = trade_symbol
+            _remember_post_exit_shadow_watch(ps, ex, state, now_epoch=now_epoch)
+            _remember_profit_take_progress(ps, ex, now_epoch=now_epoch)
+            _remember_position_entry_risk_progress(ps, ex, now_epoch=now_epoch)
 
     # Keep local mock ledger in sync when execution is explicitly mock, or when
     # runtime uses real executor against Kiwoom mock host (KIWOOM_MODE=mock).
@@ -863,6 +1219,7 @@ def update_state_after_execution(state: dict) -> dict:
         _apply_mock_fill(ps, ex, state)
     elif not ok and _is_kiwoom_mock_mode():
         _reconcile_mock_sell_reject_no_position(ps, ex)
+    _sanitize_closeout_unresolved_flatten_state(ps)
 
     if not order_sent:
         _remember_recent_monitor_block(ps, state, now_epoch=now_epoch)

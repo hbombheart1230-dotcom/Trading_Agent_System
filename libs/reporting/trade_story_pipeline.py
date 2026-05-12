@@ -507,6 +507,22 @@ def _list_text_for_symbol(values: Any, *, symbol: str, limit: int = 3, max_len: 
     return []
 
 
+def _korea_indices_bullet(korea_indices: Any) -> str:
+    packet = korea_indices if isinstance(korea_indices, dict) else {}
+    indices = packet.get("indices") if isinstance(packet.get("indices"), dict) else {}
+    parts: List[str] = []
+    for name in ("KOSPI", "KOSDAQ"):
+        row = indices.get(name) if isinstance(indices.get(name), dict) else {}
+        if not row:
+            continue
+        parts.append(
+            f"{name} current={format_pct(row.get('current'))} "
+            f"previous_close={format_pct(row.get('previous_close'))} "
+            f"change={format_pct(row.get('change_pct'))}%"
+        )
+    return "; ".join(parts)
+
+
 def _top_numeric_drivers(values: Any, *, limit: int = 4) -> Dict[str, float]:
     if not isinstance(values, dict):
         return {}
@@ -588,6 +604,7 @@ def _build_strategist_evidence_trace(
         "market_headlines": market_headlines,
         "symbol_headlines": symbol_headlines,
         "global_sentiment_signal": dict(global_signal or {}),
+        "korea_indices": dict(global_signal.get("korea_indices") or {}) if isinstance(global_signal.get("korea_indices"), dict) else {},
         "fear_index": dict(fear_index or {}),
         "key_events": key_events,
     }
@@ -879,6 +896,31 @@ def _build_monitor_stop_policy_trace(monitor: Dict[str, Any], thresholds: Dict[s
         "effective_stop_loss_pct": effective_stop_loss_pct,
         "trailing_stop_pct": thresholds.get("trailing_stop_pct"),
         "take_profit_pct": thresholds.get("take_profit_pct"),
+        "partial_take_profit_pct": thresholds.get("partial_take_profit_pct"),
+        "partial_take_profit_fraction": thresholds.get("partial_take_profit_fraction"),
+        "profit_ladder_levels_pct": thresholds.get("profit_ladder_levels_pct"),
+        "profit_ladder_fraction": thresholds.get("profit_ladder_fraction"),
+        "risk_reward_take_profit_r": thresholds.get("risk_reward_take_profit_r"),
+        "risk_reward_take_profit_rungs": thresholds.get("risk_reward_take_profit_rungs"),
+        "risk_reward_take_profit_fraction": thresholds.get("risk_reward_take_profit_fraction"),
+        "risk_reward_take_profit_min_pct": thresholds.get("risk_reward_take_profit_min_pct"),
+        "vwap_extension_take_profit_pct": thresholds.get("vwap_extension_take_profit_pct"),
+        "vwap_extension_take_profit_min_pct": thresholds.get("vwap_extension_take_profit_min_pct"),
+        "resistance_take_profit_near_pct": thresholds.get("resistance_take_profit_near_pct"),
+        "resistance_take_profit_min_pct": thresholds.get("resistance_take_profit_min_pct"),
+        "profit_time_stop_sec": thresholds.get("profit_time_stop_sec"),
+        "profit_time_stop_min_pct": thresholds.get("profit_time_stop_min_pct"),
+        "profit_time_stop_peak_giveback_pct": thresholds.get("profit_time_stop_peak_giveback_pct"),
+        "volume_exhaustion_take_profit_min_pct": thresholds.get("volume_exhaustion_take_profit_min_pct"),
+        "volume_exhaustion_volume_ratio_max": thresholds.get("volume_exhaustion_volume_ratio_max"),
+        "volume_exhaustion_strength_max": thresholds.get("volume_exhaustion_strength_max"),
+        "opening_gap_profit_take_min_pct": thresholds.get("opening_gap_profit_take_min_pct"),
+        "opening_gap_profit_take_window_sec": thresholds.get("opening_gap_profit_take_window_sec"),
+        "opening_gap_profit_take_fraction": thresholds.get("opening_gap_profit_take_fraction"),
+        "cost_aware_profit_floor_enabled": thresholds.get("cost_aware_profit_floor_enabled"),
+        "round_trip_cost_floor_pct": thresholds.get("round_trip_cost_floor_pct"),
+        "min_net_profit_buffer_pct": thresholds.get("min_net_profit_buffer_pct"),
+        "cost_aware_profit_floor_pct": thresholds.get("cost_aware_profit_floor_pct"),
         "strategist_baseline_stop_loss_pct": strategist_adaptive_exit.get("stop_loss_pct"),
         "strategist_baseline_take_profit_pct": strategist_adaptive_exit.get("take_profit_pct"),
         "strategist_baseline_trailing_stop_pct": strategist_adaptive_exit.get("trailing_stop_pct"),
@@ -1732,6 +1774,18 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategist_evidence_trace.get("global_sentiment_signal"), dict)
         else {}
     )
+    if not global_sentiment_signal and isinstance(strategist.get("global_sentiment_signal"), dict):
+        global_sentiment_signal = dict(strategist.get("global_sentiment_signal") or {})
+    korea_indices = (
+        dict(strategist.get("korea_indices") or {})
+        if isinstance(strategist.get("korea_indices"), dict)
+        else dict(global_sentiment_signal.get("korea_indices") or {})
+        if isinstance(global_sentiment_signal.get("korea_indices"), dict)
+        else dict(input_summary.get("korea_indices") or {})
+        if isinstance(input_summary.get("korea_indices"), dict)
+        else {}
+    )
+    korea_indices_text = _korea_indices_bullet(korea_indices)
     fear_index_trace = (
         dict(strategist_evidence_trace.get("fear_index") or {})
         if isinstance(strategist_evidence_trace.get("fear_index"), dict)
@@ -1754,6 +1808,8 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         f"Global sentiment scored {format_pct(global_sentiment_score)} and VIX was {format_pct(vix_level)}. "
         f"{stress_summary} {news_summary}"
     )
+    if korea_indices_text:
+        summary = f"{summary} Korea indices: {korea_indices_text}."
     bullets = [
         f"Market regime: {regime}",
         f"Market sentiment: {sentiment_state}",
@@ -1765,6 +1821,8 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         f"Defensive mode: {'enabled' if defensive_mode else 'not enabled'}",
         f"News input: {news_summary}",
     ]
+    if korea_indices_text:
+        bullets.append(f"Korea indices: {korea_indices_text}")
     if theme_packet or theme_source or theme_status or theme_reason:
         bullets.append(
             "Kiwoom theme packet: "
@@ -1797,6 +1855,7 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         "theme_strength_scores": theme_scores,
         "global_sentiment_score": global_sentiment_score,
         "global_sentiment_signal": global_sentiment_signal,
+        "korea_indices": korea_indices,
         "vix_level": vix_level,
         "fear_index": fear_index_trace,
         "stress_flags": stress_flags,
@@ -2294,6 +2353,35 @@ def enrich_filters_from_evidence(
     price_anomaly_check: Optional[Dict[str, str]] = None
     execution_spread_check: Optional[Dict[str, str]] = None
 
+    def _existing_chart_feature_total() -> int:
+        texts: List[str] = [str(out.get("summary") or "")]
+        texts.extend([str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()])
+        for check in list(out.get("checks") or []):
+            if isinstance(check, dict):
+                texts.append(str(check.get("detail") or ""))
+        for text in texts:
+            match = re.search(r"\b\d+\s*/\s*(\d+)\s+captured(?:\s+chart)?\s+features\b", text, flags=re.IGNORECASE)
+            if match:
+                total_value = safe_int(match.group(1), 0)
+                if total_value > 0:
+                    return int(total_value)
+        return 0
+
+    if coverage and str(coverage.get("source") or "") == "snapshot_derived":
+        existing_total = _existing_chart_feature_total()
+        if existing_total > 0 and existing_total != safe_int(coverage.get("total"), 0):
+            coverage = dict(coverage)
+            present_count = safe_int(coverage.get("present"), 0)
+            coverage["total"] = int(existing_total)
+            coverage["coverage_ratio"] = float(present_count) / float(existing_total) if existing_total else 0.0
+            if coverage["coverage_ratio"] >= 0.75:
+                coverage["quality"] = "strong"
+            elif coverage["coverage_ratio"] >= 0.5:
+                coverage["quality"] = "partial"
+            else:
+                coverage["quality"] = "weak"
+            coverage["source"] = "snapshot_derived_existing_filter_total"
+
     def _visit_monitor_payload(node: Any) -> None:
         nonlocal price_anomaly_check
         if price_anomaly_check is not None:
@@ -2667,6 +2755,24 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         watch_axes.append("Hard stop")
     if "Take profit" not in watch_axes and thresholds.get("take_profit_pct") not in (None, ""):
         watch_axes.append("Take profit")
+    if "Partial take profit" not in watch_axes and safe_float(thresholds.get("partial_take_profit_pct"), 0.0) > 0.0:
+        watch_axes.append("Partial take profit")
+    if "Profit ladder" not in watch_axes and isinstance(thresholds.get("profit_ladder_levels_pct"), list) and thresholds.get("profit_ladder_levels_pct"):
+        watch_axes.append("Profit ladder")
+    if "Risk/reward take profit" not in watch_axes and safe_float(thresholds.get("risk_reward_take_profit_r"), 0.0) > 0.0:
+        watch_axes.append("Risk/reward take profit")
+    elif "Risk/reward take profit" not in watch_axes and isinstance(thresholds.get("risk_reward_take_profit_rungs"), list) and thresholds.get("risk_reward_take_profit_rungs"):
+        watch_axes.append("Risk/reward take profit")
+    if "VWAP extension take profit" not in watch_axes and safe_float(thresholds.get("vwap_extension_take_profit_pct"), 0.0) > 0.0:
+        watch_axes.append("VWAP extension take profit")
+    if "Resistance take profit" not in watch_axes and safe_float(thresholds.get("resistance_take_profit_near_pct"), 0.0) > 0.0:
+        watch_axes.append("Resistance take profit")
+    if "Volume exhaustion take profit" not in watch_axes and safe_float(thresholds.get("volume_exhaustion_take_profit_min_pct"), 0.0) > 0.0:
+        watch_axes.append("Volume exhaustion take profit")
+    if "Opening gap profit take" not in watch_axes and safe_float(thresholds.get("opening_gap_profit_take_min_pct"), 0.0) > 0.0:
+        watch_axes.append("Opening gap profit take")
+    if "Time-decay profit exit" not in watch_axes and safe_float(thresholds.get("profit_time_stop_sec"), 0.0) > 0.0:
+        watch_axes.append("Time-decay profit exit")
     if "Trailing stop" not in watch_axes and thresholds.get("trailing_stop_pct") not in (None, ""):
         watch_axes.append("Trailing stop")
     if "Peak drawdown" not in watch_axes and thresholds.get("peak_drawdown_exit_pct") not in (None, ""):
@@ -2817,6 +2923,53 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         bullets.append(
             f"Take profit target: {format_ratio_pct(monitor_stop_policy_trace.get('take_profit_pct'))}%"
         )
+    if bool(monitor_stop_policy_trace.get("cost_aware_profit_floor_enabled")) and safe_float(
+        monitor_stop_policy_trace.get("cost_aware_profit_floor_pct"), 0.0
+    ) > 0.0:
+        bullets.append(
+            "Cost-aware profit floor: "
+            f"{format_ratio_pct(monitor_stop_policy_trace.get('cost_aware_profit_floor_pct'))}% "
+            f"(round-trip cost {format_ratio_pct(monitor_stop_policy_trace.get('round_trip_cost_floor_pct'))}% "
+            f"+ buffer {format_ratio_pct(monitor_stop_policy_trace.get('min_net_profit_buffer_pct'))}%)"
+        )
+    if safe_float(monitor_stop_policy_trace.get("partial_take_profit_pct"), 0.0) > 0.0:
+        bullets.append(
+            f"Partial take profit: {format_ratio_pct(monitor_stop_policy_trace.get('partial_take_profit_pct'))}%"
+        )
+    if isinstance(monitor_stop_policy_trace.get("profit_ladder_levels_pct"), list) and monitor_stop_policy_trace.get("profit_ladder_levels_pct"):
+        bullets.append(
+            "Profit ladder levels: "
+            + ", ".join(f"{format_ratio_pct(level)}%" for level in list(monitor_stop_policy_trace.get("profit_ladder_levels_pct") or [])[:4])
+        )
+    if safe_float(monitor_stop_policy_trace.get("risk_reward_take_profit_r"), 0.0) > 0.0:
+        bullets.append(f"Risk/reward take profit R: {monitor_stop_policy_trace.get('risk_reward_take_profit_r')}")
+    elif isinstance(monitor_stop_policy_trace.get("risk_reward_take_profit_rungs"), list) and monitor_stop_policy_trace.get("risk_reward_take_profit_rungs"):
+        bullets.append(
+            "Risk/reward take profit rungs: "
+            + ", ".join(str(x) for x in list(monitor_stop_policy_trace.get("risk_reward_take_profit_rungs") or [])[:4])
+        )
+    if safe_float(monitor_stop_policy_trace.get("vwap_extension_take_profit_pct"), 0.0) > 0.0:
+        bullets.append(
+            "VWAP extension take profit: "
+            f"{format_ratio_pct(monitor_stop_policy_trace.get('vwap_extension_take_profit_pct'))}%"
+        )
+    if safe_float(monitor_stop_policy_trace.get("resistance_take_profit_near_pct"), 0.0) > 0.0:
+        bullets.append(
+            "Resistance take profit near: "
+            f"{format_ratio_pct(monitor_stop_policy_trace.get('resistance_take_profit_near_pct'))}%"
+        )
+    if safe_float(monitor_stop_policy_trace.get("volume_exhaustion_take_profit_min_pct"), 0.0) > 0.0:
+        bullets.append(
+            "Volume exhaustion take profit min: "
+            f"{format_ratio_pct(monitor_stop_policy_trace.get('volume_exhaustion_take_profit_min_pct'))}%"
+        )
+    if safe_float(monitor_stop_policy_trace.get("opening_gap_profit_take_min_pct"), 0.0) > 0.0:
+        bullets.append(
+            "Opening gap profit take min: "
+            f"{format_ratio_pct(monitor_stop_policy_trace.get('opening_gap_profit_take_min_pct'))}%"
+        )
+    if safe_float(monitor_stop_policy_trace.get("profit_time_stop_sec"), 0.0) > 0.0:
+        bullets.append(f"Profit time stop: {safe_int(monitor_stop_policy_trace.get('profit_time_stop_sec'), 0)} seconds")
     if monitor_stop_policy_trace.get("strategist_baseline_take_profit_pct") not in (None, ""):
         bullets.append(
             f"Strategist baseline take profit: {format_ratio_pct(monitor_stop_policy_trace.get('strategist_baseline_take_profit_pct'))}%"
@@ -3083,6 +3236,12 @@ def build_operator_conclusion_human(
     reporter_status_human: Dict[str, Any],
 ) -> Dict[str, Any]:
     action = str(execution.get("action") or "").upper() or "WAIT"
+    outcome_text = str(execution_outcome_human.get("summary") or "").upper()
+    outcome_ko = str(execution_outcome_human.get("summary") or "")
+    if action != "SELL" and ("SELL" in outcome_text or "매도" in outcome_ko):
+        action = "SELL"
+    elif action not in {"BUY", "SELL"} and ("BUY" in outcome_text or "매수" in outcome_ko):
+        action = "BUY"
     watch_next: List[str] = []
     invalidation: List[str] = [
         "거시 환경이 부정적으로 전환되는지 확인해야 합니다.",

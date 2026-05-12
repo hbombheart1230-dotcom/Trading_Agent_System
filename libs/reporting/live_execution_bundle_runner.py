@@ -10,13 +10,15 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+KST = timezone(timedelta(hours=9), name="KST")
 
 from libs.core.settings import load_env_file
 from libs.core.symbols import normalize_symbol
@@ -50,6 +52,7 @@ from libs.reporting.llm_artifacts import (
     build_llm_response_artifact,
     canonical_llm_status,
     daily_artifact_paths,
+    iter_trade_dirs,
     persist_llm_artifact_refs,
     split_prompt_text,
     trade_artifact_paths,
@@ -137,16 +140,91 @@ def _runtime_minute_rows_for_symbol(runtime_state: Dict[str, Any], symbol: str) 
     candidates = [normalized]
     if normalized and not normalized.startswith("A"):
         candidates.append(f"A{normalized}")
-    for root_key in ("recent_minute_ohlcv_by_symbol", "minute_ohlcv_by_symbol", "ohlcv_by_symbol"):
-        root = runtime_state.get(root_key)
-        if not isinstance(root, dict):
-            continue
+    if not any(candidates):
+        return []
+
+    def _rows_from_record(record: Any) -> List[Dict[str, Any]]:
+        if isinstance(record, list):
+            return [dict(row) for row in record if isinstance(row, dict)]
+        if not isinstance(record, dict):
+            return []
+        direct_rows = record.get("rows")
+        if isinstance(direct_rows, list):
+            return [dict(row) for row in direct_rows if isinstance(row, dict)]
+        result = record.get("result") if isinstance(record.get("result"), dict) else {}
+        data = result.get("data") if isinstance(result.get("data"), dict) else record.get("data")
+        if isinstance(data, dict):
+            data_rows = data.get("rows")
+            if isinstance(data_rows, list):
+                return [dict(row) for row in data_rows if isinstance(row, dict)]
+            for candidate in candidates:
+                nested = data.get(candidate)
+                nested_rows = _rows_from_record(nested)
+                if nested_rows:
+                    return nested_rows
         for candidate in candidates:
-            record = root.get(candidate)
-            rows = record.get("rows") if isinstance(record, dict) else record
-            if isinstance(rows, list) and rows:
-                return [dict(row) for row in rows if isinstance(row, dict)]
-    return []
+            nested = record.get(candidate)
+            nested_rows = _rows_from_record(nested)
+            if nested_rows:
+                return nested_rows
+        return []
+
+    def _latest_epoch(rows: List[Dict[str, Any]]) -> int:
+        best = 0
+        for row in rows:
+            try:
+                ts = int(float(row.get("ts")))
+            except Exception:
+                ts = 0
+            best = max(best, ts)
+        return best
+
+    def _collect_from_container(container: Dict[str, Any], out: List[List[Dict[str, Any]]]) -> None:
+        for root_key in ("recent_minute_ohlcv_by_symbol", "minute_ohlcv_by_symbol", "monitor_minute_ohlcv_by_symbol", "intraday_ohlcv_by_symbol", "ohlcv_by_symbol"):
+            root = container.get(root_key)
+            if not isinstance(root, dict):
+                continue
+            for candidate in candidates:
+                rows = _rows_from_record(root.get(candidate))
+                if rows:
+                    out.append(rows)
+
+    found: List[List[Dict[str, Any]]] = []
+    _collect_from_container(runtime_state, found)
+    persisted = runtime_state.get("persisted_state") if isinstance(runtime_state.get("persisted_state"), dict) else {}
+    _collect_from_container(persisted, found)
+
+    skill_results = runtime_state.get("skill_results") if isinstance(runtime_state.get("skill_results"), dict) else {}
+    for key in ("market.minute_ohlcv_by_symbol", "market.minute_ohlcv", "market.minute_candles", "market.candles"):
+        raw = skill_results.get(key)
+        if isinstance(raw, dict):
+            for candidate in candidates:
+                rows = _rows_from_record(raw.get(candidate))
+                if rows:
+                    found.append(rows)
+            rows = _rows_from_record(raw)
+            if rows and normalize_symbol(raw.get("symbol") or "", allow_test_symbols=True) in candidates:
+                found.append(rows)
+
+    history = (
+        ((runtime_state.get("skill_results_history") or {}).get("market.minute_ohlcv"))
+        if isinstance(runtime_state.get("skill_results_history"), dict)
+        else []
+    )
+    if isinstance(history, list):
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            if normalize_symbol(item.get("symbol") or "", allow_test_symbols=True) not in candidates:
+                continue
+            rows = _rows_from_record(item.get("record"))
+            if rows:
+                found.append(rows)
+
+    if not found:
+        return []
+    found.sort(key=lambda rows: (_latest_epoch(rows), len(rows)), reverse=True)
+    return [dict(row) for row in found[0] if isinstance(row, dict)]
 
 
 def _post_exit_shadow_from_lifecycle(lifecycle: Dict[str, Any], lifecycle_bundle: Dict[str, Any]) -> Dict[str, Any]:
@@ -362,6 +440,7 @@ def _build_strategist_input_summary(
         news_ctx = dict(compact.get("news_context") or {})
     macro_moves = global_signal.get("macro_moves") if isinstance(global_signal.get("macro_moves"), dict) else {}
     fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
+    korea_indices = global_signal.get("korea_indices") if isinstance(global_signal.get("korea_indices"), dict) else {}
     macro_stress = src.get("macro_stress_overlay_hint") if isinstance(src.get("macro_stress_overlay_hint"), dict) else {}
     if not macro_stress and isinstance(compact.get("macro_stress_overlay_hint"), dict):
         macro_stress = dict(compact.get("macro_stress_overlay_hint") or {})
@@ -382,6 +461,7 @@ def _build_strategist_input_summary(
         "vix_level": _safe_float(fear_index.get("level"), _safe_float(macro_moves.get("vix_level"), None)),
         "vix_change_pct": _safe_float(fear_index.get("change_pct"), _safe_float(macro_moves.get("vix_pct"), None)),
         "vix_level_pressure": _safe_float(fear_index.get("level_pressure"), _safe_float(macro_moves.get("vix_level_pressure"), None)),
+        "korea_indices": dict(korea_indices or {}),
         "headline_count": safe_int(news_ctx.get("headline_count"), 0),
         "candidate_signal_total": safe_int(news_ctx.get("candidate_signal_total"), 0),
         "market_signal_total": safe_int(news_ctx.get("market_signal_total"), 0),
@@ -428,6 +508,9 @@ def _enrich_strategist_from_input_summary(
             "level_pressure": summary.get("vix_level_pressure"),
         }
     out["fear_index"] = dict(fear_index or {})
+    if not isinstance(out.get("korea_indices"), dict) or not out.get("korea_indices"):
+        if isinstance(summary.get("korea_indices"), dict):
+            out["korea_indices"] = dict(summary.get("korea_indices") or {})
 
     macro_moves = out.get("global_macro_moves") if isinstance(out.get("global_macro_moves"), dict) else {}
     if summary.get("vix_level") not in (None, "") and macro_moves.get("vix_level") in (None, ""):
@@ -1890,6 +1973,36 @@ def _utc_day(ts: Any) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def _trade_time_bucket_from_lifecycle_bundle(bundle: Dict[str, Any]) -> str:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return ""
+    payload = bundle if isinstance(bundle, dict) else {}
+    lifecycle = payload.get("lifecycle") if isinstance(payload.get("lifecycle"), dict) else {}
+    entry = payload.get("entry") if isinstance(payload.get("entry"), dict) else {}
+    lifecycle_entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+    exit_ctx = payload.get("exit") if isinstance(payload.get("exit"), dict) else {}
+    lifecycle_exit = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+    candidates = [
+        entry.get("ts"),
+        entry.get("timestamp"),
+        lifecycle_entry.get("ts"),
+        lifecycle_entry.get("timestamp"),
+        exit_ctx.get("ts"),
+        exit_ctx.get("timestamp"),
+        lifecycle_exit.get("ts"),
+        lifecycle_exit.get("timestamp"),
+        payload.get("ts"),
+        payload.get("saved_at"),
+        payload.get("generated_at"),
+    ]
+    for candidate in candidates:
+        epoch = _to_epoch(candidate)
+        if epoch is None:
+            continue
+        return datetime.fromtimestamp(epoch, tz=KST).strftime("%H00")
+    return datetime.now(KST).strftime("%H00")
+
+
 def _normalize_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return _normalize_execution_row_lib(payload if isinstance(payload, dict) else {})
 
@@ -2882,9 +2995,7 @@ def _find_existing_trade_id_for_run_ids(
         return ""
     symbol_norm = normalize_symbol(symbol or "", allow_test_symbols=True) or ""
     matches: List[Tuple[int, str]] = []
-    for trade_dir in day_root.iterdir():
-        if not trade_dir.is_dir():
-            continue
+    for trade_dir in iter_trade_dirs(day_root):
         trade_id = str(trade_dir.name or "").strip()
         if symbol_norm and f"_{symbol_norm}_" not in trade_id:
             continue
@@ -3410,8 +3521,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             not lifecycle_operator_conclusion_human
             or lifecycle_conclusion_summary_is_placeholder(lifecycle_operator_conclusion_human.get("summary"))
         ):
+            conclusion_execution = dict(anchor_execution)
+            if status == "closed" and exit_action:
+                conclusion_execution["action"] = exit_action
+                if exit_ctx.get("qty") not in (None, ""):
+                    conclusion_execution["qty"] = safe_int(exit_ctx.get("qty"), safe_int(conclusion_execution.get("qty"), 0))
+                if exit_ctx.get("ts") not in (None, ""):
+                    conclusion_execution["ts"] = str(exit_ctx.get("ts") or "")
             lifecycle_operator_conclusion_human = build_operator_conclusion_human(
-                execution=anchor_execution,
+                execution=conclusion_execution if status == "closed" and exit_action else anchor_execution,
                 scanner_reason_human=dict(anchor_bundle.get("scanner_reason_human") or entry_ctx.get("scanner_context") or {}),
                 filters_human=dict(anchor_bundle.get("filters_human") or {}),
                 monitor_reason_human=lifecycle_monitor_reason_human,
@@ -3494,7 +3612,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             },
         }
 
-        trade_paths = trade_artifact_paths(reports_root, day, trade_id)
+        trade_paths = trade_artifact_paths(
+            reports_root,
+            day,
+            trade_id,
+            time_bucket=_trade_time_bucket_from_lifecycle_bundle(lifecycle_bundle),
+        )
         trade_root = trade_paths["trade_root"]
         trade_root.mkdir(parents=True, exist_ok=True)
         for key in ("reports_dir", "evidence_dir"):

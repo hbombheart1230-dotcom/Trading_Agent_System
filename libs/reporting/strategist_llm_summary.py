@@ -56,13 +56,18 @@ def _parse_response_body(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _canonical_strategist_path_for_response(source_path: Path) -> Path | None:
-    if source_path.name != "response.json" or source_path.parent.name != "strategist":
+    if source_path.name != "response.json":
         return None
-    run_dir = source_path.parent.parent
+    artifact_dir = source_path.parent
+    run_dir = artifact_dir.parent
     day_dir = run_dir.parent
     llm_dir = day_dir.parent
     if llm_dir.name != "llm":
-        return None
+        category_dir = run_dir.parent
+        day_dir = category_dir.parent
+        llm_dir = day_dir.parent
+        if llm_dir.name != "llm":
+            return None
     reports_root = llm_dir.parent
     return reports_root / "canonical" / day_dir.name / run_dir.name / "strategist.json"
 
@@ -155,7 +160,61 @@ def _news_usage_from_canonical(canonical: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _operator_readout(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _stage_decision_from_payload(payload: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    call_kind = _text(raw.get("call_kind") or payload.get("call_kind"), "")
+    stage_name = _text(raw.get("stage_name") or payload.get("stage_name"), "")
+    try:
+        stage_index = int(raw.get("stage_index") or payload.get("stage_index") or 0)
+    except (TypeError, ValueError):
+        stage_index = 0
+    is_market_frame = stage_index in (0, 1) and call_kind in {"", "market_strategy_frame", "theme_selection", "strategic_frame"}
+    if is_market_frame:
+        return {"is_stage_specific": False}
+
+    decision = _first_text(
+        "",
+        payload.get("hold_review_decision"),
+        payload.get("carry_review_decision"),
+        payload.get("tactical_refresh_decision"),
+        payload.get("selected_symbol_decision"),
+        payload.get("decision"),
+    )
+    monitor_adjustment = _as_dict(payload.get("monitor_adjustment"))
+    priority_exit_triggers = _as_list(payload.get("priority_exit_triggers"))
+    return {
+        "is_stage_specific": True,
+        "stage_index": stage_index,
+        "stage_name": stage_name,
+        "call_kind": call_kind,
+        "decision": decision,
+        "exit_pressure": _text(payload.get("exit_pressure"), ""),
+        "thesis_status": _text(payload.get("thesis_status"), ""),
+        "next_check_minutes": payload.get("next_check_minutes"),
+        "priority_exit_triggers": priority_exit_triggers,
+        "monitor_adjustment": monitor_adjustment,
+        "reason": _text(payload.get("reason"), ""),
+        "raw_payload_keys": sorted(str(key) for key in payload.keys()),
+    }
+
+
+def _operator_readout(payload: Dict[str, Any], stage_decision: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    stage_decision = _as_dict(stage_decision)
+    if bool(stage_decision.get("is_stage_specific")):
+        stage_name = _text(stage_decision.get("stage_name"), "stage_specific")
+        decision = _text(stage_decision.get("decision"), "-")
+        reason = _text(stage_decision.get("reason"), "")
+        return {
+            "headline": f"{stage_name} / decision={decision}",
+            "good_points": [
+                "Stage-specific strategist response was parsed.",
+                "Market-frame fields such as selected_themes are not required for this stage.",
+            ],
+            "issues": [] if reason else ["stage-specific reason is empty"],
+            "root_cause": reason or "stage-specific response did not include a reason",
+            "recommended_actions": ["Review the stage decision fields instead of the market-frame section."],
+            "validation_questions": ["Confirm monitor/executor behavior followed the stage decision."],
+        }
+
     theme_strategy = _as_dict(payload.get("theme_strategy"))
     rationale = _text(payload.get("rationale"), "")
     selected_themes = _as_list(payload.get("selected_themes"))
@@ -217,6 +276,186 @@ def _operator_readout(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _first_text(default: str, *values: Any) -> str:
+    for value in values:
+        text = _text(value, "")
+        if text:
+            return text
+    return default
+
+
+def _first_dict(*values: Any) -> Dict[str, Any]:
+    for value in values:
+        row = _as_dict(value)
+        if row:
+            return row
+    return {}
+
+
+def _strategy_detail_from_sources(payload: Dict[str, Any], canonical: Dict[str, Any]) -> Dict[str, Any]:
+    canonical_detail = _as_dict(canonical.get("strategy_detail"))
+    strategy_policy = _as_dict(canonical.get("strategy_policy"))
+    market_policy = _as_dict(strategy_policy.get("market_policy"))
+    scanner_policy = _as_dict(strategy_policy.get("scanner_policy"))
+    return {
+        "pre_llm_playbook": _first_text(
+            "",
+            canonical_detail.get("pre_llm_playbook"),
+            canonical.get("pre_llm_playbook"),
+            market_policy.get("pre_llm_playbook"),
+            payload.get("pre_llm_playbook"),
+        ),
+        "llm_requested_playbook": _first_text(
+            "",
+            canonical_detail.get("llm_requested_playbook"),
+            canonical.get("llm_requested_playbook"),
+            market_policy.get("llm_requested_playbook"),
+            payload.get("llm_requested_playbook"),
+        ),
+        "requested_playbook": _first_text(
+            "",
+            canonical_detail.get("requested_playbook"),
+            canonical.get("requested_playbook"),
+            market_policy.get("requested_playbook"),
+            payload.get("requested_playbook"),
+        ),
+        "requested_playbook_source": _first_text(
+            "",
+            canonical_detail.get("requested_playbook_source"),
+            canonical.get("requested_playbook_source"),
+            market_policy.get("requested_playbook_source"),
+            payload.get("requested_playbook_source"),
+        ),
+        "final_playbook": _first_text(
+            "",
+            canonical_detail.get("final_playbook"),
+            canonical.get("final_playbook"),
+            market_policy.get("final_playbook"),
+            canonical.get("playbook"),
+            payload.get("final_playbook"),
+            payload.get("playbook"),
+        ),
+        "tactical_strategy": _first_text(
+            "",
+            canonical_detail.get("tactical_strategy"),
+            canonical.get("tactical_strategy"),
+            market_policy.get("tactical_strategy"),
+            payload.get("tactical_strategy"),
+        ),
+        "strategy_scores": _first_dict(
+            canonical_detail.get("strategy_scores"),
+            canonical.get("strategy_scores"),
+            market_policy.get("strategy_scores"),
+            payload.get("strategy_scores"),
+        ),
+        "rejected_strategy_reasons": _first_dict(
+            canonical_detail.get("rejected_strategy_reasons"),
+            canonical.get("rejected_strategy_reasons"),
+            market_policy.get("rejected_strategy_reasons"),
+            payload.get("rejected_strategy_reasons"),
+        ),
+        "candidate_watch_policy": _first_dict(
+            canonical_detail.get("candidate_watch_policy"),
+            canonical.get("candidate_watch_policy"),
+            scanner_policy.get("candidate_watch_policy"),
+            payload.get("candidate_watch_policy"),
+        ),
+    }
+
+
+def _json_inline(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(value)
+
+
+def _watch_scope_label(value: Dict[str, Any]) -> str:
+    if not value:
+        return ""
+    rank = value.get("max_priority_rank")
+    runner_ups = value.get("max_runner_ups")
+    parts: List[str] = []
+    if rank not in (None, ""):
+        parts.append(f"{rank}위까지")
+    if runner_ups not in (None, ""):
+        parts.append(f"차순위 {runner_ups}개")
+    if value.get("cascade_enabled") not in (None, ""):
+        parts.append(f"cascade {'활성' if bool(value.get('cascade_enabled')) else '비활성'}")
+    return " / ".join(parts)
+
+
+def _strategy_patch_status(detail: Dict[str, Any]) -> str:
+    required_keys = (
+        "pre_llm_playbook",
+        "llm_requested_playbook",
+        "requested_playbook",
+        "requested_playbook_source",
+        "final_playbook",
+        "tactical_strategy",
+        "strategy_scores",
+        "rejected_strategy_reasons",
+        "candidate_watch_policy",
+    )
+    missing = [key for key in required_keys if not detail.get(key)]
+    if not missing:
+        return "적용됨"
+    return f"일부 누락 ({', '.join(missing)})"
+
+
+def _playbook_flow_label(detail: Dict[str, Any]) -> str:
+    pre = _text(detail.get("pre_llm_playbook"), "")
+    requested = _text(detail.get("requested_playbook"), "")
+    final = _text(detail.get("final_playbook"), "")
+    parts = [part for part in (pre, requested, final) if part]
+    if not parts:
+        return "-"
+    flow = " -> ".join(parts)
+    source = _text(detail.get("requested_playbook_source"), "")
+    return f"{flow} (source={source})" if source else flow
+
+
+def _score_value(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("-inf")
+
+
+def _score_label(value: Any) -> str:
+    numeric = _score_value(value)
+    if numeric != float("-inf"):
+        return f"{numeric:.2f}".rstrip("0").rstrip(".")
+    return _text(value)
+
+
+def _strategy_score_lines(scores: Dict[str, Any], *, selected: str) -> List[str]:
+    if not scores:
+        return ["- -"]
+    rows = sorted(scores.items(), key=lambda row: (_score_value(row[1]), str(row[0])), reverse=True)
+    lines: List[str] = []
+    for name, score in rows:
+        marker = " (선택)" if str(name) == selected else ""
+        lines.append(f"- {name}: {_score_label(score)}{marker}")
+    return lines
+
+
+def _rejected_strategy_lines(reasons: Dict[str, Any], *, selected: str) -> List[str]:
+    if not reasons:
+        return ["- -"]
+    lines: List[str] = []
+    for name in sorted(reasons):
+        if str(name) == selected:
+            continue
+        reason = reasons.get(name)
+        if isinstance(reason, (dict, list)):
+            reason_text = _json_inline(reason)
+        else:
+            reason_text = _text(reason)
+        lines.append(f"- {name}: {reason_text}")
+    return lines if lines else ["- -"]
+
+
 def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, Any]:
     source_path = Path(response_json_path)
     raw = json.loads(source_path.read_text(encoding="utf-8"))
@@ -225,6 +464,8 @@ def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, 
     theme_strategy = _as_dict(payload.get("theme_strategy"))
     refresh_trace = _as_dict(payload.get("strategy_refresh_trace"))
     horizon = _as_dict(payload.get("strategy_horizon_feedback"))
+    strategy_detail = _strategy_detail_from_sources(payload, canonical)
+    stage_decision = _stage_decision_from_payload(payload, raw)
 
     return {
         "schema_version": "strategist_llm_summary.v1",
@@ -234,6 +475,10 @@ def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, 
         "generated_at": _utc_now_iso(),
         "llm_meta": {
             "stage": _text(raw.get("stage"), ""),
+            "stage_index": raw.get("stage_index"),
+            "stage_name": _text(raw.get("stage_name"), ""),
+            "call_kind": _text(raw.get("call_kind"), ""),
+            "stage_component": _text(raw.get("stage_component"), ""),
             "provider": _text(raw.get("provider"), ""),
             "model": _text(raw.get("model"), ""),
             "status": _text(raw.get("status"), ""),
@@ -245,7 +490,8 @@ def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, 
             "profile_name": _text(raw.get("llm_execution_profile_name"), ""),
             "profile_source": _text(raw.get("llm_execution_profile_source"), ""),
         },
-        "operator_readout": _operator_readout(payload),
+        "operator_readout": _operator_readout(payload, stage_decision),
+        "stage_decision": stage_decision,
         "strategy_frame": {
             "playbook": _text(payload.get("playbook")),
             "selected_themes": _as_list(payload.get("selected_themes")),
@@ -253,6 +499,7 @@ def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, 
             "fallback_reason": _text(theme_strategy.get("fallback_reason"), ""),
             "rationale": _text(payload.get("rationale"), ""),
         },
+        "strategy_detail": strategy_detail,
         "policy_changes": {
             "playbook_action": _directive(payload, "playbook_action"),
             "entry_policy_action": _directive(payload, "entry_policy_action"),
@@ -350,7 +597,12 @@ def _news_usage_lines(news: Dict[str, Any]) -> List[str]:
 def render_strategist_llm_summary_markdown(payload: Dict[str, Any]) -> str:
     meta = _as_dict(payload.get("llm_meta"))
     readout = _as_dict(payload.get("operator_readout"))
+    stage_decision = _as_dict(payload.get("stage_decision"))
+    if bool(stage_decision.get("is_stage_specific")):
+        return _render_stage_specific_summary_markdown(payload)
+
     frame = _as_dict(payload.get("strategy_frame"))
+    detail = _as_dict(payload.get("strategy_detail"))
     changes = _as_dict(payload.get("policy_changes"))
     entry = _as_dict(payload.get("monitor_entry_policy"))
     memory = _as_dict(payload.get("memory_usage"))
@@ -363,6 +615,11 @@ def render_strategist_llm_summary_markdown(payload: Dict[str, Any]) -> str:
 
     selected_themes = _as_list(frame.get("selected_themes"))
     theme_text = ", ".join(str(x) for x in selected_themes) if selected_themes else "-"
+    watch = _as_dict(detail.get("candidate_watch_policy"))
+    watch_scope = _watch_scope_label(watch)
+    tactical_strategy = _text(detail.get("tactical_strategy"), "")
+    strategy_scores = _as_dict(detail.get("strategy_scores"))
+    rejected_reasons = _as_dict(detail.get("rejected_strategy_reasons"))
 
     lines: List[str] = [
         f"# Strategist LLM Summary ({_text(meta.get('day'), '-')})",
@@ -385,6 +642,23 @@ def render_strategist_llm_summary_markdown(payload: Dict[str, Any]) -> str:
         "**전략가 rationale**",
         "",
         _text(frame.get("rationale")),
+        "",
+        "### 전략 디테일",
+        "",
+        f"- 전략 강화 필드: {_strategy_patch_status(detail)}",
+        f"- 플레이북 흐름: {_playbook_flow_label(detail)}",
+        f"- LLM 요청 플레이북: {_text(detail.get('llm_requested_playbook'))}",
+        f"- 최종 플레이북: {_text(detail.get('final_playbook'))}",
+        f"- 선택 전술: {_text(detail.get('tactical_strategy'))}",
+        f"- 후보 감시 제안: {watch_scope or '-'}",
+        "",
+        "#### 전략 점수",
+        "",
+        *_strategy_score_lines(strategy_scores, selected=tactical_strategy),
+        "",
+        "#### 탈락 전략 이유",
+        "",
+        *_rejected_strategy_lines(rejected_reasons, selected=tactical_strategy),
         "",
         "### 메모리 사용",
         "",
@@ -477,6 +751,87 @@ def render_strategist_llm_summary_markdown(payload: Dict[str, Any]) -> str:
         "---",
         "",
         "## 근거",
+        "",
+        f"- source_response_json: `{payload.get('source_response_json')}`",
+        f"- source_canonical_strategist_json: `{payload.get('source_canonical_strategist_json')}`",
+        f"- run_id: `{_text(meta.get('run_id'), '')}`",
+        f"- saved_at: `{_text(meta.get('saved_at'), '')}`",
+        f"- generated_at: `{_text(payload.get('generated_at'), '')}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _monitor_adjustment_lines(value: Dict[str, Any]) -> List[str]:
+    if not value:
+        return ["- -"]
+    return [f"- {key}: {value.get(key)}" for key in sorted(value)]
+
+
+def _render_stage_specific_summary_markdown(payload: Dict[str, Any]) -> str:
+    meta = _as_dict(payload.get("llm_meta"))
+    readout = _as_dict(payload.get("operator_readout"))
+    stage_decision = _as_dict(payload.get("stage_decision"))
+    detail = _as_dict(payload.get("strategy_detail"))
+    watch = _as_dict(detail.get("candidate_watch_policy"))
+    triggers = ", ".join(str(x) for x in _as_list(stage_decision.get("priority_exit_triggers"))) or "-"
+    monitor_adjustment = _as_dict(stage_decision.get("monitor_adjustment"))
+
+    lines: List[str] = [
+        f"# Strategist LLM Summary ({_text(meta.get('day'), '-')})",
+        "",
+        "---",
+        "",
+        "## Stage-Specific LLM Output",
+        "",
+        f"- status: {_text(meta.get('status'))} / model={_text(meta.get('model'))}",
+        f"- stage: {stage_decision.get('stage_index')} / {_text(stage_decision.get('stage_name'))}",
+        f"- call_kind: {_text(stage_decision.get('call_kind'))}",
+        f"- stage_component: {_text(meta.get('stage_component'))}",
+        "",
+        "### Decision",
+        "",
+        f"- decision: **{_text(stage_decision.get('decision'))}**",
+        f"- exit_pressure: {_text(stage_decision.get('exit_pressure'))}",
+        f"- thesis_status: {_text(stage_decision.get('thesis_status'))}",
+        f"- next_check_minutes: {stage_decision.get('next_check_minutes')}",
+        f"- priority_exit_triggers: {triggers}",
+        "",
+        "### Monitor Adjustment",
+        "",
+        *_monitor_adjustment_lines(monitor_adjustment),
+        "",
+        "### Reason",
+        "",
+        _text(stage_decision.get("reason")),
+        "",
+        "## Strategy Context From Canonical",
+        "",
+        f"- final_playbook: {_text(detail.get('final_playbook'))}",
+        f"- tactical_strategy: {_text(detail.get('tactical_strategy'))}",
+        f"- playbook_flow: {_playbook_flow_label(detail)}",
+        f"- candidate_watch: {_watch_scope_label(watch) or '-'}",
+        "",
+        "## Operator Check",
+        "",
+        f"- summary: **{_text(readout.get('headline'))}**",
+        f"- main_reason: {_text(readout.get('root_cause'))}",
+        "",
+        "### Good Points",
+        "",
+        *_bullet_lines(_as_list(readout.get("good_points"))),
+        "",
+        "### Issues",
+        "",
+        *_bullet_lines(_as_list(readout.get("issues"))),
+        "",
+        "### Recommended Actions",
+        "",
+        *_bullet_lines(_as_list(readout.get("recommended_actions"))),
+        "",
+        "---",
+        "",
+        "## Evidence",
         "",
         f"- source_response_json: `{payload.get('source_response_json')}`",
         f"- source_canonical_strategist_json: `{payload.get('source_canonical_strategist_json')}`",

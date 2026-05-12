@@ -354,6 +354,7 @@ def test_run_ai_trade_report_batch_default_regeneration_does_not_call_llm(
 
     assert rc == 0
     assert out["ok"] is True
+    assert out["operator_summary_refresh"]["status"] == "ok"
     assert out["rows"][0]["generation_mode_requested"] == "deterministic"
     assert out["rows"][0]["llm_enabled"] is False
     assert out["rows"][0]["llm_status"] == "fallback"

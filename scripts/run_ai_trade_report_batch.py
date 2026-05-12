@@ -21,11 +21,14 @@ from libs.reporting.intraday_trade_reports import (
 from libs.reporting.llm_artifacts import (
     build_compact_input_artifact,
     build_llm_response_artifact,
+    iter_trade_dirs,
     persist_llm_artifact_refs,
     resolve_trade_day_root,
     trade_artifact_paths,
     write_json,
 )
+from libs.reporting.operator_period_summary import generate_operator_daily_summary_artifact
+from libs.reporting.symbol_trade_report import collect_symbols_for_day, generate_symbol_trade_report
 from libs.reporting.trade_report_ai import (
     build_ai_trade_report,
     build_deterministic_trade_report,
@@ -41,6 +44,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Regenerate ai_trade_report artifacts for one trade day.")
     parser.add_argument("--env-path", default=".env")
     parser.add_argument("--reports-root", default="reports")
+    parser.add_argument("--event-log-path", default="data/logs/events.jsonl")
     parser.add_argument("--day", required=True)
     parser.add_argument("--trade-id", action="append", default=[], help="Optional trade_id filter. Repeat the flag to process multiple trades.")
     llm = parser.add_mutually_exclusive_group()
@@ -54,6 +58,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-sec", type=float, default=None, help="Override provider timeout_sec policy for this run.")
     parser.add_argument("--hard-timeout-sec", type=float, default=None, help="Apply a wall-clock timeout to each trade_report LLM call.")
     parser.add_argument("--local-debug", action="store_true", help="Skip LLM and render deterministic .local_debug artifacts without overwriting canonical report files.")
+    parser.add_argument("--skip-operator-summary-refresh", action="store_true", help="Do not refresh reports/operator_summary/daily after canonical regeneration.")
+    parser.add_argument("--refresh-all-symbols", action="store_true", help="Refresh every symbol report for the day even when --trade-id narrows regeneration.")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -183,7 +189,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 3
 
     rows: List[Dict[str, Any]] = []
-    trade_dirs = sorted(path for path in trade_day_root.iterdir() if path.is_dir())
+    affected_symbols: set[str] = set()
+    trade_dirs = iter_trade_dirs(trade_day_root)
     trade_id_filters = _normalize_trade_id_filters(args.trade_id)
     if trade_id_filters:
         allowed = set(trade_id_filters)
@@ -228,6 +235,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 }
             )
             continue
+        symbol_hint = str(story_input.get("symbol") or "").strip().upper()
+        if not symbol_hint and isinstance(story_input.get("shared_facts"), dict):
+            symbol_hint = str((story_input.get("shared_facts") or {}).get("symbol") or "").strip().upper()
+        if symbol_hint:
+            affected_symbols.add(symbol_hint)
 
         compact_input_path = output_paths["compact_input_path"]
         compact_input = build_ai_trade_report_compact_input(story_input)
@@ -293,7 +305,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         llm_path = output_paths["llm_path"]
         llm_response_path = ""
         summary_llm_response_path = ""
-        report_json_path.parent.mkdir(parents=True, exist_ok=True)
+        for path in (
+            report_json_path,
+            report_md_path,
+            summary_input_json_path,
+            summary_json_path,
+            summary_md_path,
+            summary_llm_path,
+            llm_path,
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
         report_json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         report_md_path.write_text(render_trade_report_markdown(report), encoding="utf-8")
         summary_input = build_trade_summary_input(report)
@@ -384,10 +405,47 @@ def main(argv: Optional[List[str]] = None) -> int:
             }
         )
 
+    operator_summary_refresh: Dict[str, Any] = {"status": "skipped", "reason": "not_requested"}
+    if not bool(args.local_debug) and not bool(getattr(args, "skip_operator_summary_refresh", False)):
+        try:
+            event_log_path = Path(str(args.event_log_path or "data/logs/events.jsonl").strip())
+            refreshed_symbols: List[str] = []
+            if trade_id_filters and not bool(getattr(args, "refresh_all_symbols", False)):
+                symbols_to_refresh = sorted(affected_symbols)
+                refresh_scope = "affected_trade_symbols"
+            else:
+                symbols_to_refresh = list(collect_symbols_for_day(event_log_path, reports_root, day))
+                refresh_scope = "all_day_symbols"
+            for symbol in symbols_to_refresh:
+                generate_symbol_trade_report(
+                    events_path=event_log_path,
+                    reports_root=reports_root,
+                    symbol=symbol,
+                )
+                refreshed_symbols.append(symbol)
+            daily_md, daily_json, _daily_payload = generate_operator_daily_summary_artifact(
+                reports_root=reports_root,
+                day=day,
+            )
+            operator_summary_refresh = {
+                "status": "ok",
+                "daily_summary_md": str(daily_md),
+                "daily_summary_json": str(daily_json),
+                "symbol_report_count": len(refreshed_symbols),
+                "symbols": refreshed_symbols,
+                "refresh_scope": refresh_scope,
+            }
+        except Exception as exc:
+            operator_summary_refresh = {
+                "status": "error",
+                "error": str(exc),
+            }
+
     out = {
         "ok": True,
         "day": day,
         "trade_count": len(rows),
+        "operator_summary_refresh": operator_summary_refresh,
         "rows": rows,
     }
     if bool(args.json):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from libs.reporting.trade_bundle_state import (
+    _backfill_execution_fields,
     build_ai_trade_report_generation_component,
     build_bundle_health,
     build_bundle_provenance,
@@ -11,6 +12,21 @@ from libs.reporting.trade_bundle_state import (
     build_trade_bundle_state,
     finalize_bundle_health,
 )
+
+
+def test_backfill_execution_fields_prefers_sell_monitor_price_over_avg_without_fill() -> None:
+    payload = _backfill_execution_fields(
+        {
+            "action": "SELL",
+            "price": 5394,
+            "avg_price": 5394,
+            "monitor_context": {"current_price": 5440, "average_price": 5394},
+        },
+        {"filled_price": None, "avg_price": 5394},
+    )
+
+    assert payload["price"] == 5440
+    assert payload["price_basis"] == "monitor_current_price_fallback"
 
 
 def test_build_component_fingerprint_is_deterministic() -> None:
@@ -346,7 +362,15 @@ def test_build_live_trade_bundle_payloads_prefers_richer_exit_execution_details(
 
     lifecycle_bundle_payload = result["lifecycle_bundle_payload"]
     exit_payload = lifecycle_bundle_payload["exit"]
+    assert result["entry_payload"]["order_id"] == "ENTRY-1"
+    assert result["entry_payload"]["price"] == 1967.0
+    assert result["exit_payload"]["order_id"] == "EXIT-1"
+    assert result["exit_payload"]["filled_price"] == 2030.0
+    assert result["exit_payload"]["price"] == 2030.0
+    assert result["exit_payload"]["broker_fee"] == 10
     assert exit_payload["execution_details"]["filled_price"] == 2030.0
+    assert exit_payload["price"] == 2030.0
+    assert exit_payload["broker_fee"] == 10
     assert exit_payload["execution_details"]["broker_day_match_mode"] == "symbol_qty_exact"
     assert exit_payload["execution_details"]["broker_day_authoritative"] is True
     assert lifecycle_bundle_payload["exit_execution_details"]["filled_price"] == 2030.0

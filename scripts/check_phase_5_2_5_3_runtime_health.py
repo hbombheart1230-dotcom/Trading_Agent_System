@@ -13,12 +13,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.runtime.monitor_policy import normalize_monitor_entry_policy_schema
-from libs.reporting.chart_structure_decision_hint_summary import (
-    build_chart_structure_decision_hint_executive_line,
-    build_chart_structure_decision_hint_summary,
-)
-from libs.reporting.policy_surface_summary import build_policy_surface_quality_summary
-
 
 STRUCTURE_KEYS: Tuple[str, ...] = (
     "entry_policy_contract",
@@ -42,6 +36,24 @@ POLICY_SOURCE_NAMES: Tuple[str, ...] = (
     "state.monitor_entry_policy",
     "strategy_policy.monitor_policy.entry_policy",
 )
+
+
+def _build_chart_structure_decision_hint_summary(rows: Any) -> Dict[str, Any]:
+    from libs.reporting.chart_structure_decision_hint_summary import build_chart_structure_decision_hint_summary
+
+    return build_chart_structure_decision_hint_summary(rows)
+
+
+def _build_chart_structure_decision_hint_executive_line(summary: Dict[str, Any]) -> str:
+    from libs.reporting.chart_structure_decision_hint_summary import build_chart_structure_decision_hint_executive_line
+
+    return build_chart_structure_decision_hint_executive_line(summary)
+
+
+def _build_policy_surface_quality_summary(rows: Any) -> Dict[str, Any]:
+    from libs.reporting.policy_surface_summary import build_policy_surface_quality_summary
+
+    return build_policy_surface_quality_summary(rows)
 
 EXPLICIT_POLICY_FIELDS: Tuple[str, ...] = (
     "entry_style",
@@ -166,11 +178,22 @@ def _iter_run_dirs(reports_root: Path, *, day: str = "", run_ids: Optional[Seque
     return candidates[: max(1, int(limit or 50))]
 
 
-def _collect_monitor_event_payloads(event_log_path: Path, run_ids: Sequence[str]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+def _collect_monitor_event_payloads(
+    event_log_path: Path,
+    run_ids: Sequence[str],
+    *,
+    day: str = "",
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
     target_ids = {str(run_id).strip() for run_id in run_ids if str(run_id).strip()}
     out: Dict[str, Dict[str, Dict[str, Any]]] = {run_id: {} for run_id in target_ids}
     relevant_names = set(MONITOR_EVENT_PRIORITY)
-    for row in _iter_jsonl(event_log_path):
+    if str(day or "").strip():
+        from libs.reporting.event_log_reader import iter_jsonl_events
+
+        source_rows = iter_jsonl_events(event_log_path, day=day)
+    else:
+        source_rows = _iter_jsonl(event_log_path)
+    for row in source_rows:
         run_id = str(row.get("run_id") or "").strip()
         if not run_id or run_id not in target_ids:
             continue
@@ -695,7 +718,7 @@ def build_phase_5_2_5_3_runtime_health(
     if not run_dirs:
         raise FileNotFoundError(f"No canonical monitor runs found for day={day!r} run_ids={list(run_ids or [])!r}")
 
-    event_payloads = _collect_monitor_event_payloads(event_log_path, [path.name for path in run_dirs])
+    event_payloads = _collect_monitor_event_payloads(event_log_path, [path.name for path in run_dirs], day=day)
     run_rows = [_extract_run_health(path, event_payloads.get(path.name, {})) for path in run_dirs]
 
     structure_summary: Dict[str, Dict[str, Any]] = {}
@@ -810,13 +833,13 @@ def build_phase_5_2_5_3_runtime_health(
         },
         "policy_source_field_presence": _build_policy_source_summary(run_rows),
         "policy_aware_gating_deadness": _build_policy_aware_gating_deadness(run_rows),
-        "chart_structure_decision_hint_summary": build_chart_structure_decision_hint_summary(run_rows),
+        "chart_structure_decision_hint_summary": _build_chart_structure_decision_hint_summary(run_rows),
         "final_decision_counts": dict(decision_counts),
         "suspicious_counts": dict(suspicious_counts),
         "suspicious_runs": suspicious_runs,
         "buy_runs": buy_runs,
         "reclaim_wait_runs": reclaim_wait_runs,
-        "policy_surface_quality_summary": build_policy_surface_quality_summary(run_rows),
+        "policy_surface_quality_summary": _build_policy_surface_quality_summary(run_rows),
         "runs": run_rows,
     }
     return out
@@ -957,7 +980,7 @@ def render_phase_5_2_5_3_runtime_health_text(payload: Mapping[str, Any]) -> str:
         "",
         "## Chart Structure Decision Hint Summary",
         "",
-        f"- headline: {build_chart_structure_decision_hint_executive_line(chart_structure_decision_hint_summary) or 'Chart structure guard unknown'}",
+        f"- headline: {_build_chart_structure_decision_hint_executive_line(chart_structure_decision_hint_summary) or 'Chart structure guard unknown'}",
         f"- available_run_count: **{int(chart_structure_decision_hint_summary.get('available_run_count') or 0)}**",
         f"- applied_count: **{int(chart_structure_decision_hint_summary.get('applied_count') or 0)}**",
         f"- applied_rate: **{float(chart_structure_decision_hint_summary.get('applied_rate') or 0.0):.4f}**",

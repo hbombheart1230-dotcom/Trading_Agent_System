@@ -17,6 +17,7 @@ Current contract draft:
 - `../kiwoom_truth/kiwoom_theme_strength_packet_2026-04-27.md`
 - `news_query_target_flow_2026-04-28.md`
 - `strategist_llm_summary_artifact_2026-04-28.md`
+- `strategy_detail_candidate_watch_policy_2026-05-06.md`
 
 ## Design Principle
 
@@ -56,6 +57,9 @@ Playbook diversity rule:
 - when market regime, theme strength, liquidity, and volume quality are supportive, strategist should allow `breakout` or `momentum_pullback` frames
 - memory-derived recent losses should distinguish entry-signal failure from cost/exit failure before forcing a more defensive playbook
 - fresh strategist artifacts should expose why the chosen playbook was selected and which alternative playbooks were rejected
+- strategist should propose candidate watch depth through `candidate_watch_policy`; Commander owns the final executable `entry_control`
+- reports should show `pre_llm_playbook`, `llm_requested_playbook`, and `final_playbook` separately; Phase 1 visibility fields were implemented on `2026-05-06`
+- reports should show the full candidate-watch chain: strategist proposal, Commander clamp/final scope, and Monitor cascade/fallback result
 
 ## Current Validation Status
 
@@ -70,6 +74,8 @@ Code/test verification is current for:
 - Commander-owned horizon handoff fields
 - deterministic `strategist_summary.md/json` generation from strategist `response.json`
 - `ai_trade_report` compact input and markdown rendering that consume structured strategist fields directly
+- Phase 1 strategy detail visibility fields: `pre_llm_playbook`, `llm_requested_playbook`, `final_playbook`, `tactical_strategy`, `strategy_scores`, `rejected_strategy_reasons`, and proposed `candidate_watch_policy`
+- Phase 4 candidate-watch reporting visibility: `entry_execution_visibility`, `commander.entry_control`, and `monitor.entry_candidate_cascade`
 
 Remaining live verification:
 

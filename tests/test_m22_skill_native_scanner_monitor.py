@@ -21,7 +21,7 @@ def test_m22_scanner_uses_skill_account_orders_for_penalty():
             },
             "account.orders": {
                 "rows": [
-                    {"symbol": "AAA", "order_id": "x-1"},
+                    {"symbol": "AAA", "order_id": "x-1", "side": "BUY", "order_qty": 2, "filled_qty": 0, "remaining_qty": 2, "status": "OPEN"},
                 ]
             },
         },
@@ -37,13 +37,42 @@ def test_m22_scanner_uses_skill_account_orders_for_penalty():
 
     rows = {str(r.get("symbol")): r for r in out.get("scan_results", []) if isinstance(r, dict)}
     assert rows["AAA"]["features"]["skill_open_orders"] == 1
+    assert rows["AAA"]["features"]["skill_open_orders_pending_only"] is True
     assert rows["BBB"]["features"]["skill_open_orders"] == 0
     assert rows["AAA"]["risk_score"] > rows["BBB"]["risk_score"]
+
+
+def test_m22_scanner_ignores_filled_account_orders_for_open_order_penalty():
+    state = {
+        "candidates": [{"symbol": "AAA"}, {"symbol": "BBB"}],
+        "mock_scan_results": {
+            "AAA": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+            "BBB": {"score": 0.49, "risk_score": 0.20, "confidence": 0.80},
+        },
+        "skill_results": {
+            "market.quote": {
+                "AAA": {"symbol": "AAA", "cur": 1000},
+                "BBB": {"symbol": "BBB", "cur": 1000},
+            },
+            "account.orders": {
+                "rows": [
+                    {"symbol": "AAA", "side": "BUY", "order_qty": 2, "filled_qty": 2, "remaining_qty": 0, "status": "FILLED"},
+                ]
+            },
+        },
+        "policy": {"max_risk": 1.0, "min_confidence": 0.0},
+    }
+
+    out = scanner_node(state)
+    rows = {str(r.get("symbol")): r for r in out.get("scan_results", []) if isinstance(r, dict)}
+    assert rows["AAA"]["features"]["skill_open_orders"] == 0
+    assert rows["AAA"]["components"]["open_order_penalty_component"] == 0.0
 
 
 def test_m22_monitor_reads_order_status_dto_without_changing_intent_shape():
     state = {
         "plan": {"thesis": "demo"},
+        "entry_cost_filter": {"enabled": False},
         "selected": {"symbol": "AAA", "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
         "minute_ohlcv_by_symbol": {
             "AAA": [
@@ -78,6 +107,42 @@ def test_m22_monitor_reads_order_status_dto_without_changing_intent_shape():
     assert out["monitor"]["order_lifecycle"]["stage"] == "partial_fill"
     assert out["monitor"]["order_lifecycle"]["terminal"] is False
     assert out["monitor"]["order_lifecycle"]["progress"] == 0.5
+
+
+def test_m22_monitor_does_not_block_entry_on_filled_account_order_feature():
+    state = {
+        "plan": {"thesis": "demo"},
+        "entry_cost_filter": {"enabled": False},
+        "selected": {
+            "symbol": "AAA",
+            "score": 0.9,
+            "risk_score": 0.2,
+            "confidence": 0.8,
+            "features": {"skill_open_orders": 1},
+        },
+        "minute_ohlcv_by_symbol": {
+            "AAA": [
+                {"ts": 1774317000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+                {"ts": 1774317060, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+                {"ts": 1774317120, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+                {"ts": 1774317180, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+                {"ts": 1774317240, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                {"ts": 1774317300, "open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 2500, "vwap": 101.2},
+            ]
+        },
+        "skill_results": {
+            "account.orders": {
+                "rows": [
+                    {"symbol": "AAA", "side": "BUY", "order_qty": 1, "filled_qty": 1, "remaining_qty": 0, "status": "FILLED"},
+                ]
+            }
+        },
+    }
+
+    out = monitor_node(state)
+    assert out["monitor"]["entry_guard_reason"] != "same_symbol_pending_buy"
+    assert isinstance(out.get("intents"), list) and len(out["intents"]) == 1
+    assert out["intents"][0]["symbol"] == "AAA"
 
 
 def test_m22_monitor_maps_filled_lifecycle_from_qty_progress():

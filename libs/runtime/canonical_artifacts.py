@@ -5,7 +5,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from libs.contracts.agent_outputs import (
     build_commander_output_artifact,
@@ -17,6 +17,7 @@ from libs.contracts.agent_outputs import (
     build_supervisor_output_artifact,
     validate_artifact,
 )
+from libs.runtime.llm_report_classifier import find_llm_run_dir, organize_llm_run
 
 
 def _reports_root(state: Dict[str, Any] | None = None) -> Path:
@@ -75,19 +76,185 @@ def llm_run_artifact_paths(
     reports_root: Path,
     artifact_name: str,
 ) -> Dict[str, Path]:
-    base = (
-        Path(reports_root)
-        / "llm"
-        / str(day or "").strip()
-        / str(run_id or "").strip()
-        / str(artifact_name or "").strip()
-    )
+    run_base = find_llm_run_dir(Path(reports_root), str(day or "").strip(), str(run_id or "").strip())
+    base = run_base / str(artifact_name or "").strip()
     return {
         "base_dir": base,
         "prompt": base / "prompt.json",
         "response": base / "response.json",
         "meta": base / "meta.json",
     }
+
+
+_STRATEGIST_STAGE_BY_CALL_KIND: Dict[str, Dict[str, Any]] = {
+    "market_strategy_frame": {
+        "stage_index": 1,
+        "stage_name": "market_strategy_frame",
+        "component": "strategist_stage1_market_frame",
+    },
+    "selected_symbol_tactical_refresh": {
+        "stage_index": 2,
+        "stage_name": "selected_symbol_tactical_refresh",
+        "component": "strategist_stage2_selected_symbol",
+    },
+    "stale_intraday_hold_review": {
+        "stage_index": 3,
+        "stage_name": "stale_intraday_hold_review",
+        "component": "strategist_stage3_hold_review",
+    },
+    "end_of_day_carry_review": {
+        "stage_index": 4,
+        "stage_name": "end_of_day_carry_review",
+        "component": "strategist_stage4_carry_review",
+    },
+}
+
+_STRATEGIST_STAGE_ALIASES: Dict[str, str] = {
+    "": "market_strategy_frame",
+    "strategic_frame": "market_strategy_frame",
+    "theme_selection": "market_strategy_frame",
+    "theme_selection_repair": "market_strategy_frame",
+    "post_scanner_refresh": "selected_symbol_tactical_refresh",
+    "selected_symbol_refresh": "selected_symbol_tactical_refresh",
+    "post_scanner_selected_symbol_refresh": "selected_symbol_tactical_refresh",
+    "open_position_monitor_refresh": "stale_intraday_hold_review",
+    "hold_review": "stale_intraday_hold_review",
+    "preopen_open_position_review": "stale_intraday_hold_review",
+    "carry_review": "end_of_day_carry_review",
+    "overnight_carry_review": "end_of_day_carry_review",
+    "closeout_carry_review": "end_of_day_carry_review",
+}
+
+
+def normalize_strategist_llm_call_kind(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    normalized = _STRATEGIST_STAGE_ALIASES.get(raw, raw)
+    if normalized in _STRATEGIST_STAGE_BY_CALL_KIND:
+        return normalized
+    return "market_strategy_frame"
+
+
+def strategist_llm_stage_descriptor(call_kind: Any) -> Dict[str, Any]:
+    normalized = normalize_strategist_llm_call_kind(call_kind)
+    descriptor = dict(_STRATEGIST_STAGE_BY_CALL_KIND.get(normalized) or {})
+    descriptor["call_kind"] = normalized
+    return descriptor
+
+
+def llm_stage_manifest_path(
+    run_id: str,
+    *,
+    day: str,
+    reports_root: Path,
+) -> Path:
+    run_base = find_llm_run_dir(Path(reports_root), str(day or "").strip(), str(run_id or "").strip())
+    return run_base / "llm_stage_manifest.json"
+
+
+def _read_manifest(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_llm_stage_manifest_entry(state: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
+    run_id = str(state.get("run_id") or "").strip()
+    if not run_id:
+        return {}
+    day = _resolve_day(state)
+    reports_root = _reports_root(state)
+    path = llm_stage_manifest_path(run_id, day=day, reports_root=reports_root)
+    descriptor = strategist_llm_stage_descriptor(entry.get("call_kind") or entry.get("stage_name"))
+    normalized_entry = {
+        "stage_index": int(entry.get("stage_index") or descriptor.get("stage_index") or 0),
+        "stage_name": str(entry.get("stage_name") or descriptor.get("stage_name") or ""),
+        "call_kind": str(descriptor.get("call_kind") or ""),
+        "component": str(entry.get("component") or descriptor.get("component") or ""),
+        "status": str(entry.get("status") or entry.get("llm_status") or ""),
+        "reason": str(entry.get("reason") or ""),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for key in (
+        "prompt_ref",
+        "response_ref",
+        "meta_ref",
+        "legacy_prompt_ref",
+        "legacy_response_ref",
+        "legacy_meta_ref",
+        "strategist_summary_md_ref",
+        "strategist_summary_json_ref",
+        "skip_reason",
+        "model",
+    ):
+        value = entry.get(key)
+        if value not in (None, ""):
+            normalized_entry[key] = value
+
+    manifest = _read_manifest(path)
+    if not manifest:
+        manifest = {
+            "schema_version": "llm_stage_manifest.v1",
+            "run_id": run_id,
+            "day": day,
+            "stages": [],
+        }
+    stages: List[Dict[str, Any]] = [
+        dict(row)
+        for row in list(manifest.get("stages") or [])
+        if isinstance(row, dict)
+    ]
+    stage_index = int(normalized_entry.get("stage_index") or 0)
+    component = str(normalized_entry.get("component") or "")
+    replaced = False
+    for idx, row in enumerate(stages):
+        if int(row.get("stage_index") or 0) == stage_index and str(row.get("component") or "") == component:
+            stages[idx] = normalized_entry
+            replaced = True
+            break
+    if not replaced:
+        stages.append(normalized_entry)
+    stages = sorted(stages, key=lambda row: (int(row.get("stage_index") or 0), str(row.get("component") or "")))
+    manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
+    manifest["stages"] = stages
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    llm_map = state.get("llm_artifacts") if isinstance(state.get("llm_artifacts"), dict) else {}
+    llm_map = dict(llm_map)
+    llm_map["llm_stage_manifest"] = str(path)
+    state["llm_artifacts"] = llm_map
+    return {"llm_stage_manifest_ref": str(path), "stage_entry": normalized_entry}
+
+
+def write_llm_stage_skip_entry(state: Dict[str, Any], *, call_kind: Any, reason: str) -> Dict[str, Any]:
+    run_id = str(state.get("run_id") or "").strip()
+    if not run_id:
+        return {}
+    day = _resolve_day(state)
+    reports_root = _reports_root(state)
+    descriptor = strategist_llm_stage_descriptor(call_kind)
+    path = llm_stage_manifest_path(run_id, day=day, reports_root=reports_root)
+    manifest = _read_manifest(path)
+    stage_index = int(descriptor.get("stage_index") or 0)
+    component = str(descriptor.get("component") or "")
+    for row in list(manifest.get("stages") or []):
+        if not isinstance(row, dict):
+            continue
+        if int(row.get("stage_index") or 0) == stage_index and str(row.get("component") or "") == component:
+            return {"llm_stage_manifest_ref": str(path), "stage_entry": dict(row), "already_present": True}
+    return write_llm_stage_manifest_entry(
+        state,
+        {
+            **dict(descriptor),
+            "status": "skipped",
+            "reason": str(reason or ""),
+            "skip_reason": str(reason or ""),
+        },
+    )
 
 
 def _with_validation(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -205,7 +372,14 @@ def write_llm_artifact_bundle(
 
     summary_refs: Dict[str, str] = {}
     summary_error = ""
-    if str(artifact_name or "").strip() == "strategist" or str(meta_obj.get("component") or "").strip() == "strategist":
+    artifact_key = str(artifact_name or "").strip()
+    component_key = str(meta_obj.get("component") or "").strip()
+    if (
+        artifact_key == "strategist"
+        or artifact_key.startswith("strategist_stage")
+        or component_key == "strategist"
+        or component_key.startswith("strategist_stage")
+    ):
         try:
             from libs.reporting.strategist_llm_summary import generate_strategist_llm_summary
 
@@ -245,9 +419,25 @@ def write_strategist_artifact(state: Dict[str, Any]) -> str:
     run_id = str(state.get("run_id") or "").strip()
     if not run_id:
         return ""
-    paths = canonical_run_artifact_paths(run_id, day=_resolve_day(state), reports_root=_reports_root(state))
+    day = _resolve_day(state)
+    reports_root = _reports_root(state)
+    paths = canonical_run_artifact_paths(run_id, day=day, reports_root=reports_root)
     path = _write_artifact_once(state, agent="strategist", path=paths["strategist"], payload=build_strategist_output_artifact(state))
+    _refresh_strategist_llm_summary_after_canonical(run_id=run_id, day=day, reports_root=reports_root)
     return path
+
+
+def _refresh_strategist_llm_summary_after_canonical(*, run_id: str, day: str, reports_root: Path) -> None:
+    paths = llm_run_artifact_paths(run_id, day=day, reports_root=reports_root, artifact_name="strategist")
+    response_path = paths["response"]
+    if not response_path.exists():
+        return
+    try:
+        from libs.reporting.strategist_llm_summary import generate_strategist_llm_summary
+
+        generate_strategist_llm_summary(response_path)
+    except Exception:
+        return
 
 
 def write_scanner_artifact(state: Dict[str, Any]) -> str:
@@ -302,13 +492,49 @@ def write_supervisor_artifact(
     return path
 
 
+def _rewrite_state_llm_artifact_refs(state: Dict[str, Any], *, day: str, run_id: str, category: str) -> None:
+    if not category:
+        return
+    old_backslash = f"reports\\llm\\{day}\\{run_id}\\"
+    new_backslash = f"reports\\llm\\{day}\\{category}\\{run_id}\\"
+    old_slash = f"reports/llm/{day}/{run_id}/"
+    new_slash = f"reports/llm/{day}/{category}/{run_id}/"
+    old_abs_backslash = f"\\llm\\{day}\\{run_id}\\"
+    new_abs_backslash = f"\\llm\\{day}\\{category}\\{run_id}\\"
+    old_abs_slash = f"/llm/{day}/{run_id}/"
+    new_abs_slash = f"/llm/{day}/{category}/{run_id}/"
+    llm_map = state.get("llm_artifacts") if isinstance(state.get("llm_artifacts"), dict) else {}
+    if not llm_map:
+        return
+    updated: Dict[str, Any] = {}
+    for key, value in dict(llm_map).items():
+        text = str(value)
+        text = text.replace(old_backslash, new_backslash).replace(old_slash, new_slash)
+        text = text.replace(old_abs_backslash, new_abs_backslash).replace(old_abs_slash, new_abs_slash)
+        updated[key] = text
+    state["llm_artifacts"] = updated
+
+
 def write_executor_artifact(state: Dict[str, Any], *, execution: Dict[str, Any], order: Dict[str, Any] | None = None) -> str:
     run_id = str(state.get("run_id") or "").strip()
     if not run_id:
         return ""
-    paths = canonical_run_artifact_paths(run_id, day=_resolve_day(state), reports_root=_reports_root(state))
+    day = _resolve_day(state)
+    reports_root = _reports_root(state)
+    paths = canonical_run_artifact_paths(run_id, day=day, reports_root=reports_root)
     payload = build_executor_output_artifact(state, execution=dict(execution or {}), order=dict(order or {}))
     path = _write_artifact_once(state, agent="executor", path=paths["executor"], payload=payload)
+    try:
+        classification = organize_llm_run(reports_root, day=day, run_id=run_id, dry_run=False, update_day_index=True)
+        state["llm_report_classification"] = dict(classification)
+        _rewrite_state_llm_artifact_refs(
+            state,
+            day=day,
+            run_id=run_id,
+            category=str(classification.get("category") or ""),
+        )
+    except Exception as exc:
+        state["llm_report_classification_error"] = f"{type(exc).__name__}: {exc}"[:300]
     return path
 
 

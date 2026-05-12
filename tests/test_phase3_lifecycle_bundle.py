@@ -1,6 +1,6 @@
 ﻿from pathlib import Path
 
-from libs.reporting.llm_artifacts import trade_artifact_paths
+from libs.reporting.llm_artifacts import iter_trade_dirs, trade_artifact_paths
 from libs.reporting.trade_story_pipeline import build_lifecycle_bundle
 
 
@@ -103,3 +103,16 @@ def test_trade_artifact_paths_use_phase3_trade_layout_and_keep_legacy_refs() -> 
     assert paths["brief_json"].as_posix().endswith("reports/trades/2026-03-20/TRD_20260320_005930_01/reports/operator_brief.json")
     assert paths["strategist_llm_response_json"].as_posix().endswith("reports/trades/2026-03-20/TRD_20260320_005930_01/reports/strategist_llm_response.json")
     assert paths["legacy_trade_lifecycle_json"].as_posix().endswith("reports/trades/2026/03/TRD_20260320_005930_01/trade_lifecycle.json")
+
+
+def test_trade_artifact_paths_resolve_hour_bucketed_existing_trade(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    trade_id = "TRD_20260320_005930_01"
+    trade_root = reports_root / "trades" / "2026-03-20" / "0900" / trade_id
+    trade_root.mkdir(parents=True)
+    (trade_root / "lifecycle_bundle.json").write_text("{}", encoding="utf-8")
+
+    paths = trade_artifact_paths(reports_root, "2026-03-20", trade_id)
+
+    assert paths["trade_root"] == trade_root
+    assert iter_trade_dirs(reports_root / "trades" / "2026-03-20") == [trade_root]

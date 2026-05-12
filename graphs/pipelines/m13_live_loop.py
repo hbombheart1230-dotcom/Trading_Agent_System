@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 # Type aliases for dependency injection (keeps this pipeline unit-testable).
@@ -49,6 +51,50 @@ def _clear_per_run_transient_state(state: Dict[str, Any]) -> None:
     for key in _PER_RUN_TRANSIENT_KEYS:
         state.pop(key, None)
 
+
+def _resolve_report_day(state: Dict[str, Any]) -> str:
+    for key in ("started_at", "ts", "now_iso", "tick_ts"):
+        value = str(state.get(key) or "").strip()
+        if len(value) >= 10 and value[4:5] == "-" and value[7:8] == "-":
+            return value[:10]
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _rewrite_state_llm_refs(state: Dict[str, Any], *, day: str, run_id: str, category: str) -> None:
+    llm_map = state.get("llm_artifacts") if isinstance(state.get("llm_artifacts"), dict) else {}
+    if not llm_map or not category:
+        return
+    replacements = {
+        f"reports\\llm\\{day}\\{run_id}\\": f"reports\\llm\\{day}\\{category}\\{run_id}\\",
+        f"reports/llm/{day}/{run_id}/": f"reports/llm/{day}/{category}/{run_id}/",
+        f"\\llm\\{day}\\{run_id}\\": f"\\llm\\{day}\\{category}\\{run_id}\\",
+        f"/llm/{day}/{run_id}/": f"/llm/{day}/{category}/{run_id}/",
+    }
+    updated: Dict[str, Any] = {}
+    for key, value in dict(llm_map).items():
+        text = str(value)
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        updated[key] = text
+    state["llm_artifacts"] = updated
+
+
+def _classify_current_llm_report(state: Dict[str, Any]) -> None:
+    run_id = str(state.get("run_id") or "").strip()
+    if not run_id:
+        return
+    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports") or "reports"))
+    day = _resolve_report_day(state)
+    try:
+        from libs.runtime.llm_report_classifier import organize_llm_run
+
+        result = organize_llm_run(reports_root, day=day, run_id=run_id, dry_run=False, update_day_index=True)
+        state["llm_report_classification"] = dict(result)
+        _rewrite_state_llm_refs(state, day=day, run_id=run_id, category=str(result.get("category") or ""))
+    except Exception as exc:
+        state["llm_report_classification_error"] = f"{type(exc).__name__}: {exc}"[:300]
+
+
 def run_m13_once(
     state: Dict[str, Any],
     *,
@@ -86,6 +132,8 @@ def run_m13_once(
     state = tick_fn(state, dt=dt)  # type: ignore[arg-type]
     # End-of-day report trigger (runs only after close, once per day)
     state = eod_fn(state, dt=dt)  # type: ignore[arg-type]
+    # Keep LLM audit artifacts grouped for operator review after each completed cycle.
+    _classify_current_llm_report(state)
     # Persist state at end
     state = save_state_fn(state)
     return state

@@ -110,6 +110,49 @@ def test_live_execution_bundle_report_reuses_trade_bundle_state_helper() -> None
     assert mod.build_live_trade_bundle_payloads is shared_build_live_trade_bundle_payloads
 
 
+def test_runtime_minute_rows_for_symbol_reads_persisted_post_exit_cache() -> None:
+    rows = [
+        {"ts": 1777529700, "close": 56600.0, "raw_ts": "20260430151500"},
+        {"ts": 1777530000, "close": 56700.0, "raw_ts": "20260430152000"},
+    ]
+    state = {
+        "persisted_state": {
+            "recent_minute_ohlcv_by_symbol": {
+                "001440": {
+                    "symbol": "001440",
+                    "rows": rows,
+                    "latest_candle_ts": 1777530000,
+                }
+            }
+        }
+    }
+
+    assert runner_mod._runtime_minute_rows_for_symbol(state, "001440") == rows
+
+
+def test_runtime_minute_rows_for_symbol_prefers_freshest_source() -> None:
+    stale_rows = [{"ts": 100, "close": 10.0}]
+    fresh_rows = [{"ts": 100, "close": 10.0}, {"ts": 220, "close": 11.0}]
+    state = {
+        "recent_minute_ohlcv_by_symbol": {"005930": {"rows": stale_rows}},
+        "skill_results": {
+            "market.minute_ohlcv_by_symbol": {
+                "005930": {
+                    "result": {
+                        "action": "ready",
+                        "data": {
+                            "symbol": "005930",
+                            "rows": fresh_rows,
+                        },
+                    }
+                }
+            }
+        },
+    }
+
+    assert runner_mod._runtime_minute_rows_for_symbol(state, "005930") == fresh_rows
+
+
 def test_live_execution_bundle_event_logger_accepts_level(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
@@ -913,11 +956,11 @@ def test_scanner_evidence_enrichment_normalizes_chart_coverage() -> None:
         monitor_evidence={"cycle_summaries": [{"price_anomaly_flag": False, "price_anomaly_reason": ""}]},
     )
 
-    assert "chart feature coverage 10/12" in enriched_reason["top_reasons"]
-    assert "Chart / feature coverage: 10/12" in enriched_reason["bullets"]
-    assert "10/12 captured features" in enriched_filters["summary"]
+    assert "chart feature coverage 10/13" in enriched_reason["top_reasons"]
+    assert "Chart / feature coverage: 10/13" in enriched_reason["bullets"]
+    assert "10/13 captured features" in enriched_filters["summary"]
     assert "strong" in enriched_filters["summary"]
-    assert "chart completeness filter: PASS - 10/12 captured chart features" in enriched_filters["bullets"]
+    assert "chart completeness filter: PASS - 10/13 captured chart features" in enriched_filters["bullets"]
     assert any(row["name"] == "price anomaly filter" and row["status"] == "PASS" for row in enriched_filters["checks"])
     assert any("price anomaly filter: PASS - monitor price cross-check found no anomaly" == bullet for bullet in enriched_filters["bullets"])
 

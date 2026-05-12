@@ -226,3 +226,40 @@ def test_m18_strategist_clamps_positive_min_extended_without_invalid_fallback(mo
         "min_extended_from_vwap_pct:clamped_to_upper_bound" in str(issue)
         for issue in list(strategist_output.get("policy_validation_issues") or [])
     )
+
+
+def test_m18_strategist_accepts_percent_unit_monitor_entry_policy(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    out = strategist_node(
+        {
+            "runtime_phase": "session",
+            "candidate_symbols": ["111111", "222222", "333333"],
+            "ai_strategist_output": {
+                "playbook": "pullback",
+                "monitor_entry_policy": {
+                    "volume_ratio_min": 0.72,
+                    "min_extended_from_vwap_pct": -1.5,
+                    "max_extended_from_vwap_pct": 3.0,
+                    "pullback_min_pct": 0.5,
+                    "pullback_max_pct": 3.0,
+                    "reclaim_tolerance_pct": 0.2,
+                },
+                "policy_rationale": "LLM expressed pct thresholds in percent units.",
+                "policy_source": "strategist",
+            },
+        }
+    )
+
+    strategist_output = out.get("strategist_output") or {}
+    policy = strategist_output.get("monitor_entry_policy") or {}
+    issues = [str(issue) for issue in list(strategist_output.get("policy_validation_issues") or [])]
+
+    assert strategist_output.get("policy_fallback_used") is False
+    assert strategist_output.get("policy_validation_status") == "partial_normalized"
+    assert list(strategist_output.get("policy_validation_invalid_fields") or []) == []
+    assert policy["min_extended_from_vwap_pct"] == -0.015
+    assert policy["max_extended_from_vwap_pct"] == 0.03
+    assert policy["pullback_min_pct"] == 0.005
+    assert policy["pullback_max_pct"] == 0.03
+    assert policy["reclaim_tolerance_pct"] == 0.002
+    assert any("max_extended_from_vwap_pct:percent_unit_normalized" in issue for issue in issues)

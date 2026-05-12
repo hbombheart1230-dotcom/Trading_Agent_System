@@ -61,6 +61,11 @@ def test_build_chart_structure_features_extracts_breakout_bias_states() -> None:
     assert (out.get("support_resistance") or {}).get("resistance_break_confirmed") == "confirmed"
     assert (out.get("continuity_momentum") or {}).get("volume_sustain") == "strong"
     assert (out.get("continuity_momentum") or {}).get("momentum_follow_through") in {"moderate", "strong"}
+    human = out.get("human_chart_context") or {}
+    assert human.get("available") is True
+    assert human.get("vwap_reclaim_persistence") in {"partial", "strong"}
+    assert human.get("ma_bullish_persistence") in {"partial", "strong"}
+    assert float(human.get("entry_chart_score") or 0.0) > 0.5
 
 
 def test_build_chart_structure_features_marks_failed_breakout_when_rejected() -> None:
@@ -84,3 +89,6 @@ def test_build_chart_structure_features_marks_failed_breakout_when_rejected() ->
     assert (out.get("support_resistance") or {}).get("resistance_break_confirmed") == "failed"
     assert (out.get("support_resistance") or {}).get("failed_breakout") in {"suspected", "confirmed"}
     assert (out.get("continuity_momentum") or {}).get("momentum_decay") in {"mild", "strong"}
+    human = out.get("human_chart_context") or {}
+    assert human.get("available") is True
+    assert float(human.get("exit_risk_score") or 0.0) > 0.0

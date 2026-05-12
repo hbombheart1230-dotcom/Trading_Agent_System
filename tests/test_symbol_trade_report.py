@@ -97,7 +97,7 @@ def test_generate_symbol_trade_report_uses_truth_artifacts_not_trade_markdown(tm
     assert payload["summary"]["recent_playbooks"] == ["pullback"]
     assert payload["summary"]["recent_wait_reasons"] == ["volume_confirmation_missing"]
     assert payload["summary"]["wait_reason_distribution"] == {"volume_confirmation_missing": 1}
-    assert payload["summary"]["recent_entry_reasons"] == ["pullback_reclaim_above_vwap_with_rebound_confirmation"]
+    assert payload["summary"]["recent_entry_reasons"] == ["눌림목 VWAP 재회복 + 반등 확인"]
     assert payload["history_index"][0]["trade_id"] == "TRD_20260320_005930_01"
     assert payload["history_index"][0]["last_action"] == "SELL"
     assert payload["history_index"][0]["last_status"] == "closed"
@@ -234,14 +234,66 @@ def test_symbol_trade_report_reads_linked_trade_report_and_operator_brief(tmp_pa
     assert payload["summary"]["recent_operator_viewpoints"] == [
         "Scanner found the leader, but the trade needed a defensive exit."
     ]
-    assert payload["pattern_insights"]["recent_entry_pattern_types"] == ["pullback"]
-    assert payload["pattern_insights"]["recent_exit_pattern_types"] == ["vwap_breakdown"]
+    assert payload["pattern_insights"]["recent_entry_pattern_types"] == ["눌림목"]
+    assert payload["pattern_insights"]["recent_exit_pattern_types"] == ["VWAP 이탈"]
     assert payload["pattern_insights"]["recent_improvement_tags"] == ["insufficient_confirmation"]
     assert payload["pattern_insights"]["recent_review_flags"] == ["needs_human_review"]
-    assert payload["history_index"][0]["entry_pattern_type"] == "pullback"
-    assert payload["history_index"][0]["exit_pattern_type"] == "vwap_breakdown"
+    assert payload["history_index"][0]["entry_pattern_type"] == "눌림목"
+    assert payload["history_index"][0]["exit_pattern_type"] == "VWAP 이탈"
     assert payload["history_index"][0]["brief_headline"] == "000660 VWAP breakdown exit"
     assert payload["history_index"][0]["result_pct"] == 0.67
+
+
+def test_symbol_trade_report_prefers_actual_fallback_entry_reason_over_top_scanner_pick(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    events_path = tmp_path / "data" / "logs" / "events.jsonl"
+    _write_jsonl(events_path, [])
+    trade_root = reports_root / "trades" / "2026-05-07" / "1300" / "TRD_20260507_010170_02"
+    _write_json(
+        trade_root / "lifecycle_bundle.json",
+        {
+            "trade_id": "TRD_20260507_010170_02",
+            "symbol": "010170",
+            "day": "2026-05-07",
+            "trade_lifecycle_status": "closed",
+            "lifecycle": {
+                "entry": {
+                    "ts": "2026-05-07T04:14:18+00:00",
+                    "price": 21548,
+                    "reason_human": "Scanner selected 005930 as rank #1 out of 5 candidates with score 0.896 because it led on turnover and volume.",
+                    "monitor_context": {
+                        "trigger_type": "pullback_structure_above_vwap_with_volume_confirmation"
+                    },
+                },
+                "exit": {
+                    "ts": "2026-05-07T04:21:07+00:00",
+                    "price": 21400,
+                    "reason_human": "SELL was triggered because intraday_low_break.",
+                },
+            },
+        },
+    )
+    _write_json(
+        trade_root / "reports" / "ai_trade_report.json",
+        {"shared_facts": {"pnl_pct": -0.0158}},
+    )
+    _write_json(
+        trade_root / "reports" / "ai_trade_summary_input.json",
+        {
+            "decision_flow": {
+                "selection_path": "monitor_fallback_from_scanner_top_pick",
+                "scanner_top_pick_symbol": "005930",
+                "monitor_fallback_reason": "VWAP 위 눌림목 구조와 거래량 확인",
+            }
+        },
+    )
+
+    payload = build_symbol_trade_summary(events_path, reports_root, "010170")
+    row = payload["history_index"][0]
+
+    assert row["entry_reason"] == "VWAP 위 눌림목 + 거래량 확인"
+    assert row["entry_pattern_type"] == "눌림목"
+    assert "005930" not in row["entry_reason"]
 
 
 def test_symbol_trade_report_normalizes_ratio_like_result_pct_from_bundle_artifacts(tmp_path: Path) -> None:
@@ -358,8 +410,8 @@ def test_symbol_trade_report_prefers_structured_entry_pattern_for_pattern_rows(t
 
     payload = build_symbol_trade_summary(events_path, reports_root, "000250")
 
-    assert payload["pattern_insights"]["successful_entry_patterns"] == ["breakout"]
-    assert payload["pattern_insights"]["failed_entry_patterns"] == ["pullback"]
+    assert payload["pattern_insights"]["successful_entry_patterns"] == ["돌파"]
+    assert payload["pattern_insights"]["failed_entry_patterns"] == ["눌림목"]
 
 
 def test_build_symbol_memory_payload_derives_deterministic_bias_fields(tmp_path: Path) -> None:
@@ -406,7 +458,7 @@ def test_build_symbol_memory_payload_derives_deterministic_bias_fields(tmp_path:
     assert memory["schema_version"] == "symbol_memory.v1"
     assert memory["trade_stats"]["trade_count"] == 1
     assert memory["playbook_stats"]["breakout"]["count"] == 1
-    assert memory["pattern_stats"]["failed_entry_patterns"] == ["breakout"]
-    assert memory["monitor_patterns"]["dominant_exit_failure_axis"] == "hard_stop"
+    assert memory["pattern_stats"]["failed_entry_patterns"] == ["돌파"]
+    assert memory["monitor_patterns"]["dominant_exit_failure_axis"] == "손절"
     assert memory["bias_recommendation"]["avoid_playbook"] == "breakout"
     assert memory["bias_recommendation"]["risk_cap"] == "conservative"

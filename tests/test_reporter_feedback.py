@@ -321,3 +321,31 @@ def test_strategist_feedback_packet_falls_back_to_misplaced_same_day_trade_repor
     assert packet["source_reports"]["trade_reports"] is True
     assert packet["trade_report_analysis"]["closed_trade_count"] == 1
     assert packet["trade_report_analysis"]["broker_truth_count"] == 1
+
+
+def test_strategist_feedback_packet_route_summary_names_actual_leader(tmp_path: Path) -> None:
+    day = "2026-05-04"
+    reports_root = tmp_path / "reports"
+    _write_json(
+        reports_root / "metrics" / f"metrics_{day}.json",
+        {
+            "day": day,
+            "generated_at": f"{day}T10:00:00+09:00",
+            "source_run_count": 3,
+            "latest_run_id": "r3",
+            "latest_run_ts": f"{day}T09:59:00+09:00",
+            "route_selected_total": {"monitor_only": 0, "cached_strategist": 0, "full_cycle": 3},
+            "dominant_blocker_total": {},
+            "data_freshness": {"freshness_status": "fresh", "stale": False},
+        },
+    )
+
+    packet = build_strategist_feedback_packet(
+        mode="daily_report",
+        payload={"day": day},
+        reports_root=reports_root,
+        day=day,
+    )
+
+    assert "Route mix is led by full_cycle 3/3" in packet["insight_summary"]
+    assert "led by monitor_only 0/3" not in packet["insight_summary"]

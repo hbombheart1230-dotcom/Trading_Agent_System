@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.reporting.event_log_reader import iter_jsonl_events
 from libs.reporting.report_metadata import (
     build_data_freshness,
     build_route_provenance,
@@ -275,7 +276,8 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows: List[Dict[str, Any]] = []
-    for raw in _iter_events(events_path):
+    source_rows = iter_jsonl_events(events_path, day=day) if day else _iter_events(events_path)
+    for raw in source_rows:
         ts = raw.get("ts") or (raw.get("payload") or {}).get("ts")
         epoch = _to_epoch(ts)
         rows.append({**raw, "_epoch": epoch, "_day": _utc_day(ts)})

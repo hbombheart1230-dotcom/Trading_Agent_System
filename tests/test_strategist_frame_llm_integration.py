@@ -58,6 +58,13 @@ class _FakeRouterOk:
         return (
             '{"market_regime":"risk_on","market_sentiment":"bullish","themes":["semiconductor","ai"],'
             '"avoid_themes":["high_gap_speculative"],"playbook":"breakout","scanner_bias":"momentum",'
+            '"tactical_strategy":"opening_range_breakout",'
+            '"strategy_scores":{"opening_range_breakout":0.82,"leader_vwap_reclaim_pullback":0.61,"defensive_observe":0.14},'
+            '"rejected_strategy_reasons":{"defensive_observe":"risk_on tape supports active watch"},'
+            '"candidate_watch_policy":{"max_priority_rank":7,"max_runner_ups":4,"cascade_enabled":true,'
+            '"cascade_allowed_reasons":["too_extended_from_vwap","breakout_not_ready"],'
+            '"cascade_blocked_reasons":["cost_filter_failed","risk_policy_block"],'
+            '"reason":"breakout tape supports scanning beyond rank one"},'
             '"scanner_priority":["momentum","trend_strength","trading_value"],'
             '"trade_aggressiveness":"high","risk_tone":"aggressive","monitor_guidance":"hold_through_noise",'
             '"report_focus":["theme_accuracy","exit_quality"]}'
@@ -205,6 +212,44 @@ class _FakeRouterThemeConstraint(_FakeRouterOk):
         )
 
 
+class _FakeRouterStage2SelectedSymbol(_FakeRouterOk):
+    @staticmethod
+    def from_env() -> "_FakeRouterStage2SelectedSymbol":
+        return _FakeRouterStage2SelectedSymbol()
+
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        return json.dumps(
+            {
+                "selected_symbol_decision": "cascade_to_runner_up",
+                "target_symbol": "005930",
+                "target_rank": 1,
+                "runner_up_order": ["000660", "035420"],
+                "monitor_instruction": {
+                    "watch_intensity": "strict",
+                    "required_confirmations": ["vwap_reclaim", "net_cost_hurdle_pass"],
+                    "avoid_if": ["opening_gap_chase_without_pullback"],
+                },
+                "entry_policy_delta": {
+                    "tighten_confidence_threshold": True,
+                    "require_prev_close_context": True,
+                    "require_cost_hurdle": True,
+                },
+                "memory_usage": {
+                    "status": "used",
+                    "sample_count": 4,
+                    "confidence": "medium",
+                    "data_quality": "ok",
+                    "effect": "cautionary",
+                    "reason": "최근 동일 종목은 추격 진입 비용 손실이 반복되었습니다.",
+                },
+                "commander_actionability": "policy_delta_allowed",
+                "confidence": 0.72,
+                "reason": "1순위는 비용 장벽과 갭 추격 리스크가 있어 차순위 cascade 감시가 낫습니다.",
+            },
+            ensure_ascii=False,
+        )
+
+
 def _base_state(logger: _MemoryLogger) -> Dict[str, Any]:
     return {
         "run_id": "strategist-llm-test",
@@ -234,6 +279,19 @@ def test_strategist_frame_llm_overrides_are_applied(monkeypatch):
     assert strategist_output.get("scanner_bias") == "momentum"
     assert strategist_output.get("risk_tone") == "aggressive"
     assert strategist_output.get("monitor_guidance") == "hold_through_noise"
+    assert strategist_output.get("pre_llm_playbook")
+    assert strategist_output.get("llm_requested_playbook") == "breakout"
+    assert strategist_output.get("requested_playbook") == "breakout"
+    assert strategist_output.get("requested_playbook_source") == "llm"
+    assert strategist_output.get("final_playbook") == "breakout"
+    assert strategist_output.get("tactical_strategy") == "opening_range_breakout"
+    assert strategist_output.get("strategy_scores", {}).get("opening_range_breakout") == 0.82
+    assert strategist_output.get("rejected_strategy_reasons", {}).get("defensive_observe") == "risk_on tape supports active watch"
+    watch_policy = strategist_output.get("candidate_watch_policy") or {}
+    assert watch_policy.get("behavior_effect") == "visibility_only"
+    assert watch_policy.get("max_priority_rank") == 7
+    assert watch_policy.get("max_runner_ups") == 4
+    assert (strategist_output.get("strategy_policy") or {}).get("scanner_policy", {}).get("candidate_watch_policy") == watch_policy
     assert bool(strategist_output.get("llm_frame_applied")) is True
     assert str(strategist_output.get("llm_frame_status") or "") == "ok"
 
@@ -1288,6 +1346,179 @@ def test_build_strategist_llm_messages_disables_memory_usage_when_policy_disable
     assert "The memory packets are not optional background" not in user
 
 
+def test_compact_strategist_llm_payload_limits_read_model_and_operator_summary_bulk() -> None:
+    payload = {
+        "read_model_facts": {
+            "recent_trades": [
+                {
+                    "trade_id": f"T{i}",
+                    "symbol": "005930",
+                    "entry_reason": "breakout_above_recent_high_with_vwap_structure_confirmation",
+                    "exit_reason": "stop_loss",
+                    "pnl_pct": -0.01,
+                    "raw_story_blob": "x" * 5000,
+                }
+                for i in range(8)
+            ],
+            "symbol_patterns": {
+                "005930": {
+                    "symbol": "005930",
+                    "trade_count": 12,
+                    "win_rate": 0.25,
+                    "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+                    "repeated_failure_pattern": [
+                        {"type": "blocker", "value": "below_vwap_reclaim_not_ready", "count": 7, "raw": "y" * 1000}
+                    ],
+                    "trade_history": [{"raw": "z" * 5000}],
+                }
+            },
+        },
+        "memory_packets": {
+            "daily_strategy_memory": {
+                "status": "ok",
+                "operator_summary": {
+                    "available": True,
+                    "metrics": {"trade_count": 5, "win_rate": 0.2},
+                    "operator_view": {
+                        "conclusion": "review " * 100,
+                        "review_points": ["entry", "exit", "cost", "risk", "extra"],
+                    },
+                    "raw_rows": [{"raw": "a" * 5000}],
+                },
+            },
+            "weekly_strategy_memory": {"status": "unavailable"},
+            "monthly_strategy_memory": {"status": "unavailable"},
+            "symbol_memory_packet": {"status": "empty", "symbol": "005930"},
+        },
+    }
+
+    compact = _build_compact_strategist_llm_payload(payload)
+    encoded = json.dumps(compact, ensure_ascii=False)
+
+    assert compact["read_model_facts"]["recent_trade_count"] == 8
+    assert len(compact["read_model_facts"]["recent_trades"]) == 3
+    assert "raw_story_blob" not in encoded
+    assert "trade_history" not in encoded
+    assert "raw_rows" not in encoded
+    assert compact["memory_packets"]["daily_strategy_memory"]["operator_summary"]["metrics"]["trade_count"] == 5
+    assert len(compact["memory_packets"]["daily_strategy_memory"]["operator_summary"]["operator_view"]["review_points"]) == 4
+    assert len(encoded) < 8000
+
+
+def test_stage1_compact_payload_excludes_symbol_memory_until_selected_refresh() -> None:
+    payload = {
+        "read_model_facts": {
+            "symbol_patterns": {
+                "005930": {
+                    "symbol": "005930",
+                    "trade_count": 8,
+                    "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+                }
+            }
+        },
+        "memory_packets": {
+            "daily_strategy_memory": {"status": "ok"},
+            "weekly_strategy_memory": {"status": "ok"},
+            "monthly_strategy_memory": {"status": "ok"},
+            "symbol_memory_packet": {"status": "ok", "symbol": "005930", "trade_count": 8},
+        },
+        "commander_refresh_context": {"requested": False},
+    }
+
+    compact = _build_compact_strategist_llm_payload(payload)
+
+    assert compact["resolved_call_kind"] == "market_strategy_frame"
+    assert compact["read_model_facts"]["symbol_patterns"] == {}
+    assert compact["read_model_facts"]["symbol_pattern_count"] == 0
+    assert compact["memory_packets"]["symbol_memory_packet"]["status"] == "excluded"
+    assert compact["memory_boundary"]["symbol_memory_visible_to_llm"] is False
+
+
+def test_compact_payload_resolves_stage3_and_stage4_call_kinds() -> None:
+    stage3 = _build_compact_strategist_llm_payload(
+        {
+            "commander_refresh_context": {
+                "requested": True,
+                "reason": "repeated_hold_monitor_only",
+                "refresh_scope": "open_position_monitor_refresh",
+                "selected_symbol": "005930",
+            }
+        }
+    )
+    stage4 = _build_compact_strategist_llm_payload(
+        {
+            "commander_refresh_context": {
+                "requested": True,
+                "reason": "session_closeout_carry_review",
+                "refresh_scope": "session_closeout_carry_review",
+                "selected_symbol": "005930",
+            }
+        }
+    )
+    preopen = _build_compact_strategist_llm_payload(
+        {
+            "commander_refresh_context": {
+                "requested": True,
+                "reason": "preopen_carry_risk_review",
+                "refresh_scope": "preopen_open_position_review",
+                "selected_symbol": "005930",
+            }
+        }
+    )
+
+    assert stage3["resolved_call_kind"] == "stale_intraday_hold_review"
+    assert stage4["resolved_call_kind"] == "end_of_day_carry_review"
+    assert preopen["resolved_call_kind"] == "stale_intraday_hold_review"
+
+
+def test_stage_specific_llm_messages_match_4stage_contracts() -> None:
+    stage2_messages = _build_strategist_llm_messages(
+        {
+            "commander_refresh_context": {
+                "requested": True,
+                "reason": "selected_symbol_tactical_refresh",
+                "refresh_scope": "selected_symbol_tactical_refresh",
+                "selected_symbol": "005930",
+            }
+        }
+    )
+    stage2_user = stage2_messages[1]["content"]
+    assert "selected_symbol_decision" in stage2_user
+    assert "runner_up_order" in stage2_user
+    assert "commander_actionability" in stage2_user
+    assert "choose exactly ONE playbook" not in stage2_user
+
+    stage3_messages = _build_strategist_llm_messages(
+        {
+            "commander_refresh_context": {
+                "requested": True,
+                "reason": "repeated_hold_monitor_only",
+                "refresh_scope": "open_position_monitor_refresh",
+                "selected_symbol": "005930",
+            }
+        }
+    )
+    stage3_system = stage3_messages[0]["content"]
+    stage3_user = stage3_messages[1]["content"]
+    assert "unrelated candidate themes" in stage3_system
+    assert "hold_review_decision" in stage3_user
+    assert "monitor_adjustment" in stage3_user
+    assert "held symbol under review" in stage3_user
+
+    stage4_user = _build_strategist_llm_messages(
+        {
+            "commander_refresh_context": {
+                "requested": True,
+                "reason": "session_closeout_carry_review",
+                "refresh_scope": "session_closeout_carry_review",
+                "selected_symbol": "005930",
+            }
+        }
+    )[1]["content"]
+    assert "carry_review" in stage4_user
+    assert "portfolio_level_decision" in stage4_user
+
+
 def test_strategist_llm_payload_includes_commander_refresh_context(monkeypatch):
     captured = {}
 
@@ -1364,6 +1595,143 @@ def test_strategist_llm_payload_includes_commander_refresh_context(monkeypatch):
     assert commander_refresh_context["selected_symbol_memory"]["symbol"] == "000660"
     assert commander_refresh_context["selected_symbol_memory"]["dominant_playbook"] == "pullback"
     assert commander_refresh_context["selected_symbol_memory"]["dominant_monitor_blocker"] == "below_vwap_reclaim_not_ready"
+
+
+def test_strategist_llm_payload_uses_post_scanner_refresh_symbol_from_strategy_context(monkeypatch):
+    captured = {}
+
+    def fake_run_strategist_frame_llm(*, state, policy, payload):
+        captured["payload"] = dict(payload or {})
+        return ({}, {"status": "disabled", "attempts": 0, "repair_used": False, "reason": "test_capture"})
+
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setattr("graphs.nodes.strategist_node._run_strategist_frame_llm", fake_run_strategist_frame_llm)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["candidate_symbols"] = ["078890", "005930"]
+    state["commander_decision"] = {
+        "market_regime": "neutral",
+        "session_bias": "context_reuse",
+        "risk_mode": "balanced",
+        "command_intent": "REFRESH_STRATEGY_FRAME",
+        "strategist_invocation": "RUN_REFRESH",
+        "llm_policy": "allow_context_refresh",
+        "strategist_refresh_requested": True,
+        "strategist_refresh_reason": "selected_symbol_outside_cached_frame",
+        "strategist_refresh_context": {
+            "selected_symbol": "078890",
+            "selected_rank": 2,
+            "selected_score": 0.9701,
+            "scanner_primary_candidate": {"rank": 2, "symbol": "078890", "score": 0.9701},
+            "actual_selected_candidate": {"rank": 2, "symbol": "078890", "score": 0.9701},
+            "scanner_rank1_candidate": {"rank": 1, "symbol": "005930", "score": 0.9842},
+            "scanner_runner_ups": [
+                {"rank": 1, "symbol": "005930", "score": 0.9842},
+                {"rank": 3, "symbol": "000660", "score": 0.9123},
+            ],
+            "scanner_top_candidates": [
+                {"rank": 1, "symbol": "005930", "score": 0.9842},
+                {"rank": 2, "symbol": "078890", "score": 0.9701},
+                {"rank": 3, "symbol": "000660", "score": 0.9123},
+            ],
+            "selected_symbol_was_rank1": False,
+            "stage2_context_quality": "complete",
+            "selected_symbol_in_cached_frame": False,
+            "cached_candidate_hints": ["005930", "000660"],
+            "prior_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+            "current_monitor_entry_policy_summary": {"volume_ratio_min": 1.2},
+        },
+        "open_position_refresh_context": {},
+    }
+    state["reports_root"] = "reports"
+
+    def fake_build_symbol_read_model(trades_root, symbol, persisted_only=False):
+        assert symbol == "078890"
+        return {
+            "symbol": "078890",
+            "trade_count": 2,
+            "closed_trade_count": 1,
+            "win_rate": 0.0,
+            "avg_pnl_pct": -0.004,
+            "dominant_playbook": "pullback",
+            "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+            "data_quality": {"data_source": "symbol_memory", "unknown_fields_ratio": 0.0},
+        }
+
+    monkeypatch.setattr("graphs.nodes.strategist_node.build_symbol_read_model", fake_build_symbol_read_model)
+
+    out = strategist_node(state)
+
+    llm_payload = dict(captured.get("payload") or {})
+    commander_refresh_context = dict(llm_payload.get("commander_refresh_context") or {})
+    assert commander_refresh_context["requested"] is True
+    assert commander_refresh_context["reason"] == "selected_symbol_outside_cached_frame"
+    assert commander_refresh_context["selected_symbol"] == "078890"
+    assert commander_refresh_context["selected_rank"] == 2
+    assert commander_refresh_context["actual_selected_candidate"]["symbol"] == "078890"
+    assert commander_refresh_context["scanner_rank1_candidate"]["symbol"] == "005930"
+    assert commander_refresh_context["selected_symbol_was_rank1"] is False
+    assert commander_refresh_context["stage2_context_quality"] == "complete"
+    assert commander_refresh_context["selected_symbol_memory"]["symbol"] == "078890"
+    compact_payload = _build_compact_strategist_llm_payload(llm_payload)
+    assert compact_payload["strategy_refresh_trace_input"]["post_scanner_refresh"]["selected_symbol"] == "078890"
+    assert compact_payload["strategy_refresh_trace_input"]["post_scanner_refresh"]["scanner_rank1_symbol"] == "005930"
+    assert compact_payload["strategy_refresh_trace_input"]["post_scanner_refresh"]["actual_selected_rank"] == 2
+    strategic_answers = (out.get("strategist_output") or {}).get("strategic_answers") or {}
+    assert strategic_answers["q15_commander_refresh_context"]["selected_symbol"] == "078890"
+    assert strategic_answers["q15_commander_refresh_context"]["scanner_rank1_candidate"]["symbol"] == "005930"
+
+
+def test_stage2_selected_symbol_contract_is_preserved_and_mapped_to_watch_policy(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.delenv("COMMANDER_MEMORY_USAGE_DISABLED", raising=False)
+    monkeypatch.delenv("STRATEGIST_MEMORY_USAGE_DISABLED", raising=False)
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterStage2SelectedSymbol)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["commander_decision"] = {
+        "market_regime": "neutral",
+        "session_bias": "scanner_selected",
+        "risk_mode": "balanced",
+        "command_intent": "REFRESH_STRATEGY_FRAME",
+        "strategist_invocation": "RUN_REFRESH",
+        "llm_policy": "allow_context_refresh",
+        "strategist_refresh_requested": True,
+        "strategist_refresh_reason": "selected_symbol_tactical_refresh",
+        "strategist_refresh_context": {
+            "refresh_scope": "selected_symbol_tactical_refresh",
+            "selected_symbol": "005930",
+            "selected_rank": 1,
+            "selected_score": 0.91,
+            "scanner_primary_candidate": {"rank": 1, "symbol": "005930", "score": 0.91},
+            "scanner_runner_ups": [
+                {"rank": 2, "symbol": "000660", "score": 0.84},
+                {"rank": 3, "symbol": "035420", "score": 0.80},
+            ],
+        },
+    }
+    state["reports_root"] = "reports"
+
+    out = strategist_node(state)
+
+    strategist_output = out.get("strategist_output") or {}
+    stage2 = strategist_output.get("selected_symbol_tactical_review") or {}
+    assert stage2["selected_symbol_decision"] == "cascade_to_runner_up"
+    assert stage2["runner_up_order"] == ["000660", "035420"]
+    assert strategist_output["selected_symbol_decision"] == "cascade_to_runner_up"
+    assert strategist_output["commander_actionability"] == "policy_delta_allowed"
+
+    watch_policy = strategist_output.get("candidate_watch_policy") or {}
+    assert watch_policy["max_priority_rank"] == 3
+    assert watch_policy["max_runner_ups"] == 2
+    assert watch_policy["cascade_enabled"] is True
+
+    directives = strategist_output.get("strategy_adjustment_directives") or {}
+    assert directives["entry_policy_action"]["action"] == "tighten"
+    assert "confidence_threshold" in directives["entry_policy_action"]["target_fields"]
 
 
 def test_strategist_refresh_uses_persisted_selected_symbol_memory_when_not_in_read_model_facts(monkeypatch):

@@ -8,6 +8,7 @@ from libs.market.global_sentiment import compute_global_sentiment, compute_globa
 def test_compute_global_sentiment_returns_nan_when_source_unavailable(monkeypatch):
     monkeypatch.setenv("DRY_RUN", "0")
     monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: None)
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_korea_index_inputs", lambda _state, _policy: None)
     value = compute_global_sentiment(state={}, policy={})
     assert math.isnan(float(value))
 
@@ -33,6 +34,7 @@ def test_global_sentiment_signal_exposes_index_move_breakdown(monkeypatch):
         tnx_delta = -0.03
 
     monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: _Inputs())
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_korea_index_inputs", lambda _state, _policy: None)
     sig = compute_global_sentiment_signal(state={}, policy={})
 
     assert sig["status"] == "ok"
@@ -74,6 +76,7 @@ def test_global_sentiment_vix_pressure_makes_signal_more_defensive(monkeypatch):
         tnx_delta = 0.0
 
     monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: _LowFear())
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_korea_index_inputs", lambda _state, _policy: None)
     low_fear = compute_global_sentiment_signal(state={}, policy={})
     monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: _HighFear())
     high_fear = compute_global_sentiment_signal(state={}, policy={})
@@ -81,3 +84,36 @@ def test_global_sentiment_vix_pressure_makes_signal_more_defensive(monkeypatch):
     assert high_fear["status"] == "ok"
     assert low_fear["status"] == "ok"
     assert float(high_fear.get("score") or 0.0) < float(low_fear.get("score") or 0.0)
+
+
+def test_global_sentiment_signal_exposes_korea_index_context(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "0")
+
+    class _Inputs:
+        sp500_ret = 0.0
+        nasdaq_ret = 0.0
+        dow_ret = 0.0
+        vix_ret = 0.0
+        vix_level = 18.0
+        dxy_ret = 0.0
+        tnx_delta = 0.0
+
+    korea_packet = {
+        "status": "ok",
+        "source": "kiwoom.ka20009",
+        "indices": {
+            "KOSPI": {"current": 3100.12, "previous_close": 3080.0, "change_pct": 0.65, "rising": 450, "falling": 320, "unchanged": 60},
+            "KOSDAQ": {"current": 850.55, "previous_close": 842.0, "change_pct": 1.02, "rising": 690, "falling": 410, "unchanged": 80},
+        },
+    }
+
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: _Inputs())
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_korea_index_inputs", lambda _state, _policy: korea_packet)
+
+    sig = compute_global_sentiment_signal(state={}, policy={})
+
+    assert sig["status"] == "ok"
+    assert sig["source"] == "yfinance+kiwoom.ka20009"
+    assert abs(float((sig.get("index_moves") or {}).get("kospi_pct") or 0.0) - 0.65) < 1e-9
+    assert abs(float((sig.get("index_moves") or {}).get("kosdaq_pct") or 0.0) - 1.02) < 1e-9
+    assert (sig.get("korea_indices") or {}).get("indices", {}).get("KOSPI", {}).get("previous_close") == 3080.0

@@ -143,14 +143,31 @@ def _build_monitor_score_breakdown(
     pullback_mature: bool,
     volume_ok: bool,
     confidence_gate_ok: bool,
+    chart_structure_features: Mapping[str, Any] | None = None,
 ) -> Dict[str, float]:
-    return {
+    breakdown = {
         "vwap_reclaim_ok": 2.0 if bool(vwap_reclaim_ok) else 0.0,
         "breakout_ok": 2.0 if bool(breakout_ok) else 0.0,
         "pullback_mature": 1.0 if bool(pullback_mature) else 0.0,
         "volume_ok": 1.0 if bool(volume_ok) else 0.0,
         "confidence_gate_ok": 1.0 if bool(confidence_gate_ok) else 0.0,
     }
+    chart_payload = dict(chart_structure_features or {}) if isinstance(chart_structure_features, Mapping) else {}
+    chart_context = (
+        dict(chart_payload.get("human_chart_context") or {})
+        if isinstance(chart_payload.get("human_chart_context"), Mapping)
+        else {}
+    )
+    if bool(chart_context.get("available")):
+        entry_chart_score = _clamp_score(_to_float(chart_context.get("entry_chart_score")))
+        exit_risk_score = _clamp_score(_to_float(chart_context.get("exit_risk_score")))
+        late_entry_risk = str(chart_context.get("late_entry_risk") or "").strip().lower()
+        breakdown["chart_structure_confirmation"] = round(0.75 * entry_chart_score, 4)
+        if late_entry_risk in {"medium", "high"}:
+            breakdown["late_entry_risk_penalty"] = -0.25 if late_entry_risk == "medium" else -0.5
+        if exit_risk_score >= 0.55:
+            breakdown["chart_exit_risk_penalty"] = -0.25
+    return breakdown
 
 
 def _build_monitor_signal_evidence(
@@ -2289,12 +2306,26 @@ def evaluate_intraday_entry_signal(
     legacy_reason = str(reason or "")
     legacy_pattern = str(pattern or "")
     legacy_entry_condition_path = str(entry_condition_path or "")
+    chart_structure_features = build_chart_structure_features(
+        candles,
+        current_price=current_close,
+        current_vwap=current_vwap,
+        recent_high=recent_high,
+        breakout_ok=breakout_ok,
+        pullback_ok=pullback_ok,
+        reclaim_ok=vwap_reclaim_ok,
+        volume_ok=volume_ok,
+        confidence_ok=confidence_gate_ok,
+        volume_ratio=volume_ratio,
+        too_extended=bool(not extension_ok and extended_from_vwap_pct > max_extended_from_vwap_pct),
+    )
     score_breakdown = _build_monitor_score_breakdown(
         vwap_reclaim_ok=bool(vwap_reclaim_ok),
         breakout_ok=bool(breakout_ok),
         pullback_mature=bool(pullback_mature),
         volume_ok=bool(volume_ok),
         confidence_gate_ok=bool(confidence_gate_ok),
+        chart_structure_features=chart_structure_features,
     )
     scoring_entry_decision = "BUY" if sum(_to_float(v) for v in score_breakdown.values()) >= float(scoring_settings.get("entry_threshold") or 3.0) else "WAIT"
     signal_evidence = _build_monitor_signal_evidence(
@@ -2326,19 +2357,6 @@ def evaluate_intraday_entry_signal(
         breakout_distance_to_ready=breakout_distance_to_ready,
         score_breakdown=score_breakdown,
         score_threshold=float(scoring_settings.get("entry_threshold") or 3.0),
-    )
-    chart_structure_features = build_chart_structure_features(
-        candles,
-        current_price=current_close,
-        current_vwap=current_vwap,
-        recent_high=recent_high,
-        breakout_ok=breakout_ok,
-        pullback_ok=pullback_ok,
-        reclaim_ok=vwap_reclaim_ok,
-        volume_ok=volume_ok,
-        confidence_ok=confidence_gate_ok,
-        volume_ratio=volume_ratio,
-        too_extended=bool(not extension_ok and extended_from_vwap_pct > max_extended_from_vwap_pct),
     )
     policy_interpreter_trace = _build_monitor_policy_interpreter_trace(
         policy_interpretation=out.get("policy_interpretation"),
@@ -2379,6 +2397,11 @@ def evaluate_intraday_entry_signal(
                 "chart_structure_decision_hint_applied",
             ]
         )
+    chart_human_context = (
+        dict(chart_structure_features.get("human_chart_context") or {})
+        if isinstance(chart_structure_features.get("human_chart_context"), Mapping)
+        else {}
+    )
     if bool(policy_aware_gating.get("applied")):
         triggered = True
         pattern = "breakout_policy_reclaim_near_ready"
@@ -2474,6 +2497,14 @@ def evaluate_intraday_entry_signal(
         "engine_trend_strength": (features or {}).get("engine_trend_strength"),
         "inferred_spacing_minutes": series_quality.get("inferred_spacing_minutes"),
         "series_class": series_quality.get("series_class"),
+        "human_chart_entry_score": chart_human_context.get("entry_chart_score"),
+        "human_chart_exit_risk_score": chart_human_context.get("exit_risk_score"),
+        "vwap_reclaim_persistence": chart_human_context.get("vwap_reclaim_persistence"),
+        "ma_bullish_persistence": chart_human_context.get("ma_bullish_persistence"),
+        "volume_expansion_persistence": chart_human_context.get("volume_expansion_persistence"),
+        "late_entry_risk": chart_human_context.get("late_entry_risk"),
+        "swing_low_above_vwap": chart_human_context.get("swing_low_above_vwap"),
+        "box_breakout_retest_hold": chart_human_context.get("box_breakout_retest_hold"),
     }
     transition_trace = _empty_entry_transition_trace()
     transition_trace.update(
@@ -2504,6 +2535,10 @@ def evaluate_intraday_entry_signal(
     grouped_logic_trace["chart_structure_decision_hint_applied"] = bool(chart_structure_decision_hint.get("applied"))
     grouped_logic_trace["chart_structure_decision_hint_mode"] = str(chart_structure_decision_hint.get("mode") or "none")
     grouped_logic_trace["chart_structure_decision_hint_blocking_features"] = list(chart_structure_decision_hint.get("blocking_features") or [])
+    grouped_logic_trace["human_chart_entry_score"] = chart_human_context.get("entry_chart_score")
+    grouped_logic_trace["human_chart_exit_risk_score"] = chart_human_context.get("exit_risk_score")
+    grouped_logic_trace["late_entry_risk"] = str(chart_human_context.get("late_entry_risk") or "")
+    grouped_logic_trace["chart_structure_scoring_consumed"] = bool(chart_human_context.get("available"))
     grouped_logic_trace["entry_quality_score"] = entry_quality_score
     grouped_logic_trace["entry_quality_tier"] = _entry_quality_tier(entry_quality_score)
     grouped_logic_trace["entry_quality_path"] = entry_quality_path

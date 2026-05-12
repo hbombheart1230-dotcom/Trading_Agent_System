@@ -21,6 +21,10 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch):
         "EXECUTION_ENABLED",
         "SYMBOL_ALLOWLIST",
         "EXECUTION_MODE",
+        "MAX_ORDER_NOTIONAL",
+        "MAX_NOTIONAL",
+        "MAX_ORDER_QTY",
+        "MAX_QTY",
     ]
     for k in keys:
         monkeypatch.delenv(k, raising=False)
@@ -131,6 +135,32 @@ def test_m15_executor_agent_auto_but_execution_disabled_returns_note(isolated_en
     assert "note" in res
     assert "EXECUTION_ENABLED=false" in res["note"]
     assert "execution" not in res
+
+
+def test_m15_executor_agent_blocks_buy_when_notional_guard_price_missing(
+    isolated_env: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from libs.execution.executors.base import ExecutionDisabledError
+
+    isolated_env.setenv("KIWOOM_MODE", "mock")
+    isolated_env.setenv("APPROVAL_MODE", "auto")
+    isolated_env.setenv("EXECUTION_ENABLED", "true")
+    isolated_env.setenv("MAX_ORDER_NOTIONAL", "1000000")
+
+    agent = _make_executor_agent(tmp_path)
+
+    with pytest.raises(ExecutionDisabledError) as e:
+        agent.execute_order(
+            intent={
+                "action": "BUY",
+                "symbol": "000660",
+                "qty": 1,
+                "order_type": "market",
+                "price": None,
+            }
+        )
+    assert "Missing price for MAX_ORDER_NOTIONAL guard" in str(e.value)
 
 
 def test_m15_real_mode_requires_execution_enabled(isolated_env: pytest.MonkeyPatch, tmp_path: Path):

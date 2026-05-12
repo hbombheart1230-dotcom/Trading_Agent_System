@@ -495,6 +495,8 @@ def test_intraday_entry_scoring_disabled_keeps_legacy_decision() -> None:
     assert out["scoring_entry_decision"] == "BUY"
     assert out["hard_filter_passed"] is True
     assert float(out.get("total_score") or 0.0) >= 3.0
+    assert "chart_structure_confirmation" in dict(out.get("score_breakdown") or {})
+    assert (out.get("grouped_logic_trace") or {}).get("chart_structure_scoring_consumed") is True
 
 
 def test_intraday_entry_policy_interpretation_is_empty_safe_without_explicit_policy() -> None:
@@ -506,6 +508,7 @@ def test_intraday_entry_policy_interpretation_is_empty_safe_without_explicit_pol
     summary = out.get("policy_alignment_summary") or {}
     assert chart_features.get("schema_version") == "chart_structure_features.v1"
     assert chart_features.get("available") is True
+    assert (chart_features.get("human_chart_context") or {}).get("available") is True
     assert isinstance((chart_features.get("structure") or {}).get("structure_hh_hl"), str)
     assert interpretation.get("policy_available") is False
     assert interpretation.get("entry_style") is None

@@ -48,6 +48,17 @@ def resolve_event_log_path(default: str = "./data/logs/events.jsonl") -> Path:
     return Path(default)
 
 
+def _is_canonical_operator_event_log_path(path: Path) -> bool:
+    try:
+        candidate = Path(path)
+        canonical_relative = Path("data") / "logs" / "events.jsonl"
+        if not candidate.is_absolute():
+            return candidate == canonical_relative or candidate == Path(".") / canonical_relative
+        return candidate.resolve() == (Path.cwd() / canonical_relative).resolve()
+    except Exception:
+        return False
+
+
 def _sanitize_payload(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
@@ -154,6 +165,12 @@ class EventLogger:
 
     def __post_init__(self) -> None:
         self.log_path = Path(self.log_path)
+        if (
+            os.getenv("PYTEST_CURRENT_TEST")
+            and not str(os.getenv("EVENT_LOG_PATH", "") or "").strip()
+            and _is_canonical_operator_event_log_path(self.log_path)
+        ):
+            self.log_path = resolve_event_log_path()
 
     def log(
         self,

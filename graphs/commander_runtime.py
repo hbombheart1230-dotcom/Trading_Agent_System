@@ -37,6 +37,7 @@ from libs.runtime.monitor_memory_bias import build_monitor_memory_bias, summariz
 from libs.runtime.scanner_memory_bias import build_scanner_memory_bias, summarize_scanner_memory_bias
 from libs.runtime.memory_packet_loader import load_commander_memory_packets
 from libs.runtime.monitor_policy import (
+    MonitorEntryPolicy,
     build_default_monitor_entry_policy,
     build_monitor_entry_policy_bundle,
     extract_monitor_entry_policy_mapping,
@@ -46,7 +47,11 @@ from libs.llm.model_catalog import resolve_execution_profile, resolve_model_prof
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.scanner_policy import normalize_scanner_source_type
 from libs.runtime.strategy_horizon_feedback import build_commander_horizon_policy
-from libs.runtime.canonical_artifacts import write_commander_artifact, write_commander_shadow_artifact
+from libs.runtime.canonical_artifacts import (
+    write_commander_artifact,
+    write_commander_shadow_artifact,
+    write_llm_stage_skip_entry,
+)
 from libs.runtime.market_hours import MarketHours
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
@@ -57,6 +62,7 @@ RuntimePhase = Literal["preopen", "session", "closeout"]
 
 _PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC = 120
 _PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD = 0.80
+_DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN = 15
 _PRE_BUY_STRATEGIST_REFRESH_FORCE_SIGNALS = frozenset(
     {
         "selected_symbol_outside_cached_frame",
@@ -81,10 +87,13 @@ _COMMANDER_OWNED_POLICY_FIELDS = [
     "commander.route.monitor_only_when_holding",
     "commander.route.cached_strategist_when_flat",
     "commander.route.post_scanner_refresh_enabled",
+    "commander.route.pre_entry_exit_sweep_enabled",
     "commander.memory_usage.disabled",
     "monitor.exit.enabled",
     "monitor.exit.eod_flat.enabled",
     "monitor.entry.block_buy_when_open_position",
+    "monitor.entry.buy_closeout_cutoff_min",
+    "monitor.entry.position_sizing.enabled",
     "monitor.memory_bias.observation_only",
     "monitor.entry.scoring.enabled",
     "monitor.entry.scoring.shadow_mode",
@@ -107,9 +116,16 @@ _COMMANDER_OWNED_NUMERIC_POLICY_FIELDS = [
     "monitor.hold.min_hold_seconds",
     "monitor.exit.confirm_ticks",
     "monitor.exit.eod_flat.cutoff_min",
+    "monitor.entry.buy_closeout_cutoff_min",
     "scanner.candidate.top_pool",
     "scanner.kiwoom.condition_limit",
     "monitor.entry.scoring.threshold",
+    "monitor.entry.position_sizing.risk_per_trade_ratio",
+    "monitor.entry.position_sizing.position_notional_ratio",
+    "monitor.entry.position_sizing.max_position_qty",
+    "monitor.entry.position_sizing.max_position_notional",
+    "monitor.entry.position_sizing.min_position_qty",
+    "monitor.entry.position_sizing.lot_size",
     "strategist.memory_feedback.recent_runs",
 ]
 _COMMANDER_OWNED_LLM_POLICY_FIELDS = [
@@ -157,6 +173,26 @@ _ENTRY_CONTROL_DYNAMIC_BAND_BLOCKERS = frozenset(
         "still_overextended_after_pullback",
     }
 )
+_CANDIDATE_WATCH_DEFAULT_CASCADE_ALLOWED_REASONS = (
+    "too_extended_from_vwap",
+    "breakout_not_ready",
+    "volume_insufficient",
+    "volume_confirmation_missing",
+    "below_vwap_reclaim_not_ready",
+    "pullback_below_vwap_reclaim_not_ready",
+    "pullback_not_mature",
+)
+_CANDIDATE_WATCH_DEFAULT_CASCADE_BLOCKED_REASONS = (
+    "cost_filter_failed",
+    "risk_policy_block",
+    "closeout_window",
+    "open_position_present",
+    "daily_loss_limit",
+    "broker_truth_mismatch",
+    "data_quality_guard",
+    "buy_blocked_post_exit_cooldown",
+    "buy_blocked_closeout_window",
+)
 
 _COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS = {
     "COMMANDER_POST_SCANNER_REFRESH_ENABLED": "true",
@@ -167,6 +203,22 @@ _COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS = {
     "STRATEGIST_MEMORY_USAGE_DISABLED": "true",
     "STRATEGY_MEMORY_PERSIST_ENABLED": "false",
 }
+_PRE_ENTRY_EXIT_SWEEP_TRANSIENT_KEYS = (
+    "selected",
+    "scanner_output",
+    "intents",
+    "monitor_output",
+    "monitor_entry",
+    "monitor_exit",
+    "monitor_entry_decision_detail",
+    "monitor_exit_decision_detail",
+    "monitor_action_decision",
+    "monitor_entry_blocker_surface",
+    "monitor_feature_hydration",
+    "decision",
+    "decision_reason",
+    "decision_packet",
+)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -222,6 +274,18 @@ def _commander_post_scanner_refresh_enabled(state: Dict[str, Any]) -> bool:
         "COMMANDER_POST_SCANNER_REFRESH_ENABLED",
         _commander_default_bool("COMMANDER_POST_SCANNER_REFRESH_ENABLED", True),
     )
+
+
+def _commander_pre_entry_exit_sweep_enabled(state: Dict[str, Any]) -> bool:
+    if isinstance(state, dict):
+        if state.get("commander_pre_entry_exit_sweep_enabled") not in (None, ""):
+            return _is_trueish(state.get("commander_pre_entry_exit_sweep_enabled"))
+        applied = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+        commander = applied.get("commander") if isinstance(applied.get("commander"), dict) else {}
+        route = commander.get("route") if isinstance(commander.get("route"), dict) else {}
+        if route.get("pre_entry_exit_sweep_enabled") not in (None, ""):
+            return _is_trueish(route.get("pre_entry_exit_sweep_enabled"))
+    return _env_bool("COMMANDER_PRE_ENTRY_EXIT_SWEEP_ENABLED", True)
 
 
 def _commander_memory_usage_disabled(state: Dict[str, Any]) -> bool:
@@ -283,6 +347,21 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _resolve_risk_max_positions(state: Dict[str, Any] | None = None) -> int:
+    obj = state if isinstance(state, dict) else {}
+    for value in (
+        ((obj.get("risk_context") or {}).get("max_positions") if isinstance(obj.get("risk_context"), dict) else None),
+        ((obj.get("risk") or {}).get("max_positions") if isinstance(obj.get("risk"), dict) else None),
+        os.getenv("RISK_MAX_POSITIONS"),
+    ):
+        try:
+            if value not in (None, ""):
+                return max(1, int(float(value)))
+        except Exception:
+            continue
+    return 1
 
 
 def _runtime_now_epoch(state: Dict[str, Any]) -> int:
@@ -568,6 +647,36 @@ def _derive_carry_state(
     return "same_session"
 
 
+def _closeout_unresolved_flatten_symbols(state: Dict[str, Any]) -> set[str]:
+    symbols: set[str] = set()
+    sources: list[Dict[str, Any]] = []
+    if isinstance(state, dict):
+        sources.append(state)
+        persisted = state.get("persisted_state")
+        if isinstance(persisted, dict):
+            sources.append(persisted)
+    for source in sources:
+        backup = source.get("closeout_backup_liquidation") if isinstance(source, dict) else {}
+        if isinstance(backup, dict):
+            for key in ("unresolved_flatten_symbols", "unresolved_flatten_requires_next_open_symbols"):
+                for value in list(backup.get(key) or []):
+                    symbol = str(value or "").strip().upper()
+                    if symbol:
+                        symbols.add(symbol)
+        unresolved_map = source.get("closeout_unresolved_flatten_by_symbol") if isinstance(source, dict) else {}
+        if isinstance(unresolved_map, dict):
+            for key in unresolved_map.keys():
+                symbol = str(key or "").strip().upper()
+                if symbol:
+                    symbols.add(symbol)
+    return symbols
+
+
+def _is_closeout_unresolved_flatten_symbol(state: Dict[str, Any], symbol: str) -> bool:
+    normalized = str(symbol or "").strip().upper()
+    return bool(normalized and normalized in _closeout_unresolved_flatten_symbols(state))
+
+
 def _resolve_position_age_seconds(state: Dict[str, Any], row: Dict[str, Any], symbol: str) -> int | None:
     for key in ("position_age_seconds", "hold_sec"):
         age = _coerce_int(row.get(key), 0)
@@ -683,11 +792,14 @@ def _assess_position_carry_control(
     overnight_decision: Dict[str, Any] | None,
 ) -> Dict[str, Any]:
     overnight = dict(overnight_decision or {}) if isinstance(overnight_decision, dict) else {}
+    closeout_unresolved_flatten_required = _is_closeout_unresolved_flatten_symbol(state, symbol)
     carry_state = _derive_carry_state(
         position_age_seconds=position_age_seconds,
         hold_repeat_count=int(hold_repeat_count),
         overnight_decision=overnight,
     )
+    if closeout_unresolved_flatten_required:
+        carry_state = "multi_session_stale"
     session_open_recovery = _build_session_open_recovery_assessment(
         state=state,
         carry_state=carry_state,
@@ -698,7 +810,10 @@ def _assess_position_carry_control(
     )
     carry_risk_bias = "normal"
     carry_risk_reason = "same_session_baseline"
-    if carry_state == "multi_session_stale":
+    if closeout_unresolved_flatten_required:
+        carry_risk_bias = "urgent_exit_review"
+        carry_risk_reason = "closeout_unresolved_flatten_required"
+    elif carry_state == "multi_session_stale":
         carry_risk_bias = "urgent_exit_review"
         carry_risk_reason = "multi_session_stale_position"
     elif carry_state == "overnight_open" and str(session_open_recovery.get("recovery_state") or "") == "failed":
@@ -717,6 +832,7 @@ def _assess_position_carry_control(
         "carry_risk_reason": str(carry_risk_reason),
         "overnight_carry_approved": bool(overnight.get("approved")),
         "overnight_carry_reason": str(overnight.get("reason") or ""),
+        "closeout_unresolved_flatten_required": bool(closeout_unresolved_flatten_required),
         "session_open_recovery_assessment": dict(session_open_recovery),
     }
 
@@ -838,6 +954,30 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         fallback_policy=default_policy,
         policy_source=policy_source_hint or ("strategist" if candidate_source == "strategist" else default_policy.policy_source),
     )
+    override_reason = ""
+    phase_text = str(
+        state.get("runtime_phase")
+        or state.get("phase")
+        or state.get("market_clock_phase")
+        or "session"
+    ).strip().lower()
+    try:
+        open_position_count = _portfolio_open_position_count(state)
+    except Exception:
+        open_position_count = _coerce_int(state.get("open_position_count"), 0)
+    if (
+        not bool(normalized_policy.enabled)
+        and int(open_position_count) <= 0
+        and phase_text in {"", "session", "intraday"}
+    ):
+        normalized_policy = MonitorEntryPolicy.from_mapping(
+            {
+                **normalized_policy.to_dict(),
+                "enabled": True,
+                "policy_source": str(normalized_policy.policy_source or policy_source_hint or candidate_source),
+            }
+        )
+        override_reason = "flat_session_entry_policy_enabled_forced"
 
     validation_status = str(normalized_meta.get("status") or "ok")
     fallback_used = bool(normalized_meta.get("fallback_used"))
@@ -917,6 +1057,8 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     source_chain = [candidate_source or "default", "validation"]
     if fallback_used:
         source_chain.append("default_fallback")
+    if override_reason:
+        source_chain.append("commander_entry_enabled_guard")
     source_chain.append("commander_confirmed")
     source_chain = [str(x) for x in source_chain if str(x or "").strip()]
 
@@ -930,7 +1072,7 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_default_filled_fields": list(default_filled_fields),
         "policy_validation_missing_fields": list(validation_missing_fields),
         "policy_validation_invalid_fields": list(validation_invalid_fields),
-        "override_reason": "",
+        "override_reason": override_reason,
         "applied_policy_source_chain": source_chain,
         "monitor_entry_policy_summary": _summarize_monitor_entry_policy(applied_policy),
     }
@@ -1053,6 +1195,10 @@ def _resolve_commander_behavior_policy(
             "COMMANDER_POST_SCANNER_REFRESH_ENABLED",
             _commander_default_bool("COMMANDER_POST_SCANNER_REFRESH_ENABLED", True),
         )
+    pre_entry_exit_sweep_enabled = _existing_value("commander", "route", "pre_entry_exit_sweep_enabled")
+    if pre_entry_exit_sweep_enabled is None:
+        pre_entry_exit_sweep_enabled = True
+    risk_max_positions = _resolve_risk_max_positions(state)
     memory_bias_observation_only = _env_bool(
         "MEMORY_BIAS_OBSERVATION_ONLY",
         _commander_default_bool("MEMORY_BIAS_OBSERVATION_ONLY", True),
@@ -1071,7 +1217,7 @@ def _resolve_commander_behavior_policy(
         exit_policy_use_eod_flat = True
     block_buy_when_open_position = _existing_value("monitor", "entry", "block_buy_when_open_position")
     if block_buy_when_open_position is None:
-        block_buy_when_open_position = True
+        block_buy_when_open_position = risk_max_positions <= 1
     monitor_scoring_enabled = _existing_value("monitor", "entry", "scoring", "enabled")
     if monitor_scoring_enabled is None:
         monitor_scoring_enabled = False
@@ -1093,6 +1239,12 @@ def _resolve_commander_behavior_policy(
     eod_flat_cutoff_min = _existing_value("monitor", "exit", "eod_flat", "cutoff_min")
     if eod_flat_cutoff_min is None:
         eod_flat_cutoff_min = 10
+    buy_closeout_cutoff_min = _existing_value("monitor", "entry", "buy_closeout_cutoff_min")
+    if buy_closeout_cutoff_min is None:
+        buy_closeout_cutoff_min = max(
+            _DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN,
+            _coerce_int(eod_flat_cutoff_min, 10),
+        )
     top_candidate_pool = _existing_value("scanner", "candidate", "top_pool")
     if top_candidate_pool is None:
         top_candidate_pool = 30
@@ -1124,6 +1276,40 @@ def _resolve_commander_behavior_policy(
     monitor_scoring_threshold = _existing_value("monitor", "entry", "scoring", "threshold")
     if monitor_scoring_threshold is None:
         monitor_scoring_threshold = 3
+    position_sizing_enabled = _existing_value("monitor", "entry", "position_sizing", "enabled")
+    if position_sizing_enabled is None:
+        position_sizing_enabled = True
+    position_sizing_risk_per_trade_ratio = _existing_value(
+        "monitor",
+        "entry",
+        "position_sizing",
+        "risk_per_trade_ratio",
+    )
+    if position_sizing_risk_per_trade_ratio is None:
+        position_sizing_risk_per_trade_ratio = 0.01
+    position_sizing_notional_ratio = _existing_value(
+        "monitor",
+        "entry",
+        "position_sizing",
+        "position_notional_ratio",
+    )
+    if position_sizing_notional_ratio is None:
+        position_sizing_notional_ratio = 0.50
+    position_sizing_max_qty = _existing_value("monitor", "entry", "position_sizing", "max_position_qty")
+    if position_sizing_max_qty is None:
+        position_sizing_max_qty = _coerce_int(os.getenv("MAX_ORDER_QTY") or os.getenv("MAX_QTY"), 10)
+    position_sizing_max_notional = _existing_value("monitor", "entry", "position_sizing", "max_position_notional")
+    if position_sizing_max_notional is None:
+        position_sizing_max_notional = _runtime_float(
+            os.getenv("MAX_ORDER_NOTIONAL") or os.getenv("MAX_NOTIONAL"),
+            1_000_000.0,
+        )
+    position_sizing_min_qty = _existing_value("monitor", "entry", "position_sizing", "min_position_qty")
+    if position_sizing_min_qty is None:
+        position_sizing_min_qty = 1
+    position_sizing_lot_size = _existing_value("monitor", "entry", "position_sizing", "lot_size")
+    if position_sizing_lot_size is None:
+        position_sizing_lot_size = 1
     strategy_memory_recent_runs = _existing_value("strategist", "memory_feedback", "recent_runs")
     if strategy_memory_recent_runs is None:
         strategy_memory_recent_runs = 12
@@ -1404,6 +1590,7 @@ def _resolve_commander_behavior_policy(
                 "monitor_only_when_holding": bool(monitor_only_when_holding),
                 "cached_strategist_when_flat": bool(cached_strategist_when_flat),
                 "post_scanner_refresh_enabled": bool(post_scanner_refresh_enabled),
+                "pre_entry_exit_sweep_enabled": bool(pre_entry_exit_sweep_enabled),
                 "policy_source": "commander_applied_policy",
             },
             "memory_usage": {
@@ -1465,6 +1652,37 @@ def _resolve_commander_behavior_policy(
             },
             "entry": {
                 "block_buy_when_open_position": bool(block_buy_when_open_position),
+                "multi_position": {
+                    "enabled": bool(risk_max_positions > 1),
+                    "max_positions": int(risk_max_positions),
+                    "same_symbol_reentry_allowed": False,
+                    "pending_buy_same_symbol_allowed": False,
+                    "open_position_gate_mode": "max_positions",
+                    "policy_source": "commander_applied_policy",
+                },
+                "buy_closeout_cutoff_min": max(
+                    _coerce_int(eod_flat_cutoff_min, 10),
+                    _coerce_int(buy_closeout_cutoff_min, _DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN),
+                ),
+                "position_sizing": {
+                    "enabled": bool(position_sizing_enabled),
+                    "risk_per_trade_ratio": max(
+                        0.0,
+                        float(_runtime_float(position_sizing_risk_per_trade_ratio, 0.01)),
+                    ),
+                    "position_notional_ratio": max(
+                        0.0,
+                        float(_runtime_float(position_sizing_notional_ratio, 0.50)),
+                    ),
+                    "max_position_qty": max(1, _coerce_int(position_sizing_max_qty, 10)),
+                    "max_position_notional": max(
+                        0.0,
+                        float(_runtime_float(position_sizing_max_notional, 0.0)),
+                    ),
+                    "min_position_qty": max(1, _coerce_int(position_sizing_min_qty, 1)),
+                    "lot_size": max(1, _coerce_int(position_sizing_lot_size, 1)),
+                    "policy_source": "commander_applied_policy",
+                },
                 "scoring": {
                     "enabled": bool(monitor_scoring_enabled),
                     "shadow_mode": bool(monitor_scoring_shadow_mode),
@@ -1498,6 +1716,7 @@ def _resolve_commander_behavior_policy(
             "strategist_memory_usage_disabled": bool(strategist_memory_usage_disabled),
             "memory_bias_observation_only": bool(memory_bias_observation_only),
             "post_scanner_refresh_enabled": bool(post_scanner_refresh_enabled),
+            "pre_entry_exit_sweep_enabled": bool(pre_entry_exit_sweep_enabled),
             "monitor_only_when_holding": bool(monitor_only_when_holding),
             "cached_strategist_when_flat": bool(cached_strategist_when_flat),
             "exit_policy_enabled": bool(exit_policy_enabled),
@@ -1508,8 +1727,31 @@ def _resolve_commander_behavior_policy(
             "carry_exit_policy_overrides": dict(carry_exit_policy_overrides),
             "carry_policy_adjustments": list(carry_policy_adjustments),
             "block_buy_when_open_position": bool(block_buy_when_open_position),
+            "multi_position_enabled": bool(risk_max_positions > 1),
+            "max_positions": int(risk_max_positions),
+            "same_symbol_reentry_allowed": False,
+            "pending_buy_same_symbol_allowed": False,
+            "open_position_gate_mode": "max_positions",
+            "buy_closeout_cutoff_min": max(
+                _coerce_int(eod_flat_cutoff_min, 10),
+                _coerce_int(buy_closeout_cutoff_min, _DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN),
+            ),
             "monitor_scoring_enabled": bool(monitor_scoring_enabled),
             "monitor_scoring_shadow_mode": bool(monitor_scoring_shadow_mode),
+            "position_sizing_enabled": bool(position_sizing_enabled),
+            "position_sizing_risk_per_trade_ratio": max(
+                0.0,
+                float(_runtime_float(position_sizing_risk_per_trade_ratio, 0.01)),
+            ),
+            "position_sizing_position_notional_ratio": max(
+                0.0,
+                float(_runtime_float(position_sizing_notional_ratio, 0.50)),
+            ),
+            "position_sizing_max_position_qty": max(1, _coerce_int(position_sizing_max_qty, 10)),
+            "position_sizing_max_position_notional": max(
+                0.0,
+                float(_runtime_float(position_sizing_max_notional, 0.0)),
+            ),
             "reporter_feedback_mode": str(feedback_policy.get("reporter_feedback_mode") or "auto"),
             "universe_fields": {
                 "asset_type": str(universe_asset_type or "common_stock_only").strip().lower() or "common_stock_only",
@@ -1586,9 +1828,27 @@ def _resolve_commander_behavior_policy(
                 "min_hold_seconds": max(0, _coerce_int(min_hold_seconds, 600)),
                 "exit_confirm_ticks": max(1, _coerce_int(exit_confirm_ticks, 2)),
                 "eod_flat_cutoff_min": max(0, _coerce_int(eod_flat_cutoff_min, 10)),
+                "buy_closeout_cutoff_min": max(
+                    _coerce_int(eod_flat_cutoff_min, 10),
+                    _coerce_int(buy_closeout_cutoff_min, _DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN),
+                ),
                 "top_candidate_pool": max(1, _coerce_int(top_candidate_pool, 30)),
                 "kiwoom_condition_limit": max(0, _coerce_int(kiwoom_condition_limit, 200)),
                 "monitor_entry_scoring_threshold": max(0.0, float(_runtime_float(monitor_scoring_threshold, 3.0))),
+                "position_sizing_enabled": bool(position_sizing_enabled),
+                "position_sizing_risk_per_trade_ratio": max(
+                    0.0,
+                    float(_runtime_float(position_sizing_risk_per_trade_ratio, 0.01)),
+                ),
+                "position_sizing_position_notional_ratio": max(
+                    0.0,
+                    float(_runtime_float(position_sizing_notional_ratio, 0.50)),
+                ),
+                "position_sizing_max_position_qty": max(1, _coerce_int(position_sizing_max_qty, 10)),
+                "position_sizing_max_position_notional": max(
+                    0.0,
+                    float(_runtime_float(position_sizing_max_notional, 0.0)),
+                ),
                 "strategy_memory_recent_runs": max(1, _coerce_int(strategy_memory_recent_runs, 12)),
             },
         },
@@ -1897,8 +2157,10 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
         "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
         "observability_only": True,
+        "allow_behavior_translation": bool(commander_horizon_policy.get("allow_behavior_translation")),
         "do_not_force_hold": True,
         "decision_reason": str(commander_horizon_policy.get("decision_reason") or ""),
+        "behavior_translation": dict(commander_horizon_policy.get("behavior_translation") or {}),
     }
     strategist_refresh_context = (
         dict(commander_context.get("strategist_refresh_context") or {})
@@ -1963,8 +2225,16 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     scanner_policy["scanner_memory_bias_summary"] = dict(scanner_memory_bias_summary)
     if commander_entry_control:
         scanner_policy["entry_control"] = dict(commander_entry_control)
-        scanner_policy["max_priority_rank"] = int(commander_entry_control.get("max_priority_rank") or 10)
-        scanner_policy["max_runner_ups"] = int(commander_entry_control.get("max_runner_ups") or 9)
+        scanner_policy["max_priority_rank"] = int(
+            commander_entry_control.get("max_priority_rank")
+            if commander_entry_control.get("max_priority_rank") not in (None, "")
+            else 10
+        )
+        scanner_policy["max_runner_ups"] = int(
+            commander_entry_control.get("max_runner_ups")
+            if commander_entry_control.get("max_runner_ups") not in (None, "")
+            else 9
+        )
     strategy_policy["scanner_policy"] = scanner_policy
 
     provenance = (
@@ -2074,6 +2344,151 @@ def _extract_commander_policy_vwap_ceiling(applied_policy: Dict[str, Any]) -> fl
     return float(value if value > 0.0 else 0.08)
 
 
+def _clamp_int(value: Any, default: int, lo: int, hi: int) -> int:
+    try:
+        parsed = int(float(value))
+    except Exception:
+        parsed = int(default)
+    return int(max(lo, min(hi, parsed)))
+
+
+def _dedupe_reason_list(value: Any, defaults: tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    allowed_defaults = {str(item).strip().lower() for item in defaults if str(item).strip()}
+    source = value if isinstance(value, list) else []
+    for item in source:
+        text = str(item or "").strip().lower()
+        if not text:
+            continue
+        if allowed_defaults and text not in allowed_defaults:
+            continue
+        if text not in out:
+            out.append(text)
+    for item in defaults:
+        text = str(item or "").strip().lower()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _extract_strategist_candidate_watch_policy(strategist_output: Dict[str, Any] | None) -> Dict[str, Any]:
+    data = strategist_output if isinstance(strategist_output, dict) else {}
+    if not data:
+        return {}
+    direct = data.get("candidate_watch_policy")
+    if isinstance(direct, dict) and direct:
+        return dict(direct)
+    strategy_policy = data.get("strategy_policy") if isinstance(data.get("strategy_policy"), dict) else {}
+    scanner_policy = strategy_policy.get("scanner_policy") if isinstance(strategy_policy.get("scanner_policy"), dict) else {}
+    nested = scanner_policy.get("candidate_watch_policy")
+    if isinstance(nested, dict) and nested:
+        return dict(nested)
+    return {}
+
+
+def _normalize_candidate_watch_proposal_for_commander(
+    raw: Dict[str, Any] | None,
+    *,
+    playbook: str = "",
+    tactical_strategy: str = "",
+) -> Dict[str, Any]:
+    src = dict(raw or {}) if isinstance(raw, dict) else {}
+    if not src:
+        return {}
+    proposed_rank = _clamp_int(src.get("max_priority_rank"), 5, 1, 10)
+    proposed_runner_ups = _clamp_int(src.get("max_runner_ups"), max(0, proposed_rank - 1), 0, max(0, proposed_rank - 1))
+    cascade_enabled = (
+        _is_trueish(src.get("cascade_enabled"))
+        if src.get("cascade_enabled") not in (None, "")
+        else proposed_runner_ups > 0
+    )
+    if not cascade_enabled:
+        proposed_runner_ups = 0
+    return {
+        "schema_version": "commander_candidate_watch_proposal.v1",
+        "source": str(src.get("source") or "strategist_output.candidate_watch_policy"),
+        "original_behavior_effect": str(src.get("behavior_effect") or ""),
+        "playbook": str(src.get("playbook") or playbook or ""),
+        "tactical_strategy": str(src.get("tactical_strategy") or tactical_strategy or ""),
+        "proposed_max_priority_rank": int(proposed_rank),
+        "proposed_max_runner_ups": int(proposed_runner_ups),
+        "proposed_cascade_enabled": bool(cascade_enabled and proposed_runner_ups > 0),
+        "cascade_allowed_reasons": _dedupe_reason_list(
+            src.get("cascade_allowed_reasons"),
+            _CANDIDATE_WATCH_DEFAULT_CASCADE_ALLOWED_REASONS,
+        ),
+        "cascade_blocked_reasons": _dedupe_reason_list(
+            src.get("cascade_blocked_reasons"),
+            _CANDIDATE_WATCH_DEFAULT_CASCADE_BLOCKED_REASONS,
+        ),
+        "reason": str(src.get("reason") or "strategist_candidate_watch_policy"),
+        "raw_policy": dict(src),
+    }
+
+
+def _candidate_watch_rank_cap(
+    *,
+    proposal: Dict[str, Any],
+    market_regime: str,
+    risk_mode: str,
+    stress_flags: list[Any],
+    resilience: Dict[str, Any],
+) -> int:
+    tactical = str(proposal.get("tactical_strategy") or "").strip().lower()
+    regime = str(market_regime or "").strip().lower()
+    mode = str(risk_mode or "").strip().lower()
+    if mode == "blocked":
+        return 1
+    if regime == "risk_off" or mode == "defensive" or bool(stress_flags) or str(resilience.get("degrade_mode") or "").strip():
+        return 3
+    if tactical == "defensive_observe":
+        return 3
+    if regime == "risk_on" or mode == "offensive":
+        return 10
+    return 7
+
+
+def _apply_candidate_watch_proposal_to_entry_control(
+    base: Dict[str, Any],
+    proposal: Dict[str, Any],
+    *,
+    rank_cap: int,
+    force_disable_cascade: bool = False,
+    clamp_reason: str = "",
+) -> Dict[str, Any]:
+    if not proposal:
+        return base
+    out = dict(base or {})
+    proposed_rank = _clamp_int(proposal.get("proposed_max_priority_rank"), 5, 1, 10)
+    proposed_runner_ups = _clamp_int(
+        proposal.get("proposed_max_runner_ups"),
+        max(0, proposed_rank - 1),
+        0,
+        max(0, proposed_rank - 1),
+    )
+    final_rank = int(max(1, min(10, int(rank_cap), proposed_rank)))
+    final_runner_ups = int(min(proposed_runner_ups, max(0, final_rank - 1)))
+    cascade_enabled = bool(proposal.get("proposed_cascade_enabled")) and final_runner_ups > 0 and not bool(force_disable_cascade)
+    if not cascade_enabled:
+        final_runner_ups = 0
+    out.update(
+        {
+            "candidate_watch_policy_applied": True,
+            "candidate_watch_policy_effect": "commander_clamped_execution",
+            "candidate_watch_policy_proposal": dict(proposal),
+            "candidate_watch_policy_clamp_reason": str(clamp_reason or "commander_strategy_scope_clamp"),
+            "proposed_max_priority_rank": int(proposed_rank),
+            "proposed_max_runner_ups": int(proposed_runner_ups),
+            "max_priority_rank": int(final_rank),
+            "max_runner_ups": int(final_runner_ups),
+            "cascade_enabled": bool(cascade_enabled),
+            "cascade_allowed_reasons": list(proposal.get("cascade_allowed_reasons") or []),
+            "cascade_blocked_reasons": list(proposal.get("cascade_blocked_reasons") or []),
+        }
+    )
+    return out
+
+
 def _build_commander_entry_control(
     *,
     market_regime: str,
@@ -2084,6 +2499,8 @@ def _build_commander_entry_control(
     resilience: Dict[str, Any],
     monitor_feedback: Dict[str, Any],
     applied_policy: Dict[str, Any],
+    max_positions: int = 1,
+    strategist_output: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     blocker = str(monitor_feedback.get("dominant_blocker") or "").strip().lower()
     failure_streak = max(0, _coerce_int(monitor_feedback.get("failure_streak"), 0))
@@ -2100,6 +2517,15 @@ def _build_commander_entry_control(
     )
     expandable_blocker = blocker in _ENTRY_CONTROL_POOL_EXPAND_BLOCKERS
     repeated_block = bool(blocker and failure_streak >= 3)
+    max_positions = max(1, int(max_positions or 1))
+    capacity_remaining = max(0, int(max_positions) - int(open_position_count))
+    strategist_data = strategist_output if isinstance(strategist_output, dict) else {}
+    raw_watch_policy = _extract_strategist_candidate_watch_policy(strategist_data)
+    candidate_watch_proposal = _normalize_candidate_watch_proposal_for_commander(
+        raw_watch_policy,
+        playbook=str(strategist_data.get("final_playbook") or strategist_data.get("playbook") or ""),
+        tactical_strategy=str(strategist_data.get("tactical_strategy") or ""),
+    )
     base: Dict[str, Any] = {
         "schema_version": "commander_entry_control.v1",
         "source": "commander_decision",
@@ -2119,17 +2545,36 @@ def _build_commander_entry_control(
         "max_extended_from_vwap_pct_cap": 0.10,
         "scan_aggressiveness_floor": 0.0,
         "reason": "baseline_entry_scope",
+        "open_position_count": int(open_position_count),
+        "max_positions": int(max_positions),
+        "capacity_remaining": int(capacity_remaining),
+        "open_position_gate_mode": "max_positions",
     }
-    if int(open_position_count) > 0:
+    if candidate_watch_proposal:
+        base["candidate_watch_policy_detected"] = True
+        base["candidate_watch_policy_source"] = str(candidate_watch_proposal.get("source") or "")
+        base["mode"] = "strategy_watch_policy"
+        base["decision"] = "apply_strategy_candidate_watch_policy"
+        base["reason"] = str(candidate_watch_proposal.get("reason") or "strategy_candidate_watch_policy")
+    if int(open_position_count) >= int(max_positions):
         base.update(
             {
-                "mode": "position_management_no_entry_expansion",
+                "mode": "max_positions_no_entry_expansion",
                 "decision": "preserve_existing_position_focus",
-                "reason": "open_position_present",
+                "reason": "max_positions_reached",
             }
         )
+        if candidate_watch_proposal:
+            base = _apply_candidate_watch_proposal_to_entry_control(
+                base,
+                candidate_watch_proposal,
+                rank_cap=1,
+                force_disable_cascade=True,
+                clamp_reason="max_positions_reached",
+            )
         return base
-    if bool(preflight.get("blocked")) or mode == "blocked":
+    hard_entry_blocked = bool(preflight.get("blocked")) or (mode == "blocked" and capacity_remaining <= 0)
+    if hard_entry_blocked:
         base.update(
             {
                 "mode": "blocked_no_entry_expansion",
@@ -2137,7 +2582,30 @@ def _build_commander_entry_control(
                 "reason": "preflight_or_runtime_blocked",
             }
         )
+        if candidate_watch_proposal:
+            base = _apply_candidate_watch_proposal_to_entry_control(
+                base,
+                candidate_watch_proposal,
+                rank_cap=1,
+                force_disable_cascade=True,
+                clamp_reason="preflight_or_runtime_blocked",
+            )
         return base
+    if candidate_watch_proposal:
+        rank_cap = _candidate_watch_rank_cap(
+            proposal=candidate_watch_proposal,
+            market_regime=regime or str(market_regime or ""),
+            risk_mode=mode or str(risk_mode or ""),
+            stress_flags=list(stress_flags or []),
+            resilience=dict(resilience or {}),
+        )
+        base = _apply_candidate_watch_proposal_to_entry_control(
+            base,
+            candidate_watch_proposal,
+            rank_cap=rank_cap,
+            force_disable_cascade=rank_cap <= 1,
+            clamp_reason=f"market_regime={regime or str(market_regime or '')}:risk_mode={mode or str(risk_mode or '')}",
+        )
     if repeated_block and not market_supportive:
         base.update(
             {
@@ -2146,6 +2614,14 @@ def _build_commander_entry_control(
                 "reason": "market_or_risk_mode_not_supportive_for_entry_expansion",
             }
         )
+        if candidate_watch_proposal:
+            base = _apply_candidate_watch_proposal_to_entry_control(
+                base,
+                candidate_watch_proposal,
+                rank_cap=3,
+                force_disable_cascade=not bool(base.get("cascade_enabled")),
+                clamp_reason="market_or_risk_mode_not_supportive_for_entry_expansion",
+            )
         return base
     if repeated_block and not expandable_blocker:
         base.update(
@@ -2159,6 +2635,9 @@ def _build_commander_entry_control(
     if repeated_block and market_supportive and expandable_blocker:
         max_priority_rank = 10 if failure_streak >= 5 else 8
         scan_floor = 0.10 if failure_streak >= 5 else 0.05
+        if candidate_watch_proposal and str(candidate_watch_proposal.get("tactical_strategy") or "").strip().lower() != "defensive_observe":
+            current_rank = _clamp_int(base.get("max_priority_rank"), max_priority_rank, 1, 10)
+            max_priority_rank = max(int(current_rank), int(max_priority_rank))
         base.update(
             {
                 "mode": "expand_when_market_ok",
@@ -2172,6 +2651,11 @@ def _build_commander_entry_control(
                 ),
             }
         )
+        if candidate_watch_proposal:
+            base["candidate_watch_policy_clamp_reason"] = (
+                f"market_supportive_repeated_blocker:{blocker}:streak={failure_streak}"
+            )
+            base["candidate_watch_policy_effect"] = "commander_expanded_repeated_blocker"
         if blocker in _ENTRY_CONTROL_DYNAMIC_BAND_BLOCKERS:
             received_ceiling = _extract_commander_policy_vwap_ceiling(applied_policy)
             target_floor = 0.10 if failure_streak >= 5 and (near_ready or avg_distance >= 0.70) else 0.08
@@ -2220,27 +2704,35 @@ def _build_commander_decision(
     )
     positions = [row for row in list(portfolio_snapshot.get("positions") or []) if isinstance(row, dict)]
     open_position_count = len(positions)
+    max_positions = _resolve_risk_max_positions(state)
+    entry_capacity_available = open_position_count < max_positions
     market_regime, strategist_fallback_used = _derive_commander_market_regime(state, shadow_assessment=shadow_assessment)
-    stress_flags = list(
-        (
-            (strategist_output.get("macro_stress_overlay") or {}).get("stress_flags")
-            if isinstance(strategist_output.get("macro_stress_overlay"), dict)
-            else []
-        )
-        or []
+    macro_stress_overlay = (
+        strategist_output.get("macro_stress_overlay")
+        if isinstance(strategist_output.get("macro_stress_overlay"), dict)
+        else {}
     )
+    raw_stress_flags = list(macro_stress_overlay.get("stress_flags") or [])
+    macro_stress_active = bool(macro_stress_overlay.get("active"))
+    stress_flags = raw_stress_flags if macro_stress_active else []
     if str(phase_value or "").strip() == "preopen":
         session_bias = "preopen_context"
     elif str(phase_value or "").strip() == "closeout":
         session_bias = "closeout_control"
-    elif open_position_count > 0:
+    elif open_position_count > 0 and not entry_capacity_available:
         session_bias = "position_management"
+    elif open_position_count > 0 and entry_capacity_available:
+        session_bias = "multi_position_selection"
     elif "cached" in str(path_value or ""):
         session_bias = "context_reuse"
     else:
         session_bias = "active_selection"
 
-    if bool(preflight.get("blocked")) or str(status_value or "").strip().lower() in {"blocked", "preflight_blocked"}:
+    runtime_status_blocked = str(status_value or "").strip().lower() in {"blocked", "preflight_blocked"}
+    hard_runtime_blocked = bool(preflight.get("blocked")) or (
+        bool(runtime_status_blocked) and not bool(entry_capacity_available)
+    )
+    if hard_runtime_blocked:
         risk_mode = "blocked"
     elif market_regime == "risk_off" or bool(stress_flags) or str(resilience.get("degrade_mode") or "").strip():
         risk_mode = "defensive"
@@ -2270,6 +2762,9 @@ def _build_commander_decision(
     elif session_bias == "position_management":
         scanner_mission = "Keep candidate refresh narrow while existing exposure is being managed."
         monitor_mission = "Focus on hold versus exit confirmation for open positions first."
+    elif session_bias == "multi_position_selection":
+        scanner_mission = "Continue candidate selection while existing exposure is monitored, avoiding held symbols."
+        monitor_mission = "Evaluate fresh entries only when position capacity remains and duplicate-symbol guards pass."
     else:
         scanner_mission = "Prioritize balanced liquid leaders with clear scanner fit and manageable risk."
         monitor_mission = "Wait for confirmation and avoid low-quality chase entries."
@@ -2292,11 +2787,11 @@ def _build_commander_decision(
     flow_instruction = str(shadow_assessment.get("suggested_action") or "").strip()
     no_trade_reason_code = shadow_no_trade_reason_code
     if not strategist_invocation:
-        strategist_invocation = "SKIP" if open_position_count > 0 else "RUN"
+        strategist_invocation = "SKIP" if open_position_count > 0 and not entry_capacity_available else "RUN"
     if not flow_instruction:
-        flow_instruction = "HOLD_OBSERVE" if open_position_count > 0 else "NO_ACTION"
+        flow_instruction = "HOLD_OBSERVE" if open_position_count > 0 and not entry_capacity_available else "NO_ACTION"
     if not no_trade_reason_code:
-        no_trade_reason_code = "POSITION_ALREADY_OPEN" if open_position_count > 0 else "NONE"
+        no_trade_reason_code = "MAX_POSITIONS_REACHED" if open_position_count > 0 and not entry_capacity_available else "NONE"
     observations = dict(shadow_assessment.get("observations") or {}) if isinstance(shadow_assessment.get("observations"), dict) else {}
     refresh_assessment = _assess_pre_buy_strategist_refresh_need(state, commander_market_regime=market_regime)
     strategist_refresh_requested = bool(refresh_assessment.get("requested"))
@@ -2548,8 +3043,10 @@ def _build_commander_decision(
         "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
         "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
         "observability_only": True,
+        "allow_behavior_translation": bool(commander_horizon_policy.get("allow_behavior_translation")),
         "do_not_force_hold": True,
         "decision_reason": str(commander_horizon_policy.get("decision_reason") or ""),
+        "behavior_translation": dict(commander_horizon_policy.get("behavior_translation") or {}),
     }
     strategist_refresh_context = {
         **dict(strategist_refresh_context or {}),
@@ -2637,7 +3134,15 @@ def _build_commander_decision(
         
     strategist_call_decision = strategist_invocation
     strategist_call_reason = strategist_refresh_reason if strategist_refresh_requested else ("normal_cycle" if strategist_invocation == "RUN" else "")
-    strategist_skip_reason = strategist_cache_preference_reason if strategist_cache_preferred else ("open_positions_present" if open_position_count > 0 else "")
+    strategist_skip_reason = (
+        strategist_cache_preference_reason
+        if strategist_cache_preferred
+        else (
+            ("open_positions_present" if max_positions <= 1 else "max_positions_reached")
+            if open_position_count > 0 and not entry_capacity_available
+            else ""
+        )
+    )
 
     # Task 2: Explicit Strategy Decision Rules
     cache_payload_for_state = _strategist_cache_payload(state)
@@ -2664,7 +3169,7 @@ def _build_commander_decision(
     else:
         strategy_selection_mode = "prefer_cache"
 
-    if open_position_count > 0:
+    if open_position_count > 0 and not entry_capacity_available:
         strategist_invocation_mode = "SKIP_MONITOR_ONLY"
     elif not cached_output_for_state:
         strategist_invocation_mode = "RUN"
@@ -2744,6 +3249,8 @@ def _build_commander_decision(
         resilience=resilience,
         monitor_feedback=monitor_feedback,
         applied_policy=applied_policy,
+        max_positions=max_positions,
+        strategist_output=strategist_output,
     )
 
     adaptive_policy = {
@@ -2809,8 +3316,8 @@ def _build_commander_decision(
             "apply_when_top_value_only": True,
             "policy_source": "commander_default",
         },
-        "max_priority_rank": int(entry_control.get("max_priority_rank") or 10),
-        "max_runner_ups": int(entry_control.get("max_runner_ups") or 9),
+        "max_priority_rank": int(entry_control.get("max_priority_rank") if entry_control.get("max_priority_rank") not in (None, "") else 10),
+        "max_runner_ups": int(entry_control.get("max_runner_ups") if entry_control.get("max_runner_ups") not in (None, "") else 9),
         "entry_control": dict(entry_control),
     }
     observations = {
@@ -2818,8 +3325,11 @@ def _build_commander_decision(
         "entry_control_mode": str(entry_control.get("mode") or ""),
         "entry_control_decision": str(entry_control.get("decision") or ""),
         "entry_control_reason": str(entry_control.get("reason") or ""),
-        "entry_control_max_priority_rank": int(entry_control.get("max_priority_rank") or 10),
+        "entry_control_max_priority_rank": int(entry_control.get("max_priority_rank") if entry_control.get("max_priority_rank") not in (None, "") else 10),
         "entry_control_dynamic_band": bool(entry_control.get("allow_dynamic_entry_band")),
+        "open_position_count": int(open_position_count),
+        "max_positions": int(max_positions),
+        "multi_position_capacity_remaining": max(0, int(max_positions) - int(open_position_count)),
     }
     source_refs = {
         **source_refs,
@@ -3619,6 +4129,7 @@ def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
         return {"action": "NOOP", "reason": "no_monitor_intent"}
 
     it0 = intents[0] if isinstance(intents[0], dict) else {}
+    meta = dict(it0.get("meta") or {}) if isinstance(it0.get("meta"), dict) else {}
     side = str(it0.get("side") or "BUY").strip().upper()
     action = "BUY" if side == "BUY" else "SELL" if side == "SELL" else "NOOP"
     symbol = str(it0.get("symbol") or state.get("symbol") or state.get("selected_symbol") or "").strip().upper()
@@ -3626,8 +4137,41 @@ def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
     market = state.get("market_snapshot") if isinstance(state.get("market_snapshot"), dict) else {}
     price = it0.get("price")
-    if price is None:
-        price = market.get("price")
+    if price in (None, ""):
+        entry_metrics = meta.get("entry_metrics") if isinstance(meta.get("entry_metrics"), dict) else {}
+        entry_cost_filter = meta.get("entry_cost_filter") if isinstance(meta.get("entry_cost_filter"), dict) else {}
+        sizing = meta.get("sizing") if isinstance(meta.get("sizing"), dict) else {}
+        monitor_entry = state.get("monitor_entry") if isinstance(state.get("monitor_entry"), dict) else {}
+        monitor_entry_metrics = (
+            monitor_entry.get("metrics") if isinstance(monitor_entry.get("metrics"), dict) else {}
+        )
+        monitor_entry_cost_filter = (
+            monitor_entry.get("entry_cost_filter")
+            if isinstance(monitor_entry.get("entry_cost_filter"), dict)
+            else {}
+        )
+        monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+        for candidate in (
+            meta.get("price"),
+            meta.get("current_price"),
+            meta.get("raw_price"),
+            meta.get("quote_price"),
+            meta.get("market_price"),
+            entry_cost_filter.get("price"),
+            entry_metrics.get("current_price"),
+            entry_metrics.get("price"),
+            sizing.get("price"),
+            monitor_entry_cost_filter.get("price"),
+            monitor_entry_metrics.get("current_price"),
+            monitor_entry_metrics.get("price"),
+            monitor_output.get("current_price"),
+            monitor_output.get("price"),
+            monitor_output.get("exit_raw_price"),
+            market.get("price"),
+        ):
+            if candidate not in (None, "") and _runtime_float(candidate, 0.0) > 0.0:
+                price = candidate
+                break
 
     return {
         "action": action,
@@ -3637,17 +4181,22 @@ def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
         "order_type": "limit",
         "order_api_id": "ORDER_SUBMIT",
         "rationale": str(it0.get("thesis") or "monitor_intent"),
+        "meta": meta,
     }
 
 
 def _build_packet_from_state(state: Dict[str, Any], *, intent: Dict[str, Any]) -> Dict[str, Any]:
     risk = state.get("risk_context") if isinstance(state.get("risk_context"), dict) else {}
     exec_context = state.get("exec_context") if isinstance(state.get("exec_context"), dict) else {}
-    return {
+    packet = {
         "intent": dict(intent),
         "risk": dict(risk),
         "exec_context": dict(exec_context),
     }
+    strategy_policy = state.get("strategy_policy") if isinstance(state.get("strategy_policy"), dict) else {}
+    if strategy_policy:
+        packet["strategy_policy"] = dict(strategy_policy)
+    return packet
 
 
 def _normalize_strategist_output_contract(output: Dict[str, Any]) -> Dict[str, Any]:
@@ -3793,11 +4342,192 @@ def _portfolio_open_position_symbols(state: Dict[str, Any]) -> list[str]:
     return symbols
 
 
+def _open_position_focus_sort_key(item: Dict[str, Any]) -> tuple[int, int, int, int, float, float, int, int, str]:
+    return (
+        -int(bool(item.get("closeout_unresolved_flatten_required"))),
+        -_carry_risk_bias_rank(item.get("carry_risk_bias")),
+        -_carry_state_rank(item.get("carry_state")),
+        -_coerce_int(item.get("profit_protection_priority"), 0),
+        -max(0.0, float(_runtime_float(item.get("profit_giveback_ratio"), 0.0))),
+        float(_runtime_float(item.get("effective_loss_ratio"), 0.0)),
+        max(0, _coerce_int(item.get("last_exit_sweep_epoch"), 0)),
+        -_coerce_int(item.get("hold_repeat_count"), 0),
+        str(item.get("symbol") or ""),
+    )
+
+
+def _select_open_position_focus_symbol(state: Dict[str, Any], fallback_symbols: list[str] | None = None) -> str:
+    fallback = [str(x or "").strip().upper() for x in list(fallback_symbols or []) if str(x or "").strip()]
+    held_set = set(fallback)
+    unresolved = _closeout_unresolved_flatten_symbols(state)
+    for symbol in fallback:
+        if symbol in unresolved:
+            return symbol
+
+    assessment = (
+        dict(state.get("commander_open_position_override") or {})
+        if isinstance(state.get("commander_open_position_override"), dict)
+        else {}
+    )
+    positions = []
+    for row in list(assessment.get("positions") or []):
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol or (held_set and symbol not in held_set):
+            continue
+        positions.append({**dict(row), "symbol": symbol})
+    if positions:
+        return str(sorted(positions, key=_open_position_focus_sort_key)[0].get("symbol") or "")
+    return fallback[0] if fallback else ""
+
+
+def _normalize_order_symbol(value: Any) -> str:
+    raw = str(value or "").strip().upper()
+    if raw.startswith("A") and len(raw) == 7 and raw[1:].isdigit():
+        raw = raw[1:]
+    return raw if raw.isdigit() and len(raw) == 6 else ""
+
+
+def _order_row_side(row: Dict[str, Any]) -> str:
+    raw = str(row.get("side") or row.get("io_tp_nm") or row.get("trde_tp") or "").strip().upper()
+    if raw in {"BUY", "B", "2"} or "BUY" in raw or "매수" in raw or "留ㅼ닔" in raw:
+        return "BUY"
+    if raw in {"SELL", "S", "1"} or "SELL" in raw or "매도" in raw or "留ㅻ룄" in raw:
+        return "SELL"
+    return raw
+
+
+def _pending_buy_cancel_intents_from_account_orders(state: Dict[str, Any]) -> list[Dict[str, Any]]:
+    try:
+        from graphs.nodes.skill_contracts import (
+            account_order_is_pending,
+            account_order_quantity_snapshot,
+            account_order_side,
+            extract_account_orders_rows,
+        )
+    except Exception:
+        return []
+
+    rows, meta = extract_account_orders_rows(state)
+    out: list[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if account_order_side(row) != "BUY" or not account_order_is_pending(row):
+            continue
+        symbol = _normalize_order_symbol(row.get("symbol") or row.get("stk_cd") or row.get("pdno") or row.get("code"))
+        ord_no = str(row.get("ord_no") or row.get("odno") or row.get("ODNO") or "").strip()
+        if not symbol or not ord_no:
+            continue
+        qty_snapshot = account_order_quantity_snapshot(row)
+        order_qty = int(qty_snapshot.get("order_qty") or 0)
+        filled_qty = int(qty_snapshot.get("filled_qty") or 0)
+        remaining_qty_raw = qty_snapshot.get("remaining_qty")
+        remaining_qty = _coerce_int(remaining_qty_raw, -1) if remaining_qty_raw is not None else -1
+        status = str(row.get("status") or row.get("acpt_tp") or row.get("ord_st") or "").strip()
+        terminal_cancel = any(token in status for token in ("취소", "거부", "거절", "CANCEL", "REJECT"))
+        pending = True
+        if terminal_cancel or not pending:
+            continue
+        out.append(
+            {
+                "action": "CANCEL",
+                "symbol": symbol,
+                "qty": 0,
+                "order_type": "market",
+                "order_api_id": "kt10003",
+                "api_id": "kt10003",
+                "stk_cd": symbol,
+                "orig_ord_no": ord_no,
+                "cncl_qty": "0",
+                "dmst_stex_tp": str(row.get("dmst_stex_tp") or "KRX"),
+                "rationale": "session_closeout_pending_buy_cancel",
+                "meta": {
+                    "source": "commander_session_closeout_guard",
+                    "order_qty": int(order_qty),
+                    "filled_qty": int(filled_qty),
+                    "remaining_qty": int(remaining_qty) if remaining_qty >= 0 else None,
+                    "status": status,
+                    "account_orders_present": bool(meta.get("present")),
+                },
+            }
+        )
+    return out
+
+
+def _hydrate_closeout_account_orders(state: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from graphs.nodes.skill_contracts import extract_account_orders_rows
+
+        rows, meta = extract_account_orders_rows(state)
+        if rows or bool(meta.get("present")):
+            return state
+    except Exception:
+        return state
+
+    try:
+        from graphs.nodes.hydrate_skill_results_node import hydrate_skill_results_node
+    except Exception:
+        return state
+
+    previous_auto = state.get("auto_skill_runner")
+    previous_candidates = state.get("candidates")
+    had_candidates = "candidates" in state
+    state["auto_skill_runner"] = True
+    state["candidates"] = []
+    try:
+        state = hydrate_skill_results_node(state)
+    except Exception:
+        return state
+    finally:
+        if previous_auto is None:
+            state.pop("auto_skill_runner", None)
+        else:
+            state["auto_skill_runner"] = previous_auto
+        if had_candidates:
+            state["candidates"] = previous_candidates
+        else:
+            state.pop("candidates", None)
+    return state
+
+
 def _normalize_position_ratio(value: Any) -> float | None:
     if value in (None, ""):
         return None
     ratio = _runtime_float(value, 0.0)
     return float(ratio)
+
+
+def _resolve_profit_protection_activation_ratio(state: Dict[str, Any]) -> float:
+    for root in (
+        state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {},
+        state.get("policy") if isinstance(state.get("policy"), dict) else {},
+    ):
+        monitor = root.get("monitor") if isinstance(root.get("monitor"), dict) else {}
+        exit_policy = monitor.get("exit") if isinstance(monitor.get("exit"), dict) else {}
+        for key in (
+            "profit_protection_activation_pct",
+            "partial_take_profit_pct",
+            "cost_aware_profit_floor_pct",
+        ):
+            value = _runtime_float(exit_policy.get(key), 0.0)
+            if value > 0.0:
+                return float(value)
+    return 0.008
+
+
+def _position_current_profit_ratio(
+    *,
+    raw_price_ratio: float | None,
+    account_pnl_ratio: float | None,
+    price_anomaly: bool,
+) -> float | None:
+    if raw_price_ratio is not None:
+        return float(raw_price_ratio)
+    if account_pnl_ratio is not None and not price_anomaly:
+        return float(account_pnl_ratio)
+    return None
 
 
 def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -3831,6 +4561,17 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         if isinstance(persisted.get("overnight_decision_by_symbol"), dict)
         else {}
     )
+    position_peak_price = (
+        persisted.get("position_peak_price")
+        if isinstance(persisted.get("position_peak_price"), dict)
+        else {}
+    )
+    last_exit_sweep_by_symbol = (
+        persisted.get("commander_pre_entry_exit_sweep_last_checked_by_symbol")
+        if isinstance(persisted.get("commander_pre_entry_exit_sweep_last_checked_by_symbol"), dict)
+        else {}
+    )
+    profit_activation_ratio = _resolve_profit_protection_activation_ratio(state)
 
     next_hold_counts: Dict[str, int] = {}
     next_refresh_cooldowns: Dict[str, int] = {}
@@ -3890,6 +4631,32 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         if account_pnl_ratio is not None and not price_anomaly:
             candidate_loss_ratios.append(float(account_pnl_ratio))
         effective_loss_ratio = min(candidate_loss_ratios) if candidate_loss_ratios else None
+        current_profit_ratio = _position_current_profit_ratio(
+            raw_price_ratio=raw_loss_ratio,
+            account_pnl_ratio=account_pnl_ratio,
+            price_anomaly=price_anomaly,
+        )
+        peak_price = max(
+            _runtime_float(row.get("peak_price"), 0.0),
+            _runtime_float(row.get("high_water_mark"), 0.0),
+            _runtime_float(position_peak_price.get(symbol), 0.0) if isinstance(position_peak_price, dict) else 0.0,
+            current_price,
+            avg_price,
+        )
+        peak_profit_ratio = float((peak_price / avg_price) - 1.0) if peak_price > 0.0 and avg_price > 0.0 else None
+        profit_giveback_ratio = (
+            max(0.0, float(peak_profit_ratio) - float(current_profit_ratio))
+            if peak_profit_ratio is not None and current_profit_ratio is not None
+            else 0.0
+        )
+        profit_protection_priority = 0
+        if peak_profit_ratio is not None and peak_profit_ratio >= profit_activation_ratio:
+            profit_protection_priority = 2
+        elif current_profit_ratio is not None and current_profit_ratio >= profit_activation_ratio:
+            profit_protection_priority = 2
+        elif current_profit_ratio is not None and current_profit_ratio >= (profit_activation_ratio * 0.75):
+            profit_protection_priority = 1
+        last_exit_sweep_epoch = max(0, _coerce_int(last_exit_sweep_by_symbol.get(symbol), 0))
 
         previous = monitor_last_state.get(symbol) if isinstance(monitor_last_state, dict) else {}
         previous_posture = str((previous or {}).get("posture") or "").strip().lower()
@@ -3948,6 +4715,8 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
             reasons.append(
                 f"{symbol}:carry_bias:{str(carry_control.get('carry_risk_bias') or '')}:{str(carry_control.get('carry_risk_reason') or '')}"
             )
+        if bool(carry_control.get("closeout_unresolved_flatten_required")):
+            reasons.append(f"{symbol}:closeout_unresolved_flatten_required")
 
         rows_summary.append(
             {
@@ -3955,6 +4724,13 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 "qty": int(qty),
                 "effective_loss_ratio": effective_loss_ratio,
                 "raw_loss_ratio": raw_loss_ratio,
+                "current_profit_ratio": current_profit_ratio,
+                "peak_price": peak_price if peak_price > 0.0 else None,
+                "peak_profit_ratio": peak_profit_ratio,
+                "profit_giveback_ratio": profit_giveback_ratio,
+                "profit_protection_priority": int(profit_protection_priority),
+                "profit_protection_activation_ratio": float(profit_activation_ratio),
+                "last_exit_sweep_epoch": int(last_exit_sweep_epoch),
                 "account_pnl_ratio": account_pnl_ratio,
                 "price_anomaly": bool(price_anomaly),
                 "price_anomaly_reason": str(price_anomaly_reason),
@@ -3973,6 +4749,9 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 "carry_risk_reason": str(carry_control.get("carry_risk_reason") or ""),
                 "overnight_carry_approved": bool(carry_control.get("overnight_carry_approved")),
                 "overnight_carry_reason": str(carry_control.get("overnight_carry_reason") or ""),
+                "closeout_unresolved_flatten_required": bool(
+                    carry_control.get("closeout_unresolved_flatten_required")
+                ),
                 "session_open_recovery_assessment": dict(carry_control.get("session_open_recovery_assessment") or {}),
             }
         )
@@ -3982,7 +4761,10 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
     elif "commander_open_position_hold_repeat_by_symbol" in persisted:
         persisted.pop("commander_open_position_hold_repeat_by_symbol", None)
 
-    override_triggered = bool(anomaly_found or risk_found or max_hold_repeat >= 3)
+    closeout_unresolved_found = any(
+        bool(row.get("closeout_unresolved_flatten_required")) for row in rows_summary if isinstance(row, dict)
+    )
+    override_triggered = bool(closeout_unresolved_found or anomaly_found or risk_found or max_hold_repeat >= 3)
     override_action = ""
     override_reason = ""
     override_suppressed = False
@@ -4029,7 +4811,13 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         )
 
     if override_triggered:
-        if anomaly_found:
+        if closeout_unresolved_found:
+            override_action = "force_exit_review"
+            override_reason = "closeout_unresolved_flatten_required"
+            force_exit_review_pending = True
+            open_position_risk_review_reason = "closeout_unresolved_flatten_required"
+            position_refresh_trigger = "closeout_unresolved_flatten_required"
+        elif anomaly_found:
             override_action = "force_exit_review"
             override_reason = "price_pnl_anomaly"
         else:
@@ -4099,12 +4887,7 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
     carry_focus = (
         sorted(
             rows_summary,
-            key=lambda item: (
-                -_carry_risk_bias_rank(item.get("carry_risk_bias")),
-                -_carry_state_rank(item.get("carry_state")),
-                float(item.get("effective_loss_ratio") or 0.0),
-                str(item.get("symbol") or ""),
-            ),
+            key=_open_position_focus_sort_key,
         )[0]
         if rows_summary
         else {}
@@ -4120,6 +4903,7 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         "hold_repeat_count_max": int(max_hold_repeat),
         "effective_loss_ratio_min": min_effective_loss_ratio,
         "price_anomaly_flag": bool(anomaly_found),
+        "closeout_unresolved_flatten_required": bool(closeout_unresolved_found),
         "refresh_cooldown_sec": int(_OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC),
         "refresh_cooldown_symbol": str(refresh_cooldown_symbol),
         "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
@@ -4180,6 +4964,8 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
         default=True,
     )
     open_position_count = _portfolio_open_position_count(state)
+    max_positions = _resolve_risk_max_positions(state)
+    entry_capacity_available = open_position_count < max_positions
     applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
     applied_entry = (applied_policy.get("monitor") or {}).get("entry") if isinstance((applied_policy.get("monitor") or {}), dict) else {}
     block_buy_when_open_position = _is_trueish(
@@ -4195,6 +4981,9 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
         "enabled": bool(enabled),
         "policy_source": str(policy_source),
         "open_position_count": int(open_position_count),
+        "max_positions": int(max_positions),
+        "entry_capacity_available": bool(entry_capacity_available),
+        "multi_position_capacity_remaining": max(0, int(max_positions) - int(open_position_count)),
         "block_buy_when_open_position": bool(block_buy_when_open_position),
         "reason": "",
     }
@@ -4310,11 +5099,145 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
     if str(override_assessment.get("carry_risk_bias") or "").strip().lower() == "urgent_exit_review":
         payload["reason"] = "holding_position_carry_risk_monitor_only"
         return True, payload
+    if entry_capacity_available:
+        payload["reason"] = "multi_position_capacity_available"
+        return False, payload
     if not block_buy_when_open_position:
         payload["reason"] = "buy_not_blocked_when_open_position"
         return False, payload
-    payload["reason"] = "holding_position_monitor_only"
+    payload["reason"] = "holding_position_monitor_only" if max_positions <= 1 else "max_positions_reached_monitor_only"
     return True, payload
+
+
+def _mark_pre_entry_exit_sweep_checked(state: Dict[str, Any], symbol: str) -> None:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    checked = (
+        dict(persisted.get("commander_pre_entry_exit_sweep_last_checked_by_symbol") or {})
+        if isinstance(persisted.get("commander_pre_entry_exit_sweep_last_checked_by_symbol"), dict)
+        else {}
+    )
+    checked[normalized] = int(_runtime_now_epoch(state))
+    persisted["commander_pre_entry_exit_sweep_last_checked_by_symbol"] = checked
+    state["persisted_state"] = persisted
+
+
+def _restore_pre_entry_exit_sweep_transients(
+    state: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    keys: tuple[str, ...],
+) -> Dict[str, Any]:
+    for key in keys:
+        if key in snapshot:
+            state[key] = snapshot[key]
+        else:
+            state.pop(key, None)
+    return state
+
+
+def _run_pre_entry_exit_sweep(
+    state: Dict[str, Any],
+    *,
+    monitor_node_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
+    decision_node_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
+    execute_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
+    emit_trade_report_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
+    update_state_after_execution_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
+    shadow_runtime: Dict[str, Any],
+) -> Tuple[Dict[str, Any], bool]:
+    if not _commander_pre_entry_exit_sweep_enabled(state):
+        state["commander_pre_entry_exit_sweep"] = {"enabled": False, "reason": "disabled"}
+        return state, False
+    held_symbols = _portfolio_open_position_symbols(state)
+    if not held_symbols:
+        state["commander_pre_entry_exit_sweep"] = {"enabled": True, "reason": "no_open_position"}
+        return state, False
+
+    assessment = state.get("commander_open_position_override") if isinstance(state.get("commander_open_position_override"), dict) else {}
+    if not isinstance(assessment.get("positions"), list) or not assessment.get("positions"):
+        state["commander_open_position_override"] = dict(_assess_open_position_commander_override(state))
+    focus_symbol = _select_open_position_focus_symbol(state, fallback_symbols=held_symbols)
+    if not focus_symbol:
+        state["commander_pre_entry_exit_sweep"] = {"enabled": True, "reason": "no_focus_symbol"}
+        return state, False
+
+    restore_keys = _PRE_ENTRY_EXIT_SWEEP_TRANSIENT_KEYS + ("runtime_fast_path", "commander_decision")
+    restore_snapshot = {key: state[key] for key in restore_keys if key in state}
+    sweep_payload = {
+        "enabled": True,
+        "reason": "pre_entry_open_position_exit_check",
+        "focus_symbol": str(focus_symbol),
+        "held_symbols": list(held_symbols),
+        "open_position_count": int(len(held_symbols)),
+        "max_positions": int(_resolve_risk_max_positions(state)),
+        "result": "pending",
+    }
+    state["commander_pre_entry_exit_sweep"] = dict(sweep_payload)
+    state["runtime_fast_path"] = dict(sweep_payload)
+    state["commander_decision"] = _build_commander_decision(
+        state,
+        mode_value="integrated_chain",
+        phase_value=str(state.get("runtime_phase") or "session"),
+        status_value=str(state.get("runtime_status") or "planning"),
+        path_value="integrated_chain_pre_entry_exit_sweep",
+        reason_text="pre_entry_open_position_exit_check",
+    )
+    state["selected"] = {
+        "symbol": focus_symbol,
+        "_monitor_synthetic_selected": True,
+        "_pre_entry_exit_sweep_selected": True,
+    }
+    state.pop("scanner_output", None)
+    _log_commander_event(
+        state,
+        "pre_entry_exit_sweep",
+        {"path": "integrated_chain_pre_entry_exit_sweep", **dict(sweep_payload)},
+    )
+
+    state = _hydrate_monitor_symbol_features(state)
+    state = monitor_node_fn(state)
+    monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+    monitor_decision = str(monitor_output.get("intent_side") or "NOOP")
+    shadow_runtime["pre_entry_exit_sweep_monitor_decision"] = monitor_decision
+    state = decision_node_fn(state)
+    decision = str(state.get("decision") or "").strip().lower()
+    intent = _intent_from_monitor_state(state)
+    action = str(intent.get("action") or "").strip().upper()
+    _mark_pre_entry_exit_sweep_checked(state, focus_symbol)
+
+    state["commander_pre_entry_exit_sweep"] = {
+        **dict(sweep_payload),
+        "monitor_decision": monitor_decision,
+        "decision": str(decision or ""),
+        "intent_action": action,
+    }
+    if decision == "approve" and action == "SELL":
+        state["decision_packet"] = _build_packet_from_state(state, intent=intent)
+        state = execute_fn(state)
+        shadow_runtime["monitor_decision"] = monitor_decision
+        shadow_runtime["executor_action"] = str(
+            (((state.get("execution") or {}).get("order") or {}).get("action") or action or "")
+        )
+        shadow_runtime["executor_status"] = str(
+            ((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or ""))
+        )
+        state = emit_trade_report_fn(state)
+        state = update_state_after_execution_fn(state)
+        state["commander_pre_entry_exit_sweep"] = {
+            **dict(state.get("commander_pre_entry_exit_sweep") or {}),
+            "result": "executed_exit",
+        }
+        state["path"] = "integrated_chain_pre_entry_exit_sweep"
+        return state, True
+
+    state["commander_pre_entry_exit_sweep"] = {
+        **dict(state.get("commander_pre_entry_exit_sweep") or {}),
+        "result": "no_exit_signal" if action in {"", "NOOP"} else "non_sell_intent_ignored",
+    }
+    state = _restore_pre_entry_exit_sweep_transients(state, restore_snapshot, restore_keys)
+    return state, False
 
 
 def _should_use_session_closeout_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
@@ -4350,6 +5273,29 @@ def _should_use_session_closeout_fast_path(state: Dict[str, Any]) -> Tuple[bool,
             else None
         )
     )
+    applied_entry = (
+        ((applied_policy.get("monitor") or {}).get("entry") or {})
+        if isinstance((applied_policy.get("monitor") or {}).get("entry"), dict)
+        else {}
+    )
+    policy_entry = (
+        ((policy.get("monitor") or {}).get("entry") or {})
+        if isinstance((policy.get("monitor") or {}).get("entry"), dict)
+        else {}
+    )
+    eod_cutoff_int = _coerce_int(cutoff_min, 10)
+    buy_cutoff_raw = (
+        applied_entry.get("buy_closeout_cutoff_min")
+        if applied_entry.get("buy_closeout_cutoff_min") not in (None, "")
+        else policy_entry.get("buy_closeout_cutoff_min")
+    )
+    buy_cutoff_min = _coerce_int(
+        buy_cutoff_raw,
+        max(_DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN, eod_cutoff_int),
+    )
+    if buy_cutoff_min <= 0:
+        buy_cutoff_min = max(_DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN, eod_cutoff_int)
+    buy_cutoff_min = max(eod_cutoff_int, buy_cutoff_min)
     market_context = _ensure_market_context_clock_fields(state)
     raw_minutes_to_close = market_context.get("minutes_to_close")
     minutes_to_close = None if raw_minutes_to_close in (None, "") else float(_runtime_float(raw_minutes_to_close, 0.0))
@@ -4357,12 +5303,13 @@ def _should_use_session_closeout_fast_path(state: Dict[str, Any]) -> Tuple[bool,
         _is_trueish(use_eod_flat if use_eod_flat is not None else True)
         and minutes_to_close is not None
         and minutes_to_close >= 0.0
-        and minutes_to_close <= float(_coerce_int(cutoff_min, 10))
+        and minutes_to_close <= float(buy_cutoff_min)
     )
     payload = {
         "active": bool(active),
         "minutes_to_close": minutes_to_close,
-        "cutoff_min": int(_coerce_int(cutoff_min, 10)),
+        "cutoff_min": int(eod_cutoff_int),
+        "buy_cutoff_min": int(buy_cutoff_min),
         "use_eod_flat": bool(_is_trueish(use_eod_flat if use_eod_flat is not None else True)),
         "open_position_count": int(_portfolio_open_position_count(state)),
         "reason": "session_closeout_window" if active else (
@@ -4547,6 +5494,8 @@ def _assess_pre_buy_strategist_refresh_need(
     min_cache_age_sec = int(_PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC)
     readiness_threshold = float(_PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD)
     open_position_count = _portfolio_open_position_count(state)
+    max_positions = _resolve_risk_max_positions(state)
+    entry_capacity_available = open_position_count < max_positions
     cache_payload = _strategist_cache_payload(state)
     cached_output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
     now_epoch = _runtime_now_epoch(state)
@@ -4636,6 +5585,8 @@ def _assess_pre_buy_strategist_refresh_need(
     payload = {
         "requested": False,
         "open_position_count": int(open_position_count),
+        "max_positions": int(max_positions),
+        "entry_capacity_available": bool(entry_capacity_available),
         "selected_symbol": selected_symbol,
         "selected_symbol_in_cached_frame": bool(selected_symbol_in_cached_frame),
         "cached_candidate_hints": list(cached_candidate_hints[:8]),
@@ -4657,8 +5608,8 @@ def _assess_pre_buy_strategist_refresh_need(
         "cache_freshness_gate_bypassed": False,
         "reason": "",
     }
-    if open_position_count > 0:
-        payload["reason"] = "open_positions_present"
+    if open_position_count > 0 and not entry_capacity_available:
+        payload["reason"] = "max_positions_reached"
         return payload
     if _is_trueish(state.get("force_refresh_strategist")):
         payload["requested"] = True
@@ -4682,6 +5633,439 @@ def _assess_pre_buy_strategist_refresh_need(
     payload["requested"] = True
     payload["reason"] = "commander_requested_refresh"
     return payload
+
+
+def _post_scanner_selected_symbol(state: Dict[str, Any]) -> str:
+    selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
+    if bool(selected.get("_monitor_synthetic_selected")) or bool(selected.get("_closeout_guard_selected")):
+        return ""
+    scanner_output = state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {}
+    return str(
+        selected.get("symbol")
+        or scanner_output.get("top_stock")
+        or scanner_output.get("selected_symbol")
+        or ""
+    ).strip().upper()
+
+
+def _compact_post_scanner_candidate_row(row: Dict[str, Any], *, fallback_rank: int = 0) -> Dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    symbol = str(row.get("symbol") or row.get("code") or row.get("ticker") or "").strip().upper()
+    if not symbol:
+        return {}
+    score = None
+    score_source = ""
+    for key in (
+        "score_total",
+        "post_adjust_score_total",
+        "selected_score_total",
+        "scanner_score_total",
+        "score",
+        "final_score",
+        "rank_score",
+        "pre_adjust_score_total",
+    ):
+        score = _shadow_float(row.get(key))
+        if score is not None:
+            score_source = key
+            break
+    reason = str(
+        row.get("selection_reason")
+        or row.get("selection_reason_with_bias")
+        or row.get("why")
+        or row.get("reason")
+        or row.get("reason_text")
+        or row.get("source_reason")
+        or ""
+    ).strip()
+    rank = _coerce_int(row.get("rank"), fallback_rank)
+    score_breakdown: Dict[str, Any] = {}
+    if isinstance(row.get("score_breakdown"), dict):
+        for key, value in list(dict(row.get("score_breakdown") or {}).items())[:10]:
+            numeric = _shadow_float(value)
+            score_breakdown[str(key)[:50]] = (
+                round(float(numeric), 6)
+                if numeric is not None
+                else _shadow_text(value, max_len=80)
+            )
+    compact = {
+        "symbol": symbol,
+        "rank": int(rank if rank > 0 else fallback_rank),
+        "score": round(float(score), 6) if score is not None else None,
+        "score_total": round(float(score), 6) if score is not None else None,
+        "score_source": score_source,
+        "reason": reason[:180],
+        "source": str(row.get("source") or row.get("source_name") or "").strip()[:80],
+    }
+    if score_breakdown:
+        compact["score_breakdown"] = score_breakdown
+    for key in (
+        "risk_score",
+        "confidence",
+        "entry_compatibility_score",
+        "compatibility_bias",
+        "bias_adjustment",
+        "pre_adjust_score_total",
+        "post_adjust_score_total",
+    ):
+        value = _shadow_float(row.get(key))
+        if value is not None:
+            compact[key] = round(float(value), 6)
+    for key in (
+        "expected_monitor_block_reason",
+        "dominant_block_reason",
+        "market_representative_guard_reason",
+        "selection_reason_with_bias",
+        "status",
+    ):
+        text = _shadow_text(row.get(key), max_len=160)
+        if text:
+            compact[key] = text
+    return compact
+
+
+def _post_scanner_context_quality(
+    *,
+    selected_candidate: Dict[str, Any],
+    scanner_rank1_candidate: Dict[str, Any],
+    runner_ups: list[Dict[str, Any]],
+) -> Dict[str, Any]:
+    reasons: list[str] = []
+    if not str(selected_candidate.get("symbol") or "").strip():
+        reasons.append("selected_candidate_missing")
+    if _coerce_int(selected_candidate.get("rank"), 0) <= 0:
+        reasons.append("selected_rank_missing")
+    if selected_candidate.get("score") is None and selected_candidate.get("score_total") is None:
+        reasons.append("selected_score_missing")
+    if not str(scanner_rank1_candidate.get("symbol") or "").strip():
+        reasons.append("scanner_rank1_missing")
+    if not runner_ups:
+        reasons.append("runner_ups_missing")
+    quality = "complete"
+    if reasons:
+        quality = "partial"
+    if "selected_candidate_missing" in reasons or "scanner_rank1_missing" in reasons:
+        quality = "weak"
+    return {"quality": quality, "reasons": reasons}
+
+
+def _post_scanner_candidate_snapshot(state: Dict[str, Any], selected_symbol: str) -> Dict[str, Any]:
+    scanner_output = state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {}
+    raw_rows: list[Any] = []
+    for source in (
+        state.get("ranked_candidates"),
+        scanner_output.get("ranked_candidates"),
+        scanner_output.get("candidate_ranking_table", {}).get("rows")
+        if isinstance(scanner_output.get("candidate_ranking_table"), dict)
+        else [],
+        scanner_output.get("runner_ups"),
+    ):
+        if isinstance(source, list):
+            raw_rows.extend(source)
+    rows: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, raw in enumerate(raw_rows, start=1):
+        if not isinstance(raw, dict):
+            continue
+        row = _compact_post_scanner_candidate_row(raw, fallback_rank=idx)
+        symbol = str(row.get("symbol") or "")
+        if not symbol or symbol in seen:
+            continue
+        rows.append(row)
+        seen.add(symbol)
+        if len(rows) >= 8:
+            break
+    scanner_rank1_candidate = {}
+    for row in rows:
+        if _coerce_int(row.get("rank"), 0) == 1:
+            scanner_rank1_candidate = dict(row)
+            break
+    if not scanner_rank1_candidate and rows:
+        scanner_rank1_candidate = dict(rows[0])
+    selected_candidate = {}
+    for row in rows:
+        if str(row.get("symbol") or "").strip().upper() == selected_symbol:
+            selected_candidate = dict(row)
+            break
+    if selected_symbol and not selected_candidate:
+        selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
+        fallback_raw = dict(selected)
+        fallback_raw["symbol"] = selected_symbol
+        fallback_raw.setdefault("source", "selected")
+        selected_candidate = _compact_post_scanner_candidate_row(
+            fallback_raw,
+            fallback_rank=_coerce_int(fallback_raw.get("rank") or fallback_raw.get("selected_rank"), 0),
+        )
+        if not selected_candidate:
+            selected_candidate = {
+                "symbol": selected_symbol,
+                "rank": 0,
+                "score": None,
+                "score_total": None,
+                "reason": "",
+                "source": "selected_missing_from_scanner_rows",
+            }
+        if selected_symbol not in seen:
+            rows.append(dict(selected_candidate))
+            seen.add(selected_symbol)
+    primary = dict(selected_candidate or scanner_rank1_candidate)
+    runner_ups = [
+        dict(row)
+        for row in rows
+        if str(row.get("symbol") or "").strip().upper() != selected_symbol
+    ][:4]
+    quality = _post_scanner_context_quality(
+        selected_candidate=selected_candidate,
+        scanner_rank1_candidate=scanner_rank1_candidate,
+        runner_ups=runner_ups,
+    )
+    return {
+        "primary": primary,
+        "selected_candidate": dict(selected_candidate),
+        "scanner_rank1_candidate": dict(scanner_rank1_candidate),
+        "runner_ups": runner_ups,
+        "rows": rows[:5],
+        "selected_symbol_was_rank1": bool(
+            selected_symbol
+            and str((scanner_rank1_candidate or {}).get("symbol") or "").strip().upper() == selected_symbol
+        ),
+        "stage2_context_quality": quality["quality"],
+        "stage2_context_quality_reasons": list(quality["reasons"]),
+    }
+
+
+def _force_selected_symbol_tactical_refresh_decision(
+    state: Dict[str, Any],
+    commander_decision: Dict[str, Any],
+) -> Dict[str, Any]:
+    if bool(commander_decision.get("strategist_refresh_requested")):
+        return commander_decision
+    open_position_count = _portfolio_open_position_count(state)
+    max_positions = _resolve_risk_max_positions(state)
+    if open_position_count >= max_positions:
+        return commander_decision
+    selected_symbol = _post_scanner_selected_symbol(state)
+    if not selected_symbol:
+        return commander_decision
+    if selected_symbol in set(_portfolio_open_position_symbols(state)):
+        return commander_decision
+    snapshot = _post_scanner_candidate_snapshot(state, selected_symbol)
+    primary = dict(snapshot.get("primary") or {})
+    refresh_context = (
+        dict(commander_decision.get("strategist_refresh_context") or {})
+        if isinstance(commander_decision.get("strategist_refresh_context"), dict)
+        else {}
+    )
+    refresh_context.update(
+        {
+            "refresh_scope": "selected_symbol_tactical_refresh",
+            "refresh_signal": "selected_symbol_tactical_refresh",
+            "selected_symbol": selected_symbol,
+            "selected_rank": int(primary.get("rank") or 0),
+            "selected_score": primary.get("score"),
+            "scanner_primary_candidate": dict(primary),
+            "actual_selected_candidate": dict(snapshot.get("selected_candidate") or primary),
+            "scanner_rank1_candidate": dict(snapshot.get("scanner_rank1_candidate") or {}),
+            "scanner_runner_ups": list(snapshot.get("runner_ups") or []),
+            "scanner_top_candidates": list(snapshot.get("rows") or []),
+            "selected_symbol_was_rank1": bool(snapshot.get("selected_symbol_was_rank1")),
+            "stage2_context_quality": str(snapshot.get("stage2_context_quality") or ""),
+            "stage2_context_quality_reasons": list(snapshot.get("stage2_context_quality_reasons") or []),
+            "post_scanner_refresh_required": True,
+            "refresh_summary": f"Selected-symbol tactical refresh after scanner ranking for {selected_symbol}.",
+        }
+    )
+    out = dict(commander_decision)
+    out["strategist_refresh_requested"] = True
+    out["strategist_refresh_reason"] = "selected_symbol_tactical_refresh"
+    out["strategist_refresh_context"] = dict(refresh_context)
+    out["strategist_invocation"] = "RUN_REFRESH"
+    out["strategist_invocation_mode"] = "selected_symbol_tactical_refresh"
+    out["llm_policy"] = "allow_context_refresh"
+    out["flow_instruction"] = "REFRESH_SELECTED_SYMBOL_TACTICAL_FRAME"
+    observations = out.get("observations") if isinstance(out.get("observations"), dict) else {}
+    out["observations"] = {
+        **dict(observations),
+        "post_scanner_refresh_requested": True,
+        "post_scanner_refresh_reason": "selected_symbol_tactical_refresh",
+        "post_scanner_refresh_selected_symbol": selected_symbol,
+    }
+    return out
+
+
+def _build_stage4_carry_review_context(
+    state: Dict[str, Any],
+    override_assessment: Dict[str, Any],
+    *,
+    review_reason: str,
+) -> Dict[str, Any]:
+    assessment = dict(override_assessment or {}) if isinstance(override_assessment, dict) else {}
+    positions = [dict(row) for row in list(assessment.get("positions") or []) if isinstance(row, dict)]
+    if not positions:
+        for symbol in _portfolio_open_position_symbols(state):
+            positions.append({"symbol": symbol, "qty": 0, "carry_state": "same_session", "carry_risk_bias": "normal"})
+    if not positions:
+        return {}
+    focus = sorted(
+        positions,
+        key=_open_position_focus_sort_key,
+    )[0]
+    symbol = str(focus.get("symbol") or "").strip().upper()
+    entry_state = _compact_monitor_entry_state_for_refresh(focus.get("entry_state") or {})
+    market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    minutes_to_close = _shadow_float(market_context.get("minutes_to_close"))
+    carry_state = str(focus.get("carry_state") or assessment.get("carry_state") or "same_session")
+    carry_risk_bias = str(focus.get("carry_risk_bias") or assessment.get("carry_risk_bias") or "normal")
+    carry_risk_reason = str(focus.get("carry_risk_reason") or assessment.get("carry_risk_reason") or "")
+    summary = (
+        f"End-of-day carry review for {symbol or 'unknown_symbol'} "
+        f"with carry_state={carry_state}, carry_risk_bias={carry_risk_bias}."
+    )
+    if minutes_to_close is not None:
+        summary += f" Minutes to close is {round(float(minutes_to_close), 2)}."
+    if carry_risk_reason:
+        summary += f" Carry reason: {carry_risk_reason}."
+    return {
+        "refresh_scope": "session_closeout_carry_review",
+        "refresh_trigger": "end_of_day_carry_review",
+        "refresh_signal": str(review_reason or "session_closeout_carry_review"),
+        "refresh_summary": summary,
+        "selected_symbol": symbol,
+        "open_position_count": len(positions),
+        "selected_hold_repeat_count": int(focus.get("hold_repeat_count") or 0),
+        "selected_effective_loss_ratio": focus.get("effective_loss_ratio"),
+        "monitor_posture": str(focus.get("posture") or ""),
+        "monitor_reason": str(focus.get("reason") or ""),
+        "active_exit_axis": str(focus.get("active_exit_axis") or ""),
+        "position_qty": int(focus.get("qty") or 0),
+        "position_age_seconds": focus.get("position_age_seconds"),
+        "carry_state": carry_state,
+        "carry_risk_bias": carry_risk_bias,
+        "carry_risk_reason": carry_risk_reason,
+        "session_open_recovery_assessment": dict(
+            focus.get("session_open_recovery_assessment")
+            or assessment.get("session_open_recovery_assessment")
+            or {}
+        ),
+        "entry_state": dict(entry_state),
+        "minutes_to_close": round(float(minutes_to_close), 2) if minutes_to_close is not None else None,
+        "positions": [
+            {
+                "symbol": str(row.get("symbol") or "").strip().upper(),
+                "qty": int(row.get("qty") or 0),
+                "carry_state": str(row.get("carry_state") or ""),
+                "carry_risk_bias": str(row.get("carry_risk_bias") or ""),
+                "carry_risk_reason": str(row.get("carry_risk_reason") or ""),
+                "closeout_unresolved_flatten_required": bool(row.get("closeout_unresolved_flatten_required")),
+                "effective_loss_ratio": row.get("effective_loss_ratio"),
+                "hold_repeat_count": int(row.get("hold_repeat_count") or 0),
+                "position_age_seconds": row.get("position_age_seconds"),
+            }
+            for row in positions[:5]
+        ],
+    }
+
+
+def _force_stage4_carry_review_decision(
+    state: Dict[str, Any],
+    commander_decision: Dict[str, Any],
+    *,
+    review_reason: str,
+) -> Dict[str, Any]:
+    override_assessment = (
+        dict(state.get("commander_open_position_override") or {})
+        if isinstance(state.get("commander_open_position_override"), dict)
+        else {}
+    )
+    if not isinstance(override_assessment.get("positions"), list):
+        override_assessment = _assess_open_position_commander_override(state)
+        state["commander_open_position_override"] = dict(override_assessment)
+    context = _build_stage4_carry_review_context(
+        state,
+        override_assessment,
+        review_reason=review_reason,
+    )
+    if not context:
+        return commander_decision
+    state["commander_open_position_refresh_context"] = dict(context)
+    out = dict(commander_decision or {})
+    out["command_intent"] = "MANAGE_OPEN_RISK"
+    out["strategist_invocation"] = "RUN_REFRESH"
+    out["strategist_invocation_mode"] = "end_of_day_carry_review"
+    out["llm_policy"] = "allow_context_refresh"
+    out["flow_instruction"] = "REVIEW_END_OF_DAY_CARRY_BEFORE_CLOSE"
+    out["strategist_refresh_requested"] = True
+    out["strategist_refresh_reason"] = str(review_reason or "session_closeout_carry_review")
+    out["strategist_refresh_context"] = dict(context)
+    out["open_position_refresh_context"] = dict(context)
+    out["carry_state"] = str(context.get("carry_state") or "")
+    out["carry_risk_bias"] = str(context.get("carry_risk_bias") or "")
+    out["carry_risk_reason"] = str(context.get("carry_risk_reason") or "")
+    observations = out.get("observations") if isinstance(out.get("observations"), dict) else {}
+    out["observations"] = {
+        **dict(observations),
+        "stage4_carry_review_requested": True,
+        "stage4_carry_review_reason": str(review_reason or "session_closeout_carry_review"),
+        "stage4_carry_review_selected_symbol": str(context.get("selected_symbol") or ""),
+    }
+    return out
+
+
+def _run_stage4_carry_review(
+    state: Dict[str, Any],
+    strategist_node: Callable[[Dict[str, Any]], Dict[str, Any]],
+    *,
+    review_reason: str,
+    phase: str,
+) -> Tuple[Dict[str, Any], bool]:
+    if _portfolio_open_position_count(state) <= 0:
+        write_llm_stage_skip_entry(state, call_kind="end_of_day_carry_review", reason="no_open_position")
+        return state, False
+    base_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    stage4_decision = _force_stage4_carry_review_decision(
+        state,
+        base_decision,
+        review_reason=review_reason,
+    )
+    if not bool(stage4_decision.get("strategist_refresh_requested")):
+        write_llm_stage_skip_entry(state, call_kind="end_of_day_carry_review", reason="no_rule_candidate")
+        return state, False
+    state["commander_decision"] = dict(stage4_decision)
+    state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase=phase)
+    state = _attach_commander_applied_policy(state)
+    state = strategist_node(state)
+    state = _attach_commander_applied_policy(state)
+    return state, True
+
+
+def _record_absent_later_stage_llm_reviews(state: Dict[str, Any]) -> None:
+    try:
+        if _portfolio_open_position_count(state) > 0:
+            write_llm_stage_skip_entry(
+                state,
+                call_kind="stale_intraday_hold_review",
+                reason="not_due_this_cycle",
+            )
+            phase = str(state.get("runtime_phase") or "").strip().lower()
+            write_llm_stage_skip_entry(
+                state,
+                call_kind="end_of_day_carry_review",
+                reason="not_closeout_window" if phase != "closeout" else "no_rule_candidate",
+            )
+        else:
+            write_llm_stage_skip_entry(
+                state,
+                call_kind="stale_intraday_hold_review",
+                reason="no_open_position",
+            )
+            write_llm_stage_skip_entry(
+                state,
+                call_kind="end_of_day_carry_review",
+                reason="no_open_position",
+            )
+    except Exception:
+        return
 
 
 def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
@@ -4905,16 +6289,81 @@ def _run_integrated_chain_impl(
             path_value="integrated_chain_closeout_guard",
             reason_text=str(closeout_payload.get("reason") or ""),
         )
-        held_symbols = _portfolio_open_position_symbols(state)
-        if held_symbols:
+        state = _hydrate_closeout_account_orders(state)
+        pending_buy_cancel_intents = _pending_buy_cancel_intents_from_account_orders(state)
+        if pending_buy_cancel_intents:
+            cancel_intent = dict(pending_buy_cancel_intents[0])
             state["selected"] = {
-                "symbol": held_symbols[0],
+                "symbol": cancel_intent.get("symbol"),
+                "_monitor_synthetic_selected": True,
+                "_closeout_guard_selected": True,
+                "_pending_buy_cancel_selected": True,
+            }
+            state["commander_pending_buy_cancel"] = {
+                "detected": True,
+                "intent": dict(cancel_intent),
+                "candidate_count": len(pending_buy_cancel_intents),
+                "reason": "session_closeout_pending_buy_cancel",
+            }
+            state["decision"] = "approve"
+            state["decision_reason"] = "session_closeout_pending_buy_cancel"
+            state["decision_packet"] = _build_packet_from_state(state, intent=cancel_intent)
+            _log_commander_event(
+                state,
+                "pending_buy_cancel",
+                {
+                    "path": "integrated_chain_closeout_guard",
+                    "symbol": cancel_intent.get("symbol"),
+                    "orig_ord_no": cancel_intent.get("orig_ord_no"),
+                    "candidate_count": len(pending_buy_cancel_intents),
+                },
+            )
+            state = execute_fn(state)
+            shadow_runtime["monitor_decision"] = "CANCEL"
+            shadow_runtime["executor_action"] = str(
+                (((state.get("execution") or {}).get("order") or {}).get("action") or "CANCEL")
+            )
+            shadow_runtime["executor_status"] = str(
+                ((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or ""))
+            )
+            state["path"] = "integrated_chain_closeout_guard"
+            _record_absent_later_stage_llm_reviews(state)
+            return state
+        held_symbols = _portfolio_open_position_symbols(state)
+        focus_symbol = _select_open_position_focus_symbol(state, fallback_symbols=held_symbols)
+        if focus_symbol:
+            state["selected"] = {
+                "symbol": focus_symbol,
                 "_monitor_synthetic_selected": True,
                 "_closeout_guard_selected": True,
             }
         else:
             state.pop("selected", None)
         state.pop("scanner_output", None)
+        if held_symbols:
+            state, stage4_ran = _run_stage4_carry_review(
+                state,
+                strategist_node,
+                review_reason="session_closeout_carry_review",
+                phase="closeout",
+            )
+            if stage4_ran:
+                shadow_runtime["strategist_executed"] = True
+                shadow_runtime["strategist_called"] = True
+                shadow_runtime["used_cached_strategist"] = False
+                shadow_runtime["stage4_carry_review_requested"] = True
+                shadow_runtime["stage4_carry_review_reason"] = "session_closeout_carry_review"
+                strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
+                llm_status = str(strategist_llm.get("status") or strategist_llm.get("llm_status") or "").strip().lower()
+                shadow_runtime["llm_called_by_strategist"] = bool(
+                    llm_status not in {"", "disabled"}
+                    or str(strategist_llm.get("prompt_ref") or "").strip()
+                    or str(strategist_llm.get("response_ref") or "").strip()
+                )
+                shadow_runtime["retry_count_estimate"] = max(0, _coerce_int(strategist_llm.get("attempts"), 1) - 1)
+                state["commander_shadow_runtime"] = dict(shadow_runtime)
+                if _strategist_frame_blocked(state):
+                    return _apply_strategist_block(state, phase="closeout")
         _log_commander_event(state, "fast_path", {"path": "integrated_chain_closeout_guard", **closeout_payload})
         state = _hydrate_monitor_symbol_features(state)
         state = monitor_node(state)
@@ -4932,6 +6381,7 @@ def _run_integrated_chain_impl(
             state = _emit_intraday_trade_report(state)
             state = update_state_after_execution(state)
         state["path"] = "integrated_chain_closeout_guard"
+        _record_absent_later_stage_llm_reviews(state)
         return state
 
     use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
@@ -4952,9 +6402,10 @@ def _run_integrated_chain_impl(
             reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
         )
         held_symbols = _portfolio_open_position_symbols(state)
-        if held_symbols:
+        focus_symbol = _select_open_position_focus_symbol(state, fallback_symbols=held_symbols)
+        if focus_symbol:
             state["selected"] = {
-                "symbol": held_symbols[0],
+                "symbol": focus_symbol,
                 "_monitor_synthetic_selected": True,
             }
         else:
@@ -4986,6 +6437,22 @@ def _run_integrated_chain_impl(
         path_value="integrated_chain_pre_strategist",
         reason_text=str(fast_path_payload.get("reason") or ""),
     )
+    if _portfolio_open_position_count(state) > 0:
+        state = _attach_commander_reporter_feedback_policy(state, selected_route="monitor_only", phase="session")
+        state = _attach_commander_applied_policy(state)
+        state, pre_entry_exit_executed = _run_pre_entry_exit_sweep(
+            state,
+            monitor_node_fn=monitor_node,
+            decision_node_fn=decision_node,
+            execute_fn=execute_fn,
+            emit_trade_report_fn=_emit_intraday_trade_report,
+            update_state_after_execution_fn=update_state_after_execution,
+            shadow_runtime=shadow_runtime,
+        )
+        state["commander_shadow_runtime"] = dict(shadow_runtime)
+        if pre_entry_exit_executed:
+            _record_absent_later_stage_llm_reviews(state)
+            return state
 
     reused_strategist_cache, cache_payload = _should_use_cached_strategist_from_commander_skip(state)
     if not reused_strategist_cache and str(cache_payload.get("reason") or "").strip() != "commander_requested_refresh":
@@ -5056,15 +6523,28 @@ def _run_integrated_chain_impl(
         reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
     )
     state = scanner_node(state)
-    if reused_strategist_cache and _portfolio_open_position_count(state) <= 0:
+    post_scanner_selected_symbol = _post_scanner_selected_symbol(state)
+    if (
+        _portfolio_open_position_count(state) < _resolve_risk_max_positions(state)
+        and (
+            reused_strategist_cache
+            or (bool(post_scanner_selected_symbol) and bool(str(state.get("run_id") or "").strip()))
+        )
+    ):
+        post_scanner_path = (
+            "integrated_chain_cached_frame_post_scanner"
+            if reused_strategist_cache
+            else "integrated_chain_post_scanner"
+        )
         post_scanner_decision = _build_commander_decision(
             state,
             mode_value="integrated_chain",
             phase_value=str(state.get("runtime_phase") or "session"),
             status_value=str(state.get("runtime_status") or "planning"),
-            path_value="integrated_chain_cached_frame_post_scanner",
+            path_value=post_scanner_path,
             reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
         )
+        post_scanner_decision = _force_selected_symbol_tactical_refresh_decision(state, post_scanner_decision)
         post_scanner_refresh_requested = bool(post_scanner_decision.get("strategist_refresh_requested"))
         if post_scanner_refresh_requested:
             if not _commander_post_scanner_refresh_enabled(state):
@@ -5084,11 +6564,12 @@ def _run_integrated_chain_impl(
                     "skipped": True,
                     "skip_reason": "post_scanner_refresh_disabled",
                 }
+                state["commander_shadow_runtime"] = dict(shadow_runtime)
                 _log_commander_event(
                     state,
                     "post_scanner_refresh_skipped",
                     {
-                        "path": "integrated_chain_cached_frame_post_scanner",
+                        "path": post_scanner_path,
                         **dict(refresh_context),
                         "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
                         "skip_reason": "post_scanner_refresh_disabled",
@@ -5102,13 +6583,6 @@ def _run_integrated_chain_impl(
                     if isinstance(post_scanner_decision.get("strategist_refresh_context"), dict)
                     else {}
                 )
-                shadow_runtime["pre_buy_refresh_requested"] = True
-                shadow_runtime["pre_buy_refresh_reason"] = str(
-                    post_scanner_decision.get("strategist_refresh_reason")
-                    or refresh_context.get("refresh_signal")
-                    or ""
-                )
-                shadow_runtime["pre_buy_refresh_context"] = dict(refresh_context)
                 shadow_runtime["post_scanner_refresh_requested"] = True
                 shadow_runtime["post_scanner_refresh_reason"] = str(
                     post_scanner_decision.get("strategist_refresh_reason")
@@ -5116,11 +6590,12 @@ def _run_integrated_chain_impl(
                     or ""
                 )
                 shadow_runtime["post_scanner_refresh_context"] = dict(refresh_context)
+                state["commander_shadow_runtime"] = dict(shadow_runtime)
                 _log_commander_event(
                     state,
                     "post_scanner_refresh",
                     {
-                        "path": "integrated_chain_cached_frame_post_scanner",
+                        "path": post_scanner_path,
                         **dict(refresh_context),
                         "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
                     },
@@ -5164,6 +6639,7 @@ def _run_integrated_chain_impl(
         state = _emit_intraday_trade_report(state)
         state = update_state_after_execution(state)
 
+    _record_absent_later_stage_llm_reviews(state)
     state["path"] = "integrated_chain_cached_frame" if reused_strategist_cache else "integrated_chain"
     return state
 
@@ -5220,8 +6696,38 @@ def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _run_closeout_phase(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep commander passive during closeout; reporting remains script-driven."""
+    """Run closeout carry review when positions remain; reporting remains script-driven."""
+    from graphs.nodes.build_portfolio_snapshot import build_portfolio_snapshot
+    from graphs.nodes.build_risk_context import build_risk_context
+    from graphs.nodes.strategist_node import strategist_node
+
     state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="closeout")
+    state = build_portfolio_snapshot(state)
+    snaps = state.get("snapshots") if isinstance(state.get("snapshots"), dict) else {}
+    state["snapshots"] = {**dict(snaps or {}), "portfolio": state.get("portfolio_snapshot")}
+    state = build_risk_context(state)
+    state["commander_decision"] = _build_commander_decision(
+        state,
+        mode_value=str(state.get("runtime_mode") or "graph_spine"),
+        phase_value="closeout",
+        status_value=str(state.get("runtime_status") or "closeout_ready"),
+        path_value=str(state.get("path") or "closeout_pending"),
+        reason_text="",
+    )
+    if _portfolio_open_position_count(state) > 0:
+        state, stage4_ran = _run_stage4_carry_review(
+            state,
+            strategist_node,
+            review_reason="end_of_day_carry_review",
+            phase="closeout",
+        )
+        if _strategist_frame_blocked(state):
+            return _apply_strategist_block(state, phase="closeout")
+        if stage4_ran:
+            state["path"] = "closeout_stage4_carry_review"
+            state["runtime_status"] = str(state.get("runtime_status") or "closeout_ready")
+            return state
+    _record_absent_later_stage_llm_reviews(state)
     state["path"] = "closeout_idle"
     state["runtime_status"] = str(state.get("runtime_status") or "closeout_ready")
     return state

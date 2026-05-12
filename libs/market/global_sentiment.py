@@ -60,6 +60,13 @@ class SentimentInputs:
     tnx_delta: float  # change in 10Y yield (percentage points-ish)
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def _compute_raw(
     inputs: SentimentInputs,
     w_sp: float,
@@ -88,6 +95,74 @@ def _compute_raw(
         - w_dxy * inputs.dxy_ret
         - w_tnx * inputs.tnx_delta
     )
+
+
+def _compute_korea_raw(korea_indices: Optional[Dict[str, Any]], *, w_kospi: float, w_kosdaq: float) -> float:
+    packet = korea_indices if isinstance(korea_indices, dict) else {}
+    indices = packet.get("indices") if isinstance(packet.get("indices"), dict) else {}
+    kospi = indices.get("KOSPI") if isinstance(indices.get("KOSPI"), dict) else {}
+    kosdaq = indices.get("KOSDAQ") if isinstance(indices.get("KOSDAQ"), dict) else {}
+    kospi_ret = _as_float(kospi.get("change_pct"), 0.0) / 100.0
+    kosdaq_ret = _as_float(kosdaq.get("change_pct"), 0.0) / 100.0
+    return (float(w_kospi) * kospi_ret) + (float(w_kosdaq) * kosdaq_ret)
+
+
+def _normalize_korea_index_packet(raw: Any) -> Optional[Dict[str, Any]]:
+    packet = raw if isinstance(raw, dict) else {}
+    indices = packet.get("indices") if isinstance(packet.get("indices"), dict) else {}
+    if not indices:
+        return None
+    out_indices: Dict[str, Dict[str, Any]] = {}
+    change_values = []
+    rising = falling = unchanged = 0
+    for name in ("KOSPI", "KOSDAQ"):
+        row = indices.get(name) if isinstance(indices.get(name), dict) else {}
+        if not row:
+            continue
+        item = dict(row)
+        if item.get("change_pct") not in (None, ""):
+            change_values.append(_as_float(item.get("change_pct"), 0.0))
+        rising += int(_as_float(item.get("rising"), 0.0))
+        falling += int(_as_float(item.get("falling"), 0.0))
+        unchanged += int(_as_float(item.get("unchanged"), 0.0))
+        out_indices[name] = item
+    if not out_indices:
+        return None
+    breadth_total = rising + falling + unchanged
+    normalized = dict(packet)
+    normalized["indices"] = out_indices
+    normalized.setdefault("source", "provided")
+    normalized.setdefault("status", "ok")
+    normalized["average_change_pct"] = (
+        float(sum(change_values) / len(change_values)) if change_values else packet.get("average_change_pct")
+    )
+    normalized["breadth"] = (
+        float((rising - falling) / breadth_total) if breadth_total > 0 else packet.get("breadth")
+    )
+    normalized["rising"] = rising
+    normalized["falling"] = falling
+    normalized["unchanged"] = unchanged
+    return normalized
+
+
+def _fetch_korea_index_inputs(state: Dict[str, Any], policy: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    for key in ("mock_korea_indices", "korea_index_context", "korea_indices", "kiwoom_market_indices"):
+        packet = _normalize_korea_index_packet(state.get(key))
+        if packet:
+            return packet
+
+    enabled = policy.get("use_korea_indices")
+    if enabled is None:
+        enabled = os.getenv("KOREA_INDEX_CONTEXT_ENABLED", "true")
+    if str(enabled).strip().lower() in {"0", "false", "no", "n", "off"}:
+        return None
+
+    try:
+        from libs.read.kiwoom_market_index_reader import KiwoomMarketIndexReader
+
+        return _normalize_korea_index_packet(KiwoomMarketIndexReader.from_env().get_index_packet())
+    except Exception:
+        return None
 
 
 def _fetch_last2_closes_yfinance(ticker: str) -> Optional[Tuple[float, float]]:
@@ -150,7 +225,17 @@ def _fetch_inputs(policy: Dict[str, Any]) -> Optional[SentimentInputs]:
     )
 
 
-def _sentiment_evidence(inputs: Optional[SentimentInputs], weights: Dict[str, float], raw: float) -> Dict[str, Any]:
+def _sentiment_evidence(
+    inputs: Optional[SentimentInputs],
+    weights: Dict[str, float],
+    raw: float,
+    *,
+    korea_indices: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    korea_packet = korea_indices if isinstance(korea_indices, dict) else {}
+    korea_rows = korea_packet.get("indices") if isinstance(korea_packet.get("indices"), dict) else {}
+    kospi = korea_rows.get("KOSPI") if isinstance(korea_rows.get("KOSPI"), dict) else {}
+    kosdaq = korea_rows.get("KOSDAQ") if isinstance(korea_rows.get("KOSDAQ"), dict) else {}
     components = {
         "sp500_ret": float(inputs.sp500_ret) if inputs is not None else 0.0,
         "nasdaq_ret": float(inputs.nasdaq_ret) if inputs is not None else 0.0,
@@ -159,6 +244,8 @@ def _sentiment_evidence(inputs: Optional[SentimentInputs], weights: Dict[str, fl
         "vix_level": float(getattr(inputs, "vix_level", 0.0) or 0.0) if inputs is not None else 0.0,
         "dxy_ret": float(inputs.dxy_ret) if inputs is not None else 0.0,
         "tnx_delta": float(inputs.tnx_delta) if inputs is not None else 0.0,
+        "kospi_ret": _as_float(kospi.get("change_pct"), 0.0) / 100.0 if kospi else 0.0,
+        "kosdaq_ret": _as_float(kosdaq.get("change_pct"), 0.0) / 100.0 if kosdaq else 0.0,
     }
     equity_avg = (components["sp500_ret"] + components["nasdaq_ret"] + components["dow_ret"]) / 3.0
     neutral_vix = max(1.0, float(weights.get("vix_neutral_level", 20.0) or 20.0))
@@ -172,6 +259,8 @@ def _sentiment_evidence(inputs: Optional[SentimentInputs], weights: Dict[str, fl
             "vix_level": float(weights.get("vix_level", 0.0)),
             "dxy": float(weights.get("dxy", 0.0)),
             "tnx": float(weights.get("tnx", 0.0)),
+            "kospi": float(weights.get("kospi", 0.0)),
+            "kosdaq": float(weights.get("kosdaq", 0.0)),
             "vix_neutral_level": float(weights.get("vix_neutral_level", 20.0)),
         },
         "components": dict(components),
@@ -179,6 +268,8 @@ def _sentiment_evidence(inputs: Optional[SentimentInputs], weights: Dict[str, fl
             "sp500_pct": float(components["sp500_ret"] * 100.0),
             "nasdaq_pct": float(components["nasdaq_ret"] * 100.0),
             "dow_pct": float(components["dow_ret"] * 100.0),
+            "kospi_pct": float(components["kospi_ret"] * 100.0),
+            "kosdaq_pct": float(components["kosdaq_ret"] * 100.0),
         },
         "macro_moves": {
             "vix_pct": float(components["vix_ret"] * 100.0),
@@ -200,6 +291,7 @@ def _sentiment_evidence(inputs: Optional[SentimentInputs], weights: Dict[str, fl
             "equity_advancing": int(sum(1 for v in (components["sp500_ret"], components["nasdaq_ret"], components["dow_ret"]) if v > 0.0)),
         },
         "raw_score": float(raw),
+        "korea_indices": dict(korea_packet or {}),
     }
 
 
@@ -213,9 +305,10 @@ def _signal_with_evidence(
     inputs: Optional[SentimentInputs],
     weights: Dict[str, float],
     raw_score: float,
+    korea_indices: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     signal = make_signal(score=score, status=status, source=source, reason=reason, ts=ts)
-    signal.update(_sentiment_evidence(inputs, weights, raw_score))
+    signal.update(_sentiment_evidence(inputs, weights, raw_score, korea_indices=korea_indices))
     return signal
 
 
@@ -257,7 +350,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
     # 1) explicit mock (tests)
     if state.get("mock_global_sentiment") is not None:
         try:
-            weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "vix_neutral_level": 20.0}
+            weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "kospi": 0.30, "kosdaq": 0.25, "vix_neutral_level": 20.0}
             return _signal_with_evidence(
                 score=_clamp(float(state["mock_global_sentiment"])),
                 status=SIGNAL_STATUS_OK,
@@ -269,7 +362,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
                 raw_score=float(state["mock_global_sentiment"]),
             )
         except Exception:
-            weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "vix_neutral_level": 20.0}
+            weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "kospi": 0.30, "kosdaq": 0.25, "vix_neutral_level": 20.0}
             return _signal_with_evidence(
                 score=0.0,
                 status=SIGNAL_STATUS_FALLBACK,
@@ -283,7 +376,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
 
     # 2) DRY_RUN => no network
     if _is_dry_run():
-        weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "vix_neutral_level": 20.0}
+        weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "kospi": 0.30, "kosdaq": 0.25, "vix_neutral_level": 20.0}
         return _signal_with_evidence(
             score=0.0,
             status=SIGNAL_STATUS_FALLBACK,
@@ -303,6 +396,8 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
     w_vix_level = float(weights.get("vix_level", 0.08))
     w_dxy = float(weights.get("dxy", 0.075))
     w_tnx = float(weights.get("tnx", 0.075))
+    w_kospi = float(weights.get("kospi", 0.30))
+    w_kosdaq = float(weights.get("kosdaq", 0.25))
     vix_neutral_level = float(weights.get("vix_neutral_level", 20.0))
     resolved_weights = {
         "sp500": w_sp,
@@ -312,14 +407,30 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
         "vix_level": w_vix_level,
         "dxy": w_dxy,
         "tnx": w_tnx,
+        "kospi": w_kospi,
+        "kosdaq": w_kosdaq,
         "vix_neutral_level": vix_neutral_level,
     }
 
     norm = dict(policy.get("sentiment_norm") or {})
     scale = float(norm.get("scale", 5.0))
 
+    korea_indices = _fetch_korea_index_inputs(state, policy)
     inputs = _fetch_inputs(policy)
     if inputs is None:
+        if korea_indices:
+            korea_raw = _compute_korea_raw(korea_indices, w_kospi=w_kospi, w_kosdaq=w_kosdaq)
+            return _signal_with_evidence(
+                score=_tanh_norm(korea_raw, scale=scale),
+                status=SIGNAL_STATUS_OK,
+                source=str(korea_indices.get("source") or "kiwoom.ka20009"),
+                reason="us_fetch_failed_korea_indices_available",
+                ts=now,
+                inputs=None,
+                weights=resolved_weights,
+                raw_score=korea_raw,
+                korea_indices=korea_indices,
+            )
         return _signal_with_evidence(
             score=0.0,
             status=SIGNAL_STATUS_UNAVAILABLE,
@@ -329,6 +440,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
             inputs=None,
             weights=resolved_weights,
             raw_score=0.0,
+            korea_indices=korea_indices,
         )
 
     raw = _compute_raw(
@@ -342,15 +454,17 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
         w_tnx=w_tnx,
         vix_neutral_level=vix_neutral_level,
     )
+    raw += _compute_korea_raw(korea_indices, w_kospi=w_kospi, w_kosdaq=w_kosdaq)
     return _signal_with_evidence(
         score=_tanh_norm(raw, scale=scale),
         status=SIGNAL_STATUS_OK,
-        source="yfinance",
+        source="yfinance+kiwoom.ka20009" if korea_indices else "yfinance",
         reason="",
         ts=now,
         inputs=inputs,
         weights=resolved_weights,
         raw_score=raw,
+        korea_indices=korea_indices,
     )
 
 

@@ -10,7 +10,19 @@ from libs.reporting.trade_execution_truth_merge import (
 def _minimal_rebuild_execution_details(details: Mapping[str, Any] | None) -> Dict[str, Any]:
     details_obj = dict(details or {})
     out: Dict[str, Any] = {}
-    for key in ("order_id", "order_status", "filled_qty", "fill_status", "symbol", "action", "side", "ts"):
+    for key in (
+        "order_id",
+        "order_status",
+        "filled_qty",
+        "filled_price",
+        "avg_price",
+        "fill_status",
+        "symbol",
+        "action",
+        "side",
+        "ts",
+        "broker_truth_source",
+    ):
         if details_obj.get(key) not in (None, "", [], {}):
             out[key] = details_obj.get(key)
     return out

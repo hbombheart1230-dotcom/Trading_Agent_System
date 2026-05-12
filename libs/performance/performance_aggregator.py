@@ -10,10 +10,12 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def _safe_float(value: Any, default: float | None = 0.0) -> float | None:
     try:
         return float(value)
     except Exception:
+        if default is None:
+            return None
         return float(default)
 
 
@@ -42,6 +44,39 @@ def _read_json_dict(path: Path) -> Dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _truth_input_path_from_bundle(bundle: Dict[str, Any]) -> Path:
+    raw_bundle_path = str(bundle.get("_bundle_path") or "").strip()
+    if raw_bundle_path:
+        trade_root = Path(raw_bundle_path).parent
+        candidate = trade_root / "reports" / "ai_trade_summary_input.json"
+        if candidate.exists():
+            return candidate
+    return Path()
+
+
+def extract_truth_outcome_from_bundle(bundle: Dict[str, Any]) -> Dict[str, Any]:
+    path = _truth_input_path_from_bundle(bundle)
+    if not path:
+        return {"available": False}
+    payload = _read_json_dict(path)
+    truth = payload.get("truth_surface") if isinstance(payload.get("truth_surface"), dict) else {}
+    if not truth:
+        return {"available": False, "path": str(path)}
+    pnl_value = truth.get("pnl")
+    pnl = _safe_float(pnl_value, None)
+    pnl_pct = _safe_float(truth.get("pnl_pct"), None)
+    observed = pnl_pct if pnl is None else None
+    return {
+        "available": True,
+        "path": str(path),
+        "pnl": pnl,
+        "return": pnl_pct if pnl is not None else None,
+        "observed_return": observed,
+        "result_label": str(truth.get("result_label") or ""),
+        "truth_source": str(truth.get("truth_source") or ""),
+    }
+
+
 def _iter_lifecycle_bundle_paths(reports_root: Path, *, day: str = "") -> Iterable[Path]:
     root = Path(reports_root)
     trades_root = root / "trades"
@@ -50,10 +85,10 @@ def _iter_lifecycle_bundle_paths(reports_root: Path, *, day: str = "") -> Iterab
         day_root = trades_root / target_day
         if not day_root.exists():
             return []
-        return sorted(day_root.glob("*/lifecycle_bundle.json"))
+        return sorted(day_root.rglob("lifecycle_bundle.json"))
     if not trades_root.exists():
         return []
-    return sorted(trades_root.glob("*/*/lifecycle_bundle.json"))
+    return sorted(trades_root.rglob("lifecycle_bundle.json"))
 
 
 def load_lifecycle_bundles(reports_root: Path, *, day: str = "") -> List[Dict[str, Any]]:
@@ -68,6 +103,10 @@ def load_lifecycle_bundles(reports_root: Path, *, day: str = "") -> List[Dict[st
 
 
 def _extract_return_value(bundle: Dict[str, Any]) -> Optional[float]:
+    truth = extract_truth_outcome_from_bundle(bundle)
+    if bool(truth.get("available")):
+        value = truth.get("return")
+        return float(value) if value not in (None, "") else None
     trade_outcome = bundle.get("trade_outcome") if isinstance(bundle.get("trade_outcome"), dict) else {}
     summary = bundle.get("summary") if isinstance(bundle.get("summary"), dict) else {}
     candidates = [
@@ -86,6 +125,10 @@ def _extract_return_value(bundle: Dict[str, Any]) -> Optional[float]:
 
 
 def _extract_pnl_value(bundle: Dict[str, Any]) -> Optional[float]:
+    truth = extract_truth_outcome_from_bundle(bundle)
+    if bool(truth.get("available")):
+        value = truth.get("pnl")
+        return float(value) if value not in (None, "") else None
     trade_outcome = bundle.get("trade_outcome") if isinstance(bundle.get("trade_outcome"), dict) else {}
     summary = bundle.get("summary") if isinstance(bundle.get("summary"), dict) else {}
     candidates = [
@@ -211,6 +254,7 @@ def _extract_exit_pattern_type(bundle: Dict[str, Any]) -> str:
 
 
 def _trade_row(bundle: Dict[str, Any]) -> Dict[str, Any]:
+    truth = extract_truth_outcome_from_bundle(bundle)
     return {
         "trade_id": str(bundle.get("trade_id") or ""),
         "day": str(bundle.get("day") or ""),
@@ -223,6 +267,11 @@ def _trade_row(bundle: Dict[str, Any]) -> Dict[str, Any]:
         "exit_pattern_type": _extract_exit_pattern_type(bundle),
         "return": _extract_return_value(bundle),
         "pnl": _extract_pnl_value(bundle),
+        "observed_return": truth.get("observed_return") if bool(truth.get("available")) else None,
+        "return_basis": "truth_surface_net" if bool(truth.get("available")) and truth.get("return") not in (None, "") else (
+            "truth_surface_observation_only" if bool(truth.get("available")) else "lifecycle"
+        ),
+        "truth_surface_path": str(truth.get("path") or ""),
         "bundle_path": str(bundle.get("_bundle_path") or ""),
     }
 
@@ -282,12 +331,16 @@ def _aggregate_group(rows: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str
         values = _score_series(group_rows)
         wins = sum(1 for row in group_rows if _is_win(row) is True)
         losses = sum(1 for row in group_rows if _is_win(row) is False)
+        scored_count = int(len(values))
+        unavailable_count = max(0, int(len(group_rows)) - scored_count)
         symbols = sorted({str(row.get("symbol") or "").strip().upper() for row in group_rows if str(row.get("symbol") or "").strip()})
         out[name] = {
             "trade_count": int(len(group_rows)),
+            "return_sample_count": scored_count,
+            "unavailable_return_count": unavailable_count,
             "win_count": int(wins),
             "loss_count": int(losses),
-            "win_rate": round(float(wins) / float(len(group_rows)), 6) if group_rows else 0.0,
+            "win_rate": round(float(wins) / float(scored_count), 6) if scored_count else 0.0,
             "avg_return": round(sum(values) / len(values), 6) if values else 0.0,
             "profit_factor": _compute_profit_factor(values),
             "max_drawdown": _compute_max_drawdown(values),
@@ -328,7 +381,12 @@ def aggregate_performance_from_bundles(
         "day": target_day,
         "generated_at": _utc_now_iso(),
         "total_trades": int(len(rows)),
-        "win_rate": round(float(wins) / float(len(rows)), 6) if rows else 0.0,
+        "return_sample_count": int(len(values)),
+        "unavailable_return_count": max(0, int(len(rows)) - int(len(values))),
+        "observed_return_sample_count": int(
+            sum(1 for row in rows if row.get("return") in (None, "") and row.get("observed_return") not in (None, ""))
+        ),
+        "win_rate": round(float(wins) / float(len(values)), 6) if values else 0.0,
         "avg_return": round(sum(values) / len(values), 6) if values else 0.0,
         "avg_win": round(sum(positive_values) / len(positive_values), 6) if positive_values else 0.0,
         "avg_loss": round(sum(negative_values) / len(negative_values), 6) if negative_values else 0.0,
@@ -359,6 +417,9 @@ def aggregate_performance_from_bundles(
                 "exit_reason": str(row.get("exit_reason") or ""),
                 "return": row.get("return"),
                 "pnl": row.get("pnl"),
+                "observed_return": row.get("observed_return"),
+                "return_basis": str(row.get("return_basis") or ""),
+                "truth_surface_path": str(row.get("truth_surface_path") or ""),
             }
             for row in rows
         ],

@@ -120,6 +120,7 @@ def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
         return {"action": "NOOP", "reason": "no_monitor_intent"}
 
     it0 = intents[0] if isinstance(intents[0], dict) else {}
+    meta = dict(it0.get("meta") or {}) if isinstance(it0.get("meta"), dict) else {}
     side = str(it0.get("side") or "BUY").strip().upper()
     action = "BUY" if side == "BUY" else "SELL" if side == "SELL" else "NOOP"
     symbol = str(it0.get("symbol") or state.get("symbol") or state.get("selected_symbol") or "").strip().upper()
@@ -127,8 +128,21 @@ def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
     market = state.get("market_snapshot") if isinstance(state.get("market_snapshot"), dict) else {}
     price = it0.get("price")
-    if price is None:
-        price = market.get("price")
+    if price in (None, ""):
+        for candidate in (
+            meta.get("price"),
+            meta.get("current_price"),
+            meta.get("raw_price"),
+            meta.get("quote_price"),
+            meta.get("market_price"),
+            (state.get("monitor_output") or {}).get("exit_raw_price")
+            if isinstance(state.get("monitor_output"), dict)
+            else None,
+            market.get("price"),
+        ):
+            if candidate not in (None, ""):
+                price = candidate
+                break
 
     return {
         "action": action,
@@ -138,6 +152,7 @@ def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
         "order_type": "limit",
         "order_api_id": "ORDER_SUBMIT",
         "rationale": str(it0.get("thesis") or "monitor_intent"),
+        "meta": meta,
     }
 
 

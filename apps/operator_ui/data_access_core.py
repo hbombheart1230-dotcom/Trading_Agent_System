@@ -75,6 +75,7 @@ from libs.reporting.llm_artifacts import (
     classify_llm_exception,
     daily_artifact_paths,
     iter_trade_day_roots,
+    iter_trade_dirs,
     list_misplaced_trade_day_roots,
     make_attempt,
     persist_llm_artifact_refs,
@@ -721,14 +722,12 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
         [
             path
             for day_root in day_roots
+            for trade_dir in iter_trade_dirs(day_root)
             for path in (
-                list(day_root.glob("TRD_*/lifecycle_bundle.json"))
-                + list(day_root.glob("TRD_*/aggregated_execution_bundle.json"))
-                + list(day_root.glob("*/lifecycle_bundle.json"))
-                + list(day_root.glob("*/aggregated_execution_bundle.json"))
-                + list(day_root.glob("*/*/lifecycle_bundle.json"))
-                + list(day_root.glob("*/*/aggregated_execution_bundle.json"))
+                trade_dir / "lifecycle_bundle.json",
+                trade_dir / "aggregated_execution_bundle.json",
             )
+            if path.exists()
         ],
         key=lambda p: p.stat().st_mtime,
         reverse=True,

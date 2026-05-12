@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from graphs.nodes.skill_contracts import (
     CONTRACT_VERSION,
+    account_order_is_pending,
+    account_order_side,
     extract_account_orders_rows,
     extract_market_quotes,
     extract_minute_ohlcv_by_symbol,
@@ -48,6 +50,23 @@ def test_m22_contract_extract_account_orders_rows_from_data_wrapper():
     assert meta["used"] is True
     assert meta["errors"] == []
     assert len(rows) == 2
+
+
+def test_m22_contract_account_order_pending_only_for_open_rows():
+    assert account_order_side({"io_tp_nm": "BUY"}) == "BUY"
+    assert account_order_is_pending(
+        {"symbol": "005930", "side": "BUY", "order_qty": "10", "filled_qty": "0", "remaining_qty": "10", "status": "OPEN"}
+    )
+    assert not account_order_is_pending(
+        {"symbol": "005930", "side": "BUY", "order_qty": "10", "filled_qty": "10", "remaining_qty": "0", "status": "FILLED"}
+    )
+    assert not account_order_is_pending(
+        {"symbol": "005930", "side": "BUY", "order_qty": "10", "filled_qty": "0", "status": "FILLED"}
+    )
+    assert not account_order_is_pending(
+        {"symbol": "005930", "side": "BUY", "order_qty": "10", "filled_qty": "0", "remaining_qty": "10", "status": "CANCELLED"}
+    )
+    assert not account_order_is_pending({"symbol": "005930", "side": "BUY", "order_id": "historical-row"})
 
 
 def test_m22_contract_extract_order_status_reports_contract_violation():

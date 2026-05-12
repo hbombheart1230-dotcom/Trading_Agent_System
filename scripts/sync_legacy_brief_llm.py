@@ -10,11 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.reporting.llm_artifacts import iter_trade_dirs as _iter_trade_dirs_under_day
+
+
 def _iter_trade_dirs(reports_root: Path, day: str) -> List[Path]:
     day_root = reports_root / "trades" / day
     if not day_root.exists():
         return []
-    return sorted(path for path in day_root.iterdir() if path.is_dir())
+    return _iter_trade_dirs_under_day(day_root)
 
 
 def _sync_trade(trade_dir: Path, *, dry_run: bool = False) -> Dict[str, str]:

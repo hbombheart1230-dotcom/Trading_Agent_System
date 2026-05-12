@@ -12,13 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.reporting.event_log_reader import iter_jsonl_events
 from libs.reporting.llm_artifacts import daily_artifact_paths
+from libs.reporting.llm_artifacts import symbol_artifact_paths
 from libs.reporting.narrative_axes import narrative_axis_policy
 from libs.reporting.operator_visibility import (
     build_operator_daily_summary_payload,
     build_operator_summary_snapshot_from_payload,
 )
 from libs.reporting.operator_period_summary import generate_operator_daily_summary_artifact
+from libs.reporting.operator_period_summary import build_residual_positions_payload
 from libs.reporting.report_metadata import (
     build_data_freshness,
     build_route_provenance,
@@ -45,6 +48,102 @@ def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
                 except Exception:
                     continue
     return gen()
+
+
+def _read_json_list(path: Path) -> List[Any]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def _symbol_report_mode() -> str:
+    raw = str(os.getenv("DAILY_REPORT_SYMBOL_REPORT_MODE") or "missing_or_stale").strip().lower()
+    if raw in {"always", "refresh", "force"}:
+        return "always"
+    if raw in {"skip", "none", "false", "0", "off"}:
+        return "skip"
+    return "missing_or_stale"
+
+
+def _expected_trade_ids_by_symbol(trade_index: List[Dict[str, Any]]) -> Dict[str, set[str]]:
+    expected: Dict[str, set[str]] = {}
+    for row in trade_index:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        trade_id = str(row.get("trade_id") or "").strip()
+        if not symbol or not trade_id:
+            continue
+        expected.setdefault(symbol, set()).add(trade_id)
+    return expected
+
+
+def _symbol_report_is_current(reports_root: Path, symbol: str, expected_trade_ids: set[str]) -> bool:
+    paths = symbol_artifact_paths(reports_root, symbol)
+    report_json = paths["symbol_trade_report_json"]
+    history_json = paths["trade_history_json"]
+    if not report_json.exists() or not history_json.exists():
+        return False
+    if not expected_trade_ids:
+        return True
+    history = _read_json_list(history_json)
+    covered = {
+        str(row.get("trade_id") or "").strip()
+        for row in history
+        if isinstance(row, dict) and str(row.get("trade_id") or "").strip()
+    }
+    return expected_trade_ids.issubset(covered)
+
+
+def _refresh_symbol_reports(
+    *,
+    events_path: Path,
+    reports_root: Path,
+    symbols: List[str],
+    trade_index: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    mode = _symbol_report_mode()
+    generated: List[Dict[str, Any]] = []
+    skipped_existing: List[str] = []
+    skipped_mode: List[str] = []
+    expected_by_symbol = _expected_trade_ids_by_symbol(trade_index)
+
+    for raw_symbol in symbols:
+        symbol = str(raw_symbol or "").strip().upper()
+        if not symbol:
+            continue
+        if mode == "skip":
+            skipped_mode.append(symbol)
+            continue
+        if mode == "missing_or_stale" and _symbol_report_is_current(
+            reports_root,
+            symbol,
+            expected_by_symbol.get(symbol, set()),
+        ):
+            skipped_existing.append(symbol)
+            continue
+        generated.append(
+            generate_symbol_trade_report(
+                events_path=events_path,
+                reports_root=reports_root,
+                symbol=symbol,
+            )
+        )
+
+    return {
+        "mode": mode,
+        "symbol_count": len([symbol for symbol in symbols if str(symbol or "").strip()]),
+        "generated": generated,
+        "generated_count": len(generated),
+        "skipped_existing_count": len(skipped_existing),
+        "skipped_by_mode_count": len(skipped_mode),
+        "skipped_existing_symbols": skipped_existing[:20],
+        "skipped_by_mode_symbols": skipped_mode[:20],
+    }
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -187,6 +286,66 @@ def _load_policy_surface_quality_snapshot(events_path: Path, out_dir: Path, day:
     return build_policy_surface_quality_snapshot(events_path, out_dir, day)
 
 
+def _render_residual_positions_markdown(residual: Dict[str, Any]) -> List[str]:
+    positions = residual.get("positions") if isinstance(residual.get("positions"), list) else []
+    lines = ["", "## 장마감 잔여 보유 종목", ""]
+    if not bool(residual.get("available")):
+        lines.append("- 상태 스냅샷을 읽지 못해 잔여 보유 종목을 확인하지 못했습니다.")
+        return lines
+    if not positions:
+        lines.append("- 장마감 기준 잔여 보유 종목이 없습니다.")
+        return lines
+    closeout = residual.get("closeout_state") if isinstance(residual.get("closeout_state"), dict) else {}
+    reconciled = (
+        residual.get("reconciled_closed_positions")
+        if isinstance(residual.get("reconciled_closed_positions"), list)
+        else []
+    )
+    closeout_mode = str(closeout.get("mode") or "").strip()
+    closeout_reason = str(closeout.get("reason") or "").strip()
+    if closeout_mode or closeout_reason:
+        lines.append(f"- closeout 상태: {closeout_mode or '-'} / {closeout_reason or '-'}")
+    if reconciled:
+        symbols = ", ".join(
+            str(row.get("symbol") or "").strip()
+            for row in reconciled
+            if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+        )
+        if symbols:
+            lines.append(f"- 장중 청산 확인: {symbols}은 당일 전량 매도 기록으로 잔여 보유에서 제외했습니다.")
+    for row in positions:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "-")
+        status = str(row.get("status") or "잔여 보유")
+        qty = int(row.get("qty") or 0)
+        avg_price = row.get("avg_price")
+        current_price = row.get("current_price")
+        pnl_ratio = row.get("account_pnl_ratio")
+        reason = str(row.get("overnight_reason") or "").strip()
+        price_text = f"평균 {avg_price:,.0f}" if isinstance(avg_price, (int, float)) and avg_price else "평균 -"
+        current_text = f"현재 {current_price:,.0f}" if isinstance(current_price, (int, float)) and current_price else "현재 -"
+        ratio_text = f" / 평가손익률 {float(pnl_ratio) * 100:.2f}%" if isinstance(pnl_ratio, (int, float)) else ""
+        detail = f"- {symbol}: {status} / {qty}주 / {price_text} / {current_text}{ratio_text}"
+        if reason:
+            detail += f" / 사유 {reason}"
+        if bool(row.get("weekend_carry")):
+            detail += f" / 주말보유 {int(row.get('holding_gap_days') or 3)}일"
+        lines.append(detail)
+        if bool(row.get("weekend_carry")) and not bool(row.get("allow_weekend_carry")):
+            lines.append("  - 주의: 금요일 carry 승인이라 주말 갭 리스크가 포함됩니다.")
+        missing_detail = str(row.get("overnight_missing_detail") or "").strip()
+        if bool(row.get("overnight_decision_missing")) and missing_detail:
+            lines.append(f"  - 판단 기록 상태: {missing_detail}")
+        signals = [str(x) for x in list(row.get("overnight_positive_signals") or []) if str(x or "").strip()]
+        blockers = [str(x) for x in list(row.get("overnight_blockers") or []) if str(x or "").strip()]
+        if signals:
+            lines.append(f"  - 승인 근거: {', '.join(signals[:5])}")
+        if blockers:
+            lines.append(f"  - 차단/주의 근거: {', '.join(blockers[:5])}")
+    return lines
+
+
 def _day_key(ts: Any) -> str:
     """Return YYYY-MM-DD in **UTC** for determinism across machines/timezones."""
     if ts is None:
@@ -223,7 +382,8 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows: List[Dict[str, Any]] = []
-    for e in _iter_events(events_path):
+    event_rows = iter_jsonl_events(events_path, day=day) if day else _iter_events(events_path)
+    for e in event_rows:
         ts = e.get("ts") or e.get("payload", {}).get("ts")
         rows.append({**e, "_day": _day_key(ts)})
     if not rows:
@@ -232,12 +392,16 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         md_path = paths["daily_report_md"]
         js_path = paths["daily_report_json"]
         trade_index = build_daily_trade_index(out_dir, day)
-        symbols_for_day = collect_symbols_for_day(events_path, out_dir, day)
-        generated_symbol_reports = [
-            generate_symbol_trade_report(events_path=events_path, reports_root=out_dir, symbol=symbol)
-            for symbol in symbols_for_day
-        ]
+        symbols_for_day = collect_symbols_for_day(events_path, out_dir, day, trade_index=trade_index)
+        symbol_report_refresh = _refresh_symbol_reports(
+            events_path=events_path,
+            reports_root=out_dir,
+            symbols=symbols_for_day,
+            trade_index=trade_index,
+        )
+        generated_symbol_reports = list(symbol_report_refresh.get("generated") or [])
         operator_summary_snapshot = _load_operator_summary_snapshot(events_path, out_dir, day)
+        residual_positions = build_residual_positions_payload(reports_root=out_dir, day=day)
         report_freshness = {
             "generated_at": _utc_now_iso(),
             "source_run_count": 0,
@@ -268,7 +432,9 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             "trade_index": trade_index,
             "symbols_observed": symbols_for_day,
             "generated_symbol_report_count": len(generated_symbol_reports),
+            "symbol_report_refresh": {k: v for k, v in symbol_report_refresh.items() if k != "generated"},
             "operator_summary_snapshot": operator_summary_snapshot,
+            "residual_positions": residual_positions,
             "policy_surface_quality_summary": dict(policy_surface_quality.get("summary") or {}),
             "policy_surface_quality_executive_summary": dict(policy_surface_quality.get("executive_summary") or {}),
             "chart_structure_decision_hint_summary": dict(policy_surface_quality.get("chart_structure_summary") or {}),
@@ -295,6 +461,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             md_lines += ["", "## Operator Summary Snapshot", ""]
             for line in executive.get("summary_lines") or []:
                 md_lines.append(f"- {line}")
+        md_lines += _render_residual_positions_markdown(residual_positions)
         route_summary = payload.get("route_summary") if isinstance(payload.get("route_summary"), dict) else {}
         narrative_policy = payload.get("narrative_axis_policy") if isinstance(payload.get("narrative_axis_policy"), dict) else narrative_axis_policy()
         md_lines += [
@@ -408,12 +575,16 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         "blocks": blocks,
     }
     trade_index = build_daily_trade_index(out_dir, day)
-    symbols_for_day = collect_symbols_for_day(events_path, out_dir, day)
-    generated_symbol_reports = [
-        generate_symbol_trade_report(events_path=events_path, reports_root=out_dir, symbol=symbol)
-        for symbol in symbols_for_day
-    ]
+    symbols_for_day = collect_symbols_for_day(events_path, out_dir, day, trade_index=trade_index)
+    symbol_report_refresh = _refresh_symbol_reports(
+        events_path=events_path,
+        reports_root=out_dir,
+        symbols=symbols_for_day,
+        trade_index=trade_index,
+    )
+    generated_symbol_reports = list(symbol_report_refresh.get("generated") or [])
     operator_summary_snapshot = _load_operator_summary_snapshot(events_path, out_dir, day)
+    residual_positions = build_residual_positions_payload(reports_root=out_dir, day=day)
     operator_summary_snapshot_freshness = _build_snapshot_freshness(
         snapshot=operator_summary_snapshot,
         source_freshness=report_freshness,
@@ -434,7 +605,9 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     summary["trade_index"] = trade_index
     summary["symbols_observed"] = symbols_for_day
     summary["generated_symbol_report_count"] = len(generated_symbol_reports)
+    summary["symbol_report_refresh"] = {k: v for k, v in symbol_report_refresh.items() if k != "generated"}
     summary["operator_summary_snapshot"] = operator_summary_snapshot
+    summary["residual_positions"] = residual_positions
     summary["operator_summary_snapshot_freshness"] = operator_summary_snapshot_freshness
     summary["route_summary"] = dict(operator_summary_snapshot.get("route_summary") or {})
     summary["route_provenance"] = build_route_provenance(operator_summary_snapshot.get("route_summary") if isinstance(operator_summary_snapshot.get("route_summary"), dict) else {})
@@ -480,6 +653,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             md_lines.append(f"- system_status: **{executive['system_status']}**")
         for line in executive.get("summary_lines") or []:
             md_lines.append(f"- {line}")
+    md_lines += _render_residual_positions_markdown(residual_positions)
     route_summary = summary.get("route_summary") if isinstance(summary.get("route_summary"), dict) else {}
     narrative_policy = summary.get("narrative_axis_policy") if isinstance(summary.get("narrative_axis_policy"), dict) else narrative_axis_policy()
     md_lines += [

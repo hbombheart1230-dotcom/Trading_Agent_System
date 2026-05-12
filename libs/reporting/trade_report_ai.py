@@ -384,12 +384,27 @@ def _is_open_position_placeholder_reason(value: Any) -> bool:
     if not text:
         return False
     markers = (
+        "no_position",
+        "no position",
         "position is still open",
         "monitor is watching for exit",
         "still open",
         "포지션이 아직",
     )
     return any(token in text for token in markers)
+
+
+def _story_post_exit_shadow(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    for candidate in (
+        _as_dict(story_input.get("post_exit_shadow")),
+        _as_dict(_as_dict(story_input.get("lifecycle_bundle")).get("post_exit_shadow")),
+        _as_dict(_as_dict(story_input.get("trade_lifecycle")).get("post_exit_shadow")),
+        _as_dict(_as_dict(_as_dict(story_input.get("trade_lifecycle")).get("exit")).get("post_exit_shadow")),
+        _as_dict(_as_dict(_as_dict(story_input.get("lifecycle_bundle")).get("exit")).get("post_exit_shadow")),
+    ):
+        if candidate:
+            return candidate
+    return {}
 
 
 def _reporter_summary_is_placeholder(value: Any) -> bool:
@@ -437,6 +452,8 @@ def _set_fact_if_missing(
 ) -> None:
     if not _present_fact(value):
         return
+    if field == "exit_reason" and _is_open_position_placeholder_reason(value):
+        return
     if _present_fact(resolved.get(field)):
         if str(resolved.get(field)) != str(value):
             logger.debug(
@@ -472,6 +489,34 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
     monitor_reason = _as_dict(story_input.get("monitor_reason_human"))
     trade_read_model = _load_trade_read_model_hint(story_input)
     trade_read_model_context = trade_read_model.get("context") if isinstance(trade_read_model.get("context"), dict) else {}
+
+    def _monitor_mark_pnl_pct() -> Optional[float]:
+        position_snapshot = _as_dict(canonical_monitor.get("position_snapshot"))
+        for candidate in (
+            monitor_reason.get("pnl_pct"),
+            monitor_reason.get("gross_pnl_ratio"),
+            monitor_reason.get("technical_pnl_ratio"),
+            monitor_reason.get("raw_pnl_ratio"),
+            monitor_reason.get("stop_pnl_ratio"),
+        ):
+            value = _num_opt(candidate)
+            if value is not None:
+                return value
+        current = _num_opt(
+            monitor_reason.get("current_price")
+            or canonical_monitor.get("current_price")
+            or position_snapshot.get("current_price")
+        )
+        average = _num_opt(
+            monitor_reason.get("average_price")
+            or monitor_reason.get("avg_price")
+            or canonical_monitor.get("average_price")
+            or canonical_monitor.get("avg_price")
+            or position_snapshot.get("avg_price")
+        )
+        if current is None or average is None or average <= 0:
+            return None
+        return (current - average) / average
 
     fields = ["action", "status", "holding_duration", "exit_reason", "pnl", "pnl_pct"]
     resolved: Dict[str, Any] = {key: "unavailable" for key in fields}
@@ -537,6 +582,14 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
         _clip(lifecycle_summary.get("exit_reason_human"), max_len=280),
     ):
         _set_fact_if_missing(resolved=resolved, data_source=data_source, field="exit_reason", value=candidate, source="lifecycle")
+
+    for candidate in (
+        _clip(monitor_reason.get("trigger_type"), max_len=280),
+        _clip(monitor_reason.get("active_exit_axis"), max_len=280),
+        _clip(monitor_reason.get("exit_reason"), max_len=280),
+        _clip(monitor_reason.get("summary"), max_len=280),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="exit_reason", value=candidate, source="monitor")
     for candidate in (
         lifecycle.get("pnl"),
         lifecycle_summary_obj.get("pnl"),
@@ -660,7 +713,7 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
         value=monitor_reason.get("pnl"),
         source="fallback",
     )
-    for candidate in (monitor_reason.get("pnl_pct"), monitor_reason.get("current_drawdown")):
+    for candidate in (monitor_reason.get("pnl_pct"), _monitor_mark_pnl_pct()):
         _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="fallback")
 
     # Closed-lifecycle reconciliation:
@@ -752,6 +805,12 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
     canonical_strategist_decision_frame = _as_dict(canonical_strategist.get("decision_frame"))
     trade_read_model = _load_trade_read_model_hint(story_input)
     trade_read_model_facts = trade_read_model.get("facts") if isinstance(trade_read_model.get("facts"), dict) else {}
+    trade_read_model_provenance = trade_read_model.get("provenance") if isinstance(trade_read_model.get("provenance"), dict) else {}
+    trade_read_model_field_sources = (
+        trade_read_model_provenance.get("field_sources")
+        if isinstance(trade_read_model_provenance.get("field_sources"), dict)
+        else {}
+    )
     trade_read_model_context = trade_read_model.get("context") if isinstance(trade_read_model.get("context"), dict) else {}
     trade_model_report_section_seeds = (
         trade_read_model_context.get("report_section_seeds")
@@ -772,10 +831,20 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
     if resolved_facts.get("exit_reason") in (None, "", "unavailable") and str(trade_read_model_facts.get("exit_reason") or "").strip():
         resolved_facts["exit_reason"] = _clip(trade_read_model_facts.get("exit_reason"), max_len=280)
         (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"exit_reason": "trade_read_model"})
-    if resolved_facts.get("pnl") in (None, "", "unavailable") and trade_read_model_facts.get("pnl") not in (None, ""):
+    read_model_pnl_source = str(trade_read_model_field_sources.get("pnl") or "").strip()
+    if (
+        read_model_pnl_source != "default"
+        and resolved_facts.get("pnl") in (None, "", "unavailable")
+        and trade_read_model_facts.get("pnl") not in (None, "")
+    ):
         resolved_facts["pnl"] = trade_read_model_facts.get("pnl")
         (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"pnl": "trade_read_model"})
-    if resolved_facts.get("pnl_pct") in (None, "", "unavailable") and trade_read_model_facts.get("pnl_pct") not in (None, ""):
+    read_model_pnl_pct_source = str(trade_read_model_field_sources.get("pnl_pct") or "").strip()
+    if (
+        read_model_pnl_pct_source != "default"
+        and resolved_facts.get("pnl_pct") in (None, "", "unavailable")
+        and trade_read_model_facts.get("pnl_pct") not in (None, "")
+    ):
         resolved_facts["pnl_pct"] = trade_read_model_facts.get("pnl_pct")
         (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"pnl_pct": "trade_read_model"})
     lifecycle_action = _as_action(resolved_facts.get("action")) or "WAIT"
@@ -880,6 +949,17 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             or canonical_commander_decision.get("applied_policy_source_chain"),
             max_items=6,
             max_len=80,
+        ),
+        "entry_control": _compact_commander_entry_control(
+            _first_dict_from(
+                canonical_commander_decision.get("entry_control"),
+                canonical_commander.get("entry_control"),
+                canonical_commander.get("commander_entry_control"),
+                _as_dict(canonical_commander.get("scanner_policy")).get("entry_control"),
+                _as_dict(canonical_commander.get("monitor_policy")).get("entry_control"),
+                _as_dict(story_input.get("commander_decision")).get("entry_control"),
+                story_input.get("commander_entry_control"),
+            )
         ),
     }
     scanner_reasoning = {
@@ -1286,6 +1366,7 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             max_len=180,
         ),
     }
+    entry_execution_visibility = _extract_entry_execution_visibility(story_input)
     return {
         "symbol": _clip(story_input.get("symbol"), max_len=32) or "unknown",
         "trade_id": _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120),
@@ -1346,6 +1427,7 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "commander_route": commander_route,
         "strategist_evidence": strategist_evidence,
         "strategist_context": strategist_context,
+        "entry_execution_visibility": entry_execution_visibility,
         "report_section_seeds": {
             "market_context_at_entry": _as_dict(trade_model_report_section_seeds.get("market_context_at_entry")),
             "strategist_summary": _as_dict(trade_model_report_section_seeds.get("strategist_summary")),
@@ -1437,6 +1519,24 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
             if refresh_trace_for_output:
                 strategist_output["strategy_refresh_trace"] = refresh_trace_for_output
         out["strategist_output"] = strategist_output
+    entry_execution_visibility = _extract_entry_execution_visibility(story_input)
+    if entry_execution_visibility:
+        existing_visibility = out.get("entry_execution_visibility") if isinstance(out.get("entry_execution_visibility"), dict) else {}
+        out["entry_execution_visibility"] = {**existing_visibility, **entry_execution_visibility}
+        monitor_snapshot = out.get("monitor_snapshot") if isinstance(out.get("monitor_snapshot"), dict) else {}
+        cascade = _as_dict(entry_execution_visibility.get("monitor_entry_candidate_cascade"))
+        if monitor_snapshot and cascade and not _as_dict(monitor_snapshot.get("entry_candidate_cascade")):
+            monitor_snapshot = dict(monitor_snapshot)
+            monitor_snapshot["entry_candidate_cascade"] = cascade
+            out["monitor_snapshot"] = monitor_snapshot
+    post_exit_shadow = _story_post_exit_shadow(story_input)
+    if post_exit_shadow:
+        out["post_exit_shadow"] = dict(post_exit_shadow)
+        fact_payload = out.get("fact_payload") if isinstance(out.get("fact_payload"), dict) else {}
+        if fact_payload:
+            fact_payload = dict(fact_payload)
+            fact_payload.setdefault("post_exit_shadow", dict(post_exit_shadow))
+            out["fact_payload"] = fact_payload
     refresh_trace = _build_report_strategist_refresh_trace(story_input)
     if refresh_trace:
         existing_refresh = out.get("strategist_refresh_trace") if isinstance(out.get("strategist_refresh_trace"), dict) else {}
@@ -1542,6 +1642,9 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
         for candidate in (
             _clip(report_shared_facts.get("exit_reason"), max_len=280),
             _clip(report_exit_decision.get("summary"), max_len=280),
+            _clip(_as_dict(story_input.get("monitor_reason_human")).get("trigger_type"), max_len=280),
+            _clip(_as_dict(story_input.get("monitor_reason_human")).get("active_exit_axis"), max_len=280),
+            _clip(_as_dict(story_input.get("monitor_reason_human")).get("summary"), max_len=280),
         ):
             if candidate and not _is_open_position_placeholder_reason(candidate):
                 resolved_exit_reason = candidate
@@ -1754,6 +1857,7 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
         "price_source": _clip(data.get("price_source"), max_len=80),
         "feature_source": _clip(data.get("feature_source"), max_len=80),
         "monitor_stop_policy_trace": _compact_scalar_dict(data.get("monitor_stop_policy_trace"), max_items=8, max_len=120),
+        "entry_candidate_cascade": _compact_entry_candidate_cascade(data.get("entry_candidate_cascade")),
     }
     return {key: value for key, value in out.items() if value not in ("", None, [])}
 
@@ -1953,6 +2057,57 @@ def _extract_us_indices_snapshot(events: Any) -> Dict[str, float]:
     return {}
 
 
+def _extract_korea_indices_snapshot(section: Any) -> Dict[str, Dict[str, Any]]:
+    data = section if isinstance(section, dict) else {}
+    packet = data.get("korea_indices") if isinstance(data.get("korea_indices"), dict) else {}
+    indices = packet.get("indices") if isinstance(packet.get("indices"), dict) else {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for name in ("KOSPI", "KOSDAQ"):
+        row = indices.get(name) if isinstance(indices.get(name), dict) else {}
+        if row:
+            out[name] = dict(row)
+    if out:
+        return out
+    events = data.get("key_events") or data.get("key_events_hint")
+    for row in _listify(events, max_items=8, max_len=260):
+        text = str(row or "")
+        match = re.search(
+            r"kospi=([+-]?\d+(?:\.\d+)?)/prev=([+-]?\d+(?:\.\d+)?)/chg=([+-]?\d+(?:\.\d+)?)%.*?"
+            r"kosdaq=([+-]?\d+(?:\.\d+)?)/prev=([+-]?\d+(?:\.\d+)?)/chg=([+-]?\d+(?:\.\d+)?)%",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        return {
+            "KOSPI": {"current": float(match.group(1)), "previous_close": float(match.group(2)), "change_pct": float(match.group(3))},
+            "KOSDAQ": {"current": float(match.group(4)), "previous_close": float(match.group(5)), "change_pct": float(match.group(6))},
+        }
+    return {}
+
+
+def _format_korea_indices_sentence(indices: Dict[str, Dict[str, Any]]) -> str:
+    parts: List[str] = []
+    for name in ("KOSPI", "KOSDAQ"):
+        row = indices.get(name) if isinstance(indices.get(name), dict) else {}
+        if not row:
+            continue
+        current = _num_opt(row.get("current"))
+        previous = _num_opt(row.get("previous_close"))
+        change_pct = _num_opt(row.get("change_pct"))
+        if current is None and previous is None and change_pct is None:
+            continue
+        bits = [name]
+        if current is not None:
+            bits.append(f"현재 {current:,.2f}")
+        if previous is not None:
+            bits.append(f"전일 {previous:,.2f}")
+        if change_pct is not None:
+            bits.append(f"등락률 {_format_pct_points(change_pct)}")
+        parts.append(" ".join(bits))
+    return "; ".join(parts)
+
+
 def _format_pct_points(value: Any) -> str:
     number = _num_opt(value)
     if number is None:
@@ -1995,6 +2150,7 @@ def _build_market_context_summary(section: Any, *, scanner_reason: Dict[str, Any
     headline_count = int(float(market.get("headline_count") or 0)) if _num_opt(market.get("headline_count")) is not None else 0
     query_count = int(float(market.get("news_query_count") or 0)) if _num_opt(market.get("news_query_count")) is not None else 0
     us_indices = _extract_us_indices_snapshot(market.get("key_events") or market.get("key_events_hint"))
+    korea_indices_text = _format_korea_indices_sentence(_extract_korea_indices_snapshot(market))
     selected_symbol = _clip(scanner.get("selected_symbol"), max_len=24)
 
     regime_missing = regime in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
@@ -2030,6 +2186,8 @@ def _build_market_context_summary(section: Any, *, scanner_reason: Dict[str, Any
             f"미국 지수는 S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
             f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}였습니다."
         )
+    if korea_indices_text:
+        sentences.append(f"국내 지수는 {korea_indices_text} 기준으로 반영했습니다.")
     if headline_count or query_count:
         sentences.append(
             f"뉴스 입력 {headline_count}건과 조회 대상 {query_count}개를 함께 반영했습니다."
@@ -2059,6 +2217,7 @@ def _build_market_context_bullets(section: Any, *, scanner_reason: Dict[str, Any
     headline_count = int(float(data.get("headline_count") or 0)) if _num_opt(data.get("headline_count")) is not None else 0
     query_count = int(float(data.get("news_query_count") or 0)) if _num_opt(data.get("news_query_count")) is not None else 0
     us_indices = _extract_us_indices_snapshot(data.get("key_events") or data.get("key_events_hint"))
+    korea_indices_text = _format_korea_indices_sentence(_extract_korea_indices_snapshot(data))
     market_titles = _join_headlines(data.get("market_news_titles") or data.get("market_headlines"), max_items=2, max_len=180)
     symbol_title = _select_symbol_headline(
         data.get("symbol_news_titles")
@@ -2098,6 +2257,8 @@ def _build_market_context_bullets(section: Any, *, scanner_reason: Dict[str, Any
             f"미국 지수는 S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
             f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}였습니다."
         )
+    if korea_indices_text:
+        bullets.append(f"국내 지수는 {korea_indices_text}입니다.")
     if headline_count or query_count or targets:
         bullets.append(
             f"뉴스 입력은 {headline_count}건 헤드라인, 조회 대상은 {query_count}개"
@@ -2213,6 +2374,9 @@ def _build_strategist_summary_section(
         )
     if input_bits:
         bullets.append("핵심 입력은 " + ", ".join(input_bits) + "입니다.")
+    korea_indices_text = _format_korea_indices_sentence(_extract_korea_indices_snapshot(market_context))
+    if korea_indices_text:
+        bullets.append("전략가는 국내 지수 " + korea_indices_text + "를 시장 상태 입력으로 사용했습니다.")
 
     if regime_missing and sentiment_missing:
         interpretation_bits = [f"플레이북 {playbook}"]
@@ -2996,6 +3160,22 @@ def _exit_reason_label(value: Any) -> str:
         return "고점 대비 하락폭 기준으로 청산"
     if "hard_stop" in lowered:
         return "고정 손절 기준으로 청산"
+    if "partial_take_profit" in lowered:
+        return "1차 목표 수익 도달로 일부 익절"
+    if "profit_ladder" in lowered:
+        return "수익 구간별 분할 익절"
+    if "risk_reward_take_profit" in lowered:
+        return "손익비 목표 도달로 청산"
+    if "vwap_extension_take_profit" in lowered:
+        return "VWAP 과확장 구간에서 수익 실현"
+    if "resistance_take_profit" in lowered:
+        return "저항권 접근으로 수익 실현"
+    if "volume_exhaustion_take_profit" in lowered:
+        return "거래량/체결 강도 둔화로 수익 실현"
+    if "opening_gap_profit_take" in lowered:
+        return "장초반 갭 추격 구간 빠른 익절"
+    if "time_decay_profit_exit" in lowered:
+        return "수익권 시간 경과와 되돌림 기준으로 청산"
     if "take_profit" in lowered:
         return "목표 수익 실현으로 청산"
     if "trailing_stop" in lowered:
@@ -3019,6 +3199,14 @@ def _decision_chain_label(value: Any) -> str:
         "peak_drawdown": "고점 대비 하락폭",
         "breakout_above_recent_high_with_vwap_structure_confirmation": "직전 고점 돌파와 VWAP 구조 확인",
         "hard_stop": "고정 손절",
+        "partial_take_profit": "1차 일부 익절",
+        "profit_ladder": "구간별 분할 익절",
+        "risk_reward_take_profit": "손익비 익절",
+        "vwap_extension_take_profit": "VWAP 과확장 익절",
+        "resistance_take_profit": "저항권 익절",
+        "volume_exhaustion_take_profit": "거래량 둔화 익절",
+        "opening_gap_profit_take": "갭 추격 빠른 익절",
+        "time_decay_profit_exit": "시간 경과 수익 보전",
         "vwap_breakdown": "VWAP 이탈",
         "breakout_path": "돌파 경로",
     }
@@ -3163,6 +3351,63 @@ def _compact_entry_gate_snapshot(source: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _looks_like_post_entry_monitor_snapshot(story_input: Dict[str, Any], monitor_reason: Dict[str, Any]) -> bool:
+    grouped_trace = _as_dict(monitor_reason.get("entry_grouped_logic_trace"))
+    entry_scores = _as_dict(monitor_reason.get("entry_condition_scores"))
+    has_entry_gate_snapshot = bool(
+        grouped_trace
+        or entry_scores
+        or monitor_reason.get("entry_condition_path") not in (None, "")
+    )
+    if not has_entry_gate_snapshot:
+        return False
+
+    status_text = _clip(
+        story_input.get("status")
+        or story_input.get("lifecycle_status")
+        or _as_dict(story_input.get("shared_facts")).get("status"),
+        max_len=40,
+    ).lower()
+    action_text = _clip(
+        story_input.get("action")
+        or _as_dict(story_input.get("shared_facts")).get("action"),
+        max_len=40,
+    ).upper()
+    posture = _clip(monitor_reason.get("posture"), max_len=40).upper()
+    has_exit_axis = any(
+        monitor_reason.get(key) not in (None, "", [], {})
+        for key in (
+            "active_exit_axis",
+            "exit_triggered",
+            "position_age_seconds",
+            "trigger_type",
+            "peak_drawdown",
+            "current_drawdown",
+            "effective_stop_loss_pct",
+            "watch_axes",
+        )
+    )
+    return bool(has_exit_axis and (status_text == "closed" or action_text == "SELL" or posture in {"SELL", "HOLD"}))
+
+
+def _entry_snapshot_as_post_entry_observation(monitor_reason: Dict[str, Any]) -> Dict[str, Any]:
+    resolved = dict(monitor_reason or {})
+    post_entry_snapshot = _compact_entry_gate_snapshot(monitor_reason)
+    for key in (
+        "entry_grouped_logic_trace",
+        "entry_condition_scores",
+        "entry_condition_path",
+        "entry_condition_paths_passed",
+        "entry_reason",
+        "entry_thresholds",
+    ):
+        resolved.pop(key, None)
+    if post_entry_snapshot:
+        resolved["post_entry_gate_observation"] = post_entry_snapshot
+        resolved["entry_gate_snapshot_source"] = "post_entry_monitor_snapshot_only"
+    return resolved
+
+
 def _select_entry_decision_detail(story_input: Dict[str, Any], entry_summary: Dict[str, Any]) -> Dict[str, Any]:
     monitor_timeline = _as_dict(story_input.get("monitor_timeline"))
     rows = monitor_timeline.get("entry_decision_details")
@@ -3220,6 +3465,8 @@ def _resolve_entry_monitor_reason(
     entry_detail = _select_entry_decision_detail(story_input, entry_summary)
     payload = _as_dict(entry_detail.get("payload"))
     if not payload:
+        if _looks_like_post_entry_monitor_snapshot(story_input, monitor_reason):
+            return _entry_snapshot_as_post_entry_observation(monitor_reason)
         return monitor_reason
 
     resolved = dict(monitor_reason or {})
@@ -3977,6 +4224,362 @@ def _evidence_digest(evidence: Any, keys: List[str]) -> Dict[str, int]:
     return {key: len(list(data.get(key) or [])) for key in keys}
 
 
+def _extract_strategy_detail_from_source(source: Any) -> Dict[str, Any]:
+    data = source if isinstance(source, dict) else {}
+    if not data:
+        return {}
+    strategy_policy = _as_dict(data.get("strategy_policy"))
+    market_policy = _as_dict(strategy_policy.get("market_policy"))
+    scanner_policy = _as_dict(strategy_policy.get("scanner_policy"))
+    direct_detail = _as_dict(data.get("strategy_detail"))
+
+    def _pick_text(key: str, *, max_len: int = 80) -> str:
+        return _first_nonempty_text(
+            direct_detail.get(key),
+            data.get(key),
+            market_policy.get(key),
+            max_len=max_len,
+        )
+
+    detail: Dict[str, Any] = {}
+    for key in (
+        "pre_llm_playbook",
+        "llm_requested_playbook",
+        "requested_playbook",
+        "requested_playbook_source",
+        "final_playbook",
+        "tactical_strategy",
+    ):
+        value = _pick_text(key)
+        if value:
+            detail[key] = value
+
+    scores = (
+        _as_dict(direct_detail.get("strategy_scores"))
+        or _as_dict(data.get("strategy_scores"))
+        or _as_dict(market_policy.get("strategy_scores"))
+    )
+    if scores:
+        detail["strategy_scores"] = {
+            str(key): value
+            for key, value in list(scores.items())[:8]
+            if str(key or "").strip()
+        }
+
+    rejected = (
+        _as_dict(direct_detail.get("rejected_strategy_reasons"))
+        or _as_dict(data.get("rejected_strategy_reasons"))
+        or _as_dict(market_policy.get("rejected_strategy_reasons"))
+    )
+    if rejected:
+        detail["rejected_strategy_reasons"] = _compact_scalar_dict(rejected, max_items=6, max_len=180)
+
+    watch = (
+        _as_dict(direct_detail.get("candidate_watch_policy"))
+        or _as_dict(data.get("candidate_watch_policy"))
+        or _as_dict(scanner_policy.get("candidate_watch_policy"))
+    )
+    if watch:
+        detail["candidate_watch_policy"] = {
+            "behavior_effect": _clip(watch.get("behavior_effect"), max_len=40),
+            "source": _clip(watch.get("source"), max_len=80),
+            "max_priority_rank": watch.get("max_priority_rank"),
+            "max_runner_ups": watch.get("max_runner_ups"),
+            "cascade_enabled": watch.get("cascade_enabled"),
+            "tactical_strategy": _clip(watch.get("tactical_strategy"), max_len=80),
+            "reason": _clip(watch.get("reason"), max_len=220),
+            "cascade_allowed_reasons": _listify(watch.get("cascade_allowed_reasons"), max_items=6, max_len=80),
+            "cascade_blocked_reasons": _listify(watch.get("cascade_blocked_reasons"), max_items=8, max_len=80),
+        }
+
+    return {key: value for key, value in detail.items() if value not in ("", None, [], {})}
+
+
+def _compact_strategy_detail_context(value: Any) -> Dict[str, Any]:
+    detail = _as_dict(value)
+    if not detail:
+        return {}
+    out: Dict[str, Any] = {}
+    for key, max_len in (
+        ("pre_llm_playbook", 60),
+        ("llm_requested_playbook", 60),
+        ("requested_playbook", 60),
+        ("requested_playbook_source", 60),
+        ("final_playbook", 60),
+        ("tactical_strategy", 80),
+    ):
+        text = _clip(detail.get(key), max_len=max_len)
+        if text:
+            out[key] = text
+    scores = _compact_scalar_dict(detail.get("strategy_scores"), max_items=8, max_len=80)
+    if scores:
+        out["strategy_scores"] = scores
+    rejected = _compact_scalar_dict(detail.get("rejected_strategy_reasons"), max_items=6, max_len=180)
+    if rejected:
+        out["rejected_strategy_reasons"] = rejected
+    watch = _as_dict(detail.get("candidate_watch_policy"))
+    if watch:
+        watch_out = {
+            "behavior_effect": _clip(watch.get("behavior_effect"), max_len=40),
+            "source": _clip(watch.get("source"), max_len=80),
+            "max_priority_rank": watch.get("max_priority_rank"),
+            "max_runner_ups": watch.get("max_runner_ups"),
+            "cascade_enabled": watch.get("cascade_enabled"),
+            "tactical_strategy": _clip(watch.get("tactical_strategy"), max_len=80),
+            "reason": _clip(watch.get("reason"), max_len=220),
+            "cascade_allowed_reasons": _listify(watch.get("cascade_allowed_reasons"), max_items=6, max_len=80),
+            "cascade_blocked_reasons": _listify(watch.get("cascade_blocked_reasons"), max_items=8, max_len=80),
+        }
+        watch_out = {key: val for key, val in watch_out.items() if val not in ("", None, [], {})}
+        if watch_out:
+            out["candidate_watch_policy"] = watch_out
+    return out
+
+
+def _compact_candidate_watch_proposal(value: Any) -> Dict[str, Any]:
+    data = _as_dict(value)
+    if not data:
+        return {}
+    out = {
+        "source": _clip(data.get("source"), max_len=80),
+        "behavior_effect": _clip(data.get("behavior_effect"), max_len=48),
+        "tactical_strategy": _clip(data.get("tactical_strategy"), max_len=80),
+        "max_priority_rank": data.get("max_priority_rank"),
+        "max_runner_ups": data.get("max_runner_ups"),
+        "cascade_enabled": data.get("cascade_enabled"),
+        "reason": _clip(data.get("reason"), max_len=220),
+        "cascade_allowed_reasons": _listify(data.get("cascade_allowed_reasons"), max_items=6, max_len=80),
+        "cascade_blocked_reasons": _listify(data.get("cascade_blocked_reasons"), max_items=8, max_len=80),
+    }
+    return {key: value for key, value in out.items() if value not in ("", None, [], {})}
+
+
+def _enrich_candidate_watch_proposal_from_entry_control(
+    proposal: Dict[str, Any],
+    entry_control: Dict[str, Any],
+) -> Dict[str, Any]:
+    out = dict(proposal or {})
+    control = _as_dict(entry_control)
+    nested = _as_dict(control.get("proposal")) or _as_dict(control.get("candidate_watch_policy_proposal"))
+    if not out and nested:
+        out = dict(nested)
+    if not out:
+        return {}
+    if out.get("max_priority_rank") in (None, "") and control.get("proposed_max_priority_rank") not in (None, ""):
+        out["max_priority_rank"] = control.get("proposed_max_priority_rank")
+    if out.get("max_runner_ups") in (None, "") and control.get("proposed_max_runner_ups") not in (None, ""):
+        out["max_runner_ups"] = control.get("proposed_max_runner_ups")
+    if out.get("cascade_enabled") in (None, "") and nested.get("cascade_enabled") not in (None, ""):
+        out["cascade_enabled"] = nested.get("cascade_enabled")
+    for key in ("source", "behavior_effect", "tactical_strategy", "reason"):
+        if out.get(key) in (None, "") and nested.get(key) not in (None, ""):
+            out[key] = nested.get(key)
+    for key in ("cascade_allowed_reasons", "cascade_blocked_reasons"):
+        if out.get(key) in (None, "", []) and nested.get(key) not in (None, "", []):
+            out[key] = nested.get(key)
+    return _compact_candidate_watch_proposal(out)
+
+
+def _compact_commander_entry_control(value: Any) -> Dict[str, Any]:
+    data = _as_dict(value)
+    if not data:
+        return {}
+    proposal = _compact_candidate_watch_proposal(data.get("candidate_watch_policy_proposal"))
+    out = {
+        "schema_version": _clip(data.get("schema_version"), max_len=80),
+        "mode": _clip(data.get("mode"), max_len=80),
+        "decision": _clip(data.get("decision"), max_len=100),
+        "reason": _clip(data.get("reason"), max_len=220),
+        "max_priority_rank": data.get("max_priority_rank"),
+        "max_runner_ups": data.get("max_runner_ups"),
+        "cascade_enabled": data.get("cascade_enabled"),
+        "candidate_watch_policy_detected": data.get("candidate_watch_policy_detected"),
+        "candidate_watch_policy_applied": data.get("candidate_watch_policy_applied"),
+        "candidate_watch_policy_effect": _clip(data.get("candidate_watch_policy_effect"), max_len=80),
+        "candidate_watch_policy_clamp_reason": _clip(
+            data.get("candidate_watch_policy_clamp_reason"),
+            max_len=220,
+        ),
+        "proposed_max_priority_rank": data.get("proposed_max_priority_rank") or proposal.get("max_priority_rank"),
+        "proposed_max_runner_ups": data.get("proposed_max_runner_ups") or proposal.get("max_runner_ups"),
+        "proposal": proposal,
+        "cascade_allowed_reasons": _listify(data.get("cascade_allowed_reasons"), max_items=6, max_len=80),
+        "cascade_blocked_reasons": _listify(data.get("cascade_blocked_reasons"), max_items=8, max_len=80),
+    }
+    return {key: value for key, value in out.items() if value not in ("", None, [], {})}
+
+
+def _compact_entry_candidate_cascade(value: Any) -> Dict[str, Any]:
+    data = _as_dict(value)
+    if not data:
+        return {}
+    trace_rows: List[Dict[str, Any]] = []
+    for row in list(data.get("fallback_trace") or [])[:6]:
+        item = _as_dict(row)
+        if not item:
+            continue
+        trace_rows.append(
+            {
+                "symbol": _clip(item.get("symbol"), max_len=24),
+                "rank": item.get("rank"),
+                "score_total": item.get("score_total"),
+                "triggered": item.get("triggered"),
+                "reason": _clip(item.get("reason"), max_len=120),
+                "primary_failure_axis": _clip(item.get("primary_failure_axis"), max_len=80),
+                "guard_blocked": item.get("guard_blocked"),
+                "confidence_score": item.get("confidence_score"),
+                "confidence_threshold": item.get("confidence_threshold"),
+                "volume_ratio": item.get("volume_ratio"),
+                "vwap_distance": item.get("vwap_distance"),
+            }
+        )
+    trace_rows = [
+        {key: value for key, value in row.items() if value not in ("", None, [], {})}
+        for row in trace_rows
+    ]
+    out = {
+        "attempted": data.get("attempted"),
+        "eligible": data.get("eligible"),
+        "cascade_enabled": data.get("cascade_enabled"),
+        "reason": _clip(data.get("reason"), max_len=140),
+        "blocked_reason": _clip(data.get("blocked_reason"), max_len=140),
+        "top_pick_symbol": _clip(data.get("top_pick_symbol"), max_len=24),
+        "top_pick_triggered": data.get("top_pick_triggered"),
+        "top_pick_reason": _clip(data.get("top_pick_reason"), max_len=140),
+        "top_pick_guard_blocked": data.get("top_pick_guard_blocked"),
+        "max_priority_rank": data.get("max_priority_rank"),
+        "max_runner_ups": data.get("max_runner_ups"),
+        "control_source": _clip(data.get("control_source"), max_len=80),
+        "control_mode": _clip(data.get("control_mode"), max_len=80),
+        "runner_up_symbols": _listify(data.get("runner_up_symbols"), max_items=9, max_len=24),
+        "fallback_used": data.get("fallback_used"),
+        "fallback_from_symbol": _clip(data.get("fallback_from_symbol"), max_len=24),
+        "fallback_to_symbol": _clip(data.get("fallback_to_symbol"), max_len=24),
+        "fallback_to_rank": data.get("fallback_to_rank"),
+        "final_selected_symbol": _clip(data.get("final_selected_symbol"), max_len=24),
+        "final_selected_rank": data.get("final_selected_rank"),
+        "fallback_trace": trace_rows,
+        "cascade_allowed_reasons": _listify(data.get("cascade_allowed_reasons"), max_items=6, max_len=80),
+        "cascade_blocked_reasons": _listify(data.get("cascade_blocked_reasons"), max_items=8, max_len=80),
+    }
+    return {key: value for key, value in out.items() if value not in ("", None, [], {})}
+
+
+def _first_dict_from(*values: Any) -> Dict[str, Any]:
+    for value in values:
+        data = _as_dict(value)
+        if data:
+            return data
+    return {}
+
+
+def _entry_execution_visibility_summary(
+    *,
+    proposal: Dict[str, Any],
+    entry_control: Dict[str, Any],
+    cascade: Dict[str, Any],
+) -> str:
+    parts: List[str] = []
+    if proposal:
+        parts.append(
+            "strategy proposed "
+            f"rank<={proposal.get('max_priority_rank', '-')}, runner_ups={proposal.get('max_runner_ups', '-')}"
+        )
+    if entry_control:
+        parts.append(
+            "commander applied "
+            f"rank<={entry_control.get('max_priority_rank', '-')}, runner_ups={entry_control.get('max_runner_ups', '-')}"
+        )
+        clamp_reason = _clip(entry_control.get("candidate_watch_policy_clamp_reason"), max_len=120)
+        if clamp_reason:
+            parts.append(f"clamp={clamp_reason}")
+    if cascade:
+        attempted = "attempted" if bool(cascade.get("attempted")) else "not_attempted"
+        fallback = cascade.get("fallback_to_symbol") if bool(cascade.get("fallback_used")) else ""
+        if fallback:
+            parts.append(f"monitor {attempted}, fallback_to={fallback}")
+        else:
+            blocked = _clip(cascade.get("blocked_reason"), max_len=120)
+            suffix = f", blocked={blocked}" if blocked else ""
+            parts.append(f"monitor {attempted}{suffix}")
+    return "; ".join(part for part in parts if part)
+
+
+def _extract_entry_execution_visibility(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    canonical = _as_dict(story_input.get("canonical_agent_artifacts"))
+    canonical_commander = _as_dict(canonical.get("commander"))
+    canonical_commander_decision = _as_dict(canonical_commander.get("commander_decision"))
+    canonical_monitor = _as_dict(canonical.get("monitor"))
+    canonical_monitor_handoff = _as_dict(canonical_monitor.get("scanner_monitor_handoff"))
+    canonical_strategist = _as_dict(canonical.get("strategist"))
+    shared_facts = _as_dict(story_input.get("shared_facts"))
+    shared_commander_route = _as_dict(shared_facts.get("commander_route"))
+    monitor_reason = _as_dict(story_input.get("monitor_reason_human"))
+    monitor_output = _as_dict(story_input.get("monitor_output"))
+    story_handoff = _as_dict(story_input.get("scanner_monitor_handoff"))
+    strategy_detail = _extract_strategy_detail_from_source(
+        _first_dict_from(
+            story_input.get("strategist_output"),
+            story_input.get("strategist"),
+            canonical_strategist,
+            story_input,
+        )
+    )
+    raw_entry_control = _first_dict_from(
+        story_input.get("commander_entry_control"),
+        canonical_commander_decision.get("entry_control"),
+        canonical_commander.get("entry_control"),
+        canonical_commander.get("commander_entry_control"),
+        _as_dict(canonical_commander.get("scanner_policy")).get("entry_control"),
+        _as_dict(canonical_commander.get("monitor_policy")).get("entry_control"),
+        _as_dict(story_input.get("commander_decision")).get("entry_control"),
+        shared_commander_route.get("entry_control"),
+    )
+    raw_cascade = _first_dict_from(
+        story_input.get("monitor_entry_cascade"),
+        story_input.get("entry_candidate_cascade"),
+        story_handoff.get("entry_candidate_cascade"),
+        monitor_reason.get("entry_candidate_cascade"),
+        canonical_monitor.get("entry_candidate_cascade"),
+        canonical_monitor_handoff.get("entry_candidate_cascade"),
+        monitor_output.get("entry_candidate_cascade"),
+        _as_dict(monitor_output.get("scanner_monitor_handoff")).get("entry_candidate_cascade"),
+    )
+    raw_focus_context = _first_dict_from(
+        story_input.get("monitor_focus_context"),
+        monitor_reason.get("monitor_focus_context"),
+        canonical_monitor.get("monitor_focus_context"),
+        monitor_output.get("monitor_focus_context"),
+    )
+    raw_proposal = _first_dict_from(
+        _as_dict(strategy_detail.get("candidate_watch_policy")),
+        _as_dict(raw_entry_control.get("candidate_watch_policy_proposal")),
+    )
+    entry_control = _compact_commander_entry_control(raw_entry_control)
+    proposal = _enrich_candidate_watch_proposal_from_entry_control(
+        _compact_candidate_watch_proposal(raw_proposal),
+        entry_control,
+    )
+    cascade = _compact_entry_candidate_cascade(raw_cascade)
+    out: Dict[str, Any] = {}
+    if proposal:
+        out["strategy_candidate_watch_proposal"] = proposal
+    if entry_control:
+        out["commander_entry_control"] = entry_control
+    if cascade:
+        out["monitor_entry_candidate_cascade"] = cascade
+    if raw_focus_context:
+        out["monitor_focus_context"] = _as_dict(raw_focus_context)
+    summary = _entry_execution_visibility_summary(
+        proposal=proposal,
+        entry_control=entry_control,
+        cascade=cascade,
+    )
+    if summary:
+        out["summary"] = _clip(summary, max_len=420)
+    return out
+
+
 def _extract_strategist_report_context(story_input: Dict[str, Any]) -> Dict[str, Any]:
     canonical = story_input.get("canonical_agent_artifacts") if isinstance(story_input.get("canonical_agent_artifacts"), dict) else {}
     carriers = [
@@ -3996,6 +4599,7 @@ def _extract_strategist_report_context(story_input: Dict[str, Any]) -> Dict[str,
         "conflict_analysis",
         "trade_permission_frame",
         "responsibility_boundary",
+        "strategy_detail",
     )
     out: Dict[str, Any] = {}
     for carrier in carriers:
@@ -4008,6 +4612,12 @@ def _extract_strategist_report_context(story_input: Dict[str, Any]) -> Dict[str,
             value = source.get(field)
             if isinstance(value, dict) and value:
                 out[field] = dict(value)
+    if "strategy_detail" not in out:
+        for carrier in carriers:
+            detail = _extract_strategy_detail_from_source(carrier)
+            if detail:
+                out["strategy_detail"] = detail
+                break
     return out
 
 
@@ -4133,6 +4743,7 @@ def _compact_strategist_report_context(story_input: Dict[str, Any]) -> Dict[str,
     permission = _as_dict(context.get("trade_permission_frame"))
     conflict = _as_dict(context.get("conflict_analysis"))
     delta = _as_dict(context.get("strategy_delta_trace"))
+    strategy_detail = _compact_strategy_detail_context(context.get("strategy_detail"))
     refresh_trace = _compact_strategy_refresh_trace(context.get("strategy_refresh_trace"))
     return {
         "strategy_thesis": {
@@ -4148,6 +4759,7 @@ def _compact_strategist_report_context(story_input: Dict[str, Any]) -> Dict[str,
             "current_playbook": _clip(delta.get("current_playbook"), max_len=60),
             "change_reason": _clip(delta.get("change_reason"), max_len=220),
         },
+        "strategy_detail": strategy_detail,
         "strategy_refresh_trace": refresh_trace,
         "memory_usage_trace": {
             "schema_version": _clip(memory.get("schema_version"), max_len=80),
@@ -4227,6 +4839,11 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     commander_route = shared_seed.get("commander_route") if isinstance(shared_seed.get("commander_route"), dict) else {}
     strategist_evidence = shared_seed.get("strategist_evidence") if isinstance(shared_seed.get("strategist_evidence"), dict) else {}
     strategist_context = shared_seed.get("strategist_context") if isinstance(shared_seed.get("strategist_context"), dict) else {}
+    entry_execution_visibility = (
+        shared_seed.get("entry_execution_visibility")
+        if isinstance(shared_seed.get("entry_execution_visibility"), dict)
+        else {}
+    )
     scanner_reasoning = shared_seed.get("scanner_reasoning") if isinstance(shared_seed.get("scanner_reasoning"), dict) else {}
     monitor_reasoning = shared_seed.get("monitor_reasoning") if isinstance(shared_seed.get("monitor_reasoning"), dict) else {}
     policy_ref_context = _extract_policy_ref_context(story_input, monitor_reason)
@@ -4346,6 +4963,7 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                 max_items=8,
                 max_len=120,
             ),
+            "korea_indices": _as_dict(market_context.get("korea_indices") or strategist_evidence.get("korea_indices")),
             "fear_index": _compact_scalar_dict(
                 market_context.get("fear_index") or strategist_evidence.get("fear_index"),
                 max_items=8,
@@ -4390,6 +5008,8 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "applied_policy_source_chain": _listify(
                 commander_route.get("applied_policy_source_chain"), max_items=6, max_len=80
             ),
+            "entry_control": _as_dict(commander_route.get("entry_control"))
+            or _as_dict(entry_execution_visibility.get("commander_entry_control")),
         },
         "scanner_reason_human": {
             "selected_symbol": _clip(scanner_reason.get("selected_symbol"), max_len=24),
@@ -4517,6 +5137,10 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                 max_items=8,
                 max_len=120,
             ),
+            "entry_candidate_cascade": _as_dict(
+                entry_execution_visibility.get("monitor_entry_candidate_cascade")
+            )
+            or _compact_entry_candidate_cascade(monitor_reason.get("entry_candidate_cascade")),
         },
         "guard_reason_human": {
             "summary": guard_summary,
@@ -4560,6 +5184,7 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_selection_trace": _as_dict(story_input.get("scanner_selection_trace")),
         "monitor_stop_policy_trace": _as_dict(story_input.get("monitor_stop_policy_trace")),
         "monitor_blocker_trace": _as_dict(story_input.get("monitor_blocker_trace")),
+        "entry_execution_visibility": entry_execution_visibility,
         "evidence_digest": {
             "strategist": _evidence_digest(
                 story_input.get("strategist_evidence"),
@@ -4614,6 +5239,7 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     execution = compact.get("execution_outcome_human") if isinstance(compact.get("execution_outcome_human"), dict) else {}
     reporter = compact.get("reporter_status_human") if isinstance(compact.get("reporter_status_human"), dict) else {}
     conclusion = compact.get("operator_conclusion_human") if isinstance(compact.get("operator_conclusion_human"), dict) else {}
+    entry_visibility = compact.get("entry_execution_visibility") if isinstance(compact.get("entry_execution_visibility"), dict) else {}
     report_section_seeds = compact.get("report_section_seeds") if isinstance(compact.get("report_section_seeds"), dict) else {}
     execution_seed = _as_dict(report_section_seeds.get("execution_quality"))
     if execution.get("summary") and execution_outcome_summary_is_placeholder(execution_seed.get("summary")):
@@ -4715,6 +5341,8 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "applied_policy_source_chain": _listify(
                 commander.get("applied_policy_source_chain"), max_items=6, max_len=80
             ),
+            "entry_control": _as_dict(commander.get("entry_control"))
+            or _as_dict(entry_visibility.get("commander_entry_control")),
         },
         "entry": {
             "ts": entry.get("ts"),
@@ -4864,6 +5492,8 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "active_exit_axis": monitor.get("active_exit_axis"),
             "watch_axes": _listify(monitor.get("watch_axes"), max_items=4, max_len=80),
             "price_source": monitor.get("price_source"),
+            "entry_candidate_cascade": _as_dict(monitor.get("entry_candidate_cascade"))
+            or _as_dict(entry_visibility.get("monitor_entry_candidate_cascade")),
         },
         "exit": {
             "ts": exit_summary.get("ts"),
@@ -4908,6 +5538,7 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "timeline": _compact_timeline_rows(story_input.get("timeline"), head=1, tail=5),
         "improvement_points": _listify(compact.get("improvement_points"), max_items=4, max_len=140),
         "strategist_evidence": _as_dict(compact.get("strategist_evidence")),
+        "entry_execution_visibility": entry_visibility,
         "ai_report_diagnostics": {
             "report_status": diagnostics.get("report_status"),
             "report_reason_code": diagnostics.get("report_reason_code"),
@@ -5015,6 +5646,22 @@ def _operator_axis_label(value: Any) -> str:
         "adaptive_stop": "상황 대응형 손절 기준",
         "take profit": "목표 수익 실현 기준",
         "take_profit": "목표 수익 실현 기준",
+        "partial take profit": "1차 일부 익절",
+        "partial_take_profit": "1차 일부 익절",
+        "profit ladder": "구간별 분할 익절",
+        "profit_ladder": "구간별 분할 익절",
+        "risk/reward take profit": "손익비 익절",
+        "risk_reward_take_profit": "손익비 익절",
+        "vwap extension take profit": "VWAP 과확장 익절",
+        "vwap_extension_take_profit": "VWAP 과확장 익절",
+        "resistance take profit": "저항권 익절",
+        "resistance_take_profit": "저항권 익절",
+        "volume exhaustion take profit": "거래량 둔화 익절",
+        "volume_exhaustion_take_profit": "거래량 둔화 익절",
+        "opening gap profit take": "갭 추격 빠른 익절",
+        "opening_gap_profit_take": "갭 추격 빠른 익절",
+        "time-decay profit exit": "시간 경과 수익 보전",
+        "time_decay_profit_exit": "시간 경과 수익 보전",
         "trailing stop": "추적 손절 기준",
         "trailing_stop": "추적 손절 기준",
         "vwap breakdown": "VWAP 이탈",
@@ -5595,6 +6242,14 @@ def _operatorize_report_text(text: Any) -> str:
     cleaned = cleaned.replace("Hard stop", "고정 손절 기준")
     cleaned = cleaned.replace("Adaptive stop", "상황 대응형 손절 기준")
     cleaned = cleaned.replace("Take profit", "목표 수익 실현 기준")
+    cleaned = cleaned.replace("Partial take profit", "1차 일부 익절")
+    cleaned = cleaned.replace("Profit ladder", "구간별 분할 익절")
+    cleaned = cleaned.replace("Risk/reward take profit", "손익비 익절")
+    cleaned = cleaned.replace("VWAP extension take profit", "VWAP 과확장 익절")
+    cleaned = cleaned.replace("Resistance take profit", "저항권 익절")
+    cleaned = cleaned.replace("Volume exhaustion take profit", "거래량 둔화 익절")
+    cleaned = cleaned.replace("Opening gap profit take", "갭 추격 빠른 익절")
+    cleaned = cleaned.replace("Time-decay profit exit", "시간 경과 수익 보전")
     cleaned = cleaned.replace("Trailing stop", "추적 손절 기준")
     cleaned = cleaned.replace("Peak drawdown", "고점 대비 하락폭")
     cleaned = cleaned.replace("VWAP breakdown", "VWAP 이탈")
@@ -6124,6 +6779,11 @@ def _fallback_report(
     reason: str,
 ) -> Dict[str, Any]:
     shared_seed = _build_shared_summary_seed(story_input)
+    entry_execution_visibility = (
+        shared_seed.get("entry_execution_visibility")
+        if isinstance(shared_seed.get("entry_execution_visibility"), dict)
+        else {}
+    )
     market_context = story_input.get("market_context_human") if isinstance(story_input.get("market_context_human"), dict) else {}
     strategist_evidence = shared_seed.get("strategist_evidence") if isinstance(shared_seed.get("strategist_evidence"), dict) else {}
     scanner_reason = story_input.get("scanner_reason_human") if isinstance(story_input.get("scanner_reason_human"), dict) else {}
@@ -6237,6 +6897,10 @@ def _fallback_report(
         "price_source": _clip(monitor_reason.get("price_source"), max_len=120) or "not_captured",
         "feature_source": _clip(monitor_reason.get("feature_source"), max_len=120) or "not_captured",
         "price_source_policy": _clip(monitor_reason.get("price_source_policy"), max_len=260) or "",
+        "entry_candidate_cascade": _as_dict(
+            entry_execution_visibility.get("monitor_entry_candidate_cascade")
+        )
+        or _compact_entry_candidate_cascade(monitor_reason.get("entry_candidate_cascade")),
     }
     entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
     entry_monitor_reason = _resolve_entry_monitor_reason(story_input, monitor_reason, entry_summary)
@@ -6572,6 +7236,7 @@ def _fallback_report(
             "global_sentiment_signal": _compact_scalar_dict(
                 market_context.get("global_sentiment_signal") or strategist_evidence.get("global_sentiment_signal"), max_items=8, max_len=120
             ),
+            "korea_indices": _as_dict(market_context.get("korea_indices") or strategist_evidence.get("korea_indices")),
             "fear_index": _compact_scalar_dict(
                 market_context.get("fear_index") or strategist_evidence.get("fear_index"), max_items=8, max_len=120
             ),
@@ -6588,6 +7253,7 @@ def _fallback_report(
         },
         "strategist_summary": strategist_summary,
         "strategist_refresh_trace": strategist_refresh_trace,
+        "entry_execution_visibility": entry_execution_visibility,
         "why_this_symbol_was_chosen": {
             "summary": _clip(scanner_choice_summary or scanner_reason.get("summary"), max_len=600),
             "bullets": _listify(why_symbol_bullets, max_items=16, max_len=260),
@@ -6700,6 +7366,9 @@ def _fallback_report(
     strategist_output = _compact_strategist_report_context(story_input)
     if strategist_output:
         out["strategist_output"] = strategist_output
+    post_exit_shadow = _story_post_exit_shadow(story_input)
+    if post_exit_shadow:
+        out["post_exit_shadow"] = dict(post_exit_shadow)
     # Backward-compatible aliases used by earlier UI/report consumers.
     out["market_context"] = dict(out.get("market_context_at_entry") or {})
     out["why_this_symbol"] = dict(out.get("why_this_symbol_was_chosen") or {})
@@ -7081,6 +7750,7 @@ def _prompt_story_input_for_llm(compact_input: Dict[str, Any]) -> Dict[str, Any]
     commander = _as_dict(data.get("commander"))
     scanner = _as_dict(data.get("scanner"))
     monitor = _as_dict(data.get("monitor"))
+    entry_visibility = _as_dict(data.get("entry_execution_visibility"))
     seeds = _as_dict(data.get("report_section_seeds"))
     return {
         "trade_id": data.get("trade_id"),
@@ -7110,6 +7780,7 @@ def _prompt_story_input_for_llm(compact_input: Dict[str, Any]) -> Dict[str, Any]
             "policy_source": commander.get("policy_source"),
             "strategist_cache_used": commander.get("strategist_cache_used"),
             "strategist_called": commander.get("strategist_called"),
+            "entry_control": _as_dict(commander.get("entry_control")),
         },
         "entry": _as_dict(data.get("entry")),
         "scanner": {
@@ -7166,7 +7837,9 @@ def _prompt_story_input_for_llm(compact_input: Dict[str, Any]) -> Dict[str, Any]
             "watch_axes": _listify(monitor.get("watch_axes"), max_items=4, max_len=80),
             "price_source": monitor.get("price_source"),
             "monitor_stop_policy_trace": _compact_scalar_dict(monitor.get("monitor_stop_policy_trace"), max_items=6, max_len=80),
+            "entry_candidate_cascade": _as_dict(monitor.get("entry_candidate_cascade")),
         },
+        "entry_execution_visibility": entry_visibility,
         "exit": _as_dict(data.get("exit")),
         "guard": _as_dict(data.get("guard")),
         "execution": _as_dict(data.get("execution")),
@@ -7408,6 +8081,14 @@ def _attach_report_status_matrix(
             out["fact_payload"] = dict(separated.get("fact_payload") or {})
         if isinstance(separated.get("narrative"), dict):
             out["narrative"] = dict(separated.get("narrative") or {})
+    post_exit_shadow = _story_post_exit_shadow(story_input)
+    if post_exit_shadow:
+        out.setdefault("post_exit_shadow", dict(post_exit_shadow))
+        fact_payload = out.get("fact_payload") if isinstance(out.get("fact_payload"), dict) else {}
+        if fact_payload:
+            fact_payload = dict(fact_payload)
+            fact_payload.setdefault("post_exit_shadow", dict(post_exit_shadow))
+            out["fact_payload"] = fact_payload
     return out
 
 
@@ -8301,6 +8982,22 @@ def render_trade_summary_markdown_with_evaluation(
             "adaptive_stop": "상황 대응형 손절 기준",
             "take profit": "목표 수익 실현 기준",
             "take_profit": "목표 수익 실현 기준",
+            "partial take profit": "1차 일부 익절",
+            "partial_take_profit": "1차 일부 익절",
+            "profit ladder": "구간별 분할 익절",
+            "profit_ladder": "구간별 분할 익절",
+            "risk/reward take profit": "손익비 익절",
+            "risk_reward_take_profit": "손익비 익절",
+            "vwap extension take profit": "VWAP 과확장 익절",
+            "vwap_extension_take_profit": "VWAP 과확장 익절",
+            "resistance take profit": "저항권 익절",
+            "resistance_take_profit": "저항권 익절",
+            "volume exhaustion take profit": "거래량 둔화 익절",
+            "volume_exhaustion_take_profit": "거래량 둔화 익절",
+            "opening gap profit take": "갭 추격 빠른 익절",
+            "opening_gap_profit_take": "갭 추격 빠른 익절",
+            "time-decay profit exit": "시간 경과 수익 보전",
+            "time_decay_profit_exit": "시간 경과 수익 보전",
             "trailing stop": "추적 손절",
             "trailing_stop": "추적 손절",
             "vwap breakdown": "VWAP 이탈",

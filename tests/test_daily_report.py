@@ -65,6 +65,53 @@ def test_generate_daily_report(tmp_path: Path):
     assert not (out_dir / "symbols" / "005930" / "symbol_trade_report.json").exists()
 
 
+def test_generate_daily_report_surfaces_residual_positions(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("STATE_STORE_PATH", raising=False)
+    events = tmp_path / "events.jsonl"
+    events.write_text("", encoding="utf-8")
+    out_dir = tmp_path / "reports"
+    state_path = tmp_path / "data" / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "mock_positions": [
+                    {"symbol": "005930", "qty": 5, "avg_price": 264500.0, "current_price": 268500.0},
+                    {"symbol": "078890", "qty": 338, "avg_price": 8770.0, "current_price": 8700.0},
+                ],
+                "overnight_decision_by_symbol": {
+                    "005930": {
+                        "approved": True,
+                        "action": "carry_overnight",
+                        "reason": "carry_overnight_approved",
+                        "decided_at_epoch": 1778221320,
+                        "positive_signals": ["pnl_ok:0.0098"],
+                    }
+                },
+                "closeout_backup_liquidation": {
+                    "mode": "broker_truth_unresolved_positions_retained",
+                    "reason": "closeout_broker_truth_unresolved_positions_retained",
+                    "carry_forward_symbols": ["005930"],
+                    "unresolved_flatten_symbols": ["078890"],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    md, js = generate_daily_report(events, out_dir, day="2026-05-08")
+    data = json.loads(js.read_text(encoding="utf-8"))
+    text = md.read_text(encoding="utf-8")
+
+    assert data["residual_positions"]["position_count"] == 2
+    assert "## 장마감 잔여 보유 종목" in text
+    assert "005930: 주말 오버나이트 승인(주의)" in text
+    assert "주말보유 3일" in text
+    assert "078890: 정리 필요" in text
+    assert "판단 기록 상태: 모니터 상태 기록 없음; EOD 전체 보유 종목 재점검 필요" in text
+
+
 def test_compat_daily_report_delegates_to_canonical_generator(tmp_path: Path):
     events = tmp_path / "events.jsonl"
     events.write_text(
