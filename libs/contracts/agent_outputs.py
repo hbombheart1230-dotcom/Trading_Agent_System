@@ -140,10 +140,22 @@ def _build_strategist_trace_summary(
     playbook: str,
 ) -> Dict[str, Any]:
     fear_index = _dict(global_signal.get("fear_index"))
+    strategy_policy_summary = _dict(strategist_output.get("strategy_policy_summary"))
+    market_policy = _dict(strategy_policy_summary.get("market_policy"))
+    risk_tone = _clip(
+        strategist_output.get("risk_tone") or market_policy.get("risk_tone"),
+        max_len=40,
+    )
+    trade_aggressiveness = _clip(
+        strategist_output.get("trade_aggressiveness") or market_policy.get("trade_aggressiveness"),
+        max_len=40,
+    )
+    monitor_guidance = _clip(
+        strategist_output.get("monitor_guidance") or market_policy.get("monitor_guidance"),
+        max_len=80,
+    )
     reason_chain = _listify(strategist_output.get("reason_chain"), limit=8, max_len=180)
     if not reason_chain:
-        strategy_policy_summary = _dict(strategist_output.get("strategy_policy_summary"))
-        market_policy = _dict(strategy_policy_summary.get("market_policy"))
         reason_chain = _listify(market_policy.get("reason_chain"), limit=8, max_len=180)
     news_targets = _listify(strategist_output.get("news_query_targets"), limit=8, max_len=80)
     stress_flags = _listify(macro_overlay.get("stress_flags"), limit=6, max_len=60)
@@ -175,7 +187,8 @@ def _build_strategist_trace_summary(
         missing_flags.append("reason_chain_missing")
     summary = (
         f"Strategist used regime={market_regime or 'not_captured'}, sentiment={market_sentiment or 'not_captured'}, "
-        f"playbook={playbook or 'not_captured'}, global_sentiment={_format_trace_number(global_sentiment_score, digits=3)}, "
+        f"playbook={playbook or 'not_captured'}, risk_tone={risk_tone or 'not_captured'}, "
+        f"global_sentiment={_format_trace_number(global_sentiment_score, digits=3)}, "
         f"vix={_format_trace_number(vix_level, digits=2)}, headlines={headline_count}, targets={query_count}."
     )
     highlights = _dedupe_text(
@@ -192,6 +205,11 @@ def _build_strategist_trace_summary(
                 f"stress {', '.join(stress_flags) if stress_flags else 'none'}"
             ),
             f"News evidence: {headline_count} headlines across {query_count} targets",
+            (
+                "Risk tone: "
+                + (risk_tone or "not_captured")
+                + (f" / aggressiveness: {trade_aggressiveness}" if trade_aggressiveness else "")
+            ),
         ],
         limit=6,
         max_len=220,
@@ -209,6 +227,9 @@ def _build_strategist_trace_summary(
         "market_regime": market_regime,
         "market_sentiment": market_sentiment,
         "playbook": playbook,
+        "risk_tone": risk_tone,
+        "trade_aggressiveness": trade_aggressiveness,
+        "monitor_guidance": monitor_guidance,
         "themes": list(themes),
         "avoid_themes": list(avoid_themes),
         "missing_flags": missing_flags,
@@ -870,6 +891,10 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             strategist_output.get("tactical_strategy") or market_policy.get("tactical_strategy"),
             max_len=120,
         ),
+        "tactical_subtype": _clip(
+            strategist_output.get("tactical_subtype") or market_policy.get("tactical_subtype"),
+            max_len=120,
+        ),
         "strategy_scores": dict(strategy_scores),
         "rejected_strategy_reasons": dict(rejected_strategy_reasons),
         "candidate_watch_policy": dict(candidate_watch_policy),
@@ -994,6 +1019,7 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "requested_playbook_source": strategy_detail["requested_playbook_source"],
             "final_playbook": strategy_detail["final_playbook"],
             "tactical_strategy": strategy_detail["tactical_strategy"],
+            "tactical_subtype": strategy_detail["tactical_subtype"],
             "strategy_scores": dict(strategy_detail["strategy_scores"]),
             "rejected_strategy_reasons": dict(strategy_detail["rejected_strategy_reasons"]),
             "candidate_watch_policy": dict(strategy_detail["candidate_watch_policy"]),
@@ -2539,6 +2565,17 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "final_exit_thresholds": _dict(exit_info.get("final_exit_thresholds")),
             "exit_threshold_source": _clip(exit_info.get("exit_threshold_source"), max_len=120),
             "hold_block_reason": _clip(exit_info.get("hold_block_reason"), max_len=180),
+            "hold_limit_sec": exit_info.get("hold_limit_sec"),
+            "max_hold_reached": bool(exit_info.get("max_hold_reached")),
+            "time_stop_reached": bool(exit_info.get("time_stop_reached")),
+            "time_limit_reached": bool(exit_info.get("time_limit_reached")),
+            "time_limit_reason": _clip(exit_info.get("time_limit_reason"), max_len=80),
+            "time_limit_reassessment_required": bool(exit_info.get("time_limit_reassessment_required")),
+            "time_limit_reassessment_blocked": bool(exit_info.get("time_limit_reassessment_blocked")),
+            "time_limit_reassessment_blocked_reason": _clip(
+                exit_info.get("time_limit_reassessment_blocked_reason"),
+                max_len=180,
+            ),
             "active_exit_axis": _clip(exit_info.get("active_exit_axis"), max_len=120),
             "watch_axes": watch_axes[:8],
             "exit_triggered": bool(exit_info.get("triggered")),

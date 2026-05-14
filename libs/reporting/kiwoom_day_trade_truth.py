@@ -142,7 +142,7 @@ def _build_match_payload(
 ) -> Dict[str, Any]:
     pnl_ratio = _normalize_kiwoom_pct_ratio(row.get("pnl_ratio"))
     derived_pnl_ratio = _derive_pnl_ratio_from_amount(row)
-    if derived_pnl_ratio is not None and (pnl_ratio is None or abs(float(pnl_ratio) - derived_pnl_ratio) > 0.002):
+    if pnl_ratio is None and derived_pnl_ratio is not None:
         pnl_ratio = derived_pnl_ratio
     return {
         "symbol": normalize_symbol(symbol, allow_test_symbols=True),
@@ -464,7 +464,11 @@ def attach_broker_day_pnl(
             if isinstance((bundle_obj.get("entry") or {}).get("execution_details"), dict)
             else {}
         )
-    if isinstance(execution_context.get("broker_day_pnl"), dict) and execution_context.get("broker_day_pnl"):
+    if (
+        isinstance(execution_context.get("broker_day_pnl"), dict)
+        and execution_context.get("broker_day_pnl")
+        and not bool(context_obj.get("broker_day_truth_lookup_enabled"))
+    ):
         context_obj["execution_context"] = execution_context
         return context_obj
 

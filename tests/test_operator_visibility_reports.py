@@ -203,6 +203,79 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert "Recommended Operator Actions" in md_body
 
 
+def test_operator_daily_summary_treats_unmeasurable_slo_artifact_as_stale_diagnostic(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    day = "2026-05-13"
+    events = tmp_path / "events.jsonl"
+    metrics_dir = tmp_path / "metrics"
+    m30_post = tmp_path / "m30_post"
+    m30_go = tmp_path / "m30_go"
+    m31_dir = tmp_path / "m31"
+    out_dir = tmp_path / "operator_summary"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "commander_router",
+                "event": "end",
+                "payload": {"status": "ok"},
+            }
+        ],
+    )
+    _write_json(metrics_dir / f"metrics_{day}.json", {"execution": {}, "broker_api": {}, "strategist_llm": {}})
+    _write_json(m30_post / f"m30_post_golive_policy_{day}.json", {"escalation_level": "normal"})
+    _write_json(m30_go / f"m30_final_golive_signoff_{day}.json", {"approved": True})
+    _write_json(
+        m31_dir / f"m31_slo_incident_{day}.json",
+        {
+            "ok": False,
+            "failure_total": 2,
+            "slo": {"event_total": 0, "run_total": 0, "availability_rate": 0.0},
+        },
+    )
+    monkeypatch.setattr(
+        operator_visibility,
+        "build_policy_surface_quality_snapshot",
+        lambda *args, **kwargs: {
+            "summary": {},
+            "executive_summary": {"status": "good", "headline": "Policy surface healthy"},
+            "chart_structure_summary": {},
+            "chart_structure_executive_summary": {"status": "inactive", "headline": "Chart inactive"},
+            "source": {},
+        },
+    )
+
+    rc = operator_summary_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--metrics-report-dir",
+            str(metrics_dir),
+            "--m30-post-golive-dir",
+            str(m30_post),
+            "--m30-golive-dir",
+            str(m30_go),
+            "--m31-slo-incident-dir",
+            str(m31_dir),
+            "--report-dir",
+            str(out_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert obj["executive_summary"]["system_status"] == "YELLOW"
+    assert obj["top_issues"][0]["code"] == "slo_incident_artifact_unmeasurable"
+    assert not any(issue["code"] == "slo_incident_gate_failed" for issue in obj["top_issues"])
+
+
 def test_decision_story_report_script_outputs_story_per_run(tmp_path: Path, capsys) -> None:
     day = "2026-03-06"
     events = tmp_path / "events.jsonl"

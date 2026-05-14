@@ -190,6 +190,9 @@ def test_trade_read_model_normalize_trade_report_section_is_trimmed_and_null_saf
         "bullets": ["a", "b"],
         "status": "ok",
         "grade": "A",
+        "current_action": "",
+        "watch_next": [],
+        "thesis_invalidation": [],
     }
 
 

@@ -74,13 +74,86 @@ def find_llm_run_dir(reports_root: Path, day: str, run_id: str) -> Path:
     llm_day = Path(reports_root) / "llm" / str(day or "").strip()
     run_id = str(run_id or "").strip()
     root_run = llm_day / run_id
-    if root_run.exists():
-        return root_run
     for category in LLM_REPORT_CATEGORIES:
         candidate = llm_day / category / run_id
         if candidate.exists():
             return candidate
+    if root_run.exists():
+        return root_run
     return root_run
+
+
+def _file_content_equal(left: Path, right: Path) -> bool:
+    try:
+        return left.read_bytes() == right.read_bytes()
+    except OSError:
+        return False
+
+
+def _unique_conflict_path(target_path: Path, source_path: Path) -> Path:
+    if source_path.is_file():
+        for idx in range(1, 1000):
+            candidate = target_path.with_name(f"{target_path.stem}.root_duplicate{idx}{target_path.suffix}")
+            if not candidate.exists():
+                return candidate
+    else:
+        for idx in range(1, 1000):
+            candidate = target_path.with_name(f"{target_path.name}.root_duplicate{idx}")
+            if not candidate.exists():
+                return candidate
+    return target_path.with_name(
+        f"{target_path.name}.root_duplicate_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+    )
+
+
+def merge_llm_run_dirs(source: Path, target: Path) -> Dict[str, Any]:
+    """Merge duplicate flat LLM run artifacts into the classified run folder."""
+    summary: Dict[str, Any] = {
+        "source": str(source),
+        "target": str(target),
+        "moved": 0,
+        "merged_dirs": 0,
+        "removed_identical_files": 0,
+        "conflict_preserved": 0,
+        "source_removed": False,
+    }
+    if not source.exists():
+        summary["status"] = "source_missing"
+        return summary
+
+    target.mkdir(parents=True, exist_ok=True)
+    for child in list(source.iterdir()):
+        dest = target / child.name
+        if not dest.exists():
+            shutil.move(str(child), str(dest))
+            summary["moved"] = int(summary["moved"]) + 1
+            continue
+        if child.is_dir() and dest.is_dir():
+            nested = merge_llm_run_dirs(child, dest)
+            summary["moved"] = int(summary["moved"]) + int(nested.get("moved") or 0)
+            summary["merged_dirs"] = int(summary["merged_dirs"]) + 1 + int(nested.get("merged_dirs") or 0)
+            summary["removed_identical_files"] = int(summary["removed_identical_files"]) + int(
+                nested.get("removed_identical_files") or 0
+            )
+            summary["conflict_preserved"] = int(summary["conflict_preserved"]) + int(
+                nested.get("conflict_preserved") or 0
+            )
+            continue
+        if child.is_file() and dest.is_file() and _file_content_equal(child, dest):
+            child.unlink()
+            summary["removed_identical_files"] = int(summary["removed_identical_files"]) + 1
+            continue
+        conflict_dest = _unique_conflict_path(dest, child)
+        shutil.move(str(child), str(conflict_dest))
+        summary["conflict_preserved"] = int(summary["conflict_preserved"]) + 1
+
+    try:
+        source.rmdir()
+        summary["source_removed"] = True
+    except OSError:
+        summary["source_removed"] = False
+    summary["status"] = "merged"
+    return summary
 
 
 def rewrite_llm_artifact_refs(run_dir: Path, day: str, category: str) -> int:
@@ -142,6 +215,7 @@ def organize_llm_run(
     category, reason = classify_llm_run(reports_root, day, run_id)
     source = find_llm_run_dir(reports_root, day, run_id)
     target = reports_root / "llm" / day / category / run_id
+    root_duplicate = reports_root / "llm" / day / run_id
     row: Dict[str, Any] = {
         "run_id": run_id,
         "category": category,
@@ -161,11 +235,16 @@ def organize_llm_run(
     if source.resolve() == target.resolve():
         row["status"] = "already_classified"
         if not dry_run:
+            if root_duplicate.exists() and root_duplicate.resolve() != target.resolve():
+                row["root_duplicate_merge"] = merge_llm_run_dirs(root_duplicate, target)
+                row["status"] = "already_classified_merged_root_duplicate"
             row["rewritten_ref_files"] = rewrite_llm_artifact_refs(target, day, category)
         return finalize(row)
     if target.exists():
         row["status"] = "target_exists"
         if not dry_run:
+            row["target_merge"] = merge_llm_run_dirs(source, target)
+            row["status"] = "merged_into_existing_target"
             row["rewritten_ref_files"] = rewrite_llm_artifact_refs(target, day, category)
         return finalize(row)
     if dry_run:

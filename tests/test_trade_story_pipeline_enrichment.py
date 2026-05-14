@@ -1,5 +1,6 @@
 from libs.reporting.trade_story_pipeline import (
     build_execution_outcome_human,
+    build_filters_human,
     build_trade_story_input,
     build_trade_story_input_from_bundle,
     build_lifecycle_bundle,
@@ -10,8 +11,27 @@ from libs.reporting.trade_story_pipeline import (
     enrich_filters_from_evidence,
     enrich_scanner_reason_from_evidence,
 )
+from libs.reporting.trade_scanner_fallback_anchor import reanchor_scanner_selection_for_monitor_fallback
 import json
 from pathlib import Path
+
+
+def test_filters_human_does_not_count_strategist_themes_as_candidate_theme_match() -> None:
+    out = build_filters_human(
+        {
+            "selected_candidate": {
+                "symbol": "005380",
+                "sources": ["strategist_backfill"],
+                "score_breakdown": {"theme_boost": 0.0},
+            }
+        },
+        {"themes": ["mobile_parts", "amoled_materials"]},
+        {"supervisor_allow": True},
+    )
+
+    theme_check = next(row for row in out["checks"] if row["name"] == "sector/theme alignment")
+    assert theme_check["status"] == "FAIL"
+    assert "theme boost was +0.000" in theme_check["detail"]
 
 
 def test_build_execution_outcome_human_emits_korean_live_execution_summary() -> None:
@@ -366,9 +386,56 @@ def test_build_trade_story_input_from_bundle_reanchors_scanner_symbol_for_monito
     assert out["scanner_reason_human"]["scanner_top_pick_symbol"] == "034020"
     assert "034020" in out["scanner_reason_human"]["summary"]
     assert "005380" in out["scanner_reason_human"]["summary"]
+    assert "breakout not ready" in out["scanner_reason_human"]["summary"]
+    assert "breakout above recent high with vwap hold and volume confirmation" in out["scanner_reason_human"]["summary"]
+    assert out["scanner_reason_human"]["scanner_top_pick_rejection_reason"] == "breakout not ready"
+    assert (
+        out["scanner_reason_human"]["fallback_candidate_trigger_reason"]
+        == "breakout above recent high with vwap hold and volume confirmation"
+    )
     assert out["scanner_selection_trace"]["selected_symbol"] == "005380"
     assert out["scanner_selection_trace"]["monitor_fallback_used"] is True
     assert out["scanner_selection_trace"]["scanner_top_pick_symbol"] == "034020"
+
+
+def test_monitor_fallback_summary_does_not_confuse_selected_trigger_with_top_pick_rejection() -> None:
+    reason, trace, selected = reanchor_scanner_selection_for_monitor_fallback(
+        scanner_reason_human={
+            "summary": "Scanner selected 005380.",
+            "selected_symbol": "005380",
+            "selected_rank": 1,
+            "top_candidates": [
+                {"rank": 1, "symbol": "005380", "score_total": 1.331},
+                {"rank": 4, "symbol": "003060", "score_total": 0.808},
+            ],
+        },
+        scanner_selection_trace={},
+        scanner_artifact={"selected_symbol": "005380", "top_stock": "005380"},
+        monitor_artifact={
+            "scanner_monitor_handoff": {
+                "scanner_selected_symbol": "005380",
+                "monitor_selected_symbol": "003060",
+                "monitor_rejection_reason_summary": "human_chart_entry_setup_confirmed",
+                "entry_candidate_cascade": {
+                    "fallback_used": True,
+                    "fallback_to_symbol": "003060",
+                    "reason": "volume_confirmation_missing",
+                    "fallback_trace": [
+                        {"symbol": "003060", "triggered": True, "reason": "human_chart_entry_setup_confirmed"}
+                    ],
+                    "runner_rows": [{"rank": 4, "symbol": "003060", "score_total": 0.808}],
+                },
+            }
+        },
+        trade_symbol="003060",
+    )
+
+    assert selected == "003060"
+    assert reason["scanner_top_pick_rejection_reason"] == "volume confirmation missing"
+    assert reason["fallback_candidate_trigger_reason"] == "human chart entry setup confirmed"
+    assert "005380 was blocked at monitor stage for volume confirmation missing" in reason["summary"]
+    assert "fallback candidate trigger was human chart entry setup confirmed" in reason["summary"]
+    assert trace["scanner_top_pick_rejection_reason"] == "volume confirmation missing"
 
 
 def test_build_trade_story_input_from_bundle_prefers_entry_run_monitor_for_fallback_reanchor(tmp_path: Path) -> None:
@@ -570,6 +637,13 @@ def test_scanner_reason_human_includes_trace_chart_feature_coverage_when_availab
                     "risk_score": 0.6281,
                     "confidence": 0.8099,
                     "feature_coverage": {"present": 12, "total": 13, "quality": "strong"},
+                    "scanner_chart_fit_score": 0.86,
+                    "scanner_chart_fit_authority": "soft_rank_bias_only",
+                    "scanner_chart_fit_components": {"vwap_reclaim_persistence": "strong"},
+                    "scanner_macro_chart_fit_score": 0.74,
+                    "scanner_macro_chart_fit_bias": 0.028,
+                    "scanner_macro_chart_fit_authority": "soft_rank_bias_only",
+                    "scanner_macro_chart_fit_components": {"trend_alignment_score": 0.81},
                 }
             ],
             "candidate_ranking_table": {
@@ -579,6 +653,13 @@ def test_scanner_reason_human_includes_trace_chart_feature_coverage_when_availab
                         "symbol": "000660",
                         "score_total": 1.1776,
                         "feature_coverage": {"present": 12, "total": 13, "quality": "strong"},
+                        "scanner_chart_fit_score": 0.86,
+                        "scanner_chart_fit_authority": "soft_rank_bias_only",
+                        "scanner_chart_fit_components": {"vwap_reclaim_persistence": "strong"},
+                        "scanner_macro_chart_fit_score": 0.74,
+                        "scanner_macro_chart_fit_bias": 0.028,
+                        "scanner_macro_chart_fit_authority": "soft_rank_bias_only",
+                        "scanner_macro_chart_fit_components": {"trend_alignment_score": 0.81},
                     }
                 ]
             },
@@ -598,6 +679,15 @@ def test_scanner_reason_human_includes_trace_chart_feature_coverage_when_availab
     trace = out["scanner_selection_trace"]
     assert trace["chart_feature_coverage"]["present"] == 12
     assert trace["chart_feature_coverage"]["total"] == 13
+    assert out["scanner_chart_fit"]["score"] == 0.86
+    assert out["scanner_chart_fit"]["authority"] == "soft_rank_bias_only"
+    assert out["scanner_chart_fit"]["components"]["vwap_reclaim_persistence"] == "strong"
+    assert trace["scanner_chart_fit"]["score"] == 0.86
+    assert out["scanner_macro_chart_fit"]["score"] == 0.74
+    assert out["scanner_macro_chart_fit"]["bias"] == 0.028
+    assert trace["scanner_macro_chart_fit"]["components"]["trend_alignment_score"] == 0.81
+    assert any("Scanner chart-fit:" in row for row in out["bullets"])
+    assert any("Scanner macro chart-fit:" in row for row in out["bullets"])
 
 
 def test_monitor_reason_human_keeps_normalized_exit_context_details() -> None:
@@ -639,6 +729,44 @@ def test_monitor_reason_human_keeps_normalized_exit_context_details() -> None:
     assert out["watch_axes"][:3] == ["Hard stop", "Take profit", "Trailing stop"]
 
 
+def test_monitor_reason_human_marks_pending_exit_as_mismatch_not_trigger() -> None:
+    out = build_monitor_reason_human(
+        {
+            "exit_reason": "exit_confirmation_pending:1/2",
+            "monitor_reason": "exit_signal_pending_confirmation",
+            "thresholds_guards_used": {"exit_confirm_ticks": 2, "exit_confirm_count": 1},
+            "exit_triggered": False,
+            "sell_guard_blocked": True,
+            "sell_guard_reason": "exit_confirmation_pending:1/2",
+            "active_exit_axis": "Partial Take Profit",
+        },
+        {"action": "SELL"},
+    )
+
+    assert out["pending_confirmation"] is True
+    assert out["monitor_execution_mismatch"] is True
+    assert "not a confirmed exit trigger" in out["summary"]
+    assert not out["summary"].startswith("SELL was triggered")
+    assert any("pending, not confirmed" in bullet for bullet in out["bullets"])
+
+
+def test_monitor_reason_human_marks_sell_hold_as_mismatch_not_trigger() -> None:
+    out = build_monitor_reason_human(
+        {
+            "exit_reason": "hold",
+            "monitor_reason": "hold",
+            "trigger_type": "hold",
+            "exit_triggered": False,
+            "active_exit_axis": "Hold",
+        },
+        {"action": "SELL"},
+    )
+
+    assert out["monitor_execution_mismatch"] is True
+    assert "not a confirmed exit trigger" in out["summary"]
+    assert not out["summary"].startswith("SELL was triggered because hold")
+
+
 def test_monitor_reason_human_surfaces_intraday_entry_metrics() -> None:
     out = build_monitor_reason_human(
         {
@@ -664,6 +792,22 @@ def test_monitor_reason_human_surfaces_intraday_entry_metrics() -> None:
                 "volume_ratio": 2.31,
                 "extended_from_vwap_pct": 0.0059,
                 "pullback_depth_pct": 0.0041,
+                "human_candle_quality_score": 0.82,
+                "human_vwap_reference_quality_score": 0.91,
+                "human_reward_room_score": 0.67,
+                "human_multi_window_structure_score": 0.73,
+                "human_chart_detail_observed": {
+                    "close_location": 0.88,
+                    "upper_wick_ratio": 0.08,
+                    "lower_wick_ratio": 0.18,
+                    "body_ratio": 0.62,
+                    "vwap_source": "explicit_bar_vwap",
+                    "vwap_bar_count": 12,
+                    "explicit_vwap_count": 11,
+                    "explicit_vwap_ratio": 0.92,
+                    "prior_resistance": 103.0,
+                    "reward_room_pct": 0.012,
+                },
             },
             "entry_thresholds": {
                 "volume_ratio_min": 1.15,
@@ -683,6 +827,11 @@ def test_monitor_reason_human_surfaces_intraday_entry_metrics() -> None:
     assert any("Grouped entry path: breakout_path" in row for row in out["bullets"])
     assert any("Volume ratio: 2.31" in row for row in out["bullets"])
     assert any("Extended from VWAP:" in row for row in out["bullets"])
+    assert any("Human chart setup quality: candle 0.82" in row for row in out["bullets"])
+    assert any("Entry candle shape: close location 0.88" in row for row in out["bullets"])
+    assert any("VWAP reference quality: source explicit_bar_vwap, bars 12" in row for row in out["bullets"])
+    assert any("Reward room context: resistance 103.00, room 1.20%" in row for row in out["bullets"])
+    assert out["human_chart_detail_observed"]["vwap_bar_count"] == 12
     assert "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation" in out["summary"]
     assert "Path: breakout path." in out["summary"]
 

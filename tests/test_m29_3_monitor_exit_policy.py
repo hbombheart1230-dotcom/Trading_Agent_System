@@ -195,7 +195,7 @@ def test_m29_3_monitor_exit_policy_cost_aware_floor_blocks_small_profit():
     assert out["monitor"]["exit_triggered"] is False
     assert out["monitor"]["exit_reason"] == "hold"
     assert out["monitor"]["cost_aware_profit_floor_blocked"] is True
-    assert out["monitor_exit"]["cost_aware_profit_floor_pct"] == pytest.approx(0.012)
+    assert out["monitor_exit"]["cost_aware_profit_floor_pct"] == pytest.approx(0.01206207723263978)
     assert out["monitor_exit"]["hold_block_reason"] == "cost_aware_profit_floor_not_met"
 
 
@@ -239,7 +239,7 @@ def test_m29_3_monitor_exit_policy_slippage_fallback_blocks_profit_take_below_co
         "plan": {"thesis": "demo"},
         "selected": {"symbol": "AAA", "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0}]},
-        "market_snapshot": {"symbol": "AAA", "price": 101.3},
+        "market_snapshot": {"symbol": "AAA", "price": 101.6},
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.10,
@@ -262,7 +262,7 @@ def test_m29_3_monitor_exit_policy_slippage_fallback_blocks_profit_take_below_co
 
     assert out["intents"] == []
     assert out["monitor"]["exit_triggered"] is False
-    assert out["monitor_exit"]["expected_exit_price"] == pytest.approx(101.3 * 0.995)
+    assert out["monitor_exit"]["expected_exit_price"] == pytest.approx(101.6 * 0.995)
     assert out["monitor_exit"]["expected_exit_price_source"] == "observed_price_minus_slippage_buffer"
     assert out["monitor_exit"]["expected_exit_price_fallback_used"] is True
     assert out["monitor_exit"]["expected_exit_profit_floor_blocked"] is True
@@ -307,7 +307,7 @@ def test_m29_3_monitor_exit_policy_partial_take_profit_uses_partial_qty():
         "plan": {"thesis": "demo"},
         "selected": {"symbol": "AAA", "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 4, "avg_price": 100.0, "hold_sec": 900}]},
-        "market_snapshot": {"symbol": "AAA", "price": 100.6},
+        "market_snapshot": {"symbol": "AAA", "price": 101.6},
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,
@@ -342,7 +342,7 @@ def test_m29_3_monitor_exit_policy_profit_ladder_emits_partial_sell_intent():
         "selected": {"symbol": "AAA", "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 6, "avg_price": 100.0, "hold_sec": 900}]},
         "persisted_state": {"partial_take_profit_taken_by_symbol": {"AAA": {"taken_epoch": 1}}},
-        "market_snapshot": {"symbol": "AAA", "price": 101.1},
+        "market_snapshot": {"symbol": "AAA", "price": 101.6},
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,
@@ -365,9 +365,9 @@ def test_m29_3_monitor_exit_policy_profit_ladder_emits_partial_sell_intent():
     out = monitor_node(state)
     assert len(out["intents"]) == 1
     assert out["intents"][0]["side"] == "SELL"
-    assert out["intents"][0]["qty"] == 2
+    assert out["intents"][0]["qty"] == 6
     assert out["intents"][0]["meta"]["exit_reason"] == "profit_ladder"
-    assert out["intents"][0]["meta"]["profit_ladder_level_pct"] == 0.01
+    assert out["intents"][0]["meta"]["profit_ladder_level_pct"] == 0.015
     assert out["monitor"]["exit_reason"] == "profit_ladder"
 
 
@@ -382,7 +382,7 @@ def test_m29_3_monitor_exit_policy_vwap_extension_take_profit_emits_sell_intent(
             "features": {"engine_vwap_distance": 0.035},
         },
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0, "hold_sec": 900}]},
-        "market_snapshot": {"symbol": "AAA", "price": 100.8},
+        "market_snapshot": {"symbol": "AAA", "price": 101.3},
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,
@@ -418,10 +418,10 @@ def test_m29_3_monitor_exit_policy_resistance_take_profit_emits_sell_intent():
             "score": 0.9,
             "risk_score": 0.2,
             "confidence": 0.8,
-            "features": {"prior_bar_high": 101.0},
+            "features": {"prior_bar_high": 101.3},
         },
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0, "hold_sec": 900}]},
-        "market_snapshot": {"symbol": "AAA", "price": 100.8},
+        "market_snapshot": {"symbol": "AAA", "price": 101.3},
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,
@@ -446,7 +446,7 @@ def test_m29_3_monitor_exit_policy_resistance_take_profit_emits_sell_intent():
     assert out["intents"][0]["side"] == "SELL"
     assert out["intents"][0]["meta"]["exit_reason"] == "resistance_take_profit"
     assert out["monitor"]["exit_reason"] == "resistance_take_profit"
-    assert out["monitor_exit"]["resistance_price"] == 101.0
+    assert out["monitor_exit"]["resistance_price"] == 101.3
 
 
 def test_m29_3_monitor_exit_policy_volume_exhaustion_take_profit_emits_sell_intent():
@@ -460,7 +460,7 @@ def test_m29_3_monitor_exit_policy_volume_exhaustion_take_profit_emits_sell_inte
             "features": {"volume_ratio": 0.55},
         },
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0, "hold_sec": 900}]},
-        "market_snapshot": {"symbol": "AAA", "price": 100.8},
+        "market_snapshot": {"symbol": "AAA", "price": 101.3},
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,
@@ -500,7 +500,7 @@ def test_m29_3_monitor_exit_policy_opening_gap_profit_take_emits_sell_intent():
             "prev_close_distance_pct": 0.018,
         },
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0, "hold_sec": 300}]},
-        "market_snapshot": {"symbol": "AAA", "price": 100.5},
+        "market_snapshot": {"symbol": "AAA", "price": 101.3},
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,
@@ -533,7 +533,7 @@ def test_m29_3_monitor_exit_policy_time_decay_profit_exit_emits_sell_intent():
         "selected": {"symbol": "AAA", "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0, "hold_sec": 900}]},
         "persisted_state": {"position_peak_price": {"AAA": 102.0}},
-        "market_snapshot": {"symbol": "AAA", "price": 100.8},
+        "market_snapshot": {"symbol": "AAA", "price": 101.3},
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,

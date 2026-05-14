@@ -109,7 +109,8 @@ def test_generate_daily_report_surfaces_residual_positions(tmp_path: Path, monke
     assert "005930: 주말 오버나이트 승인(주의)" in text
     assert "주말보유 3일" in text
     assert "078890: 정리 필요" in text
-    assert "판단 기록 상태: 모니터 상태 기록 없음; EOD 전체 보유 종목 재점검 필요" in text
+    assert "오버나이트 판단: 미수행(모니터 상태 기록 없음)" in text
+    assert "판단 기록 근거: 모니터 상태 기록 없음; EOD 전체 보유 종목 재점검 필요" in text
 
 
 def test_compat_daily_report_delegates_to_canonical_generator(tmp_path: Path):

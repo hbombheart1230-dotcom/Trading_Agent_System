@@ -391,6 +391,18 @@ def test_intraday_trade_reports_policy_helpers_gate_open_trade_generation() -> N
     assert seeded["diagnostics"]["report_reason_code"] == "awaiting_exit_for_full_report"
     assert seeded["diagnostics"]["report_status"] == "pending"
 
+    seeded_partial = seed_diagnostics_for_policy(
+        lifecycle_status="partial",
+        story_type="executed_trade",
+        report_requested=True,
+        story_input_available=True,
+        model_hint="openrouter/test",
+        generate_on_open=False,
+    )
+    assert seeded_partial["should_attempt_generation"] is False
+    assert seeded_partial["diagnostics"]["report_reason_code"] == "partial_exit_awaiting_full_close"
+    assert seeded_partial["diagnostics"]["report_status"] == "pending"
+
 
 def test_intraday_trade_reports_run_bundle_sync_uses_inprocess_runner(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -457,6 +469,34 @@ def test_intraday_trade_reports_plan_live_first_write_generates_ai(tmp_path: Pat
     assert plan["mode"] == "generate_ai"
     assert plan["diagnostics"]["generation_attempted"] is True
     assert plan["diagnostics"].get("ai_trade_report_status", "skipped") == "skipped"
+
+
+def test_intraday_trade_reports_plan_no_ai_regenerates_deterministic_when_existing_is_noisy(
+    tmp_path: Path,
+) -> None:
+    trade_report_json = tmp_path / "ai_trade_report.json"
+    trade_report_md = tmp_path / "ai_trade_report.md"
+    trade_report_json.write_text("{}", encoding="utf-8")
+    trade_report_md.write_text("# report\n", encoding="utf-8")
+
+    plan = plan_live_trade_report_generation(
+        should_attempt_generation=False,
+        report_requested=False,
+        diagnostics={"llm_model_used": "openrouter/test"},
+        deterministic_report={"headline": "deterministic", "action": "SELL"},
+        existing_trade_report_artifact={"headline": "stale", "action": "HOLD"},
+        existing_ai_trade_report_llm_artifact={},
+        ai_trade_report_generation_state={},
+        ai_trade_report_fingerprint="fp-live-1",
+        trade_report_json_path=trade_report_json,
+        trade_report_md_path=trade_report_md,
+        configured_report_model="openrouter/test",
+        existing_report_noisy=True,
+    )
+
+    assert plan["mode"] == "deterministic_only"
+    assert plan["trade_report"]["headline"] == "deterministic"
+    assert plan["diagnostics"]["report_reason_code"] == "deterministic_only"
 
 
 def test_intraday_trade_reports_apply_ai_trade_report_generation_result_preserves_deterministic_on_failure() -> None:

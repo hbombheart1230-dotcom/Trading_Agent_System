@@ -45,6 +45,6 @@ def test_report_consumption_enforces_fact_narrative_split(monkeypatch):
     assert report["fact_payload"]["trade"]["symbol"] == "NVDA"
     
     # Assert LLM Narrative is safely skipped/empty
-    assert report["narrative"]["status"] == "dry_run"
+    assert report["narrative"]["status"] == "skipped"
     assert report["narrative"]["source"] == "llm"
     assert report["narrative"]["based_on"] == "fact_payload"

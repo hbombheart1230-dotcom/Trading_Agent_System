@@ -28,6 +28,7 @@ from libs.runtime.asset_universe_policy import apply_asset_universe_filter
 from libs.runtime.canonical_artifacts import write_scanner_artifact
 from libs.runtime.commander_memory_application_trace import build_scanner_commander_memory_application_trace
 from libs.runtime.decision_trace import append_decision_trace
+from libs.runtime.etf_deviation import extract_etf_deviation_signal
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.scanner_memory_bias import (
     compute_scanner_memory_bias_adjustment,
@@ -164,6 +165,7 @@ def _compute_symbol_prior_adjustment(
     *,
     symbol_model: Dict[str, Any],
     playbook: str,
+    current_day: str = "",
 ) -> Dict[str, Any]:
     if not isinstance(symbol_model, dict) or not symbol_model:
         return {
@@ -185,9 +187,13 @@ def _compute_symbol_prior_adjustment(
 
     avg_pnl_pct = _to_float(symbol_model.get("avg_pnl_pct"))
     win_rate = _to_float(symbol_model.get("win_rate"))
+    loss_count = _to_int(symbol_model.get("loss_count"), 0)
+    closed_trade_count = _to_int(symbol_model.get("closed_trade_count"), 0)
+    last_trade_date = str(symbol_model.get("last_trade_date") or "").strip()
     dominant_playbook = str(symbol_model.get("dominant_playbook") or "").strip().lower()
     dominant_blocker = str(symbol_model.get("dominant_monitor_blocker") or "").strip()
     repeated_failures = list(symbol_model.get("repeated_failure_pattern") or [])
+    same_day_model = bool(str(current_day or "").strip() and last_trade_date == str(current_day or "").strip())
 
     if avg_pnl_pct < 0:
         adjustment -= 0.08
@@ -229,9 +235,20 @@ def _compute_symbol_prior_adjustment(
         if failure_value:
             reasons.append(f"repeated_failure:{failure_type}:{failure_value}")
 
-    adjustment = _clamp(adjustment, -0.15, 0.10)
-    risk_delta = _clamp(risk_delta, 0.0, 0.15)
-    confidence_delta = _clamp(confidence_delta, -0.10, 0.05)
+    if same_day_model and closed_trade_count >= 2 and (loss_count >= 2 or avg_pnl_pct < -0.10):
+        adjustment -= 0.25
+        risk_delta += 0.18
+        confidence_delta -= 0.12
+        reasons.append(f"same_day_repeat_loss:{loss_count}/{closed_trade_count}")
+    if same_day_model and closed_trade_count >= 3 and (loss_count >= 3 or avg_pnl_pct < -0.15):
+        adjustment -= 0.20
+        risk_delta += 0.12
+        confidence_delta -= 0.08
+        reasons.append("same_day_trade_lockout_bias")
+
+    adjustment = _clamp(adjustment, -0.60, 0.10)
+    risk_delta = _clamp(risk_delta, 0.0, 0.35)
+    confidence_delta = _clamp(confidence_delta, -0.30, 0.05)
     return {
         "adjustment": float(adjustment),
         "risk_delta": float(risk_delta),
@@ -242,6 +259,10 @@ def _compute_symbol_prior_adjustment(
             "dominant_monitor_blocker": str(symbol_model.get("dominant_monitor_blocker") or ""),
             "avg_pnl_pct": float(avg_pnl_pct),
             "win_rate": float(win_rate),
+            "last_trade_date": str(last_trade_date),
+            "same_day_model": bool(same_day_model),
+            "closed_trade_count": int(closed_trade_count),
+            "loss_count": int(loss_count),
         },
     }
 
@@ -913,6 +934,10 @@ def _ranking_table_rows(rows: List[Dict[str, Any]], *, max_rows: int = 5) -> Lis
                 "scanner_chart_fit_score": float(_to_float(row.get("scanner_chart_fit_score"))),
                 "scanner_chart_fit_authority": str(row.get("scanner_chart_fit_authority") or ""),
                 "scanner_chart_fit_components": dict(row.get("scanner_chart_fit_components") or {}),
+                "scanner_macro_chart_fit_score": float(_to_float(row.get("scanner_macro_chart_fit_score"), 0.5)),
+                "scanner_macro_chart_fit_bias": float(_to_float(row.get("scanner_macro_chart_fit_bias"))),
+                "scanner_macro_chart_fit_authority": str(row.get("scanner_macro_chart_fit_authority") or ""),
+                "scanner_macro_chart_fit_components": dict(row.get("scanner_macro_chart_fit_components") or {}),
                 "expected_monitor_block_reason": str(row.get("expected_monitor_block_reason") or ""),
                 "dominant_block_reason": str(row.get("dominant_block_reason") or ""),
                 "dominant_block_reason_ratio": float(_to_float(row.get("dominant_block_reason_ratio"))),
@@ -2369,6 +2394,194 @@ def _scanner_chart_fit_from_entry_result(result: Mapping[str, Any]) -> Dict[str,
     }
 
 
+def _scanner_macro_focus(
+    *,
+    playbook: str = "",
+    scanner_priority: List[Any] | None = None,
+    risk_tone: str = "",
+    trade_aggressiveness: str = "",
+) -> Dict[str, float]:
+    focus = {
+        "trend_alignment": 1.0,
+        "relative_strength": 1.0,
+        "adx_trend": 1.0,
+        "volume_accumulation": 1.0,
+        "breakout_base": 1.0,
+        "risk_balance": 1.0,
+    }
+    playbook_text = str(playbook or "").strip().lower()
+    if playbook_text == "breakout":
+        focus["breakout_base"] += 0.25
+        focus["volume_accumulation"] += 0.15
+        focus["relative_strength"] += 0.10
+    elif playbook_text in {"pullback", "reversal"}:
+        focus["trend_alignment"] += 0.15
+        focus["risk_balance"] += 0.15
+        focus["breakout_base"] -= 0.10
+    elif playbook_text == "defensive":
+        focus["risk_balance"] += 0.25
+        focus["trend_alignment"] += 0.10
+
+    for item in list(scanner_priority or []):
+        text = str(item or "").strip().lower()
+        if text in {"trend", "trend_strength", "ma_alignment", "ma20", "ma60", "ma120"}:
+            focus["trend_alignment"] += 0.10
+        elif text in {"relative_strength", "cross_section_rank", "leader", "leaders"}:
+            focus["relative_strength"] += 0.10
+        elif text in {"adx", "adx14"}:
+            focus["adx_trend"] += 0.10
+        elif text in {"volume", "volume_surge", "volume_spike", "turnover"}:
+            focus["volume_accumulation"] += 0.10
+        elif text in {"breakout", "breakout_base", "vwap_reclaim", "momentum"}:
+            focus["breakout_base"] += 0.10
+        elif text in {"low_risk", "risk", "volatility", "gap"}:
+            focus["risk_balance"] += 0.10
+
+    risk_text = str(risk_tone or "").strip().lower()
+    if risk_text == "conservative":
+        focus["risk_balance"] += 0.20
+    elif risk_text == "aggressive":
+        focus["breakout_base"] += 0.10
+        focus["volume_accumulation"] += 0.10
+
+    aggression_text = str(trade_aggressiveness or "").strip().lower()
+    if aggression_text == "high":
+        focus["relative_strength"] += 0.10
+        focus["breakout_base"] += 0.10
+    elif aggression_text == "low":
+        focus["risk_balance"] += 0.15
+        focus["trend_alignment"] += 0.05
+
+    return {key: _clamp(float(value), 0.50, 1.50) for key, value in focus.items()}
+
+
+def _compute_scanner_macro_chart_fit(
+    *,
+    feature_row: Mapping[str, Any],
+    ma_alignment_component: float,
+    trend_component: float,
+    adx_component: float,
+    momentum_component: float,
+    volume_surge_component: float,
+    vwap_alignment_component: float,
+    cross_section_rank_component: float,
+    volatility_penalty: float,
+    gap_penalty: float,
+    playbook: str = "",
+    scanner_priority: List[Any] | None = None,
+    risk_tone: str = "",
+    trade_aggressiveness: str = "",
+    bias_cap: float = 0.06,
+) -> Dict[str, Any]:
+    coverage_keys = (
+        "return20",
+        "ma20_gap",
+        "ma60_gap",
+        "ma120_gap",
+        "trend_strength",
+        "adx14",
+        "volume_spike20",
+        "cross_section_rank",
+        "rolling_drawdown20",
+        "volatility20",
+        "gap_pct",
+    )
+    coverage = sum(1 for key in coverage_keys if feature_row.get(key) not in (None, ""))
+    focus = _scanner_macro_focus(
+        playbook=playbook,
+        scanner_priority=scanner_priority,
+        risk_tone=risk_tone,
+        trade_aggressiveness=trade_aggressiveness,
+    )
+    if coverage < 3:
+        return {
+            "scanner_macro_chart_fit_score": 0.5,
+            "scanner_macro_chart_fit_bias": 0.0,
+            "scanner_macro_chart_fit_authority": "soft_rank_bias_only_insufficient_feature_coverage",
+            "scanner_macro_chart_fit_components": {
+                "feature_coverage_count": int(coverage),
+                "focus": dict(focus),
+            },
+            "scanner_macro_chart_fit_focus": dict(focus),
+        }
+    return20 = _to_float(feature_row.get("return20"))
+    ma20_gap = _to_float(feature_row.get("ma20_gap"))
+    rolling_drawdown20 = abs(_to_float(feature_row.get("rolling_drawdown20")))
+    relative_strength = feature_row.get("sector_relative_strength")
+    if relative_strength in (None, ""):
+        relative_strength = feature_row.get("relative_strength20")
+    relative_strength_component = max(
+        cross_section_rank_component,
+        max(0.0, _signed01(_to_float(relative_strength), 0.08)),
+        max(0.0, _signed01(return20, 0.10)),
+    )
+    trend_alignment_score = _clamp(
+        (0.48 * ma_alignment_component) + (0.32 * trend_component) + (0.20 * adx_component),
+        0.0,
+        1.0,
+    )
+    adx_trend_score = _clamp((0.65 * adx_component) + (0.35 * trend_component), 0.0, 1.0)
+    volume_accumulation_score = _clamp(volume_surge_component, 0.0, 1.0)
+    breakout_base_score = _clamp(
+        (0.45 * momentum_component)
+        + (0.25 * trend_component)
+        + (0.20 * vwap_alignment_component)
+        + (0.10 * max(0.0, _signed01(ma20_gap, 0.03))),
+        0.0,
+        1.0,
+    )
+    drawdown_penalty = _norm01(rolling_drawdown20, 0.08, 0.25)
+    overextension_risk = max(
+        _norm01(max(0.0, ma20_gap), 0.06, 0.15),
+        _clamp(volatility_penalty, 0.0, 1.0),
+        _clamp(gap_penalty, 0.0, 1.0),
+    )
+    risk_balance_score = _clamp(
+        1.0
+        - (
+            (0.40 * _clamp(volatility_penalty, 0.0, 1.0))
+            + (0.35 * _clamp(gap_penalty, 0.0, 1.0))
+            + (0.25 * drawdown_penalty)
+        ),
+        0.0,
+        1.0,
+    )
+    components = {
+        "trend_alignment_score": float(trend_alignment_score),
+        "relative_strength_score": float(_clamp(relative_strength_component, 0.0, 1.0)),
+        "adx_trend_score": float(adx_trend_score),
+        "volume_accumulation_score": float(volume_accumulation_score),
+        "breakout_base_score": float(breakout_base_score),
+        "risk_balance_score": float(risk_balance_score),
+        "overextension_risk": float(_clamp(overextension_risk, 0.0, 1.0)),
+        "rolling_drawdown20": float(rolling_drawdown20),
+        "focus": dict(focus),
+    }
+    weights = {
+        "trend_alignment_score": 0.24 * focus["trend_alignment"],
+        "relative_strength_score": 0.18 * focus["relative_strength"],
+        "adx_trend_score": 0.12 * focus["adx_trend"],
+        "volume_accumulation_score": 0.16 * focus["volume_accumulation"],
+        "breakout_base_score": 0.18 * focus["breakout_base"],
+        "risk_balance_score": 0.12 * focus["risk_balance"],
+    }
+    weight_total = sum(float(v) for v in weights.values()) or 1.0
+    score = _clamp(
+        sum(float(components[key]) * weight for key, weight in weights.items()) / weight_total,
+        0.0,
+        1.0,
+    )
+    bias_limit = max(0.0, float(bias_cap))
+    bias = _clamp((score - 0.50) * 0.12, -bias_limit, bias_limit)
+    return {
+        "scanner_macro_chart_fit_score": float(score),
+        "scanner_macro_chart_fit_bias": float(bias),
+        "scanner_macro_chart_fit_authority": "soft_rank_bias_only",
+        "scanner_macro_chart_fit_components": components,
+        "scanner_macro_chart_fit_focus": dict(focus),
+    }
+
+
 def _compute_entry_compatibility_signal(
     *,
     symbol: str,
@@ -2571,6 +2784,37 @@ def _resolve_canonical_day(state: Dict[str, Any]) -> str:
     return datetime.fromtimestamp(now_epoch).strftime("%Y-%m-%d")
 
 
+_ENTRY_COMPATIBILITY_BLOCK_REASONS = {
+    "too_extended_from_vwap",
+    "breakout_not_ready",
+    "volume_insufficient",
+    "volume_confirmation_missing",
+    "below_vwap_reclaim_not_ready",
+    "pullback_below_vwap_reclaim_not_ready",
+    "pullback_not_mature",
+    "minute_candle_missing",
+    "human_chart_sanity_guard_blocked",
+}
+
+
+def _extract_monitor_entry_block_reason(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    cascade = payload.get("entry_candidate_cascade") if isinstance(payload.get("entry_candidate_cascade"), dict) else {}
+    candidates = [
+        cascade.get("reason"),
+        cascade.get("top_pick_reason"),
+        payload.get("entry_reason"),
+        payload.get("entry_exit_reason"),
+        payload.get("primary_reason_code"),
+    ]
+    for value in candidates:
+        reason = str(value or "").strip()
+        if reason in _ENTRY_COMPATIBILITY_BLOCK_REASONS:
+            return reason
+    return ""
+
+
 def _resolve_compatibility_bias_context(state: Dict[str, Any], *, limit: int = 20) -> Dict[str, Any]:
     root = Path.cwd() / "reports" / "canonical" / _resolve_canonical_day(state)
     if not root.exists():
@@ -2582,7 +2826,14 @@ def _resolve_compatibility_bias_context(state: Dict[str, Any], *, limit: int = 2
         }
 
     monitor_paths = sorted(
-        [p / "monitor.json" for p in root.iterdir() if p.is_dir() and (p / "monitor.json").exists()],
+        [
+            p / "monitor.json"
+            for p in root.iterdir()
+            if p.is_dir()
+            and len(str(p.name)) == 32
+            and all(ch in "0123456789abcdefABCDEF" for ch in str(p.name))
+            and (p / "monitor.json").exists()
+        ],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )[: max(1, int(limit))]
@@ -2594,7 +2845,7 @@ def _resolve_compatibility_bias_context(state: Dict[str, Any], *, limit: int = 2
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        reason = str(payload.get("primary_reason_code") or "").strip()
+        reason = _extract_monitor_entry_block_reason(payload)
         if reason:
             reasons.append(reason)
 
@@ -2611,9 +2862,11 @@ def _resolve_compatibility_bias_context(state: Dict[str, Any], *, limit: int = 2
     top_ratio = float(top_count) / float(len(reasons))
     dominant_block_reason = top_reason if top_ratio >= 0.40 else "mixed"
     if dominant_block_reason in {"volume_confirmation_missing", "volume_insufficient"}:
-        bias_scale = 0.15
+        bias_scale = 0.18 if top_ratio >= 0.60 else 0.15
     elif dominant_block_reason in {"below_vwap_reclaim_not_ready", "pullback_below_vwap_reclaim_not_ready"}:
-        bias_scale = 0.12
+        bias_scale = 0.16 if top_ratio >= 0.45 else 0.12
+    elif dominant_block_reason in {"pullback_not_mature", "breakout_not_ready"}:
+        bias_scale = 0.14 if top_ratio >= 0.45 else 0.11
     else:
         bias_scale = 0.10
     return {
@@ -2663,6 +2916,11 @@ def _candidate_quote_metrics(
         best_ask = _to_float(raw_row.get("pri_sel_bid_unit") or raw_row.get("sel_1bid"))
     if best_bid <= 0.0:
         best_bid = _to_float(raw_row.get("pri_buy_bid_unit") or raw_row.get("buy_1bid"))
+    deviation_signal = extract_etf_deviation_signal(
+        symbol=symbol,
+        quote=quote,
+        state=state,
+    )
 
     halted = False
     if quote.get("halted") is not None:
@@ -2689,6 +2947,9 @@ def _candidate_quote_metrics(
         "best_ask": float(max(0.0, best_ask)),
         "best_bid": float(max(0.0, best_bid)),
         "spread_bps": (float(max(0.0, spread_bps)) if spread_bps is not None else None),
+        "etf_deviation_pct": deviation_signal.get("etf_deviation_pct"),
+        "etf_deviation_source": str(deviation_signal.get("etf_deviation_source") or ""),
+        "etf_deviation_available": bool(deviation_signal.get("available")),
         "halted": bool(halted),
         "abnormal": bool(abnormal),
     }
@@ -3565,6 +3826,32 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if quote_price is None:
             quote_price = quote.get("cur")
         quote_price_num = _to_float(quote_price) if quote_price is not None else None
+        deviation_signal = extract_etf_deviation_signal(
+            symbol=symbol,
+            candidate={**dict(candidate_meta), **dict(row if isinstance(row, dict) else {})},
+            features=feature_map.get(_norm_symbol(symbol), {}) if isinstance(feature_map.get(_norm_symbol(symbol)), dict) else {},
+            quote=quote,
+            state=state,
+            asset_class_detected=(
+                candidate_meta.get("asset_class_detected")
+                or (row.get("asset_class_detected") if isinstance(row, dict) else "")
+            ),
+        )
+        etf_deviation_tradeable = bool(
+            deviation_signal.get("is_etf_family")
+            or deviation_signal.get("available")
+        )
+        etf_deviation_entry_score = (
+            float(deviation_signal.get("entry_discount_score") or 0.0)
+            if etf_deviation_tradeable
+            else 0.0
+        )
+        etf_deviation_premium_score = (
+            float(deviation_signal.get("exit_premium_score") or 0.0)
+            if etf_deviation_tradeable
+            else 0.0
+        )
+        etf_deviation_bias = float((0.08 * etf_deviation_entry_score) - (0.08 * etf_deviation_premium_score))
         open_orders = int(skill_order_counts.get(_norm_symbol(symbol), 0))
         order_penalty = min(open_orders, 3)
 
@@ -3716,9 +4003,29 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             override=mock_compatibility_override,
         )
         compatibility_bias = float(compatibility_result.get("compatibility_bias") or 0.0)
+        macro_chart_fit = _compute_scanner_macro_chart_fit(
+            feature_row=feature_row,
+            ma_alignment_component=ma_alignment_component,
+            trend_component=trend_component,
+            adx_component=adx_component,
+            momentum_component=momentum_component,
+            volume_surge_component=volume_surge_component,
+            vwap_alignment_component=vwap_alignment_component,
+            cross_section_rank_component=cross_section_rank_component,
+            volatility_penalty=volatility_penalty,
+            gap_penalty=gap_penalty,
+            playbook=playbook,
+            scanner_priority=scanner_priority,
+            risk_tone=risk_tone,
+            trade_aggressiveness=trade_aggressiveness,
+        )
+        scanner_macro_chart_fit_bias = float(
+            macro_chart_fit.get("scanner_macro_chart_fit_bias") or 0.0
+        )
         symbol_prior_result = _compute_symbol_prior_adjustment(
             symbol_model=dict(symbol_priors.get(symbol) or {}),
             playbook=playbook,
+            current_day=_resolve_canonical_day(state),
         )
         symbol_prior_adjustment = float(symbol_prior_result.get("adjustment") or 0.0)
         pre_adjust_score_total = (
@@ -3732,8 +4039,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             + scanner_bias_adjustment
             + scanner_memory_bias_adjustment
             + symbol_prior_adjustment
+            + etf_deviation_bias
         )
-        score_total = pre_adjust_score_total + compatibility_bias
+        score_total = pre_adjust_score_total + compatibility_bias + scanner_macro_chart_fit_bias
 
         neg_news = max(-news_s, 0.0)
         neg_global = max(-gs, 0.0)
@@ -3749,6 +4057,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             + (0.25 * gap_penalty * practical_scale)
             + (0.10 * open_order_penalty)
         )
+        if etf_deviation_tradeable and etf_deviation_premium_score > 0.0:
+            adj_risk += 0.05 * etf_deviation_premium_score
+        if etf_deviation_tradeable and etf_deviation_entry_score > 0.0:
+            adj_risk -= 0.03 * etf_deviation_entry_score
         adj_conf = _clamp(
             base_conf
             + w["confidence_news_boost"] * max(news_s, 0.0)
@@ -3757,6 +4069,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             0.0,
             1.0,
         )
+        if etf_deviation_tradeable and etf_deviation_entry_score > 0.0:
+            adj_conf = _clamp(adj_conf + (0.05 * etf_deviation_entry_score), 0.0, 1.0)
+        if etf_deviation_tradeable and etf_deviation_premium_score > 0.0:
+            adj_conf = _clamp(adj_conf - (0.04 * etf_deviation_premium_score), 0.0, 1.0)
         if repeat_symbol_penalty > 0.0:
             adj_conf = _clamp(adj_conf - (0.40 * repeat_symbol_penalty), 0.0, 1.0)
             adj_risk = _clamp(adj_risk + (0.25 * repeat_symbol_penalty), 0.0, 1.0)
@@ -3785,7 +4101,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_memory_bias": float(scanner_memory_bias_adjustment),
             "scanner_memory_bias_observed": float(scanner_memory_bias_observed_adjustment),
             "symbol_prior": float(symbol_prior_adjustment),
+            "etf_deviation_bias": float(etf_deviation_bias),
             "entry_compatibility_bias": float(compatibility_bias),
+            "scanner_macro_chart_fit_bias": float(scanner_macro_chart_fit_bias),
             "risk_penalty": float(-risk_penalty_score),
             "rank_bonus": float(rank_bonus),
         }
@@ -3806,6 +4124,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["symbol_prior_adjustment"] = float(symbol_prior_adjustment)
         row["symbol_prior_reasons"] = list(symbol_prior_result.get("reasons") or [])
         row["symbol_prior_summary"] = dict(symbol_prior_result.get("summary") or {})
+        row["etf_deviation_pct"] = deviation_signal.get("etf_deviation_pct")
+        row["etf_deviation_source"] = str(deviation_signal.get("etf_deviation_source") or "")
+        row["etf_deviation_available"] = bool(deviation_signal.get("available"))
+        row["etf_deviation_entry_score"] = float(etf_deviation_entry_score)
+        row["etf_deviation_premium_score"] = float(etf_deviation_premium_score)
+        row["etf_deviation_bias"] = float(etf_deviation_bias)
         row["entry_compatibility_score"] = float(compatibility_result.get("entry_compatibility_score") or 0.0)
         row["compatibility_bias"] = float(compatibility_bias)
         row["compatibility_components"] = dict(compatibility_result.get("compatibility_components") or {})
@@ -3813,6 +4137,19 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["scanner_chart_fit_authority"] = str(compatibility_result.get("scanner_chart_fit_authority") or "")
         row["scanner_chart_fit_components"] = dict(compatibility_result.get("scanner_chart_fit_components") or {})
         row["scanner_chart_fit_penalty"] = float(_to_float(compatibility_result.get("scanner_chart_fit_penalty")))
+        row["scanner_macro_chart_fit_score"] = float(
+            _to_float(macro_chart_fit.get("scanner_macro_chart_fit_score"), 0.5)
+        )
+        row["scanner_macro_chart_fit_bias"] = float(scanner_macro_chart_fit_bias)
+        row["scanner_macro_chart_fit_authority"] = str(
+            macro_chart_fit.get("scanner_macro_chart_fit_authority") or ""
+        )
+        row["scanner_macro_chart_fit_components"] = dict(
+            macro_chart_fit.get("scanner_macro_chart_fit_components") or {}
+        )
+        row["scanner_macro_chart_fit_focus"] = dict(
+            macro_chart_fit.get("scanner_macro_chart_fit_focus") or {}
+        )
         row["expected_monitor_block_reason"] = str(compatibility_result.get("expected_monitor_block_reason") or "")
         row["dominant_block_reason"] = str(compatibility_result.get("dominant_block_reason") or "")
         row["dominant_block_reason_ratio"] = float(_to_float(compatibility_result.get("dominant_block_reason_ratio")))
@@ -3854,6 +4191,16 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "quote_best_bid": _to_float(metrics.get("best_bid")),
                     "quote_best_ask": _to_float(metrics.get("best_ask")),
                     "quote_spread_bps": metrics.get("spread_bps"),
+                    "etf_deviation_pct": deviation_signal.get("etf_deviation_pct"),
+                    "etf_deviation_source": str(deviation_signal.get("etf_deviation_source") or ""),
+                    "etf_deviation_available": bool(deviation_signal.get("available")),
+                    "etf_deviation_entry_score": float(etf_deviation_entry_score),
+                    "etf_deviation_premium_score": float(etf_deviation_premium_score),
+                    "asset_class_detected": str(
+                        deviation_signal.get("asset_class_detected")
+                        or candidate_meta.get("asset_class_detected")
+                        or ""
+                    ),
                     "engine_rsi14": feature_row.get("rsi14"),
                     "engine_ma20_gap": feature_row.get("ma20_gap"),
                     "engine_ma60": feature_row.get("ma60"),
@@ -3879,6 +4226,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "scanner_chart_fit_score": compatibility_result.get("scanner_chart_fit_score"),
                     "scanner_chart_fit_authority": compatibility_result.get("scanner_chart_fit_authority"),
                     "scanner_chart_fit_components": dict(compatibility_result.get("scanner_chart_fit_components") or {}),
+                    "scanner_macro_chart_fit_score": macro_chart_fit.get("scanner_macro_chart_fit_score"),
+                    "scanner_macro_chart_fit_bias": scanner_macro_chart_fit_bias,
+                    "scanner_macro_chart_fit_authority": macro_chart_fit.get("scanner_macro_chart_fit_authority"),
+                    "scanner_macro_chart_fit_components": dict(
+                        macro_chart_fit.get("scanner_macro_chart_fit_components") or {}
+                    ),
                     "compatibility_source": compatibility_result.get("compatibility_source"),
                     "compat_vwap_distance_abs": compatibility_result.get("vwap_distance_abs"),
                     "compat_is_below_vwap": compatibility_result.get("is_below_vwap"),
@@ -3939,6 +4292,15 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "scanner_chart_fit_authority": compatibility_result.get("scanner_chart_fit_authority"),
                     "scanner_chart_fit_components": dict(compatibility_result.get("scanner_chart_fit_components") or {}),
                     "scanner_chart_fit_penalty": compatibility_result.get("scanner_chart_fit_penalty"),
+                    "scanner_macro_chart_fit_score": macro_chart_fit.get("scanner_macro_chart_fit_score"),
+                    "scanner_macro_chart_fit_bias": scanner_macro_chart_fit_bias,
+                    "scanner_macro_chart_fit_authority": macro_chart_fit.get("scanner_macro_chart_fit_authority"),
+                    "scanner_macro_chart_fit_components": dict(
+                        macro_chart_fit.get("scanner_macro_chart_fit_components") or {}
+                    ),
+                    "scanner_macro_chart_fit_focus": dict(
+                        macro_chart_fit.get("scanner_macro_chart_fit_focus") or {}
+                    ),
                     "expected_monitor_block_reason": compatibility_result.get("expected_monitor_block_reason"),
                     "dominant_block_reason": compatibility_result.get("dominant_block_reason"),
                     "dominant_block_reason_ratio": compatibility_result.get("dominant_block_reason_ratio"),
@@ -4136,6 +4498,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_chart_fit_score": float(_to_float(r.get("scanner_chart_fit_score"))),
             "scanner_chart_fit_authority": str(r.get("scanner_chart_fit_authority") or ""),
             "scanner_chart_fit_components": dict(r.get("scanner_chart_fit_components") or {}),
+            "scanner_macro_chart_fit_score": float(_to_float(r.get("scanner_macro_chart_fit_score"), 0.5)),
+            "scanner_macro_chart_fit_bias": float(_to_float(r.get("scanner_macro_chart_fit_bias"))),
+            "scanner_macro_chart_fit_authority": str(r.get("scanner_macro_chart_fit_authority") or ""),
+            "scanner_macro_chart_fit_components": dict(r.get("scanner_macro_chart_fit_components") or {}),
             "expected_monitor_block_reason": str(r.get("expected_monitor_block_reason") or ""),
             "dominant_block_reason": str(r.get("dominant_block_reason") or ""),
             "dominant_block_reason_ratio": float(_to_float(r.get("dominant_block_reason_ratio"))),
@@ -4267,6 +4633,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_chart_fit_score": float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0,
         "scanner_chart_fit_authority": str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else "",
         "scanner_chart_fit_components": dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {},
+        "scanner_macro_chart_fit_score": float(_to_float((selected or {}).get("scanner_macro_chart_fit_score"), 0.5)) if isinstance(selected, dict) else 0.5,
+        "scanner_macro_chart_fit_bias": float(_to_float((selected or {}).get("scanner_macro_chart_fit_bias"))) if isinstance(selected, dict) else 0.0,
+        "scanner_macro_chart_fit_authority": str((selected or {}).get("scanner_macro_chart_fit_authority") or "") if isinstance(selected, dict) else "",
+        "scanner_macro_chart_fit_components": dict((selected or {}).get("scanner_macro_chart_fit_components") or {}) if isinstance(selected, dict) else {},
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
         "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
         "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
@@ -4538,6 +4908,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_chart_fit_score": float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0,
         "scanner_chart_fit_authority": str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else "",
         "scanner_chart_fit_components": dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {},
+        "scanner_macro_chart_fit_score": float(_to_float((selected or {}).get("scanner_macro_chart_fit_score"), 0.5)) if isinstance(selected, dict) else 0.5,
+        "scanner_macro_chart_fit_bias": float(_to_float((selected or {}).get("scanner_macro_chart_fit_bias"))) if isinstance(selected, dict) else 0.0,
+        "scanner_macro_chart_fit_authority": str((selected or {}).get("scanner_macro_chart_fit_authority") or "") if isinstance(selected, dict) else "",
+        "scanner_macro_chart_fit_components": dict((selected or {}).get("scanner_macro_chart_fit_components") or {}) if isinstance(selected, dict) else {},
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
         "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
         "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
@@ -4615,6 +4989,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["scanner_chart_fit_score"] = float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0
         state["scanner_output"]["scanner_chart_fit_authority"] = str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else ""
         state["scanner_output"]["scanner_chart_fit_components"] = dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {}
+        state["scanner_output"]["scanner_macro_chart_fit_score"] = float(_to_float((selected or {}).get("scanner_macro_chart_fit_score"), 0.5)) if isinstance(selected, dict) else 0.5
+        state["scanner_output"]["scanner_macro_chart_fit_bias"] = float(_to_float((selected or {}).get("scanner_macro_chart_fit_bias"))) if isinstance(selected, dict) else 0.0
+        state["scanner_output"]["scanner_macro_chart_fit_authority"] = str((selected or {}).get("scanner_macro_chart_fit_authority") or "") if isinstance(selected, dict) else ""
+        state["scanner_output"]["scanner_macro_chart_fit_components"] = dict((selected or {}).get("scanner_macro_chart_fit_components") or {}) if isinstance(selected, dict) else {}
         state["scanner_output"]["expected_monitor_block_reason"] = str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else ""
         state["scanner_output"]["dominant_block_reason"] = str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "")
         state["scanner_output"]["dominant_block_reason_ratio"] = float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio")))
@@ -4733,6 +5111,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_chart_fit_score": float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0,
         "scanner_chart_fit_authority": str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else "",
         "scanner_chart_fit_components": dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {},
+        "scanner_macro_chart_fit_score": float(_to_float((selected or {}).get("scanner_macro_chart_fit_score"), 0.5)) if isinstance(selected, dict) else 0.5,
+        "scanner_macro_chart_fit_bias": float(_to_float((selected or {}).get("scanner_macro_chart_fit_bias"))) if isinstance(selected, dict) else 0.0,
+        "scanner_macro_chart_fit_authority": str((selected or {}).get("scanner_macro_chart_fit_authority") or "") if isinstance(selected, dict) else "",
+        "scanner_macro_chart_fit_components": dict((selected or {}).get("scanner_macro_chart_fit_components") or {}) if isinstance(selected, dict) else {},
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
         "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
         "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),

@@ -780,6 +780,16 @@ def build_live_trade_bundle_payloads(
     trade_artifact_links_payload["links"]["brief_llm_response_json"] = str(resolved_brief_llm_response_json or "")
     trade_artifact_links_payload["links"]["strategist_llm_prompt_ref"] = str(strategist_llm_artifact.get("prompt_ref") or "")
     trade_artifact_links_payload["links"]["strategist_llm_response_ref"] = str(strategist_llm_artifact.get("response_ref") or "")
+    trade_artifact_links_payload["links"]["strategist_summary_md"] = str(
+        strategist_llm_artifact.get("trade_strategist_summary_md_ref")
+        or strategist_llm_artifact.get("strategist_summary_md_ref")
+        or ""
+    )
+    trade_artifact_links_payload["links"]["strategist_summary_json"] = str(
+        strategist_llm_artifact.get("trade_strategist_summary_json_ref")
+        or strategist_llm_artifact.get("strategist_summary_json_ref")
+        or ""
+    )
     trade_artifact_links_payload["links"]["brief_llm_prompt_ref"] = str(existing_brief_llm_artifact.get("prompt_ref") or "")
     trade_artifact_links_payload["links"]["brief_llm_response_ref"] = str(existing_brief_llm_artifact.get("response_ref") or "")
     trade_artifact_links_payload["links"]["ai_trade_report_llm_prompt_ref"] = str(ai_trade_report_llm_artifact.get("prompt_ref") or "")

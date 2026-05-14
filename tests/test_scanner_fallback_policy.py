@@ -115,7 +115,7 @@ def test_scanner_node_uses_kiwoom_results_without_fallback_when_pool_present(mon
     out = scanner_node(state)
     scanner_output = out.get("scanner_output") or {}
 
-    assert out.get("top_stock") == "005930"
+    assert out.get("top_stock") == "000660"
     assert scanner_output.get("candidate_source") == "kiwoom_market_data"
     assert scanner_output.get("fallback_reason") == ""
     assert scanner_output.get("scanner_candidate_source") == "kiwoom"

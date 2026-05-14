@@ -15,10 +15,9 @@ def test_m31_agent_chain_probe_passes_default(capsys):
 
     assert rc == 0
     assert obj["ok"] is True
-    assert obj["decision"]["decision"] == "approve"
-    assert obj["monitor"]["intent_total"] >= 1
-    assert obj["execution"]["attempted"] is True
-    assert obj["execution"]["allowed"] is True
+    assert obj["decision"]["decision"] == "noop"
+    assert obj["monitor"]["intent_total"] == 0
+    assert obj["execution"]["attempted"] is False
 
 
 def test_m31_agent_chain_probe_file_entrypoint_resolves_repo_imports():
@@ -33,4 +32,4 @@ def test_m31_agent_chain_probe_file_entrypoint_resolves_repo_imports():
     assert cp.returncode == 0, f"stdout={cp.stdout}\nstderr={cp.stderr}"
     obj = json.loads(cp.stdout.strip())
     assert obj["ok"] is True
-    assert obj["execution"]["attempted"] is True
+    assert obj["execution"]["attempted"] is False

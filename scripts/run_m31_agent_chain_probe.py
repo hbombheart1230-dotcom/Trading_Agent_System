@@ -90,6 +90,9 @@ def _build_state(symbol: str, price: float, cash: float) -> Dict[str, Any]:
                 "score": 0.95,
                 "risk_score": 0.10,
                 "confidence": 0.90,
+                "expected_move_pct": 0.03,
+                "scanner_chart_fit_score": 0.86,
+                "scanner_chart_fit_authority": "probe_fixture",
                 "features": {"probe": True},
             }
         },

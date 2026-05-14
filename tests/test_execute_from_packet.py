@@ -133,6 +133,69 @@ def test_execute_from_packet_skips_noop_intent(tmp_path, monkeypatch):
     assert out["execution"]["reason"] == "noop_intent_skipped"
 
 
+def test_execute_from_packet_blocks_sell_when_monitor_exit_confirmation_pending(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "false")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "allowed"
+
+            return R()
+
+    called = {"execute": 0}
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            called["execute"] += 1
+
+            class Result:
+                response = ApiResponse.from_http(200, '{"ord_no":"S000999","msg_cd":"0000","msg1":"accepted"}')
+                meta = {"executor": "real"}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "supervisor": AllowSupervisor(),
+        "executor": CaptureExecutor(),
+        "monitor_exit": {
+            "triggered": False,
+            "reason": "exit_confirmation_pending:1/2",
+            "monitor_reason": "exit_signal_pending_confirmation",
+            "sell_guard_blocked": True,
+            "sell_guard_reason": "exit_confirmation_pending:1/2",
+        },
+        "decision_packet": {
+            "intent": {
+                "action": "SELL",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 1},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "monitor_exit_confirmation_pending"
+    assert out["execution"]["monitor_exit_execution_guard"]["pending_confirmation"] is True
+    assert called["execute"] == 0
+
+
 def test_execute_from_packet_blocks_symbol_not_allowlisted(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_MODE", "mock")
     monkeypatch.setenv("SYMBOL_ALLOWLIST", "005930")
@@ -597,6 +660,121 @@ def test_execute_from_packet_blocks_recent_same_symbol_buy_before_position_refle
     assert called["execute"] == 1
 
 
+def test_execute_from_packet_blocks_structural_sell_while_recent_buy_is_partially_reflected(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "true")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "allowed"
+
+            return R()
+
+    called = {"execute": 0}
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            called["execute"] += 1
+
+            class Result:
+                response = ApiResponse.from_http(200, '{"ord_no":"A000124","msg_cd":"0000","msg1":"accepted"}')
+                meta = {"executor": "real"}
+
+            return Result()
+
+    def _health(count: int) -> dict:
+        return {
+            "reader_ok": True,
+            "source": "reader",
+            "positions_source": "reader_positions_authoritative",
+            "reconciliation_status": "reader_aligned",
+            "reader_positions_authoritative": True,
+            "positions_mismatch_detected": False,
+            "reconciliation_applied": False,
+            "reader_positions_count": count,
+            "persisted_positions_count": count,
+        }
+
+    common = {
+        "catalog_path": str(cat),
+        "supervisor": AllowSupervisor(),
+        "executor": CaptureExecutor(),
+        "recent_buy_guard_path": str(tmp_path / "recent_buy_guard.json"),
+        "recent_sell_guard_path": str(tmp_path / "recent_sell_guard.json"),
+        "recent_buy_guard_ttl_sec": 600,
+        "runtime_mode": "integrated_chain",
+        "runtime_phase": "session",
+    }
+    buy_state = {
+        **common,
+        "portfolio_snapshot": {"cash": 10_000_000.0, "positions": [], "_health": _health(0)},
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "003060", "qty": 1000, "price": 2805, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+    buy_out = execute_from_packet({**buy_state, "now_epoch": 1000})
+    assert buy_out["execution"]["allowed"] is True
+    assert buy_out["execution"]["recent_buy_order_guard"]["updated"] is True
+
+    structural_sell_state = {
+        **common,
+        "portfolio_snapshot": {
+            "cash": 10_000_000.0,
+            "positions": [{"symbol": "003060", "qty": 1, "avg_price": 2800.0}],
+            "_health": _health(1),
+        },
+        "decision_packet": {
+            "intent": {
+                "action": "SELL",
+                "symbol": "003060",
+                "qty": 1,
+                "price": 2800,
+                "order_api_id": "ORDER_SUBMIT",
+                "meta": {"position_qty": 1, "exit_qty": 1, "exit_reason": "vwap_breakdown"},
+            },
+            "risk": {"open_positions": 1},
+            "exec_context": {},
+        },
+    }
+    blocked = execute_from_packet({**structural_sell_state, "now_epoch": 1032})
+    assert blocked["execution"]["allowed"] is False
+    assert blocked["execution"]["reason"] == "sell_guard_recent_buy_fill_settle_partial_position"
+    guard = blocked["execution"]["recent_buy_settle_sell_guard"]
+    assert guard["recent_buy_qty"] == 1000
+    assert guard["position_qty_hint"] == 1
+
+    emergency_sell_state = {
+        **structural_sell_state,
+        "decision_packet": {
+            "intent": {
+                "action": "SELL",
+                "symbol": "003060",
+                "qty": 1,
+                "price": 2760,
+                "order_api_id": "ORDER_SUBMIT",
+                "meta": {"position_qty": 1, "exit_qty": 1, "exit_reason": "stop_loss"},
+            },
+            "risk": {"open_positions": 1},
+            "exec_context": {},
+        },
+    }
+    allowed = execute_from_packet({**emergency_sell_state, "now_epoch": 1033})
+    assert allowed["execution"]["allowed"] is True
+    assert allowed["execution"]["execution_ok"] is True
+    assert called["execute"] == 2
+
+
 def test_execute_from_packet_blocks_recent_full_sell_before_position_reflects(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_MODE", "real")
     monkeypatch.setenv("KIWOOM_MODE", "mock")
@@ -849,6 +1027,90 @@ def test_execute_from_packet_blocks_buy_at_upper_limit_from_skill_quote(tmp_path
     assert guard["limit_locked"] is True
 
 
+def test_execute_from_packet_blocks_buy_from_entry_chart_hard_guard(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "persisted_state": {"mock_cash": 10_000_000.0, "mock_positions": []},
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "003060",
+                "qty": 1,
+                "order_api_id": "ORDER_SUBMIT",
+                "order_type": "market",
+                "meta": {
+                    "entry_metrics": {
+                        "prev_close_distance_pct": 0.299,
+                        "open_gap_pct": 0.21,
+                        "human_reward_room_score": 0.0,
+                        "late_entry_risk": "high",
+                        "human_chart_entry_score": 0.46,
+                        "human_chart_detail_observed": {"reward_room_pct": 0.0},
+                    }
+                },
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "entry_chart_hard_guard_blocked"
+    guard = out["execution"]["upper_limit_guard"]["entry_chart_guard"]
+    assert guard["block"] is True
+    assert "near_upper_limit_zone_with_late_entry_no_reward_room" in guard["reasons"]
+
+
+def test_execute_from_packet_blocks_buy_when_reward_room_below_cost_floor(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "persisted_state": {"mock_cash": 10_000_000.0, "mock_positions": []},
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "003060",
+                "qty": 1,
+                "order_api_id": "ORDER_SUBMIT",
+                "order_type": "market",
+                "meta": {
+                    "entry_metrics": {
+                        "human_reward_room_score": 0.42,
+                        "late_entry_risk": "high",
+                        "human_chart_entry_score": 0.72,
+                        "human_chart_detail_observed": {"reward_room_pct": 0.008},
+                    }
+                },
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "entry_chart_hard_guard_blocked"
+    guard = out["execution"]["upper_limit_guard"]["entry_chart_guard"]
+    assert guard["block"] is True
+    assert "reward_room_pct<0.012_cost_floor" in guard["reasons"]
+
+
 def test_execute_from_packet_attempts_upper_limit_cancel_after_accept_when_requested(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_MODE", "real")
     monkeypatch.setenv("KIWOOM_MODE", "mock")
@@ -932,6 +1194,178 @@ def test_execute_from_packet_attempts_upper_limit_cancel_after_accept_when_reque
     assert cancel_info["attempted"] is True
     assert cancel_info["cancel_ok"] is True
     assert cancel_info["cancel"]["order"]["api_id"] == "kt10003"
+
+
+def test_execute_from_packet_replaces_unfilled_sell_with_market_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "true")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"kt10001","title":"sell","method":"POST","path":"/api/dostk/ordr","params":{"body":[{"name":"stk_cd","required":true},{"name":"ord_qty","required":true},{"name":"trde_tp","required":true},{"name":"ord_uv","required":false}]},"_flags":{"callable":true}}\n'
+        '{"api_id":"kt10003","title":"cancel","method":"POST","path":"/api/dostk/ordr","params":{"body":[{"name":"orig_ord_no","required":true},{"name":"stk_cd","required":true},{"name":"cncl_qty","required":true}]},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "allowed"
+            return R()
+
+    captured = []
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            captured.append({"api_id": getattr(req, "api_id", None), "body": dict(getattr(req, "body", {}) or {})})
+            idx = len(captured)
+
+            class Result:
+                response = ApiResponse.from_http(
+                    200,
+                    (
+                        '{"ord_no":"S000123","msg_cd":"0000","msg1":"accepted",'
+                        '"ord_qty":"10","filled_qty":"0","remaining_qty":"10"}'
+                        if idx == 1
+                        else '{"ord_no":"S000124","msg_cd":"0000","msg1":"accepted"}'
+                    ),
+                )
+                meta = {"executor": "real"}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "supervisor": AllowSupervisor(),
+        "executor": CaptureExecutor(),
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "005930", "qty": 10, "avg_price": 293000.0}],
+            "_health": {
+                "reader_ok": True,
+                "source": "reader",
+                "positions_source": "reader_positions_authoritative",
+                "reconciliation_status": "reader_aligned",
+                "reader_positions_authoritative": True,
+                "positions_mismatch_detected": False,
+                "reconciliation_applied": False,
+                "reader_positions_count": 1,
+                "persisted_positions_count": 1,
+            },
+        },
+        "now_epoch": 1778739000,
+        "decision_packet": {
+            "intent": {
+                "action": "SELL",
+                "symbol": "005930",
+                "qty": 10,
+                "price": 294000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+                "meta": {"position_qty": 10, "exit_qty": 10},
+            },
+            "risk": {"open_positions": 1},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    recovery = out["execution"]["unfilled_order_recovery"]
+    assert recovery["attempted"] is True
+    assert recovery["cancel_ok"] is True
+    assert recovery["market_replacement_ok"] is True
+    assert recovery["reason"] == "sell_unfilled_market_replacement_submitted"
+    assert [row["api_id"] for row in captured] == ["kt10001", "kt10003", "kt10001"]
+    assert captured[1]["body"]["orig_ord_no"] == "S000123"
+    assert captured[2]["body"]["stk_cd"] == "005930"
+    assert captured[2]["body"]["ord_qty"] == "10"
+    assert str(captured[2]["body"]["trde_tp"]) == "3"
+    assert str(captured[2]["body"].get("ord_uv") or "") == ""
+
+
+def test_execute_from_packet_cancels_pending_unfilled_buy_without_market_replacement(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "true")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"kt10000","title":"buy","method":"POST","path":"/api/dostk/ordr","params":{"body":[{"name":"stk_cd","required":true},{"name":"ord_qty","required":true},{"name":"trde_tp","required":true},{"name":"ord_uv","required":false}]},"_flags":{"callable":true}}\n'
+        '{"api_id":"kt10003","title":"cancel","method":"POST","path":"/api/dostk/ordr","params":{"body":[{"name":"orig_ord_no","required":true},{"name":"stk_cd","required":true},{"name":"cncl_qty","required":true}]},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "allowed"
+            return R()
+
+    captured = []
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            captured.append({"api_id": getattr(req, "api_id", None), "body": dict(getattr(req, "body", {}) or {})})
+            idx = len(captured)
+
+            class Result:
+                response = ApiResponse.from_http(
+                    200,
+                    (
+                        '{"ord_no":"B000123","msg_cd":"0000","msg1":"accepted",'
+                        '"ord_qty":"10","filled_qty":"0","remaining_qty":"10"}'
+                        if idx == 1
+                        else '{"ord_no":"B000124","msg_cd":"0000","msg1":"cancel accepted"}'
+                    ),
+                )
+                meta = {"executor": "real"}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "supervisor": AllowSupervisor(),
+        "executor": CaptureExecutor(),
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [],
+            "_health": {
+                "reader_ok": True,
+                "source": "reader",
+                "positions_source": "reader_positions_authoritative_empty",
+                "reconciliation_status": "reader_aligned",
+                "reader_positions_authoritative": True,
+                "positions_mismatch_detected": False,
+                "reconciliation_applied": False,
+                "reader_positions_count": 0,
+                "persisted_positions_count": 0,
+            },
+        },
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 10,
+                "price": 294000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    recovery = out["execution"]["unfilled_order_recovery"]
+    assert recovery["attempted"] is True
+    assert recovery["cancel_ok"] is True
+    assert recovery["reason"] == "buy_unfilled_cancelled"
+    assert "market_replacement" not in recovery
+    assert [row["api_id"] for row in captured] == ["kt10000", "kt10003"]
+    assert captured[1]["body"]["orig_ord_no"] == "B000123"
 
 
 def test_execute_from_packet_allows_buy_when_mock_cash_sufficient(tmp_path, monkeypatch):

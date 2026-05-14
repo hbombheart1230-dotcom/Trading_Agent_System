@@ -394,6 +394,27 @@ def _is_open_position_placeholder_reason(value: Any) -> bool:
     return any(token in text for token in markers)
 
 
+def _is_hold_placeholder_exit_reason(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    normalized = re.sub(r"^sell\s+was\s+triggered\s+because\s*", "", text, flags=re.IGNORECASE)
+    normalized = normalized.strip().strip(".").strip().lower()
+    return normalized in {"hold", "hold_position", "holding", "보유", "보유 유지"} or "because hold" in text.lower()
+
+
+def _lifecycle_summary_conflicts_with_status(value: Any, status: Any) -> bool:
+    text = str(value or "").strip().lower()
+    status_text = str(status or "").strip().lower()
+    if not text or not status_text:
+        return False
+    if status_text == "closed" and (" is partial" in text or "status is partial" in text):
+        return True
+    if status_text == "partial" and (" is closed" in text or "status is closed" in text):
+        return True
+    return False
+
+
 def _story_post_exit_shadow(story_input: Dict[str, Any]) -> Dict[str, Any]:
     for candidate in (
         _as_dict(story_input.get("post_exit_shadow")),
@@ -452,7 +473,9 @@ def _set_fact_if_missing(
 ) -> None:
     if not _present_fact(value):
         return
-    if field == "exit_reason" and _is_open_position_placeholder_reason(value):
+    if field == "exit_reason" and (
+        _is_open_position_placeholder_reason(value) or _is_hold_placeholder_exit_reason(value)
+    ):
         return
     if _present_fact(resolved.get(field)):
         if str(resolved.get(field)) != str(value):
@@ -721,7 +744,7 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
     # explicit exit-side action evidence to prevent BUY+closed inconsistencies.
     resolved_status = _as_status(resolved.get("status"))
     resolved_action = _as_action(resolved.get("action"))
-    if resolved_status == "closed" and resolved_action == "BUY":
+    if resolved_status == "closed" and resolved_action not in {"SELL", "EXIT"}:
         reconciled_action = ""
         for candidate in (
             _as_action(exit_summary.get("action")),
@@ -738,6 +761,33 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
         if reconciled_action:
             resolved["action"] = reconciled_action
             data_source["action"] = "closed_lifecycle_reconcile"
+
+    existing_exit_reason_text = str(resolved.get("exit_reason") or "").strip().lower()
+    if (
+        resolved_status == "closed"
+        and _as_action(resolved.get("action")) in {"SELL", "EXIT"}
+        and (
+            "sell 실행 및 잔여수량" in existing_exit_reason_text
+            or "sell_execution_confirmed" in existing_exit_reason_text
+            or "full_sell_quantity_reconciled" in existing_exit_reason_text
+        )
+    ):
+        resolved["exit_reason"] = "exit_trigger_not_captured"
+        resolved["exit_execution_status"] = "sell_execution_full_close_confirmed"
+        data_source["exit_reason"] = "closed_lifecycle_reconcile"
+        data_source["exit_execution_status"] = "closed_lifecycle_reconcile"
+    if (
+        resolved_status == "closed"
+        and _as_action(resolved.get("action")) in {"SELL", "EXIT"}
+        and (
+            resolved.get("exit_reason") in (None, "", "unavailable")
+            or _is_hold_placeholder_exit_reason(resolved.get("exit_reason"))
+        )
+    ):
+        resolved["exit_reason"] = "exit_trigger_not_captured"
+        resolved["exit_execution_status"] = "sell_execution_full_close_confirmed"
+        data_source["exit_reason"] = "closed_lifecycle_reconcile"
+        data_source["exit_execution_status"] = "closed_lifecycle_reconcile"
 
     monitor_decision = {
         "phase": _clip(canonical_monitor.get("decision_phase"), max_len=32) or "unavailable",
@@ -828,7 +878,12 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
                 (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"holding_duration": "trade_read_model"})
         except Exception:
             pass
-    if resolved_facts.get("exit_reason") in (None, "", "unavailable") and str(trade_read_model_facts.get("exit_reason") or "").strip():
+    if resolved_facts.get("exit_reason") in (
+        None,
+        "",
+        "unavailable",
+        "exit_trigger_not_captured",
+    ) and str(trade_read_model_facts.get("exit_reason") or "").strip():
         resolved_facts["exit_reason"] = _clip(trade_read_model_facts.get("exit_reason"), max_len=280)
         (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"exit_reason": "trade_read_model"})
     read_model_pnl_source = str(trade_read_model_field_sources.get("pnl") or "").strip()
@@ -1238,6 +1293,12 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             trade_model_monitor.get("stop_policy_trace"), max_items=8, max_len=120
         )
     trade_model_strategist = trade_read_model_context.get("strategist") if isinstance(trade_read_model_context.get("strategist"), dict) else {}
+    canonical_trace_summary = (
+        _as_dict(story_input.get("strategist_trace_summary"))
+        or _as_dict(story_input.get("trace_summary"))
+        or _as_dict(canonical_strategist.get("trace_summary"))
+        or _as_dict(canonical_strategist.get("strategist_trace_summary"))
+    )
     theme_strength_packet = (
         _as_dict(market_context.get("theme_strength_packet"))
         or _as_dict(trade_model_strategist.get("theme_strength_packet"))
@@ -1266,6 +1327,30 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "policy_source": _first_nonempty_text(
             market_context.get("policy_source"),
             trade_model_strategist.get("policy_source"),
+            max_len=80,
+        ),
+        "risk_tone": _first_nonempty_text(
+            market_context.get("risk_tone"),
+            trade_model_strategist.get("risk_tone"),
+            canonical_trace_summary.get("risk_tone"),
+            canonical_strategist.get("risk_tone"),
+            canonical_strategist_decision_frame.get("risk_tone"),
+            max_len=40,
+        ),
+        "trade_aggressiveness": _first_nonempty_text(
+            market_context.get("trade_aggressiveness"),
+            trade_model_strategist.get("trade_aggressiveness"),
+            canonical_trace_summary.get("trade_aggressiveness"),
+            canonical_strategist.get("trade_aggressiveness"),
+            canonical_strategist_decision_frame.get("trade_aggressiveness"),
+            max_len=40,
+        ),
+        "monitor_guidance": _first_nonempty_text(
+            market_context.get("monitor_guidance"),
+            trade_model_strategist.get("monitor_guidance"),
+            canonical_trace_summary.get("monitor_guidance"),
+            canonical_strategist.get("monitor_guidance"),
+            canonical_strategist_decision_frame.get("monitor_guidance"),
             max_len=80,
         ),
         "themes": _listify(
@@ -1510,6 +1595,13 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
     executive_summary["symbol"] = symbol
     if not str(executive_summary.get("headline") or "").strip():
         executive_summary["headline"] = f"{action} {symbol}"
+    if status_text.lower() == "closed" and _lifecycle_summary_conflicts_with_status(
+        executive_summary.get("summary"),
+        status_text,
+    ):
+        exit_label = _exit_reason_label(shared_seed.get("exit_reason")) or "매도 실행 확인"
+        executive_summary["summary"] = f"Trade {shared_seed.get('trade_id') or ''} for {symbol} is closed. Exit: {exit_label}"
+        executive_summary["headline"] = f"{action} {symbol}"
     out["executive_summary"] = executive_summary
     out["report_generation"] = dict(out.get("generation") or {})
     strategist_output = _compact_strategist_report_context(story_input)
@@ -1545,6 +1637,13 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
 
     final_conclusion = out.get("final_operator_conclusion") if isinstance(out.get("final_operator_conclusion"), dict) else {}
     normalized_conclusion = dict(final_conclusion)
+    if status_text.lower() == "closed" and _lifecycle_summary_conflicts_with_status(
+        normalized_conclusion.get("summary"),
+        status_text,
+    ):
+        normalized_conclusion["summary"] = executive_summary.get("summary") or (
+            f"Trade {shared_seed.get('trade_id') or ''} for {symbol} is closed."
+        )
     normalized_conclusion["current_action"] = "HOLD" if status_text.lower() == "open" and action == "BUY" else action
     out["final_operator_conclusion"] = normalized_conclusion
     if "section_provenance" not in out:
@@ -1581,6 +1680,9 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
     strategist_context_for_theme = _as_dict(shared_seed.get("strategist_context"))
     market_section_for_theme = out.get("market_context_at_entry") if isinstance(out.get("market_context_at_entry"), dict) else {}
     for theme_key in (
+        "risk_tone",
+        "trade_aggressiveness",
+        "monitor_guidance",
         "theme_strength_packet",
         "theme_source",
         "theme_source_status",
@@ -3182,6 +3284,17 @@ def _exit_reason_label(value: Any) -> str:
         return "추적 손절로 청산"
     if "vwap_breakdown" in lowered:
         return "VWAP 이탈로 청산"
+    if (
+        "exit_trigger_not_captured" in lowered
+        or "monitor_exit_trigger_not_captured" in lowered
+        or "sell 실행 및 잔여수량" in lowered
+        or "청산 트리거 미확인" in lowered
+        or "청산 이유는 기록되지" in lowered
+        or "exit reasoning was not captured" in lowered
+    ):
+        return "모니터 청산 트리거 미확인"
+    if "sell_execution_confirmed" in lowered or "full_sell_quantity_reconciled" in lowered:
+        return "모니터 청산 트리거 미확인"
     if "intraday low break" in lowered or "intraday_low_break" in lowered:
         return "장중 저점 이탈 기준으로 청산"
     if "below_vwap_reclaim_not_ready" in lowered or "below vwap reclaim not ready" in lowered:
@@ -3479,10 +3592,13 @@ def _resolve_entry_monitor_reason(
         or _as_dict(payload.get("effective_policy"))
         or _as_dict(payload.get("received_policy"))
     )
+    entry_metrics = _as_dict(payload.get("metrics")) or _as_dict(payload.get("entry_metrics"))
     if grouped_trace:
         resolved["entry_grouped_logic_trace"] = grouped_trace
     if condition_scores:
         resolved["entry_condition_scores"] = condition_scores
+    if entry_metrics:
+        resolved["entry_metrics"] = entry_metrics
     if payload.get("entry_condition_path") not in (None, ""):
         resolved["entry_condition_path"] = payload.get("entry_condition_path")
     if isinstance(payload.get("entry_condition_paths_passed"), list):
@@ -3884,6 +4000,13 @@ def _build_reporter_evaluation_from_feedback(reporter_feedback_packet: Dict[str,
     closed_trade_count = int(trade_summary.get("closed_trade_count") or 0)
     win_count = int(trade_summary.get("win_count") or 0)
     loss_count = int(trade_summary.get("loss_count") or 0)
+    flat_count = int(trade_summary.get("flat_count") or 0)
+    unknown_pnl_count = int(trade_summary.get("unknown_pnl_count") or 0)
+    if closed_trade_count > 0 and unknown_pnl_count <= 0:
+        inferred_unknown = closed_trade_count - win_count - loss_count - flat_count
+        if inferred_unknown > 0:
+            unknown_pnl_count = inferred_unknown
+    pnl_pct_sample_count = int(trade_summary.get("pnl_pct_sample_count") or 0)
     avg_pnl_pct = _num_opt(trade_summary.get("avg_pnl_pct"))
 
     summary_parts: List[str] = [
@@ -3892,8 +4015,13 @@ def _build_reporter_evaluation_from_feedback(reporter_feedback_packet: Dict[str,
     if closed_trade_count > 0:
         trade_bits = [f"당일 closed trade {closed_trade_count}건"]
         trade_bits.append(f"승/패 {win_count}/{loss_count}")
-        if avg_pnl_pct is not None:
-            trade_bits.append(f"평균 손익률 {_fmt_pct(avg_pnl_pct)}")
+        if flat_count > 0:
+            trade_bits.append(f"보합 {flat_count}건")
+        if unknown_pnl_count > 0:
+            trade_bits.append(f"손익 미확정 {unknown_pnl_count}건")
+        if avg_pnl_pct is not None and pnl_pct_sample_count > 0:
+            avg_label = "확인분 평균 손익률" if unknown_pnl_count > 0 else "평균 손익률"
+            trade_bits.append(f"{avg_label} {_fmt_pct(avg_pnl_pct)}")
         summary_parts.append(", ".join(trade_bits) + "였습니다.")
     if insight_summary:
         summary_parts.append(insight_summary)
@@ -3902,8 +4030,13 @@ def _build_reporter_evaluation_from_feedback(reporter_feedback_packet: Dict[str,
     bullets.append(f"피드백 생성 소스는 {', '.join(source_labels)}입니다.")
     if closed_trade_count > 0:
         trade_line = f"당일 closed trade 집계는 {closed_trade_count}건, 승패 {win_count}/{loss_count}"
-        if avg_pnl_pct is not None:
-            trade_line += f", 평균 손익률 {_fmt_pct(avg_pnl_pct)}"
+        if flat_count > 0:
+            trade_line += f", 보합 {flat_count}건"
+        if unknown_pnl_count > 0:
+            trade_line += f", 손익 미확정 {unknown_pnl_count}건"
+        if avg_pnl_pct is not None and pnl_pct_sample_count > 0:
+            avg_label = "확인분 평균 손익률" if unknown_pnl_count > 0 else "평균 손익률"
+            trade_line += f", {avg_label} {_fmt_pct(avg_pnl_pct)}"
         trade_line += "입니다."
         bullets.append(trade_line)
     for row in dominant_patterns:
@@ -4249,6 +4382,7 @@ def _extract_strategy_detail_from_source(source: Any) -> Dict[str, Any]:
         "requested_playbook_source",
         "final_playbook",
         "tactical_strategy",
+        "tactical_subtype",
     ):
         value = _pick_text(key)
         if value:
@@ -4307,6 +4441,7 @@ def _compact_strategy_detail_context(value: Any) -> Dict[str, Any]:
         ("requested_playbook_source", 60),
         ("final_playbook", 60),
         ("tactical_strategy", 80),
+        ("tactical_subtype", 80),
     ):
         text = _clip(detail.get(key), max_len=max_len)
         if text:
@@ -4344,6 +4479,7 @@ def _compact_candidate_watch_proposal(value: Any) -> Dict[str, Any]:
         "source": _clip(data.get("source"), max_len=80),
         "behavior_effect": _clip(data.get("behavior_effect"), max_len=48),
         "tactical_strategy": _clip(data.get("tactical_strategy"), max_len=80),
+        "tactical_subtype": _clip(data.get("tactical_subtype"), max_len=80),
         "max_priority_rank": data.get("max_priority_rank"),
         "max_runner_ups": data.get("max_runner_ups"),
         "cascade_enabled": data.get("cascade_enabled"),
@@ -4936,6 +5072,7 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                 max_items=6,
                 max_len=80,
             ),
+            "risk_tone": _clip(market_context.get("risk_tone") or strategist_context.get("risk_tone"), max_len=40),
             "risk_mode": _clip(policy_ref_context.get("risk_mode"), max_len=32),
             "selected_playbook": _clip(policy_ref_context.get("selected_playbook"), max_len=32),
             "preferred_themes": _listify(policy_ref_context.get("preferred_themes"), max_items=4, max_len=80),
@@ -6809,6 +6946,12 @@ def _fallback_report(
         market_context["selected_playbook"] = strategist_context.get("selected_playbook")
     if strategist_context.get("policy_source") and not market_context.get("policy_source"):
         market_context["policy_source"] = strategist_context.get("policy_source")
+    if strategist_context.get("risk_tone") and not market_context.get("risk_tone"):
+        market_context["risk_tone"] = strategist_context.get("risk_tone")
+    if strategist_context.get("trade_aggressiveness") and not market_context.get("trade_aggressiveness"):
+        market_context["trade_aggressiveness"] = strategist_context.get("trade_aggressiveness")
+    if strategist_context.get("monitor_guidance") and not market_context.get("monitor_guidance"):
+        market_context["monitor_guidance"] = strategist_context.get("monitor_guidance")
     if strategist_context.get("themes") and not market_context.get("themes"):
         market_context["themes"] = list(strategist_context.get("themes") or [])
     if strategist_context.get("preferred_themes") and not market_context.get("preferred_themes"):
@@ -6904,6 +7047,18 @@ def _fallback_report(
     }
     entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
     entry_monitor_reason = _resolve_entry_monitor_reason(story_input, monitor_reason, entry_summary)
+    for key in (
+        "entry_metrics",
+        "entry_thresholds",
+        "entry_condition_scores",
+        "entry_grouped_logic_trace",
+        "entry_condition_path",
+        "entry_condition_paths_passed",
+        "entry_reason",
+    ):
+        value = entry_monitor_reason.get(key)
+        if value not in (None, "", [], {}) and monitor_snapshot.get(key) in (None, "", [], {}):
+            monitor_snapshot[key] = value
     holding_summary = story_input.get("holding_summary") if isinstance(story_input.get("holding_summary"), dict) else {}
     exit_summary = story_input.get("exit_summary") if isinstance(story_input.get("exit_summary"), dict) else {}
     lifecycle_summary = story_input.get("lifecycle_summary") if isinstance(story_input.get("lifecycle_summary"), dict) else {}
@@ -6999,13 +7154,22 @@ def _fallback_report(
     symbol = _clip(shared_seed.get("symbol"), max_len=32) or _clip(story_input.get("symbol"), max_len=32) or "unknown"
     trade_id = _clip(shared_seed.get("trade_id"), max_len=120) or _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
     status_text = _clip(shared_seed.get("lifecycle_status"), max_len=32) or _clip(story_input.get("status"), max_len=32) or "closed"
-    executive_reason = (
-        _clip(operator_conclusion.get("summary"), max_len=600)
-        or _clip(lifecycle_summary.get("lifecycle_summary_human"), max_len=600)
-        or _clip(execution_outcome.get("summary"), max_len=600)
-        or _clip(scanner_reason.get("summary"), max_len=600)
-        or "The decision path was recorded, but the operator-facing summary is limited."
-    )
+    operator_summary_text = _clip(operator_conclusion.get("summary"), max_len=600)
+    lifecycle_summary_text = _clip(lifecycle_summary.get("lifecycle_summary_human"), max_len=600)
+    if _lifecycle_summary_conflicts_with_status(lifecycle_summary_text, status_text):
+        lifecycle_summary_text = ""
+    execution_outcome_text = _clip(execution_outcome.get("summary"), max_len=600)
+    scanner_summary_text = _clip(scanner_reason.get("summary"), max_len=600)
+    if status_text.strip().lower() == "closed" and lifecycle_summary_text:
+        executive_reason = lifecycle_summary_text
+    else:
+        executive_reason = (
+            operator_summary_text
+            or lifecycle_summary_text
+            or execution_outcome_text
+            or scanner_summary_text
+            or "The decision path was recorded, but the operator-facing summary is limited."
+        )
     confidence = _clip(scanner_reason.get("confidence_label"), max_len=24) or _clip(scanner_reason.get("confidence"), max_len=24)
     scanner_choice_summary = _build_scanner_choice_summary(scanner_reason, market_context)
     if (
@@ -7210,6 +7374,7 @@ def _fallback_report(
             "theme_source_status": _clip(market_context.get("theme_source_status"), max_len=80),
             "theme_source_reason": _clip(market_context.get("theme_source_reason"), max_len=160),
             "theme_strength_top_themes": _listify(market_context.get("theme_strength_top_themes"), max_items=6, max_len=80),
+            "risk_tone": _clip(market_context.get("risk_tone"), max_len=40),
             "risk_mode": _clip(market_context.get("risk_mode"), max_len=40),
             "selected_playbook": _clip(market_context.get("selected_playbook"), max_len=40),
             "preferred_themes": _listify(market_context.get("preferred_themes"), max_items=6, max_len=80),
@@ -7306,14 +7471,22 @@ def _fallback_report(
         "timeline": full_timeline,
         "final_operator_conclusion": {
             "summary": (
-                _clip(operator_conclusion.get("summary"), max_len=600)
-                or _clip(final_operator_conclusion_seed.get("summary"), max_len=600)
-                or executive_reason
+                executive_reason
+                if status_text.strip().lower() == "closed" and lifecycle_summary_text
+                else (
+                    _clip(operator_conclusion.get("summary"), max_len=600)
+                    or _clip(final_operator_conclusion_seed.get("summary"), max_len=600)
+                    or executive_reason
+                )
             ),
             "current_action": (
-                _clip(operator_conclusion.get("current_action"), max_len=24)
-                or _clip(final_operator_conclusion_seed.get("current_action"), max_len=24)
-                or action
+                action
+                if status_text.strip().lower() == "closed"
+                else (
+                    _clip(operator_conclusion.get("current_action"), max_len=24)
+                    or _clip(final_operator_conclusion_seed.get("current_action"), max_len=24)
+                    or action
+                )
             ),
             "watch_next": (
                 _listify(operator_conclusion.get("watch_next"), max_items=6, max_len=200)

@@ -1600,19 +1600,163 @@ def test_live_execution_bundle_report_keeps_open_lifecycle_without_exit(tmp_path
     assert out["trade_lifecycle_count"] == 1
     lifecycle = out["bundles"][0]
     assert lifecycle["status"] == "open"
-    assert lifecycle["report_status"] == "available"
-    assert lifecycle["report_reason_code"] == "deterministic_only"
+    assert lifecycle["report_status"] == "pending"
+    assert lifecycle["report_reason_code"] == "awaiting_exit_for_full_report"
     story_id = lifecycle["story_id"]
     trade_dir = reports_root / "trades" / day / story_id
     assert (trade_dir / "ai_trade_report_input.json").exists()
-    assert (trade_dir / "reports" / "ai_trade_report.json").exists()
+    assert not (trade_dir / "reports" / "ai_trade_report.json").exists()
+    assert not (trade_dir / "reports" / "ai_trade_summary.md").exists()
     bundle = json.loads((trade_dir / "lifecycle_bundle.json").read_text(encoding="utf-8"))
     diagnostics = bundle.get("ai_report_diagnostics") or {}
-    assert diagnostics.get("report_status") == "available"
-    assert diagnostics.get("report_reason_code") == "deterministic_only"
+    assert diagnostics.get("report_status") == "pending"
+    assert diagnostics.get("report_reason_code") == "awaiting_exit_for_full_report"
+    assert bundle["artifacts"]["ai_trade_report_json"] == ""
+    assert not (trade_dir / "reports" / "ai_trade_summary.json").exists()
     assert isinstance(bundle.get("entry"), dict)
     assert isinstance(bundle.get("exit"), dict)
     assert isinstance(bundle.get("shared_facts"), dict)
+
+
+def test_live_execution_bundle_report_defers_partial_exit_report_until_full_close(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    day = "2026-05-12"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {
+                "run_id": "run-buy",
+                "ts": f"{day}T01:00:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {
+                    "order": {"action": "BUY", "symbol": "003060", "qty": 1000},
+                    "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}},
+                },
+            },
+            {
+                "run_id": "run-sell-partial",
+                "ts": f"{day}T01:01:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {
+                    "order": {"action": "SELL", "symbol": "003060", "qty": 1},
+                    "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}},
+                },
+            },
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert out["trade_lifecycle_count"] == 1
+    lifecycle = out["bundles"][0]
+    assert lifecycle["status"] == "open"
+    assert lifecycle["report_status"] == "pending"
+    assert lifecycle["report_reason_code"] == "awaiting_exit_for_full_report"
+    trade_dir = reports_root / "trades" / day / lifecycle["story_id"]
+    assert (trade_dir / "ai_trade_report_input.json").exists()
+    assert not (trade_dir / "reports" / "ai_trade_report.json").exists()
+    assert not (trade_dir / "reports" / "ai_trade_summary.md").exists()
+    bundle = json.loads((trade_dir / "lifecycle_bundle.json").read_text(encoding="utf-8"))
+    assert bundle["trade_lifecycle_status"] == "open"
+    assert bundle["timeline"][-1]["event"] == "partial_exit"
+    attach_debug = bundle["lifecycle_attach_debug"][0]
+    assert attach_debug["remaining_qty"] == 999
+    assert attach_debug["exit_qty"] == 1
+    assert attach_debug["closes_position"] is False
+    assert bundle["artifacts"]["ai_trade_report_json"] == ""
+    assert not (trade_dir / "reports" / "ai_trade_summary.json").exists()
+
+
+def test_live_execution_bundle_report_generates_recovered_full_sell_report(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    day = "2026-05-13"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {
+                "run_id": "run-sell",
+                "ts": f"{day}T00:01:12+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {
+                    "order": {"action": "SELL", "symbol": "064240", "qty": 1000},
+                    "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}},
+                },
+            },
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert out["trade_lifecycle_count"] == 1
+    lifecycle = out["bundles"][0]
+    assert lifecycle["status"] == "closed"
+    assert lifecycle["report_reason_code"] == ""
+    trade_dir = reports_root / "trades" / day / lifecycle["story_id"]
+    bundle = json.loads((trade_dir / "lifecycle_bundle.json").read_text(encoding="utf-8"))
+    assert bundle["trade_lifecycle_status"] == "closed"
+    assert (trade_dir / "reports" / "ai_trade_report.json").exists()
+    assert (trade_dir / "reports" / "ai_trade_summary.md").exists()
 
 
 def test_live_execution_bundle_report_syncs_health_with_written_report_files(tmp_path: Path, capsys, monkeypatch) -> None:

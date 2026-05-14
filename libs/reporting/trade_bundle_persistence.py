@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, MutableMapping
 
@@ -37,6 +38,31 @@ def _preserve_existing_llm_artifact(
         return
 
 
+def _copy_strategist_summary_refs_to_trade(
+    *,
+    strategist_llm_artifact: Mapping[str, Any] | None,
+    strategist_llm_response_path: Path,
+) -> Dict[str, str]:
+    artifact = dict(strategist_llm_artifact or {})
+    reports_dir = Path(strategist_llm_response_path).parent
+    copied: Dict[str, str] = {}
+    for source_key, target_key, file_name in (
+        ("strategist_summary_md_ref", "trade_strategist_summary_md_ref", "strategist_summary.md"),
+        ("strategist_summary_json_ref", "trade_strategist_summary_json_ref", "strategist_summary.json"),
+    ):
+        source_ref = str(artifact.get(source_key) or "").strip()
+        if not source_ref:
+            continue
+        source_path = Path(source_ref)
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        target_path = reports_dir / file_name
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        copied[target_key] = str(target_path)
+    return copied
+
+
 def persist_trade_llm_artifacts(
     *,
     reports_root: Path,
@@ -55,6 +81,11 @@ def persist_trade_llm_artifacts(
         run_id=str(strategy_anchor_run_id or anchor_run_id or ""),
         component="strategist",
     )
+    strategist_summary_copy_refs = _copy_strategist_summary_refs_to_trade(
+        strategist_llm_artifact=strategist_llm_artifact,
+        strategist_llm_response_path=strategist_llm_response_path,
+    )
+    strategist_llm_artifact.update(strategist_summary_copy_refs)
     write_json(strategist_llm_response_path, strategist_llm_artifact)
 
     ai_trade_report_llm_compact: Dict[str, Any] = dict(ai_trade_report_llm_artifact or {})
@@ -80,6 +111,7 @@ def persist_trade_llm_artifacts(
     return {
         "strategist_llm_artifact": strategist_llm_artifact,
         "strategist_llm_response_written": str(strategist_llm_response_path),
+        "strategist_summary_copy_refs": strategist_summary_copy_refs,
         "ai_trade_report_llm_artifact": ai_trade_report_llm_compact,
         "ai_trade_report_llm_response_written": ai_trade_report_llm_response_written,
     }

@@ -99,12 +99,12 @@ def test_commander_keeps_candidate_expansion_when_status_blocked_but_capacity_av
         },
         "strategist_output": {
             "playbook": "pullback",
-            "tactical_strategy": "leader_vwap_reclaim_pullback",
+            "tactical_strategy": "vwap_reclaim_pullback",
             "candidate_watch_policy": {
                 "source": "strategist_visibility_proposal",
                 "behavior_effect": "visibility_only",
                 "playbook": "pullback",
-                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "tactical_strategy": "vwap_reclaim_pullback",
                 "max_priority_rank": 1,
                 "max_runner_ups": 0,
                 "cascade_enabled": False,
@@ -2946,6 +2946,124 @@ def test_m31_integrated_chain_reuses_cached_strategist_when_flat(monkeypatch):
         "monitor",
         "decision",
     ]
+
+
+def test_m31_integrated_chain_suppresses_post_scanner_refresh_when_input_fingerprint_same(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        state["strategist_output"] = {"playbook": "fresh_entry_frame"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        state["selected"] = {
+            "symbol": "005930",
+            "rank": 1,
+            "score": 72.0,
+            "scanner_chart_fit_score": 0.64,
+            "expected_move_pct": 0.018,
+            "theme": "semiconductor",
+        }
+        state["scanner_output"] = {
+            "top_stock": "005930",
+            "candidates": [
+                {
+                    "symbol": "005930",
+                    "rank": 1,
+                    "score": 72.0,
+                    "scanner_chart_fit_score": 0.64,
+                    "expected_move_pct": 0.018,
+                    "theme": "semiconductor",
+                },
+                {
+                    "symbol": "000660",
+                    "rank": 2,
+                    "score": 69.0,
+                    "scanner_chart_fit_score": 0.61,
+                    "expected_move_pct": 0.016,
+                    "theme": "semiconductor",
+                },
+            ],
+        }
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-suppress-post-scanner-refresh",
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
+            "now_epoch": 1000,
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {"playbook": "cached_frame", "monitor_guidance": "tight_confirm"},
+                    "generated_epoch": 950,
+                    "input_fingerprint": {
+                        "schema_version": "strategist_input_fingerprint.v1",
+                        "selected_symbol": "005930",
+                        "selected_rank_bucket": "rank1",
+                        "selected_score_bucket": "72.00-72.10",
+                        "selected_chart_fit_bucket": "0.60-0.70",
+                        "selected_edge_bucket": "tradable",
+                        "entry_gate_bucket": "unknown",
+                        "top_symbols": ["005930", "000660"],
+                        "top3_symbols": ["005930", "000660"],
+                        "top_themes": ["semiconductor"],
+                        "market_regime": "",
+                        "open_position_count": 0,
+                        "open_symbols": [],
+                    },
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+    assert out["path"] == "integrated_chain_cached_frame"
+    decision = out.get("commander_decision") or {}
+    context = decision.get("strategist_refresh_context") or {}
+    assert context.get("post_scanner_refresh_suppressed") is True
+    assert context.get("post_scanner_refresh_suppressed_reason") == "strategist_input_context_unchanged"
+    drift = context.get("strategist_input_drift") or {}
+    assert drift.get("material_change") is False
 
 
 def test_m31_integrated_chain_refreshes_strategist_before_buy_when_flat_cache_is_near_entry(monkeypatch):

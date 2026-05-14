@@ -7,6 +7,7 @@ from libs.reporting.llm_artifacts import symbol_artifact_paths
 from libs.reporting.symbol_trade_report import build_symbol_trade_summary
 from libs.reporting.symbol_trade_report import build_symbol_memory_payload
 from libs.reporting.symbol_trade_report import generate_symbol_trade_report
+from libs.reporting.symbol_trade_report import _clean_symbol_free_text
 
 
 def _write_json(path: Path, obj: dict) -> None:
@@ -19,6 +20,12 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def test_symbol_free_text_does_not_keep_sell_execution_confirmation_as_exit_viewpoint() -> None:
+    text = "Trade TRD for 064240 is closed. Exit: SELL 실행 및 잔여수량 0 확인으로 전량 청산됐습니다."
+
+    assert _clean_symbol_free_text(text, exit_reason="모니터 청산 트리거 미확인") == "모니터 청산 트리거 미확인"
 
 
 def test_symbol_artifact_paths_use_canonical_symbol_root(tmp_path: Path) -> None:

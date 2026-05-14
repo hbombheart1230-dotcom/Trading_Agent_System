@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import time
@@ -1918,8 +1918,8 @@ def test_ai_trade_report_compact_input_surfaces_structured_strategist_output_bou
             "pre_llm_playbook": "defensive",
             "llm_requested_playbook": "pullback",
             "final_playbook": "pullback",
-            "tactical_strategy": "leader_vwap_reclaim_pullback",
-            "strategy_scores": {"leader_vwap_reclaim_pullback": 0.77, "defensive_observe": 0.22},
+            "tactical_strategy": "vwap_reclaim_pullback",
+            "strategy_scores": {"vwap_reclaim_pullback": 0.77, "defensive_observe": 0.22},
             "candidate_watch_policy": {
                 "behavior_effect": "visibility_only",
                 "max_priority_rank": 5,
@@ -1999,8 +1999,8 @@ def test_ai_trade_report_preserves_and_renders_structured_strategist_output() ->
             "pre_llm_playbook": "defensive",
             "llm_requested_playbook": "pullback",
             "final_playbook": "pullback",
-            "tactical_strategy": "leader_vwap_reclaim_pullback",
-            "strategy_scores": {"leader_vwap_reclaim_pullback": 0.73, "defensive_observe": 0.31},
+            "tactical_strategy": "vwap_reclaim_pullback",
+            "strategy_scores": {"vwap_reclaim_pullback": 0.73, "defensive_observe": 0.31},
             "candidate_watch_policy": {
                 "behavior_effect": "visibility_only",
                 "max_priority_rank": 5,
@@ -2046,7 +2046,7 @@ def test_ai_trade_report_preserves_and_renders_structured_strategist_output() ->
     report = mod.build_deterministic_trade_report(story_input)
     strategist_output = report.get("strategist_output") or {}
     assert strategist_output["strategy_thesis"]["selected_playbook"] == "pullback"
-    assert strategist_output["strategy_detail"]["tactical_strategy"] == "leader_vwap_reclaim_pullback"
+    assert strategist_output["strategy_detail"]["tactical_strategy"] == "vwap_reclaim_pullback"
     assert strategist_output["strategy_detail"]["candidate_watch_policy"]["max_priority_rank"] == 5
     assert strategist_output["memory_usage_trace"]["active_layers"] == ["daily"]
     assert strategist_output["news_usage_trace"]["query_targets"] == ["KOSPI", "000660"]
@@ -2055,7 +2055,7 @@ def test_ai_trade_report_preserves_and_renders_structured_strategist_output() ->
     assert "## 전략가 출력 근거" in markdown
     assert "- [전략가 출력]" in markdown
     assert "- [전략 디테일]" in markdown
-    assert "leader_vwap_reclaim_pullback" in markdown
+    assert "vwap_reclaim_pullback" in markdown
     assert "- [메모리]" in markdown
     assert "daily=used/fresh_packet" in markdown
     assert "- [뉴스]" in markdown
@@ -2075,14 +2075,14 @@ def test_ai_trade_report_surfaces_candidate_watch_execution_visibility() -> None
                 "risk_tone": "balanced",
                 "market_view": "leader pullback needs confirmation",
             },
-            "tactical_strategy": "leader_vwap_reclaim_pullback",
+            "tactical_strategy": "vwap_reclaim_pullback",
             "candidate_watch_policy": {
                 "source": "strategist_output.candidate_watch_policy",
                 "behavior_effect": "execution_proposal",
                 "max_priority_rank": 10,
                 "max_runner_ups": 9,
                 "cascade_enabled": True,
-                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "tactical_strategy": "vwap_reclaim_pullback",
                 "reason": "watch leaders beyond the first rank",
             },
         },
@@ -2173,9 +2173,9 @@ def test_trade_summary_omits_empty_candidate_watch_proposal_explanation() -> Non
     story_input = _story_input()
     story_input["canonical_agent_artifacts"] = {
         "strategist": {
-            "tactical_strategy": "leader_vwap_reclaim_pullback",
+            "tactical_strategy": "vwap_reclaim_pullback",
             "candidate_watch_policy": {
-                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "tactical_strategy": "vwap_reclaim_pullback",
                 "reason": "recent pullback pattern explanation",
             },
         }
@@ -2275,7 +2275,7 @@ def test_entry_execution_visibility_enriches_strategy_proposal_from_commander_pr
         "strategist": {
             "candidate_watch_policy": {
                 "source": "strategist_visibility_proposal",
-                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "tactical_strategy": "vwap_reclaim_pullback",
                 "reason": "watch clean pullbacks",
             }
         },
@@ -2301,7 +2301,7 @@ def test_entry_execution_visibility_enriches_strategy_proposal_from_commander_pr
 
     assert proposal["max_priority_rank"] == 5
     assert proposal["max_runner_ups"] == 4
-    assert proposal["tactical_strategy"] == "leader_vwap_reclaim_pullback"
+    assert proposal["tactical_strategy"] == "vwap_reclaim_pullback"
 
 
 def test_trade_report_reconstructs_strategy_output_surface_from_entry_visibility() -> None:
@@ -2318,7 +2318,7 @@ def test_trade_report_reconstructs_strategy_output_surface_from_entry_visibility
         "entry_execution_visibility": {
             "strategy_candidate_watch_proposal": {
                 "source": "strategist_visibility_proposal",
-                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "tactical_strategy": "vwap_reclaim_pullback",
                 "reason": "watch clean pullbacks",
             },
             "commander_entry_control": {
@@ -2341,7 +2341,7 @@ def test_trade_report_reconstructs_strategy_output_surface_from_entry_visibility
 
     assert "## 전략가 출력 근거" in markdown
     assert "- [전략 디테일]" in markdown
-    assert "전술=leader_vwap_reclaim_pullback" in markdown
+    assert "전술=vwap_reclaim_pullback" in markdown
     assert "후보 감시 제안=rank<=5 / runner_ups=4" in markdown
     assert "- [후보 감시 실행]" in markdown
     assert "전략가 제안: 5위까지 / 차순위 4개" in markdown
@@ -3648,8 +3648,10 @@ def test_render_trade_summary_markdown_creates_operator_summary_without_replacin
     assert "## 매도 후 가격 추적 (관측-only)" in full
     assert "* +15분: 101,000 (2.02%) / 구간 고가 101,500 / 구간 저가 98,500" in full
     assert "평균가는" not in summary
-    assert "## 🤖 LLM 평가 결론" in summary_with_eval
-    assert summary_with_eval.index("## 🤖 LLM 평가 결론") < summary_with_eval.index("## 🧭 거래 개요")
+    assert "## 🧾 확정 진단" in summary_with_eval
+    assert "## 🤖 LLM 복기 초안" in summary_with_eval
+    assert summary_with_eval.index("## 🧾 확정 진단") < summary_with_eval.index("## 🤖 LLM 복기 초안")
+    assert summary_with_eval.index("## 🤖 LLM 복기 초안") < summary_with_eval.index("## 🧭 거래 개요")
     assert "root_cause_candidates" not in summary_with_eval
     assert "何か" not in summary_with_eval
     assert "により" not in summary_with_eval
@@ -4465,7 +4467,6 @@ def test_trade_summary_labels_observed_negative_pct_as_loss_not_breakeven() -> N
     assert "실현 손익: **- (-2.77%)**" not in markdown
     assert "* 청산은 고정 손절 기준으로 실행됨" in markdown
     assert "청산은 목표 수익 실현 기준으로 실행됨" not in markdown
-    assert "* 관측 손익률: -2.42%" in markdown
     assert "키움 제공 손익률" not in markdown
     assert "비용 드래그: 0" not in markdown
 

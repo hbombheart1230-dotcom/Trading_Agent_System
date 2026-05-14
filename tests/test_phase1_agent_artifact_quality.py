@@ -27,7 +27,7 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
             "tactical_strategy": "opening_range_breakout",
             "strategy_scores": {
                 "opening_range_breakout": 0.82,
-                "leader_vwap_reclaim_pullback": 0.61,
+                "vwap_reclaim_pullback": 0.61,
                 "defensive_observe": 0.14,
             },
             "rejected_strategy_reasons": {
@@ -96,7 +96,7 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
             "tactical_strategy": "opening_range_breakout",
             "strategy_scores": {
                 "opening_range_breakout": 0.82,
-                "leader_vwap_reclaim_pullback": 0.61,
+                "vwap_reclaim_pullback": 0.61,
                 "defensive_observe": 0.14,
             },
             "rejected_strategy_reasons": {

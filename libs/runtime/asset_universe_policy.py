@@ -7,6 +7,7 @@ from libs.core.symbols import normalize_symbol
 
 
 COMMON_STOCK_ONLY_ASSET_TYPE = "common_stock_only"
+ALL_TRADABLE_ASSET_TYPE = "all_tradable"
 ETF_ETN_EXCLUSION_REASON = "etf_or_etn_not_allowed"
 
 _NAME_FIELDS = (
@@ -372,11 +373,11 @@ def resolve_universe_runtime_policy(
         ("policy_universe", _read_nested(universe_policy, "asset_type")),
         ("policy_flat_fallback", policy.get("asset_type")),
     )
-    asset_type = _normalize_text(asset_type_raw).lower() or COMMON_STOCK_ONLY_ASSET_TYPE
+    asset_type = _normalize_text(asset_type_raw).lower() or ALL_TRADABLE_ASSET_TYPE
     return {
         "asset_type": asset_type,
         "common_stock_only": asset_type == COMMON_STOCK_ONLY_ASSET_TYPE,
-        "policy_source": asset_type_source if asset_type_source != "default" else "default_common_stock_only",
+        "policy_source": asset_type_source if asset_type_source != "default" else "default_all_tradable",
     }
 
 
@@ -453,8 +454,8 @@ def inspect_asset_universe_candidate(
     excluded = bool(runtime_policy.get("common_stock_only")) and asset_class_detected in _BLOCKED_ASSET_CLASSES
     return {
         "symbol": normalized_symbol,
-        "asset_policy_type": str(runtime_policy.get("asset_type") or COMMON_STOCK_ONLY_ASSET_TYPE),
-        "asset_policy_source": str(runtime_policy.get("policy_source") or "default_common_stock_only"),
+        "asset_policy_type": str(runtime_policy.get("asset_type") or ALL_TRADABLE_ASSET_TYPE),
+        "asset_policy_source": str(runtime_policy.get("policy_source") or "default_all_tradable"),
         "asset_class_detected": str(asset_class_detected),
         "detection_source": str(detection_source or "fallback"),
         "detection_field": str(detection_field or ""),
@@ -524,8 +525,8 @@ def apply_asset_universe_filter(
         kept_by_asset_class[asset_class_detected] += 1
 
     meta = {
-        "asset_universe_policy": str(runtime_policy.get("asset_type") or COMMON_STOCK_ONLY_ASSET_TYPE),
-        "asset_universe_policy_source": str(runtime_policy.get("policy_source") or "default_common_stock_only"),
+        "asset_universe_policy": str(runtime_policy.get("asset_type") or ALL_TRADABLE_ASSET_TYPE),
+        "asset_universe_policy_source": str(runtime_policy.get("policy_source") or "default_all_tradable"),
         "asset_policy_filter_applied": bool(runtime_policy.get("common_stock_only")),
         "asset_policy_candidate_evaluated_count": int(evaluated),
         "asset_policy_excluded_count": int(len(excluded_rows)),

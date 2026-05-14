@@ -21,6 +21,7 @@ from libs.runtime.exit_policy import (
     apply_env_stop_take_fallbacks,
     evaluate_exit_policy,
 )
+from libs.runtime.broker_cost_profile import apply_broker_cost_profile_to_exit_policy
 from libs.runtime.circuit_breaker import (
     gate_runtime_circuit,
     mark_runtime_circuit_failure,
@@ -270,6 +271,7 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
         out["emergency_halt"] = _is_trueish(emergency_raw)
     out.setdefault("policy_source", str(out.get("effective_policy_source") or "decide_trade_exit_policy_effective"))
     out.setdefault("effective_policy_source", str(out.get("policy_source") or "decide_trade_exit_policy_effective"))
+    out = apply_broker_cost_profile_to_exit_policy(out)
     return out
 
 

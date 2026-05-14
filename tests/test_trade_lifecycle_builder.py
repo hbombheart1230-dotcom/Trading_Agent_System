@@ -47,6 +47,98 @@ def test_build_trade_lifecycles_closes_buy_sell_in_same_symbol() -> None:
     assert lifecycle["exit"]["run_id"] == "run-sell"
 
 
+def test_build_trade_lifecycles_keeps_partial_sell_open() -> None:
+    lifecycles = build_trade_lifecycles(
+        day="2026-05-12",
+        run_snapshots=[
+            {
+                "run_id": "run-buy",
+                "ts_start": "2026-05-12T01:00:00+00:00",
+                "ts_epoch": 1,
+                "symbol": "003060",
+                "execution_action": "BUY",
+                "execution": {"action": "BUY", "qty": 1000, "price": 920.0},
+                "verdict_allowed": True,
+            },
+            {
+                "run_id": "run-sell-partial",
+                "ts_start": "2026-05-12T01:01:00+00:00",
+                "ts_epoch": 2,
+                "symbol": "003060",
+                "execution_action": "SELL",
+                "execution": {"action": "SELL", "qty": 1, "price": 919.0},
+                "exit_reason": "vwap_breakdown",
+                "monitor_reason": "confirmed_exit_signal",
+                "verdict_allowed": True,
+            },
+        ],
+        run_bundles={"run-buy": {}, "run-sell-partial": {}},
+    )
+
+    assert len(lifecycles) == 1
+    lifecycle = lifecycles[0]
+    assert lifecycle["status"] == "open"
+    assert lifecycle["entry"]["qty"] == 1000
+    assert lifecycle.get("exit") == {}
+    assert lifecycle["remaining_qty"] == 999
+    assert lifecycle["partial_exit_qty"] == 1
+    partial_exits = lifecycle["holding"]["partial_exits"]
+    assert partial_exits[0]["run_id"] == "run-sell-partial"
+    assert partial_exits[0]["qty"] == 1
+
+
+def test_build_trade_lifecycles_closes_after_cumulative_partial_sells() -> None:
+    lifecycles = build_trade_lifecycles(
+        day="2026-05-12",
+        run_snapshots=[
+            {
+                "run_id": "run-buy",
+                "ts_start": "2026-05-12T01:00:00+00:00",
+                "ts_epoch": 1,
+                "symbol": "003060",
+                "execution_action": "BUY",
+                "execution": {"action": "BUY", "qty": 1000, "price": 920.0},
+                "verdict_allowed": True,
+            },
+            {
+                "run_id": "run-sell-partial",
+                "ts_start": "2026-05-12T01:01:00+00:00",
+                "ts_epoch": 2,
+                "symbol": "003060",
+                "execution_action": "SELL",
+                "execution": {"action": "SELL", "qty": 1, "price": 919.0},
+                "exit_reason": "vwap_breakdown",
+                "monitor_reason": "confirmed_exit_signal",
+                "verdict_allowed": True,
+            },
+            {
+                "run_id": "run-sell-final",
+                "ts_start": "2026-05-12T01:03:00+00:00",
+                "ts_epoch": 3,
+                "symbol": "003060",
+                "execution_action": "SELL",
+                "execution": {"action": "SELL", "qty": 999, "price": 918.0},
+                "exit_reason": "stop_loss",
+                "monitor_reason": "confirmed_exit_signal",
+                "verdict_allowed": True,
+            },
+        ],
+        run_bundles={"run-buy": {}, "run-sell-partial": {}, "run-sell-final": {}},
+    )
+
+    assert len(lifecycles) == 1
+    lifecycle = lifecycles[0]
+    assert lifecycle["status"] == "closed"
+    assert lifecycle["entry"]["qty"] == 1000
+    assert lifecycle["exit"]["run_id"] == "run-sell-final"
+    assert lifecycle["exit"]["qty"] == 999
+    assert lifecycle["remaining_qty"] == 0
+    assert lifecycle["partial_exit_qty"] == 1
+    partial_exits = lifecycle["holding"]["partial_exits"]
+    assert partial_exits[0]["run_id"] == "run-sell-partial"
+    assert partial_exits[0]["qty"] == 1
+
+
 def test_load_existing_open_lifecycle_candidates_filters_closed_trade(tmp_path: Path) -> None:
     day = "2026-04-16"
     day_root = tmp_path / "trades" / day

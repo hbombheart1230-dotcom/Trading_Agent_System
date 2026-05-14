@@ -999,8 +999,22 @@ def build_operator_daily_summary_payload(
         issues.append({"code": "policy_escalation_watch", "severity": "YELLOW", "detail": "m30_post_golive escalation_level=watch"})
 
     if m31_slo and not bool(m31_slo.get("ok")):
-        _raise_health("RED")
-        issues.append({"code": "slo_incident_gate_failed", "severity": "RED", "detail": f"m31_slo_incident failure_total={_safe_int(m31_slo.get('failure_total'), 0)}"})
+        slo_payload = m31_slo.get("slo") if isinstance(m31_slo.get("slo"), dict) else {}
+        m31_event_total = _safe_int(slo_payload.get("event_total"), 0)
+        m31_run_total = _safe_int(slo_payload.get("run_total"), 0)
+        m31_unmeasurable = bool(day_rows and m31_event_total == 0 and m31_run_total == 0)
+        if m31_unmeasurable:
+            _raise_health("YELLOW")
+            issues.append(
+                {
+                    "code": "slo_incident_artifact_unmeasurable",
+                    "severity": "YELLOW",
+                    "detail": "m31_slo_incident has no measurable events/runs while operator events exist; treating as stale diagnostic artifact, not live runtime failure",
+                }
+            )
+        else:
+            _raise_health("RED")
+            issues.append({"code": "slo_incident_gate_failed", "severity": "RED", "detail": f"m31_slo_incident failure_total={_safe_int(m31_slo.get('failure_total'), 0)}"})
     if not issues:
         issues.append({"code": "none", "severity": "GREEN", "detail": "no critical or warning issues detected"})
 
@@ -1014,6 +1028,8 @@ def build_operator_daily_summary_payload(
         recommended_actions.append("Review allowlist, notional limits, and decision thresholds causing frequent guard blocks.")
     if "policy_escalation_incident" in issue_codes:
         recommended_actions.append("Switch to manual approval only and complete incident review with clear owner/action items.")
+    if "slo_incident_artifact_unmeasurable" in issue_codes:
+        recommended_actions.append("Refresh the SLO incident artifact from the current event log before treating it as a runtime failure.")
     if "none" in issue_codes:
         recommended_actions.append("Continue current configuration and monitor next session for regression signals.")
     if not recommended_actions:

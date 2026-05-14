@@ -189,9 +189,10 @@ def reanchor_scanner_selection_for_monitor_fallback(
         else {}
     )
     rejection_reason = _humanize_reason(
-        handoff.get("monitor_rejection_reason_summary")
-        or handoff.get("monitor_rejection_reason_code")
+        cascade.get("top_pick_reason")
         or cascade.get("reason")
+        or handoff.get("monitor_rejection_reason_summary")
+        or handoff.get("monitor_rejection_reason_code")
     )
     fallback_trace = [dict(row) for row in list(cascade.get("fallback_trace") or []) if isinstance(row, dict)]
     fallback_trigger_reason = _humanize_reason(
@@ -215,8 +216,10 @@ def reanchor_scanner_selection_for_monitor_fallback(
             if selected_score not in (None, "")
             else ""
         )
-        + "."
     )
+    if fallback_trigger_reason:
+        summary += f"; fallback candidate trigger was {fallback_trigger_reason}"
+    summary += "."
     comparison = (
         f"Actual traded symbol was {symbol} after monitor fallback from scanner top pick {scanner_top_pick}."
     )
@@ -240,7 +243,9 @@ def reanchor_scanner_selection_for_monitor_fallback(
     reason["scanner_top_pick_rank"] = _safe_int(handoff.get("scanner_rank"), 1)
     reason["monitor_selected_symbol"] = symbol
     reason["monitor_fallback_reason"] = rejection_reason
+    reason["scanner_top_pick_rejection_reason"] = rejection_reason
     reason["monitor_trigger_reason"] = fallback_trigger_reason
+    reason["fallback_candidate_trigger_reason"] = fallback_trigger_reason
     reason["summary"] = summary
     reason["comparison"] = comparison
     reason["selected_symbol_score_drivers"] = _top_numeric_drivers(selected_score_breakdown, limit=4)
@@ -279,6 +284,8 @@ def reanchor_scanner_selection_for_monitor_fallback(
     trace["scanner_top_pick_symbol"] = scanner_top_pick
     trace["monitor_selected_symbol"] = symbol
     trace["monitor_fallback_reason"] = rejection_reason
+    trace["scanner_top_pick_rejection_reason"] = rejection_reason
     trace["monitor_trigger_reason"] = fallback_trigger_reason
+    trace["fallback_candidate_trigger_reason"] = fallback_trigger_reason
 
     return reason, trace, symbol

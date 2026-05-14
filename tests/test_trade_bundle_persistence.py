@@ -72,6 +72,7 @@ def test_persist_trade_bundle_outputs_writes_files_and_finalizes_health(tmp_path
 def test_persist_trade_llm_artifacts_writes_strategist_and_ai_refs(tmp_path: Path) -> None:
     reports_root = tmp_path / "reports"
     trade_reports_dir = reports_root / "trades" / "2026-04-16" / "TRD_TEST" / "reports"
+    (reports_root / "llm" / "2026-04-16" / "trade_executed" / "run-strat").mkdir(parents=True)
     strategist_path = trade_reports_dir / "strategist_llm_response.json"
     ai_path = trade_reports_dir / "ai_trade_report_llm_response.json"
 
@@ -84,7 +85,7 @@ def test_persist_trade_llm_artifacts_writes_strategist_and_ai_refs(tmp_path: Pat
             "schema_version": "llm_response_artifact.v1",
             "component": "strategist",
             "status": "ok",
-            "response_text": "strategist raw response",
+            "response_text": '{"playbook":"defensive","selected_themes":["semiconductor"],"market_regime":"neutral"}',
             "prompt_text": "strategist prompt",
         },
         strategist_llm_response_path=strategist_path,
@@ -102,13 +103,21 @@ def test_persist_trade_llm_artifacts_writes_strategist_and_ai_refs(tmp_path: Pat
     assert ai_path.exists() is True
     strategist_payload = _read_json(strategist_path)
     ai_payload = _read_json(ai_path)
+    strategist_summary_md = trade_reports_dir / "strategist_summary.md"
+    strategist_summary_json = trade_reports_dir / "strategist_summary.json"
     assert strategist_payload["component"] == "strategist"
     assert strategist_payload["status"] == "ok"
     assert strategist_payload["response_ref"]
+    assert "trade_executed" in strategist_payload["response_ref"]
+    assert strategist_summary_md.exists() is True
+    assert strategist_summary_json.exists() is True
+    assert strategist_payload["trade_strategist_summary_md_ref"].endswith("strategist_summary.md")
+    assert strategist_payload["trade_strategist_summary_json_ref"].endswith("strategist_summary.json")
     assert ai_payload["component"] == "ai_trade_report"
     assert ai_payload["status"] == "ok"
     assert ai_payload["response_ref"]
     assert result["strategist_llm_response_written"].endswith("strategist_llm_response.json")
+    assert result["strategist_summary_copy_refs"]["trade_strategist_summary_md_ref"].endswith("strategist_summary.md")
     assert result["ai_trade_report_llm_response_written"].endswith("ai_trade_report_llm_response.json")
 
 

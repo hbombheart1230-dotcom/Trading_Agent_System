@@ -76,6 +76,29 @@ def test_update_state_mock_buy_updates_mock_positions(monkeypatch):
     assert ps["last_trade_symbol"] == "005930"
 
 
+def test_update_state_mock_buy_pending_unfilled_does_not_create_position(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {"last_order_epoch": 10, "mock_positions": []},
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock", "filled_qty": 0, "remaining_qty": 2, "order_id": "ord-1"},
+            "reason": "Allowed",
+            "order": {"action": "BUY", "symbol": "005930", "qty": 2, "price": 70000},
+        },
+    }
+
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps.get("open_positions", 0) == 0
+    assert ps["mock_positions"] == []
+    assert "last_trade_side" not in ps
+    pending = (ps.get("pending_unfilled_orders") or {}).get("005930") or {}
+    assert pending["action"] == "BUY"
+    assert pending["filled_qty"] == 0
+    assert pending["remaining_qty"] == 2
+
+
 def test_update_state_mock_buy_persists_entry_sizing_risk(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: 1234.0)
     state = {

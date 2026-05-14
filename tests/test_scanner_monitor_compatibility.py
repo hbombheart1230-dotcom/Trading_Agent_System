@@ -400,12 +400,12 @@ def test_resolve_compatibility_bias_context_uses_volume_dominant_scale(tmp_path,
         "volume_confirmation_missing",
         "volume_insufficient",
         "below_vwap_reclaim_not_ready",
-        "entry_wait",
-        "entry_wait",
+        "breakout_not_ready",
+        "pullback_not_mature",
         "too_extended_from_vwap",
     ]
     for idx, reason in enumerate(reasons, start=1):
-        run_dir = base / f"run-{idx:02d}"
+        run_dir = base / f"{idx:032x}"
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "monitor.json").write_text(
             json.dumps({"primary_reason_code": reason}, ensure_ascii=False),
@@ -419,6 +419,108 @@ def test_resolve_compatibility_bias_context_uses_volume_dominant_scale(tmp_path,
     assert out["dominant_block_reason"] == "volume_confirmation_missing"
     assert abs(float(out["dominant_block_reason_ratio"]) - 0.5) < 1e-12
     assert abs(float(out["bias_scale"]) - 0.15) < 1e-12
+
+
+def test_resolve_compatibility_bias_context_strengthens_reclaim_dominant_scale(tmp_path, monkeypatch) -> None:
+    day = "2026-05-13"
+    base = tmp_path / "reports" / "canonical" / day
+    reasons = [
+        "below_vwap_reclaim_not_ready",
+        "below_vwap_reclaim_not_ready",
+        "below_vwap_reclaim_not_ready",
+        "below_vwap_reclaim_not_ready",
+        "below_vwap_reclaim_not_ready",
+        "volume_confirmation_missing",
+        "breakout_not_ready",
+        "pullback_below_vwap_reclaim_not_ready",
+        "too_extended_from_vwap",
+        "pullback_not_mature",
+    ]
+    for idx, reason in enumerate(reasons, start=1):
+        run_dir = base / f"{idx:032x}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "monitor.json").write_text(
+            json.dumps({"primary_reason_code": reason}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(scanner_mod.Path, "cwd", lambda: tmp_path)
+
+    out = scanner_mod._resolve_compatibility_bias_context({"day": day}, limit=20)
+
+    assert out["dominant_block_reason"] == "below_vwap_reclaim_not_ready"
+    assert abs(float(out["dominant_block_reason_ratio"]) - 0.5) < 1e-12
+    assert abs(float(out["bias_scale"]) - 0.16) < 1e-12
+
+
+def test_resolve_compatibility_bias_context_uses_entry_reason_not_hold_status(tmp_path, monkeypatch) -> None:
+    day = "2026-05-13"
+    base = tmp_path / "reports" / "canonical" / day
+    noisy_dir = base / "run-monitor-minute-hydrate"
+    noisy_dir.mkdir(parents=True, exist_ok=True)
+    (noisy_dir / "monitor.json").write_text(
+        json.dumps({"primary_reason_code": "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"}),
+        encoding="utf-8",
+    )
+    reasons = [
+        "below_vwap_reclaim_not_ready",
+        "below_vwap_reclaim_not_ready",
+        "below_vwap_reclaim_not_ready",
+        "below_vwap_reclaim_not_ready",
+        "pullback_not_mature",
+        "pullback_not_mature",
+    ]
+    for idx, reason in enumerate(reasons, start=1):
+        run_dir = base / f"{idx:032x}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "monitor.json").write_text(
+            json.dumps(
+                {
+                    "primary_reason_code": "hold",
+                    "entry_candidate_cascade": {"reason": reason, "top_pick_reason": reason},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(scanner_mod.Path, "cwd", lambda: tmp_path)
+
+    out = scanner_mod._resolve_compatibility_bias_context({"day": day}, limit=20)
+
+    assert out["sample_size"] == 6
+    assert out["dominant_block_reason"] == "below_vwap_reclaim_not_ready"
+    assert abs(float(out["dominant_block_reason_ratio"]) - (4.0 / 6.0)) < 1e-12
+    assert abs(float(out["bias_scale"]) - 0.16) < 1e-12
+
+
+def test_resolve_compatibility_bias_context_strengthens_maturity_blocker_scale(tmp_path, monkeypatch) -> None:
+    day = "2026-05-13"
+    base = tmp_path / "reports" / "canonical" / day
+    reasons = [
+        "pullback_not_mature",
+        "pullback_not_mature",
+        "pullback_not_mature",
+        "pullback_not_mature",
+        "breakout_not_ready",
+        "volume_confirmation_missing",
+        "below_vwap_reclaim_not_ready",
+    ]
+    for idx, reason in enumerate(reasons, start=1):
+        run_dir = base / f"{idx:032x}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "monitor.json").write_text(
+            json.dumps({"primary_reason_code": "hold", "entry_candidate_cascade": {"reason": reason}}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(scanner_mod.Path, "cwd", lambda: tmp_path)
+
+    out = scanner_mod._resolve_compatibility_bias_context({"day": day}, limit=20)
+
+    assert out["dominant_block_reason"] == "pullback_not_mature"
+    assert abs(float(out["dominant_block_reason_ratio"]) - (4.0 / 7.0)) < 1e-12
+    assert abs(float(out["bias_scale"]) - 0.14) < 1e-12
 
 
 def test_soft_penalty_penalizes_volume_missing_more_than_reclaimish_case(monkeypatch) -> None:

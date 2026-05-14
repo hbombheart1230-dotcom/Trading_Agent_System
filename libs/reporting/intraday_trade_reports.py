@@ -35,6 +35,7 @@ from libs.reporting.trade_report_runtime_policy import (
     resolve_trade_report_policy,
     seed_diagnostics_for_policy,
 )
+from libs.reporting.monitor_timeline_reconciliation import apply_latest_exit_monitor_context_from_timeline
 from libs.reporting.trade_regeneration_truth import rehydrate_lifecycle_bundle_execution_truth
 from libs.reporting.trade_story_pipeline import build_trade_story_input_from_bundle, render_bundle_markdown
 from libs.runtime.windows_subprocess import background_creationflags, popen_hidden, run_hidden
@@ -527,6 +528,16 @@ def resolve_story_input_for_regeneration(
         return existing_story_input, existing_path, "existing_story_input", existing_score, existing_score
 
     enriched_lifecycle_bundle = rehydrate_lifecycle_bundle_execution_truth(lifecycle_bundle)
+    monitor_timeline = _read_json(trade_paths["monitor_evidence_json"])
+    if monitor_timeline:
+        enriched_lifecycle_bundle = apply_latest_exit_monitor_context_from_timeline(
+            enriched_lifecycle_bundle,
+            monitor_timeline,
+        )
+        enriched_lifecycle_bundle["monitor_evidence"] = monitor_timeline
+    scanner_evidence = _read_json(trade_paths["scanner_evidence_json"])
+    if scanner_evidence:
+        enriched_lifecycle_bundle["scanner_evidence"] = scanner_evidence
     if _payload_fingerprint(enriched_lifecycle_bundle) != _payload_fingerprint(lifecycle_bundle):
         write_json(trade_paths["lifecycle_bundle_json"], enriched_lifecycle_bundle)
         lifecycle_bundle = enriched_lifecycle_bundle

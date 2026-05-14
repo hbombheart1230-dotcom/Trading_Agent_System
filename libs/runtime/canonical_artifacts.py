@@ -463,7 +463,17 @@ def write_monitor_artifact(state: Dict[str, Any]) -> str:
     if not run_id:
         return ""
     paths = canonical_run_artifact_paths(run_id, day=_resolve_day(state), reports_root=_reports_root(state))
-    path = _write_artifact_once(state, agent="monitor", path=paths["monitor"], payload=build_monitor_output_artifact(state))
+    # Monitor can emit more than once in one integrated cycle: an early
+    # position sweep may say HOLD, while the later execution path may confirm a
+    # SELL. The canonical monitor artifact must represent the latest monitor
+    # decision for downstream trade reports.
+    path = _write_artifact_once(
+        state,
+        agent="monitor",
+        path=paths["monitor"],
+        payload=build_monitor_output_artifact(state),
+        overwrite=True,
+    )
     return path
 
 

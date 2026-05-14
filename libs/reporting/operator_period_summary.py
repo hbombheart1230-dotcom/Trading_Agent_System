@@ -54,6 +54,99 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _text_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.lower() in {"", "-", "none", "null", "unknown", "not_captured"}:
+        return ""
+    return text
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = _text_value(value)
+        if text:
+            return text
+    return ""
+
+
+def _dig(source: Dict[str, Any], *keys: str) -> Any:
+    current: Any = source
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _find_key_recursive(source: Any, key: str, *, max_nodes: int = 800) -> Any:
+    seen = 0
+    stack = [source]
+    while stack and seen < max_nodes:
+        current = stack.pop()
+        seen += 1
+        if isinstance(current, dict):
+            if key in current and current.get(key) not in (None, ""):
+                return current.get(key)
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return None
+
+
+def _score_bucket(value: Any) -> str:
+    parsed = _safe_float(value)
+    if parsed is None:
+        return ""
+    if parsed >= 0.75:
+        return ">=0.75"
+    if parsed >= 0.60:
+        return "0.60-0.75"
+    if parsed >= 0.50:
+        return "0.50-0.60"
+    return "<0.50"
+
+
+def _pct_bucket(value: Any) -> str:
+    parsed = _safe_float(value)
+    if parsed is None:
+        return ""
+    if parsed >= 0.012:
+        return ">=1.20%"
+    if parsed >= 0.006:
+        return "0.60-1.20%"
+    if parsed >= 0.0:
+        return "0.00-0.60%"
+    return "<0.00%"
+
+
+def _rank_bucket(value: Any) -> str:
+    parsed = _safe_int(value, default=0)
+    if parsed <= 0:
+        return ""
+    if parsed == 1:
+        return "rank1"
+    if parsed <= 3:
+        return "rank2-3"
+    if parsed <= 10:
+        return "rank4-10"
+    return "rank>10"
+
+
+def _bool_bucket(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value or "").strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return "true"
+    if text in {"false", "0", "no", "n"}:
+        return "false"
+    return ""
+
+
 _UNAVAILABLE_PNL_VALUES = {"", "-", "none", "null", "unavailable", "not_available"}
 
 
@@ -208,12 +301,63 @@ def _epoch_to_kst_text(epoch: Any) -> str:
         return ""
 
 
+def _iso_to_kst_dt(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone(timedelta(hours=9)))
+
+
+def _iso_to_kst_text(value: Any) -> str:
+    dt = _iso_to_kst_dt(value)
+    if dt is None:
+        return ""
+    return dt.strftime("%Y-%m-%d %H:%M:%S KST")
+
+
+def _closeout_state_metadata(closeout: Dict[str, Any], day: str | None) -> Dict[str, Any]:
+    applied_at = str(closeout.get("applied_at") or "").strip()
+    applied_raw = closeout.get("applied")
+    applied_known = isinstance(applied_raw, bool)
+    applied = bool(applied_raw) if applied_known else False
+    applied_at_kst = _iso_to_kst_text(applied_at)
+    applied_day = ""
+    dt = _iso_to_kst_dt(applied_at)
+    if dt is not None:
+        applied_day = dt.strftime("%Y-%m-%d")
+    normalized_day = str(day or "").strip()
+    stale = bool(normalized_day and applied_day and applied_day != normalized_day)
+
+    note_parts: List[str] = []
+    if applied_at_kst:
+        if applied_known:
+            note_parts.append("적용" if applied else "미적용")
+        note_parts.append(f"기록시각 {applied_at_kst}")
+    if stale:
+        note_parts.append(f"당일({normalized_day}) 오버나이트 판단 근거 아님")
+    return {
+        "applied": applied,
+        "applied_at_kst": applied_at_kst,
+        "applied_day_kst": applied_day,
+        "stale_for_day": stale,
+        "report_note": "; ".join(note_parts),
+    }
+
+
 def _overnight_missing_context(raw_row: Dict[str, Any], monitor_state: Dict[str, Any]) -> Dict[str, Any]:
     position_entry_text = _epoch_to_kst_text(raw_row.get("position_entry_epoch"))
     if not isinstance(monitor_state, dict) or not monitor_state:
         out: Dict[str, Any] = {
             "overnight_missing_reason_code": "no_monitor_state_for_residual_position",
             "overnight_missing_detail": "모니터 상태 기록 없음; EOD 전체 보유 종목 재점검 필요",
+            "overnight_decision_status": "missing",
+            "overnight_decision_label": "미수행(모니터 상태 기록 없음)",
         }
         if position_entry_text:
             out["position_entry_at_kst"] = position_entry_text
@@ -234,6 +378,7 @@ def _overnight_missing_context(raw_row: Dict[str, Any], monitor_state: Dict[str,
         detail_parts.append(f"차단축 {blocking_axis}")
 
     reason_code = "no_persisted_overnight_decision"
+    decision_label = "미확인(오버나이트 판단 저장 기록 없음)"
     if updated_epoch > 0:
         try:
             kst = timezone(timedelta(hours=9))
@@ -242,12 +387,15 @@ def _overnight_missing_context(raw_row: Dict[str, Any], monitor_state: Dict[str,
             market_close = updated_dt.replace(hour=15, minute=30, second=0, microsecond=0)
             if updated_dt < eod_window_start:
                 reason_code = "last_monitor_before_eod_window_no_later_review"
+                decision_label = "미수행(15:20 이후 재점검 없음)"
                 detail_parts.append("EOD 판단창(15:20 이후) 재점검 없음")
             elif updated_dt <= market_close:
                 reason_code = "last_monitor_inside_eod_window_without_persisted_decision"
+                decision_label = "기록 누락 가능(EOD 판단창 내 저장 없음)"
                 detail_parts.append("EOD 판단창 내 평가 기록 저장 누락 가능")
             else:
                 reason_code = "last_monitor_after_market_close_without_persisted_decision"
+                decision_label = "기록 누락 가능(장마감 후 저장 없음)"
                 detail_parts.append("장마감 후 평가 기록 저장 누락 가능")
         except Exception:
             pass
@@ -255,6 +403,8 @@ def _overnight_missing_context(raw_row: Dict[str, Any], monitor_state: Dict[str,
     out = {
         "overnight_missing_reason_code": reason_code,
         "overnight_missing_detail": " / ".join(detail_parts) if detail_parts else "오버나이트 판단 저장 기록 없음",
+        "overnight_decision_status": "missing",
+        "overnight_decision_label": decision_label,
         "last_monitor_updated_at_epoch": updated_epoch if updated_epoch > 0 else None,
         "last_monitor_updated_at_kst": updated_text,
         "last_monitor_posture": posture,
@@ -273,6 +423,27 @@ _FLATTEN_BEFORE_CLOSE_ACTIONS = {
     "force_exit",
     "sell_before_close",
 }
+
+
+def _overnight_recorded_context(decision: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(decision.get("action") or "").strip()
+    approved = bool(decision.get("approved"))
+    if approved and action == "carry_overnight":
+        status = "approved"
+        label = "수행됨(오버나이트 승인)"
+    elif action in _FLATTEN_BEFORE_CLOSE_ACTIONS:
+        status = "flatten_requested"
+        label = "수행됨(장마감 전 정리 지시)"
+    elif action:
+        status = "recorded"
+        label = f"수행됨({action})"
+    else:
+        status = "recorded"
+        label = "수행됨(결정 기록 있음)"
+    return {
+        "overnight_decision_status": status,
+        "overnight_decision_label": label,
+    }
 
 
 def _price_matches(left: Any, right: Any) -> bool:
@@ -329,6 +500,77 @@ def _same_day_flatten_reconciliation(
     return {}
 
 
+def _sell_guard_candidate_paths(*, reports_root: Path, state_path: str) -> List[Path]:
+    candidates: List[Path] = []
+    state_raw = str(state_path or "").strip()
+    if state_raw:
+        state_file = Path(state_raw)
+        candidates.append(state_file.parent / "state" / "execution_recent_sell_guard.json")
+    candidates.append(Path(reports_root).parent / "data" / "state" / "execution_recent_sell_guard.json")
+    out: List[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        try:
+            key = str(path.resolve())
+        except Exception:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _epoch_day_kst(epoch: Any) -> str:
+    value = _safe_int(epoch)
+    if value <= 0:
+        return ""
+    try:
+        kst = timezone(timedelta(hours=9))
+        return datetime.fromtimestamp(value, tz=timezone.utc).astimezone(kst).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _same_day_sell_guard_reconciliation(
+    *,
+    reports_root: Path,
+    state_path: str,
+    day: str | None,
+    symbol: str,
+    qty: int,
+) -> Dict[str, Any]:
+    normalized_day = str(day or "").strip()
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not normalized_day or not normalized_symbol or qty <= 0:
+        return {}
+    for path in _sell_guard_candidate_paths(reports_root=reports_root, state_path=state_path):
+        payload = _read_json(path)
+        if not isinstance(payload, dict):
+            continue
+        orders = payload.get("orders") if isinstance(payload.get("orders"), dict) else {}
+        row = orders.get(normalized_symbol) if isinstance(orders.get(normalized_symbol), dict) else {}
+        if not row:
+            continue
+        if _epoch_day_kst(row.get("last_sell_epoch")) != normalized_day:
+            continue
+        remaining_hint = _safe_int(row.get("remaining_qty_hint"), default=-1)
+        last_sell_qty = _safe_int(row.get("last_sell_qty"))
+        position_qty_hint = _safe_int(row.get("position_qty_hint"))
+        if remaining_hint == 0 and max(last_sell_qty, position_qty_hint) >= qty:
+            return {
+                "symbol": normalized_symbol,
+                "trade_id": str(row.get("run_id") or ""),
+                "lifecycle_bundle_path": "",
+                "reason": "same_day_sell_guard_remaining_zero",
+                "exit_reason": "recent sell guard reports remaining_qty_hint=0",
+                "exit_ts": _epoch_to_kst_text(row.get("last_sell_epoch")),
+                "exit_qty": last_sell_qty,
+                "source_path": str(path),
+            }
+    return {}
+
+
 def _build_residual_positions_payload(*, reports_root: Path, day: str | None = None) -> Dict[str, Any]:
     state, state_path = _load_state_snapshot(reports_root)
     if not state:
@@ -360,6 +602,16 @@ def _build_residual_positions_payload(*, reports_root: Path, day: str | None = N
         symbol = str(raw_row.get("symbol") or "").strip().upper()
         qty = _safe_int(raw_row.get("qty"))
         if not symbol or qty <= 0:
+            continue
+        sell_guard_reconciliation = _same_day_sell_guard_reconciliation(
+            reports_root=reports_root,
+            state_path=state_path,
+            day=day,
+            symbol=symbol,
+            qty=qty,
+        )
+        if sell_guard_reconciliation:
+            reconciled_closed.append(sell_guard_reconciliation)
             continue
         decision = overnight.get(symbol) if isinstance(overnight.get(symbol), dict) else {}
         action = str(decision.get("action") or "").strip()
@@ -407,6 +659,8 @@ def _build_residual_positions_payload(*, reports_root: Path, day: str | None = N
         if not decision:
             monitor_state = monitor_states.get(symbol) if isinstance(monitor_states.get(symbol), dict) else {}
             row.update(_overnight_missing_context(raw_row, monitor_state))
+        else:
+            row.update(_overnight_recorded_context(decision))
         positions.append(row)
 
     reconciled_symbols = {str(row.get("symbol") or "").strip().upper() for row in reconciled_closed}
@@ -415,6 +669,7 @@ def _build_residual_positions_payload(*, reports_root: Path, day: str | None = N
         for item in list(closeout.get("carry_forward_symbols") or [])
         if str(item or "").strip().upper() not in reconciled_symbols
     ]
+    closeout_meta = _closeout_state_metadata(closeout, day)
 
     return {
         "available": True,
@@ -427,6 +682,7 @@ def _build_residual_positions_payload(*, reports_root: Path, day: str | None = N
             "mode": str(closeout.get("mode") or ""),
             "reason": str(closeout.get("reason") or ""),
             "applied_at": str(closeout.get("applied_at") or ""),
+            **closeout_meta,
             "carry_forward_symbols": carry_forward_symbols,
             "flattened_symbols": list(closeout.get("flattened_symbols") or []),
             "unresolved_flatten_symbols": list(closeout.get("unresolved_flatten_symbols") or []),
@@ -445,9 +701,15 @@ def _extract_trade_decision_fields(row: Dict[str, Any], reports_root: Path) -> D
     summary_input = _read_json(trade_dir / "reports" / "ai_trade_summary_input.json")
     summary_report = _read_json(trade_dir / "reports" / "ai_trade_summary.json")
     full_report = _read_json(trade_dir / "reports" / "ai_trade_report.json")
-    summary_input = summary_input if isinstance(summary_input, dict) else {}
-    summary_report = summary_report if isinstance(summary_report, dict) else {}
-    full_report = full_report if isinstance(full_report, dict) else {}
+    strategist_summary = _read_json(trade_dir / "reports" / "strategist_summary.json")
+    exit_payload = _read_json(trade_dir / "exit.json")
+    lifecycle_bundle = _read_json(trade_dir / "lifecycle_bundle.json")
+    summary_input = _as_dict(summary_input)
+    summary_report = _as_dict(summary_report)
+    full_report = _as_dict(full_report)
+    strategist_summary = _as_dict(strategist_summary)
+    exit_payload = _as_dict(exit_payload)
+    lifecycle_bundle = _as_dict(lifecycle_bundle)
 
     decision_flow = summary_input.get("decision_flow") if isinstance(summary_input.get("decision_flow"), dict) else {}
     if not decision_flow:
@@ -455,6 +717,23 @@ def _extract_trade_decision_fields(row: Dict[str, Any], reports_root: Path) -> D
     shared_facts = full_report.get("shared_facts") if isinstance(full_report.get("shared_facts"), dict) else {}
     if not shared_facts:
         shared_facts = summary_input.get("shared_facts") if isinstance(summary_input.get("shared_facts"), dict) else {}
+    market_strategy = _as_dict(summary_input.get("market_and_strategy"))
+    strategy_detail = _as_dict(strategist_summary.get("strategy_detail"))
+    strategy_frame = _as_dict(strategist_summary.get("strategy_frame"))
+    candidate_watch = _as_dict(strategy_detail.get("candidate_watch_policy"))
+    entry_visibility = _as_dict(decision_flow.get("entry_execution_visibility"))
+    if not candidate_watch:
+        candidate_watch = _as_dict(entry_visibility.get("strategy_candidate_watch_proposal"))
+    commander_entry = _as_dict(entry_visibility.get("commander_entry_control"))
+    entry_observation = _as_dict(decision_flow.get("entry_observation"))
+    scanner_chart_fit = _as_dict(decision_flow.get("scanner_chart_fit"))
+    monitor_context = _as_dict(exit_payload.get("monitor_context"))
+    entry_grouped = _as_dict(monitor_context.get("entry_grouped_logic_trace"))
+    if not entry_grouped:
+        entry_grouped = _as_dict(_find_key_recursive(exit_payload, "entry_grouped_logic_trace"))
+    human_detail = _as_dict(entry_grouped.get("human_chart_detail_observed"))
+    if not human_detail:
+        human_detail = _as_dict(entry_observation)
 
     out: Dict[str, Any] = {
         "trade_root_path": str(trade_dir),
@@ -475,6 +754,120 @@ def _extract_trade_decision_fields(row: Dict[str, Any], reports_root: Path) -> D
     if shared_facts:
         out["last_action"] = str(shared_facts.get("action") or row.get("last_action") or "")
         out["last_status"] = str(shared_facts.get("status") or row.get("last_status") or row.get("status") or "")
+    for field in ("lifecycle_completeness", "trade_origin", "evidence_recovery_used"):
+        if lifecycle_bundle.get(field) not in (None, ""):
+            out[field] = lifecycle_bundle.get(field)
+
+    final_playbook = _first_text(
+        strategy_detail.get("final_playbook"),
+        strategy_frame.get("playbook"),
+        lifecycle_bundle.get("strategist_summary", {}).get("playbook") if isinstance(lifecycle_bundle.get("strategist_summary"), dict) else "",
+        market_strategy.get("playbook"),
+        row.get("playbook"),
+    )
+    if final_playbook:
+        out["final_playbook"] = final_playbook
+        out["playbook"] = final_playbook
+    for key, value in {
+        "pre_llm_playbook": strategy_detail.get("pre_llm_playbook"),
+        "llm_requested_playbook": strategy_detail.get("llm_requested_playbook") or strategy_detail.get("requested_playbook"),
+        "tactical_strategy": strategy_detail.get("tactical_strategy") or candidate_watch.get("tactical_strategy"),
+        "risk_tone": candidate_watch.get("risk_tone") or market_strategy.get("risk_tone"),
+        "trade_aggressiveness": candidate_watch.get("trade_aggressiveness"),
+        "strategy_horizon": _first_text(
+            _find_key_recursive(exit_payload, "strategy_horizon"),
+            _dig(lifecycle_bundle, "trade_lifecycle", "exit", "monitor_context", "strategy_horizon"),
+        ),
+        "market_regime": candidate_watch.get("market_regime"),
+    }.items():
+        text = _text_value(value)
+        if text:
+            out[key] = text
+    if candidate_watch:
+        out["candidate_watch_max_priority_rank"] = _safe_int(candidate_watch.get("max_priority_rank"))
+        out["candidate_watch_max_runner_ups"] = _safe_int(candidate_watch.get("max_runner_ups"))
+        cascade_bucket = _bool_bucket(candidate_watch.get("cascade_enabled"))
+        if cascade_bucket:
+            out["candidate_watch_cascade_enabled"] = cascade_bucket
+    for key in ("candidate_watch_policy_effect", "candidate_watch_policy_clamp_reason", "mode", "decision"):
+        text = _text_value(commander_entry.get(key))
+        if text:
+            out[f"commander_entry_{key}"] = text
+
+    scanner_rank = _safe_int(decision_flow.get("scanner_rank") or decision_flow.get("selected_rank"), default=0)
+    if scanner_rank > 0:
+        out["scanner_rank"] = scanner_rank
+        out["scanner_rank_bucket"] = _rank_bucket(scanner_rank)
+    for key, value in {
+        "scanner_selection_basis": decision_flow.get("selection_basis"),
+        "scanner_rank_basis": decision_flow.get("scanner_rank_basis"),
+        "scanner_selection_path": decision_flow.get("selection_path"),
+        "scanner_chart_fit_authority": scanner_chart_fit.get("authority") or decision_flow.get("scanner_chart_fit_authority"),
+    }.items():
+        text = _text_value(value)
+        if text:
+            out[key] = text
+    scanner_chart_score = scanner_chart_fit.get("score")
+    if scanner_chart_score is None:
+        scanner_chart_score = decision_flow.get("scanner_chart_fit_score")
+    if _safe_float(scanner_chart_score) is not None:
+        out["scanner_chart_fit_score"] = _safe_float(scanner_chart_score)
+        out["scanner_chart_fit_score_bucket"] = _score_bucket(scanner_chart_score)
+
+    for key, source in {
+        "human_chart_entry_score": entry_observation.get("human_chart_entry_score") or entry_grouped.get("human_chart_entry_score"),
+        "human_chart_setup_quality": entry_grouped.get("human_chart_setup_quality"),
+        "human_candle_quality_score": entry_observation.get("human_candle_quality_score") or entry_grouped.get("human_candle_quality_score"),
+        "human_vwap_reference_quality_score": entry_observation.get("human_vwap_reference_quality_score") or entry_grouped.get("human_vwap_reference_quality_score"),
+        "human_reward_room_score": entry_observation.get("human_reward_room_score") or entry_grouped.get("human_reward_room_score"),
+        "human_multi_window_structure_score": entry_observation.get("human_multi_window_structure_score") or entry_grouped.get("human_multi_window_structure_score"),
+        "entry_confidence_score": entry_observation.get("confidence_score") or _dig(monitor_context, "entry_condition_scores", "confidence_score"),
+        "vwap_source": entry_observation.get("vwap_source") or human_detail.get("vwap_source"),
+        "late_entry_risk": entry_grouped.get("late_entry_risk"),
+    }.items():
+        text = _text_value(source)
+        if text:
+            out[key] = source
+    for key in (
+        "human_chart_entry_score",
+        "human_candle_quality_score",
+        "human_vwap_reference_quality_score",
+        "human_reward_room_score",
+        "human_multi_window_structure_score",
+        "entry_confidence_score",
+    ):
+        if _safe_float(out.get(key)) is not None:
+            out[f"{key}_bucket"] = _score_bucket(out.get(key))
+    reward_room_pct = human_detail.get("reward_room_pct") or entry_observation.get("reward_room_pct")
+    if _safe_float(reward_room_pct) is not None:
+        out["reward_room_pct"] = _safe_float(reward_room_pct)
+        out["reward_room_pct_bucket"] = _pct_bucket(reward_room_pct)
+
+    exit_triggered = _find_key_recursive(exit_payload, "exit_triggered")
+    if isinstance(exit_triggered, bool):
+        out["monitor_exit_triggered"] = "true" if exit_triggered else "false"
+    cost_floor_blocked = _find_key_recursive(exit_payload, "cost_aware_profit_floor_blocked")
+    cost_floor_met = _find_key_recursive(exit_payload, "cost_aware_profit_floor_met")
+    if cost_floor_blocked is not None or cost_floor_met is not None:
+        out["cost_floor_state"] = (
+            "blocked" if bool(cost_floor_blocked) else "met" if bool(cost_floor_met) else "not_met"
+        )
+    peak_urgent = _find_key_recursive(exit_payload, "peak_drawdown_profit_protection_urgent")
+    peak_armed = _find_key_recursive(exit_payload, "peak_drawdown_armed")
+    if bool(peak_urgent):
+        out["peak_drawdown_state"] = "urgent"
+    elif bool(peak_armed):
+        out["peak_drawdown_state"] = "armed"
+    elif _safe_float(_find_key_recursive(exit_payload, "peak_drawdown")) is not None:
+        out["peak_drawdown_state"] = "observed"
+    time_blocked = _find_key_recursive(exit_payload, "time_limit_reassessment_blocked")
+    time_reached = _find_key_recursive(exit_payload, "time_limit_reached")
+    if time_blocked is not None or time_reached is not None:
+        out["time_limit_reassessment_state"] = (
+            "blocked" if bool(time_blocked) else "reached" if bool(time_reached) else "not_reached"
+        )
+    if _safe_float(_find_key_recursive(exit_payload, "vwap_distance")) is not None:
+        out["vwap_breakdown_state"] = "observed"
     return out
 
 
@@ -483,14 +876,28 @@ def _operator_reason_name(value: Any) -> str:
     if not raw:
         return ""
     lowered = raw.lower().strip()
+    if lowered in {"hold", "unknown", "none", "null", "-"}:
+        return ""
     if lowered.startswith("entry evidence was not captured"):
         return ""
     if lowered.startswith("entry context was recovered"):
+        return ""
+    if "진입은 hold 조건에서 실행" in raw:
+        return ""
+    if "entry evidence was not captured" in lowered or "position context was inferred" in lowered:
         return ""
     if "position is still open" in lowered or "포지션은 아직 열려" in raw:
         return ""
     if "청산 근거가 누락" in raw:
         return ""
+    if (
+        "sell 실행 및 잔여수량" in lowered
+        or "sell_execution_confirmed" in lowered
+        or "full_sell_quantity_reconciled" in lowered
+        or "exit_trigger_not_captured" in lowered
+        or "monitor_exit_trigger_not_captured" in lowered
+    ):
+        return "모니터 청산 트리거 미확인"
     if lowered.startswith("진입 사유는 "):
         raw = raw[len("진입 사유는 ") :].strip()
         lowered = raw.lower().strip()
@@ -537,6 +944,10 @@ def _operator_reason_name(value: Any) -> str:
         "trend_breakdown": "추세 붕괴 기준",
         "trailing_stop": "추적 손절 기준",
         "eod_flat": "장마감 정리 기준",
+        "exit_trigger_not_captured": "모니터 청산 트리거 미확인",
+        "monitor_exit_trigger_not_captured": "모니터 청산 트리거 미확인",
+        "sell_execution_confirmed": "모니터 청산 트리거 미확인",
+        "full_sell_quantity_reconciled": "모니터 청산 트리거 미확인",
         "no_position": "",
         "no": "",
         "unknown": "미분류",
@@ -599,11 +1010,23 @@ def _operator_pattern_name(value: Any, *, axis: str, fallback_reason: Any = "") 
     lowered = raw.lower().strip()
     if lowered.startswith("entry context was recovered"):
         return ""
+    if "진입은 hold 조건에서 실행" in raw:
+        return ""
+    if "entry evidence was not captured" in lowered or "position context was inferred" in lowered:
+        return ""
     if "position is still open" in lowered or "포지션은 아직 열려" in raw:
         return ""
     if "청산 근거가 누락" in raw:
         return ""
-    if lowered in {"", "-", "no", "none", "unknown", "no_position", "no position"}:
+    if (
+        "sell 실행 및 잔여수량" in lowered
+        or "sell_execution_confirmed" in lowered
+        or "full_sell_quantity_reconciled" in lowered
+        or "exit_trigger_not_captured" in lowered
+        or "monitor_exit_trigger_not_captured" in lowered
+    ):
+        return "청산 트리거 미확인"
+    if lowered in {"", "-", "no", "none", "unknown", "hold", "no_position", "no position"}:
         reason = _operator_reason_name(fallback_reason)
         if reason:
             return _operator_pattern_from_reason_name(reason, axis=axis)
@@ -623,6 +1046,10 @@ def _operator_pattern_name(value: Any, *, axis: str, fallback_reason: Any = "") 
         "trailing_stop": "추적 손절",
         "take_profit": "익절",
         "eod_flat": "장마감 정리",
+        "exit_trigger_not_captured": "청산 트리거 미확인",
+        "monitor_exit_trigger_not_captured": "청산 트리거 미확인",
+        "sell_execution_confirmed": "청산 트리거 미확인",
+        "full_sell_quantity_reconciled": "청산 트리거 미확인",
     }
     return mapping.get(normalized, raw)
 
@@ -935,6 +1362,128 @@ def _pattern_payload(counters: Dict[str, Counter[str]]) -> Dict[str, Any]:
     }
 
 
+def _performance_source_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [row for row in rows if _is_closed_trade(row) or _is_realized_nonclosed_exit(row)]
+
+
+def _performance_field_value(row: Dict[str, Any], field: str) -> Any:
+    value = row.get(field)
+    if field == "entry_pattern_type":
+        return _operator_pattern_name(value, axis="entry", fallback_reason=row.get("entry_reason"))
+    if field == "exit_pattern_type":
+        return _operator_pattern_name(value, axis="exit", fallback_reason=row.get("exit_reason"))
+    if _text_value(value):
+        if field in {"entry_reason", "exit_reason"}:
+            return _operator_reason_name(value)
+        return value
+    if field == "entry_reason":
+        return _operator_reason_name(row.get("entry_reason"))
+    if field == "exit_reason":
+        return _operator_reason_name(row.get("exit_reason"))
+    return value
+
+
+def _performance_rows_by_field(rows: List[Dict[str, Any]], field: str, *, limit: int = 8) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        name = _text_value(_performance_field_value(row, field))
+        if not name:
+            continue
+        grouped[name].append(row)
+    out: List[Dict[str, Any]] = []
+    for name, items in grouped.items():
+        sample = _performance_source_rows(items)
+        stats = _return_count_payload(sample)
+        out.append(
+            {
+                "name": name,
+                "count": len(items),
+                "closed_or_realized_count": len(sample),
+                "win_count": stats["win_count"],
+                "loss_count": stats["loss_count"],
+                "flat_count": stats["flat_count"],
+                "win_rate": stats["win_rate"],
+                "avg_return_pct": stats["avg_return_pct"],
+                "cost_drag_loss_count": stats["cost_drag_loss_count"],
+                "avg_hold_seconds": stats["avg_hold_seconds"],
+            }
+        )
+    out.sort(
+        key=lambda row: (
+            int(row.get("closed_or_realized_count") or 0),
+            int(row.get("count") or 0),
+            abs(float(row.get("avg_return_pct") or 0.0)),
+        ),
+        reverse=True,
+    )
+    return out[:limit]
+
+
+def _combined_pattern_key(row: Dict[str, Any]) -> str:
+    playbook = _first_text(row.get("final_playbook"), row.get("playbook"))
+    tactical = _text_value(row.get("tactical_strategy"))
+    rank = _text_value(row.get("scanner_rank_bucket"))
+    entry = _operator_pattern_name(row.get("entry_pattern_type"), axis="entry", fallback_reason=row.get("entry_reason"))
+    exit_pattern = _operator_pattern_name(row.get("exit_pattern_type"), axis="exit", fallback_reason=row.get("exit_reason"))
+    parts = [part for part in (playbook, tactical, rank, entry, exit_pattern) if part]
+    return " | ".join(parts)
+
+
+def _pattern_performance_payload(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    rows = list(rows or [])
+    combined_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        key = _combined_pattern_key(row)
+        if key:
+            enriched = dict(row)
+            enriched["combined_pattern"] = key
+            combined_rows.append(enriched)
+    return {
+        "schema_version": "pattern_performance.v1",
+        "source": "operator_summary_trade_artifact_enrichment",
+        "trade_count": len(rows),
+        "closed_or_realized_count": len(_performance_source_rows(rows)),
+        "strategist": {
+            "by_final_playbook": _performance_rows_by_field(rows, "final_playbook"),
+            "by_tactical_strategy": _performance_rows_by_field(rows, "tactical_strategy"),
+            "by_strategy_horizon": _performance_rows_by_field(rows, "strategy_horizon"),
+            "by_risk_tone": _performance_rows_by_field(rows, "risk_tone"),
+            "by_trade_aggressiveness": _performance_rows_by_field(rows, "trade_aggressiveness"),
+            "by_candidate_watch_rank": _performance_rows_by_field(rows, "candidate_watch_max_priority_rank"),
+            "by_candidate_watch_cascade": _performance_rows_by_field(rows, "candidate_watch_cascade_enabled"),
+        },
+        "scanner": {
+            "by_scanner_rank_bucket": _performance_rows_by_field(rows, "scanner_rank_bucket"),
+            "by_selection_basis": _performance_rows_by_field(rows, "scanner_selection_basis"),
+            "by_scanner_chart_fit_bucket": _performance_rows_by_field(rows, "scanner_chart_fit_score_bucket"),
+            "by_scanner_chart_fit_authority": _performance_rows_by_field(rows, "scanner_chart_fit_authority"),
+            "by_candidate_watch_effect": _performance_rows_by_field(rows, "commander_entry_candidate_watch_policy_effect"),
+        },
+        "monitor_entry": {
+            "by_entry_pattern_type": _performance_rows_by_field(rows, "entry_pattern_type"),
+            "by_human_chart_entry_score": _performance_rows_by_field(rows, "human_chart_entry_score_bucket"),
+            "by_human_chart_setup_quality": _performance_rows_by_field(rows, "human_chart_setup_quality"),
+            "by_candle_quality": _performance_rows_by_field(rows, "human_candle_quality_score_bucket"),
+            "by_vwap_quality": _performance_rows_by_field(rows, "human_vwap_reference_quality_score_bucket"),
+            "by_reward_room": _performance_rows_by_field(rows, "human_reward_room_score_bucket"),
+            "by_reward_room_pct": _performance_rows_by_field(rows, "reward_room_pct_bucket"),
+            "by_late_entry_risk": _performance_rows_by_field(rows, "late_entry_risk"),
+        },
+        "monitor_exit": {
+            "by_exit_pattern_type": _performance_rows_by_field(rows, "exit_pattern_type"),
+            "by_exit_reason": _performance_rows_by_field(rows, "exit_reason"),
+            "by_cost_floor_state": _performance_rows_by_field(rows, "cost_floor_state"),
+            "by_peak_drawdown_state": _performance_rows_by_field(rows, "peak_drawdown_state"),
+            "by_time_limit_reassessment": _performance_rows_by_field(rows, "time_limit_reassessment_state"),
+            "by_vwap_breakdown_state": _performance_rows_by_field(rows, "vwap_breakdown_state"),
+            "by_monitor_exit_triggered": _performance_rows_by_field(rows, "monitor_exit_triggered"),
+        },
+        "combined": {
+            "by_strategy_scanner_entry_exit": _performance_rows_by_field(combined_rows, "combined_pattern", limit=12)
+        },
+    }
+
+
 def _trade_dir_for_row(row: Dict[str, Any], reports_root: Path) -> Path | None:
     trade_id = str(row.get("trade_id") or "").strip()
     day = str(row.get("date") or row.get("day") or "").strip()[:10]
@@ -996,6 +1545,41 @@ def _daily_trade_index_rows(
             row["report_path"] = str(trade_dir / "reports" / "ai_trade_report.json")
         rows.append(row)
     return rows
+
+
+def _daily_symbol_history_rows(reports_root: Path, day: str) -> List[Dict[str, Any]]:
+    normalized_day = str(day or "").strip()
+    return [
+        row
+        for row in _iter_symbol_trade_history(reports_root)
+        if str(row.get("date") or "").strip() == normalized_day
+    ]
+
+
+def _merge_daily_trade_index_with_symbol_history(
+    trade_rows: List[Dict[str, Any]],
+    history_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    history_by_trade_id = {
+        str(row.get("trade_id") or "").strip(): dict(row)
+        for row in history_rows
+        if str(row.get("trade_id") or "").strip()
+    }
+    merged_rows: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in trade_rows:
+        trade_id = str(row.get("trade_id") or "").strip()
+        base = dict(history_by_trade_id.get(trade_id) or {})
+        for key, value in row.items():
+            if value not in (None, ""):
+                base[key] = value
+        merged_rows.append(base if base else dict(row))
+        if trade_id:
+            seen.add(trade_id)
+    for trade_id, row in history_by_trade_id.items():
+        if trade_id not in seen:
+            merged_rows.append(dict(row))
+    return merged_rows
 
 
 def _entry_reason_from_decision_flow(decision_flow: Dict[str, Any], *, fallback: Any = "") -> str:
@@ -1166,6 +1750,7 @@ def build_operator_period_summary(
             **metrics,
         },
         "patterns": _pattern_payload(counters),
+        "pattern_performance": _pattern_performance_payload(rows),
         "symbol_summary": _symbol_rows(rows),
     }
     summary["operator_readout"] = _operator_readout(
@@ -1187,14 +1772,14 @@ def build_operator_daily_summary_artifact_payload(
     normalized_day = str(day or "").strip()
     source_payload = dict(daily_report_payload or {})
     trade_index = source_payload.get("trade_index") if isinstance(source_payload.get("trade_index"), list) else []
+    history_rows = _daily_symbol_history_rows(reports_root, normalized_day)
     if trade_index:
-        rows = _daily_trade_index_rows(reports_root=reports_root, trade_index=trade_index)
+        rows = _merge_daily_trade_index_with_symbol_history(
+            _daily_trade_index_rows(reports_root=reports_root, trade_index=trade_index),
+            history_rows,
+        )
     else:
-        rows = [
-            row
-            for row in _iter_symbol_trade_history(reports_root)
-            if str(row.get("date") or "").strip() == normalized_day
-        ]
+        rows = history_rows
     rows = _enrich_rows_with_truth_surface(rows, reports_root)
     metrics = _trade_metrics(rows)
     counters = _pattern_counters(rows)
@@ -1218,6 +1803,7 @@ def build_operator_daily_summary_artifact_payload(
         ),
         "metrics": metrics,
         "patterns": _pattern_payload(counters),
+        "pattern_performance": _pattern_performance_payload(rows),
         "symbol_summary": _symbol_rows(rows),
         "residual_positions": _build_residual_positions_payload(reports_root=reports_root, day=normalized_day),
     }
@@ -1260,6 +1846,7 @@ def build_operator_symbol_summary_artifact_payload(
         },
         "metrics": metrics,
         "patterns": _pattern_payload(counters),
+        "pattern_performance": _pattern_performance_payload(rows),
         "symbol_memory": {
             "available": bool(memory),
             "trade_stats": dict(memory.get("trade_stats") or {}) if isinstance(memory.get("trade_stats"), dict) else {},
@@ -1276,6 +1863,51 @@ def build_operator_symbol_summary_artifact_payload(
         entry_counts=counters.get("entry_reasons") or Counter(),
     )
     return summary
+
+
+def _pattern_perf_rows(pattern_performance: Dict[str, Any], *path: str) -> List[Dict[str, Any]]:
+    current: Any = pattern_performance
+    for key in path:
+        if not isinstance(current, dict):
+            return []
+        current = current.get(key)
+    return [row for row in list(current or []) if isinstance(row, dict)]
+
+
+def _pattern_perf_line(label: str, rows: List[Dict[str, Any]], *, limit: int = 3) -> str:
+    parts: List[str] = []
+    for row in rows[:limit]:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        parts.append(
+            f"{name} ({row.get('count')}, win {float(row.get('win_rate') or 0.0) * 100:.1f}%, "
+            f"avg {float(row.get('avg_return_pct') or 0.0):.2f}%, 비용역전 {row.get('cost_drag_loss_count') or 0}건)"
+        )
+    return f"- {label}: {', '.join(parts) if parts else 'none'}"
+
+
+def _render_pattern_performance_lines(payload: Dict[str, Any]) -> List[str]:
+    perf = payload.get("pattern_performance") if isinstance(payload.get("pattern_performance"), dict) else {}
+    if not perf or int(perf.get("trade_count") or 0) <= 0:
+        return []
+    return [
+        "",
+        "---",
+        "",
+        "## Pattern Performance",
+        "",
+        _pattern_perf_line("Strategist tactical", _pattern_perf_rows(perf, "strategist", "by_tactical_strategy")),
+        _pattern_perf_line("Strategist horizon", _pattern_perf_rows(perf, "strategist", "by_strategy_horizon")),
+        _pattern_perf_line("Scanner rank", _pattern_perf_rows(perf, "scanner", "by_scanner_rank_bucket")),
+        _pattern_perf_line("Monitor entry", _pattern_perf_rows(perf, "monitor_entry", "by_entry_pattern_type")),
+        _pattern_perf_line("Monitor exit", _pattern_perf_rows(perf, "monitor_exit", "by_exit_pattern_type")),
+        _pattern_perf_line(
+            "Combined",
+            _pattern_perf_rows(perf, "combined", "by_strategy_scanner_entry_exit"),
+            limit=2,
+        ),
+    ]
 
 
 def render_operator_period_summary_markdown(payload: Dict[str, Any]) -> str:
@@ -1335,6 +1967,7 @@ def render_operator_period_summary_markdown(payload: Dict[str, Any]) -> str:
         rows = patterns.get(key) if isinstance(patterns.get(key), list) else []
         text = ", ".join(f"{row.get('name')} ({row.get('count')})" for row in rows[:3] if isinstance(row, dict))
         lines.append(f"- {label}: {text or '없음'}")
+    lines.extend(_render_pattern_performance_lines(payload))
 
     lines += ["", "---", "", "## 주요 종목", ""]
     if not symbols:
@@ -1427,6 +2060,18 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
         lines.append("- 상태 스냅샷을 읽지 못해 잔여 보유 종목을 확인하지 못했습니다.")
     elif not residual_positions:
         lines.append("- 장마감 기준 잔여 보유 종목이 없습니다.")
+        reconciled = (
+            residual.get("reconciled_closed_positions")
+            if isinstance(residual.get("reconciled_closed_positions"), list)
+            else []
+        )
+        reconciled_symbols_text = ", ".join(
+            str(row.get("symbol") or "").strip()
+            for row in reconciled
+            if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+        )
+        if reconciled_symbols_text:
+            lines.append(f"- 장중 청산 확인: {reconciled_symbols_text}은 당일 전량 매도 기록으로 잔여 보유에서 제외했습니다.")
     else:
         closeout = residual.get("closeout_state") if isinstance(residual.get("closeout_state"), dict) else {}
         reconciled = (
@@ -1437,7 +2082,11 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
         closeout_mode = str(closeout.get("mode") or "").strip()
         closeout_reason = str(closeout.get("reason") or "").strip()
         if closeout_mode or closeout_reason:
-            lines.append(f"- closeout 상태: {closeout_mode or '-'} / {closeout_reason or '-'}")
+            closeout_line = f"- closeout 상태: {closeout_mode or '-'} / {closeout_reason or '-'}"
+            closeout_note = str(closeout.get("report_note") or "").strip()
+            if closeout_note:
+                closeout_line += f" ({closeout_note})"
+            lines.append(closeout_line)
         if reconciled:
             reconciled_symbols_text = ", ".join(
                 str(row.get("symbol") or "").strip()
@@ -1456,13 +2105,16 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
             current_price = row.get("current_price")
             pnl_ratio = row.get("account_pnl_ratio")
             reason = str(row.get("overnight_reason") or "").strip()
+            decision_label = str(row.get("overnight_decision_label") or "").strip()
             signals = [str(x) for x in list(row.get("overnight_positive_signals") or []) if str(x or "").strip()]
             blockers = [str(x) for x in list(row.get("overnight_blockers") or []) if str(x or "").strip()]
             price_text = f"평균 {avg_price:,.0f}" if isinstance(avg_price, (int, float)) and avg_price else "평균 -"
             current_text = f"현재 {current_price:,.0f}" if isinstance(current_price, (int, float)) and current_price else "현재 -"
             ratio_text = f" / 평가손익률 {float(pnl_ratio) * 100:.2f}%" if isinstance(pnl_ratio, (int, float)) else ""
             detail = f"- {symbol}: {status} / {qty}주 / {price_text} / {current_text}{ratio_text}"
-            if reason:
+            if decision_label:
+                detail += f" / 오버나이트 판단: {decision_label}"
+            if reason and not bool(row.get("overnight_decision_missing")):
                 detail += f" / 사유 {reason}"
             if bool(row.get("weekend_carry")):
                 detail += f" / 주말보유 {int(row.get('holding_gap_days') or 3)}일"
@@ -1471,7 +2123,7 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
                 lines.append("  - 주의: 금요일 carry 승인이라 주말 갭 리스크가 포함됩니다.")
             missing_detail = str(row.get("overnight_missing_detail") or "").strip()
             if bool(row.get("overnight_decision_missing")) and missing_detail:
-                lines.append(f"  - 판단 기록 상태: {missing_detail}")
+                lines.append(f"  - 판단 기록 근거: {missing_detail}")
             if signals:
                 lines.append(f"  - 승인 근거: {', '.join(signals[:5])}")
             if blockers:
@@ -1487,6 +2139,7 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
         rows = patterns.get(key) if isinstance(patterns.get(key), list) else []
         text = ", ".join(f"{row.get('name')} ({row.get('count')})" for row in rows[:3] if isinstance(row, dict))
         lines.append(f"- {label}: {text or '없음'}")
+    lines.extend(_render_pattern_performance_lines(payload))
 
     lines += ["", "---", "", "## 종목별 요약", ""]
     if not symbols:
@@ -1573,6 +2226,7 @@ def render_operator_symbol_summary_markdown(payload: Dict[str, Any]) -> str:
         rows = patterns.get(key) if isinstance(patterns.get(key), list) else []
         text = ", ".join(f"{row.get('name')} ({row.get('count')})" for row in rows[:3] if isinstance(row, dict))
         lines.append(f"- {label}: {text or '없음'}")
+    lines.extend(_render_pattern_performance_lines(payload))
 
     bias = memory.get("bias_recommendation") if isinstance(memory.get("bias_recommendation"), dict) else {}
     if bias or risk_notes:

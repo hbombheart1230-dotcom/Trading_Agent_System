@@ -287,7 +287,7 @@ def _clean_symbol_free_text(value: Any, *, entry_reason: str = "", exit_reason: 
     lowered = text.lower()
     if "scanner selected" in text:
         return entry_reason or _clean_symbol_reason(text, axis="entry")
-    if "sell was triggered" in text:
+    if "sell was triggered" in text or "sell 실행 및 잔여수량" in lowered:
         return exit_reason or _clean_symbol_reason(text, axis="exit")
     if "trigger_type=trailing_stop" in lowered or "trailing_stop" in lowered:
         return text.replace("trigger_type=trailing_stop", "청산축=추적 손절").replace("trailing_stop", "추적 손절")

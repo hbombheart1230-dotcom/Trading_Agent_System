@@ -287,6 +287,82 @@ def _has_substantive_entry_evidence(entry: Dict[str, Any]) -> bool:
     return False
 
 
+def _holding_partial_exit_total(holding: Dict[str, Any]) -> int:
+    if not isinstance(holding, dict):
+        return 0
+    total = 0
+    for row in list(holding.get("partial_exits") or []):
+        if isinstance(row, dict):
+            total += max(0, safe_int(row.get("qty"), 0))
+    return int(total)
+
+
+def _exit_closure_quantity_state(lifecycle: Dict[str, Any], exit_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+    holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+    entry_qty = max(0, safe_int(entry.get("qty"), 0))
+    exit_qty = max(0, safe_int(exit_ctx.get("qty"), 0))
+    previous_partial_exit_qty = _holding_partial_exit_total(holding)
+    cumulative_exit_qty = int(previous_partial_exit_qty + exit_qty)
+    remaining_qty = max(0, int(entry_qty - cumulative_exit_qty)) if entry_qty > 0 else 0
+    return {
+        "entry_qty": int(entry_qty),
+        "exit_qty": int(exit_qty),
+        "previous_partial_exit_qty": int(previous_partial_exit_qty),
+        "cumulative_exit_qty": int(cumulative_exit_qty),
+        "remaining_qty": int(remaining_qty),
+        "closes_position": bool(entry_qty <= 0 or (exit_qty > 0 and cumulative_exit_qty >= entry_qty)),
+    }
+
+
+def _record_partial_exit(
+    lifecycle: Dict[str, Any],
+    *,
+    exit_ctx: Dict[str, Any],
+    run_id: str,
+    ts: str,
+    closure_state: Dict[str, Any],
+) -> None:
+    holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+    holding.setdefault("run_ids", [])
+    holding.setdefault("holding_events", [])
+    holding.setdefault("posture_history", [])
+    holding.setdefault("monitor_updates", [])
+    holding.setdefault("partial_exits", [])
+    if run_id and run_id not in holding["run_ids"]:
+        holding["run_ids"].append(run_id)
+    partial_exit = {
+        "run_id": str(run_id or ""),
+        "ts": str(ts or ""),
+        "qty": int(closure_state.get("exit_qty") or 0),
+        "entry_qty": int(closure_state.get("entry_qty") or 0),
+        "cumulative_exit_qty": int(closure_state.get("cumulative_exit_qty") or 0),
+        "remaining_qty": int(closure_state.get("remaining_qty") or 0),
+        "reason_human": str(exit_ctx.get("reason_human") or ""),
+        "exit_context": dict(exit_ctx or {}),
+    }
+    holding["partial_exits"].append(partial_exit)
+    holding["holding_events"].append(
+        {
+            "run_id": str(run_id or ""),
+            "ts": str(ts or ""),
+            "posture": "PARTIAL_EXIT",
+            "monitor_reason": str(exit_ctx.get("reason_human") or ""),
+            "exit_reason": str(exit_ctx.get("reason_human") or ""),
+            "monitor_context": dict(exit_ctx.get("monitor_context") or {}),
+            "summary": (
+                f"Partial SELL {partial_exit['qty']} recorded; "
+                f"remaining qty {partial_exit['remaining_qty']} before full trade report."
+            ),
+        }
+    )
+    holding["posture_history"].append({"ts": str(ts or ""), "posture": "PARTIAL_EXIT"})
+    holding["monitor_updates"].append("partial_exit_recorded")
+    lifecycle["holding"] = holding
+    lifecycle["partial_exit_qty"] = int(closure_state.get("cumulative_exit_qty") or 0)
+    lifecycle["remaining_qty"] = int(closure_state.get("remaining_qty") or 0)
+
+
 def _build_trade_lifecycles(
     *,
     day: str,
@@ -587,19 +663,57 @@ def _build_trade_lifecycles(
                     attach_debug["new_trade_created_reason"] = "no_active_or_existing_open_lifecycle"
                     attach_debug["recovered_lifecycle_reason"] = "sell_without_attachable_open_entry"
                     out.append(lifecycle)
-            lifecycle["exit"] = _exit_context(snapshot, bundle)
+            exit_ctx = _exit_context(snapshot, bundle)
             lifecycle.setdefault("run_ids_all", [])
             if run_id not in lifecycle["run_ids_all"]:
                 lifecycle["run_ids_all"].append(run_id)
-            lifecycle["timeline"].append(
-                {
-                    "event": "exit",
-                    "ts": str(snapshot.get("ts_start") or ""),
-                    "description": f"Exit SELL was executed by run {run_id}.",
-                }
-            )
             if lifecycle.get("entry"):
-                lifecycle["status"] = "closed"
+                closure_state = _exit_closure_quantity_state(lifecycle, exit_ctx)
+                attach_debug["entry_qty"] = int(closure_state.get("entry_qty") or 0)
+                attach_debug["exit_qty"] = int(closure_state.get("exit_qty") or 0)
+                attach_debug["previous_partial_exit_qty"] = int(closure_state.get("previous_partial_exit_qty") or 0)
+                attach_debug["cumulative_exit_qty"] = int(closure_state.get("cumulative_exit_qty") or 0)
+                attach_debug["remaining_qty"] = int(closure_state.get("remaining_qty") or 0)
+                attach_debug["closes_position"] = bool(closure_state.get("closes_position"))
+                if bool(closure_state.get("closes_position")):
+                    lifecycle["exit"] = exit_ctx
+                    lifecycle["status"] = "closed"
+                    lifecycle["remaining_qty"] = 0
+                    lifecycle["timeline"].append(
+                        {
+                            "event": "exit",
+                            "ts": str(snapshot.get("ts_start") or ""),
+                            "description": f"Exit SELL was executed by run {run_id}.",
+                        }
+                    )
+                    active_by_symbol.pop(symbol, None)
+                else:
+                    lifecycle["status"] = "open"
+                    _record_partial_exit(
+                        lifecycle,
+                        exit_ctx=exit_ctx,
+                        run_id=run_id,
+                        ts=str(snapshot.get("ts_start") or ""),
+                        closure_state=closure_state,
+                    )
+                    lifecycle["timeline"].append(
+                        {
+                            "event": "partial_exit",
+                            "ts": str(snapshot.get("ts_start") or ""),
+                            "description": (
+                                f"Partial SELL was executed by run {run_id}; "
+                                f"remaining qty {int(closure_state.get('remaining_qty') or 0)}."
+                            ),
+                        }
+                    )
+                    if not attach_debug.get("attach_match_reason"):
+                        attach_debug["matched_open_trade_id"] = str(lifecycle.get("trade_id") or "")
+                        attach_debug["attach_match_reason"] = "partial_sell_kept_lifecycle_open"
+                    lifecycle.setdefault("lifecycle_attach_debug", [])
+                    if isinstance(lifecycle.get("lifecycle_attach_debug"), list):
+                        lifecycle["lifecycle_attach_debug"].append(attach_debug)
+                    active_by_symbol[symbol] = lifecycle
+                    continue
                 if not attach_debug.get("attach_match_reason"):
                     attach_debug["matched_open_trade_id"] = str(lifecycle.get("trade_id") or "")
                     attach_debug["attach_match_reason"] = "matched_active_open_lifecycle_in_current_pass"
@@ -615,6 +729,14 @@ def _build_trade_lifecycles(
                 if resolved_mode_label and resolved_mode_label != "decision only":
                     lifecycle["execution_mode_label"] = resolved_mode_label
             else:
+                lifecycle["exit"] = exit_ctx
+                lifecycle["timeline"].append(
+                    {
+                        "event": "exit",
+                        "ts": str(snapshot.get("ts_start") or ""),
+                        "description": f"Exit SELL was executed by run {run_id}.",
+                    }
+                )
                 lifecycle["status"] = "partial"
                 if not attach_debug.get("new_trade_created_reason"):
                     attach_debug["new_trade_created_reason"] = "entry_missing_after_sell_attach"
@@ -623,7 +745,6 @@ def _build_trade_lifecycles(
             lifecycle.setdefault("lifecycle_attach_debug", [])
             if isinstance(lifecycle.get("lifecycle_attach_debug"), list):
                 lifecycle["lifecycle_attach_debug"].append(attach_debug)
-            active_by_symbol.pop(symbol, None)
             continue
 
         lifecycle = active_by_symbol.get(symbol)
@@ -688,11 +809,19 @@ def _build_trade_lifecycles(
             if holding_duration
             else f"{HOLDING_DURATION_UNAVAILABLE} "
         )
+        partial_exit_qty = _holding_partial_exit_total(holding)
+        remaining_qty = safe_int(lifecycle.get("remaining_qty"), 0)
+        partial_exit_clause = (
+            f" Partial exits recorded: {partial_exit_qty}; remaining qty: {remaining_qty}."
+            if partial_exit_qty > 0 and lifecycle.get("status") == "open"
+            else ""
+        )
         lifecycle_summary = (
             f"Trade {lifecycle.get('trade_id')} for {lifecycle.get('symbol')} is {lifecycle.get('status')}. "
             f"{holding_duration_clause}"
             f"Entry: {entry_reason_human} "
             f"Exit: {exit_reason_human}"
+            f"{partial_exit_clause}"
         )
         operator_conclusion_human = (
             f"Current lifecycle status is {lifecycle.get('status')}. "
@@ -748,6 +877,8 @@ def _build_trade_lifecycles(
             lifecycle["warnings"].append("Lifecycle is partial because entry or exit evidence is incomplete.")
         if lifecycle.get("status") == "open":
             lifecycle["warnings"].append("Lifecycle is open; no closing SELL execution has been recorded yet.")
+        if partial_exit_qty > 0 and lifecycle.get("status") == "open":
+            lifecycle["warnings"].append("Partial SELL was recorded, but the full position is not closed; final trade report is pending.")
         if not entry_has_execution_evidence and lifecycle.get("status") != "open":
             lifecycle["warnings"].append("Entry execution evidence is incomplete; lifecycle entry was partially recovered.")
 

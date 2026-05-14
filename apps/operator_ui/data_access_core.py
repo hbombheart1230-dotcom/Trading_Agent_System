@@ -101,6 +101,60 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _filled_strategy_scalar(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "-", "none", "null", "n/a"}
+    return True
+
+
+def _strategist_nested_value(payload: Any, key: str) -> Any:
+    if not isinstance(payload, dict):
+        return None
+
+    def _lookup(container: Any) -> Any:
+        if not isinstance(container, dict):
+            return None
+        value = container.get(key)
+        return value if _filled_strategy_scalar(value) else None
+
+    section_names = (
+        "summary",
+        "trace_summary",
+        "strategist_trace_summary",
+        "strategy_frame",
+        "policy_selected",
+        "decision_frame",
+        "market_context",
+        "llm_frame",
+    )
+    containers: List[Any] = [payload]
+    containers.extend(payload.get(name) for name in section_names)
+    artifact = payload.get("artifact")
+    if isinstance(artifact, dict):
+        containers.append(artifact)
+        containers.extend(artifact.get(name) for name in section_names)
+
+    for container in containers:
+        value = _lookup(container)
+        if value is not None:
+            return value
+    return None
+
+
+def _strategist_risk_tone(payload: Any) -> str:
+    value = _strategist_nested_value(payload, "risk_tone")
+    if value is None:
+        value = _strategist_nested_value(payload, "risk_mode")
+    return str(value or "").strip()
+
+
+def _strategist_monitor_guidance(payload: Any) -> str:
+    value = _strategist_nested_value(payload, "monitor_guidance")
+    return str(value or "").strip()
+
+
 def _env_int_with_fallback(*names: str, default: int) -> int:
     for name in names:
         raw = str(os.getenv(name, "") or "").strip()
@@ -1479,7 +1533,7 @@ def load_symbol_run_chain(config: OperatorUIConfig, day: str, symbol: str, *, li
                 "run_id": rid,
                 "phase": str((route.get("payload") or {}).get("phase") or ""),
                 "playbook": str(strategist_summary.get("playbook") or ""),
-                "risk_tone": str(strategist_summary.get("risk_tone") or ""),
+                "risk_tone": _strategist_risk_tone(strategist_summary),
                 "symbol": run_symbol,
                 "action": str(execution.get("action") or ""),
                 "execution_status": str(execution.get("status") or ""),
@@ -1680,7 +1734,7 @@ def load_recent_runs(
                 "phase": str((route.get("payload") or {}).get("phase") or ""),
                 "runtime_path": runtime_path,
                 "strategist_playbook": str(strategist_summary.get("playbook") or ""),
-                "strategist_risk_tone": str(strategist_summary.get("risk_tone") or ""),
+                "strategist_risk_tone": _strategist_risk_tone(strategist_summary),
                 "scanner_top_stock": str(scanner_summary.get("top_stock") or ""),
                 "scanner_top_score": _safe_float(scanner_summary.get("top_score"), 0.0),
                 "monitor_reason": str(monitor_summary.get("monitor_reason") or ""),
@@ -3917,8 +3971,14 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "themes": list(strategist_summary.get("themes") or canonical_trade.get("themes") or [])[:5],
             "playbook": strategist_summary.get("playbook") or canonical_trade.get("playbook"),
             "scanner_bias": strategist_summary.get("scanner_bias"),
-            "risk_tone": strategist_summary.get("risk_tone"),
-            "monitor_guidance": strategist_summary.get("monitor_guidance"),
+            "risk_tone": _strategist_risk_tone(strategist_summary)
+            or _strategist_risk_tone(strategist_artifact)
+            or _strategist_risk_tone(trade_story_input)
+            or _strategist_risk_tone(canonical_trade),
+            "monitor_guidance": _strategist_monitor_guidance(strategist_summary)
+            or _strategist_monitor_guidance(strategist_artifact)
+            or _strategist_monitor_guidance(trade_story_input)
+            or _strategist_monitor_guidance(canonical_trade),
             "news_query_targets": list(strategist_summary.get("news_query_targets") or canonical_trade.get("news_query_targets") or [])[:8],
             "news_query_reasoning": strategist_summary.get("news_query_reasoning"),
             "global_sentiment_inputs": raw_input.get("global_sentiment_inputs") if isinstance(raw_input.get("global_sentiment_inputs"), dict) else {},

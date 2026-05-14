@@ -276,6 +276,57 @@ def test_strategist_feedback_packet_falls_back_to_same_day_trade_reports(tmp_pat
     assert any("loss-heavy" in line for line in packet["recommendation"])
 
 
+def test_strategist_feedback_packet_counts_missing_closed_pnl_as_unknown(tmp_path: Path) -> None:
+    day = "2026-05-12"
+    reports_root = tmp_path / "reports"
+    closed_loss_dir = reports_root / "trades" / day / "TRD_20260512_064240_01" / "reports"
+    unknown_pnl_dir = reports_root / "trades" / day / "TRD_20260512_005930_01" / "reports"
+    _write_json(
+        closed_loss_dir / "ai_trade_report.json",
+        {
+            "trade_id": "TRD_20260512_064240_01",
+            "symbol": "064240",
+            "truth_surface": {
+                "status": {"symbol": "064240", "status": "closed", "exit_reason": "stop_loss"},
+                "price": {"broker_buy_price": 2031.67, "broker_fill_price": 2015.0},
+                "pnl": {"value": -34860.0, "pct": -0.0172, "broker_fee": 14160, "broker_tax": 4030},
+                "availability": {"broker_fill_present": True, "broker_pnl_present": True},
+            },
+        },
+    )
+    _write_json(
+        unknown_pnl_dir / "ai_trade_report.json",
+        {
+            "trade_id": "TRD_20260512_005930_01",
+            "symbol": "005930",
+            "truth_surface": {
+                "status": {"symbol": "005930", "status": "closed", "exit_reason": "manual_exit"},
+                "price": {"broker_buy_price": 57000.0, "broker_fill_price": 57100.0},
+                "pnl": {},
+                "availability": {"broker_fill_present": False, "broker_pnl_present": False},
+            },
+        },
+    )
+
+    packet = build_strategist_feedback_packet(
+        mode="daily_report",
+        payload={"day": day},
+        reports_root=reports_root,
+        day=day,
+    )
+
+    analysis = packet["trade_report_analysis"]
+    assert analysis["closed_trade_count"] == 2
+    assert analysis["win_count"] == 0
+    assert analysis["loss_count"] == 1
+    assert analysis["flat_count"] == 0
+    assert analysis["unknown_pnl_count"] == 1
+    assert analysis["pnl_pct_sample_count"] == 1
+    assert analysis["avg_pnl_pct"] == -0.0172
+    assert "1 losses" in packet["insight_summary"]
+    assert "1 unknown pnl" in packet["insight_summary"]
+
+
 def test_strategist_feedback_packet_falls_back_to_misplaced_same_day_trade_reports(tmp_path: Path) -> None:
     day = "2026-04-23"
     reports_root = tmp_path / "reports"

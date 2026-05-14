@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from graphs.nodes.skill_contracts import (
     CONTRACT_VERSION as SKILL_CONTRACT_VERSION,
@@ -33,6 +33,7 @@ from libs.runtime.decision_observability import (
     build_monitor_no_trade_surface,
     build_scanner_monitor_handoff_surface,
 )
+from libs.runtime.etf_deviation import extract_etf_deviation_signal
 from libs.runtime.monitor_candidate_cascade import build_entry_candidate_cascade_plan
 from libs.runtime.commander_memory_application_trace import build_monitor_commander_memory_application_trace
 from libs.runtime.exit_policy import (
@@ -40,6 +41,7 @@ from libs.runtime.exit_policy import (
     apply_env_stop_take_fallbacks,
     evaluate_exit_policy,
 )
+from libs.runtime.broker_cost_profile import apply_broker_cost_profile_to_exit_policy
 from libs.runtime.feature_engine import build_feature_row
 from libs.runtime.intraday_monitor_signals import (
     evaluate_intraday_entry_signal,
@@ -290,11 +292,18 @@ def _resolve_entry_candidate_cascade_config(entry_control: Dict[str, Any]) -> Di
     max_runner_ups = int(max(0, max_priority_rank - 1))
     if raw_runner_ups not in (None, ""):
         max_runner_ups = int(_clamp(_to_float(raw_runner_ups), 0, max_runner_ups))
+    commander_expanded_repeated_blocker = (
+        str(entry_control.get("candidate_watch_policy_effect") or "").strip()
+        == "commander_expanded_repeated_blocker"
+        or str(entry_control.get("mode") or "").strip() == "expand_when_market_ok"
+    )
     cascade_enabled = (
         _is_trueish(entry_control.get("cascade_enabled"))
         if isinstance(entry_control, dict) and entry_control.get("cascade_enabled") not in (None, "")
         else max_runner_ups > 0
     )
+    if commander_expanded_repeated_blocker and max_runner_ups > 0:
+        cascade_enabled = True
     if not cascade_enabled:
         max_runner_ups = 0
     return {
@@ -1969,6 +1978,7 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
             out[key] = value
     out.setdefault("policy_source", str(out.get("effective_policy_source") or "monitor_exit_policy_effective"))
     out.setdefault("effective_policy_source", str(out.get("policy_source") or "monitor_exit_policy_effective"))
+    out = apply_broker_cost_profile_to_exit_policy(out)
     return out
 
 
@@ -2056,6 +2066,56 @@ def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_plan": strategist_plan,
         "policy_provenance": policy_provenance,
     }
+
+
+def _position_strategy_frame_for_symbol(
+    state: Dict[str, Any],
+    symbol: str,
+    base_frame: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Pin exit controls to the strategy frame captured when the position opened."""
+    sym = _norm_symbol(symbol)
+    if not sym:
+        return dict(base_frame or {})
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    position_context = (
+        persisted.get("position_strategy_context")
+        if isinstance(persisted.get("position_strategy_context"), dict)
+        else {}
+    )
+    row = position_context.get(sym) if isinstance(position_context.get(sym), dict) else {}
+    output = row.get("output") if isinstance(row.get("output"), dict) else {}
+    if not output:
+        return dict(base_frame or {})
+    pinned_state = dict(state)
+    pinned_state["strategist_output"] = dict(output)
+    for key in ("playbook", "monitor_guidance", "risk_tone", "trade_aggressiveness"):
+        pinned_state.pop(key, None)
+    pinned = _extract_monitor_strategy_frame(pinned_state)
+    out = dict(base_frame or {})
+    for key in (
+        "playbook",
+        "monitor_guidance",
+        "risk_tone",
+        "trade_aggressiveness",
+        "commander_context",
+        "commander_horizon_policy",
+        "strategy_horizon",
+        "source_strategy_horizon",
+        "strategist_plan",
+        "policy_provenance",
+    ):
+        value = pinned.get(key)
+        if value not in (None, "", {}, []):
+            out[key] = value
+    if isinstance(output.get("commander_horizon_policy"), dict) and output.get("commander_horizon_policy"):
+        out["commander_horizon_policy"] = dict(output.get("commander_horizon_policy") or {})
+    out["position_strategy_context_applied"] = True
+    out["position_strategy_context_symbol"] = sym
+    out["position_strategy_context_source"] = str(row.get("source") or "position_strategy_context")
+    out["position_strategy_context_generated_epoch"] = _to_int(row.get("generated_epoch"))
+    out["position_strategy_context_output"] = dict(output)
+    return out
 
 
 def _build_monitor_policy_trace(
@@ -2190,10 +2250,24 @@ def _build_monitor_policy_trace(
             "final_exit_thresholds": dict(exit_info.get("final_exit_thresholds") or {}),
             "exit_threshold_source": str(exit_info.get("exit_threshold_source") or ""),
             "hold_block_reason": str(exit_info.get("hold_block_reason") or ""),
+            "hold_limit_sec": exit_info.get("hold_limit_sec"),
+            "max_hold_reached": bool(exit_info.get("max_hold_reached")),
+            "time_stop_reached": bool(exit_info.get("time_stop_reached")),
+            "time_limit_reached": bool(exit_info.get("time_limit_reached")),
+            "time_limit_reason": str(exit_info.get("time_limit_reason") or ""),
+            "time_limit_reassessment_required": bool(exit_info.get("time_limit_reassessment_required")),
+            "time_limit_reassessment_blocked": bool(exit_info.get("time_limit_reassessment_blocked")),
+            "time_limit_reassessment_blocked_reason": str(
+                exit_info.get("time_limit_reassessment_blocked_reason") or ""
+            ),
             "max_runup_pct": exit_info.get("max_runup_pct"),
             "peak_drawdown_from_peak": exit_info.get("peak_drawdown_from_peak"),
             "peak_drawdown_armed": bool(exit_info.get("peak_drawdown_armed")),
             "peak_drawdown_mode": str(exit_info.get("peak_drawdown_mode") or ""),
+            "peak_drawdown_blocked": bool(exit_info.get("peak_drawdown_blocked")),
+            "peak_drawdown_block_reason": str(exit_info.get("peak_drawdown_block_reason") or ""),
+            "peak_drawdown_profit_floor_required_pct": exit_info.get("peak_drawdown_profit_floor_required_pct"),
+            "peak_drawdown_profit_floor_met": bool(exit_info.get("peak_drawdown_profit_floor_met")),
             "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
             "peak_drawdown_source": str(exit_info.get("peak_drawdown_source") or ""),
             "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
@@ -2359,6 +2433,11 @@ def _apply_monitor_strategy_frame(
             confirm = max(confirm, 2)
             cooldown += 120
             adjustments.append(f"strategy_horizon:{strategy_horizon}_hold_controls")
+    if bool(frame.get("position_strategy_context_applied")):
+        adjustments.append(
+            "position_strategy_context_pinned:"
+            + str(frame.get("position_strategy_context_symbol") or "")
+        )
 
     return {
         "min_hold_sec": max(0, int(min_hold)),
@@ -2370,7 +2449,17 @@ def _apply_monitor_strategy_frame(
         "trade_aggressiveness": aggr,
         "strategy_horizon": strategy_horizon,
         "source_strategy_horizon": str(horizon_policy.get("source_strategy_horizon") or frame.get("source_strategy_horizon") or ""),
+        "commander_horizon_policy": dict(horizon_policy),
         "horizon_behavior_translation": dict(behavior_translation),
+        "position_strategy_context_applied": bool(frame.get("position_strategy_context_applied")),
+        "position_strategy_context_symbol": str(frame.get("position_strategy_context_symbol") or ""),
+        "position_strategy_context_source": str(frame.get("position_strategy_context_source") or ""),
+        "position_strategy_context_generated_epoch": frame.get("position_strategy_context_generated_epoch"),
+        "position_strategy_context_output": (
+            dict(frame.get("position_strategy_context_output") or {})
+            if isinstance(frame.get("position_strategy_context_output"), dict)
+            else {}
+        ),
         "adjustments": list(adjustments),
     }
 
@@ -2415,7 +2504,13 @@ def _apply_exit_policy_strategy_frame(
     out = dict(exit_policy_base or {})
     adjustments: list[str] = []
 
-    strategist_output_raw = state.get("strategist_output")
+    pinned_strategy_output = (
+        dict(frame.get("position_strategy_context_output") or {})
+        if isinstance(frame.get("position_strategy_context_output"), dict)
+        else {}
+    )
+    position_strategy_pinned = bool(frame.get("position_strategy_context_applied")) and bool(pinned_strategy_output)
+    strategist_output_raw = pinned_strategy_output if position_strategy_pinned else state.get("strategist_output")
     strategist_output = (
         coerce_strategist_output(strategist_output_raw)
         if isinstance(strategist_output_raw, dict)
@@ -2510,22 +2605,22 @@ def _apply_exit_policy_strategy_frame(
         behavior_translation = dict(frame.get("horizon_behavior_translation") or {})
 
     raw_playbook = str(
-        state.get("playbook")
+        ("" if position_strategy_pinned else state.get("playbook"))
         or ((strategist_output_raw or {}).get("playbook") if isinstance(strategist_output_raw, dict) else "")
         or ""
     ).strip().lower()
     raw_guidance = str(
-        state.get("monitor_guidance")
+        ("" if position_strategy_pinned else state.get("monitor_guidance"))
         or ((strategist_output_raw or {}).get("monitor_guidance") if isinstance(strategist_output_raw, dict) else "")
         or ""
     ).strip().lower()
     raw_tone = str(
-        state.get("risk_tone")
+        ("" if position_strategy_pinned else state.get("risk_tone"))
         or ((strategist_output_raw or {}).get("risk_tone") if isinstance(strategist_output_raw, dict) else "")
         or ""
     ).strip().lower()
     raw_aggr = str(
-        state.get("trade_aggressiveness")
+        ("" if position_strategy_pinned else state.get("trade_aggressiveness"))
         or ((strategist_output_raw or {}).get("trade_aggressiveness") if isinstance(strategist_output_raw, dict) else "")
         or ""
     ).strip().lower()
@@ -2729,6 +2824,14 @@ def _apply_exit_policy_strategy_frame(
         out["source_strategy_horizon"] = str(commander_horizon_policy.get("source_strategy_horizon") or frame.get("source_strategy_horizon") or "")
         out["horizon_behavior_translation_applied"] = bool(behavior_translation.get("applied"))
         out["horizon_exit_policy_bias"] = str(behavior_translation.get("exit_policy_bias") or "")
+    if position_strategy_pinned:
+        out["position_strategy_context_applied"] = True
+        out["position_strategy_context_symbol"] = str(frame.get("position_strategy_context_symbol") or "")
+        out["position_strategy_context_source"] = str(frame.get("position_strategy_context_source") or "")
+        adjustments.append(
+            "position_strategy_context_pinned:"
+            + str(frame.get("position_strategy_context_symbol") or "")
+        )
     return {"policy": out, "adjustments": adjustments}
 
 
@@ -3489,6 +3592,19 @@ def _preview_exit_decision_for_symbol(
             value = quote.get(source_key)
             if value not in (None, "") and _to_float(value) > 0.0:
                 exit_policy_map.setdefault(policy_key, value)
+    deviation_signal = extract_etf_deviation_signal(
+        symbol=symbol,
+        candidate=selected_for_exit,
+        features=features,
+        quote=quote,
+        state=state,
+        asset_class_detected=features.get("asset_class_detected") or selected_for_exit.get("asset_class_detected"),
+    )
+    if deviation_signal.get("etf_deviation_pct") is not None:
+        exit_policy_map.setdefault("etf_deviation_pct", deviation_signal.get("etf_deviation_pct"))
+        exit_policy_map.setdefault("etf_deviation_source", deviation_signal.get("etf_deviation_source"))
+    if deviation_signal.get("asset_class_detected"):
+        exit_policy_map.setdefault("asset_class_detected", deviation_signal.get("asset_class_detected"))
     if position.get("peak_price") is not None:
         exit_policy_map.setdefault("peak_price", position.get("peak_price"))
     elif position.get("high_water_mark") is not None:
@@ -3502,8 +3618,17 @@ def _preview_exit_decision_for_symbol(
             exit_policy_map.setdefault("peak_price", peak_map.get(symbol))
     if features.get("engine_volatility20") is not None:
         exit_policy_map.setdefault("current_volatility", features.get("engine_volatility20"))
-    if features.get("engine_vwap_distance") is not None:
+    fresh_vwap_distance, fresh_vwap_distance_source = _fresh_minute_vwap_distance_for_symbol(
+        state,
+        symbol,
+        price=price,
+    )
+    if fresh_vwap_distance is not None:
+        exit_policy_map["vwap_distance"] = float(fresh_vwap_distance)
+        exit_policy_map["vwap_distance_source"] = str(fresh_vwap_distance_source)
+    elif features.get("engine_vwap_distance") is not None:
         exit_policy_map.setdefault("vwap_distance", features.get("engine_vwap_distance"))
+        exit_policy_map.setdefault("vwap_distance_source", "selected.features.engine_vwap_distance")
     if features.get("engine_trend_strength") is not None:
         exit_policy_map.setdefault("trend_strength", features.get("engine_trend_strength"))
     for signal_key in (
@@ -3602,7 +3727,34 @@ def _preview_exit_decision_for_symbol(
     decision["position_entry_stop_loss_pct"] = exit_policy_map.get("position_entry_stop_loss_pct")
     decision["position_entry_stop_loss_source"] = str(exit_policy_map.get("position_entry_stop_loss_source") or "")
     decision["position_entry_invalidation_price"] = exit_policy_map.get("position_entry_invalidation_price")
+    decision["etf_deviation_pct"] = exit_policy_map.get("etf_deviation_pct")
+    decision["etf_deviation_source"] = str(exit_policy_map.get("etf_deviation_source") or "")
+    decision["asset_class_detected"] = str(exit_policy_map.get("asset_class_detected") or "")
     return decision
+
+
+def _fresh_minute_vwap_distance_for_symbol(
+    state: Dict[str, Any],
+    symbol: str,
+    *,
+    price: float | None = None,
+) -> tuple[float | None, str]:
+    sym = _norm_symbol(symbol)
+    if not sym:
+        return None, "no_symbol"
+    minute_rows_by_symbol, minute_meta = extract_minute_ohlcv_by_symbol(state)
+    rows = minute_rows_by_symbol.get(sym) if isinstance(minute_rows_by_symbol, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return None, "minute_vwap_unavailable"
+    latest = rows[-1] if isinstance(rows[-1], dict) else {}
+    current_vwap = _to_float(latest.get("vwap"))
+    current_price = _to_float(price)
+    if current_price <= 0.0:
+        current_price = _to_float(latest.get("close"))
+    if current_vwap <= 0.0 or current_price <= 0.0:
+        return None, "minute_vwap_or_price_unavailable"
+    source = str((minute_meta or {}).get("source") or "minute_ohlcv_by_symbol").strip() or "minute_ohlcv_by_symbol"
+    return float((current_price - current_vwap) / current_vwap), f"{source}.vwap_distance"
 
 
 def _update_position_peak_price(
@@ -4250,6 +4402,223 @@ def _monitor_selected_snapshot_for_symbol(
     return base
 
 
+def _entry_candidate_sources(row: Dict[str, Any]) -> set[str]:
+    candidate = row.get("candidate") if isinstance(row.get("candidate"), dict) else {}
+    raw_sources: List[Any] = []
+    for value in (
+        candidate.get("sources"),
+        row.get("sources"),
+        row.get("selected_sources"),
+    ):
+        if isinstance(value, (list, tuple, set)):
+            raw_sources.extend(list(value))
+        elif value not in (None, ""):
+            raw_sources.extend(str(value).replace("+", ",").split(","))
+    return {str(item or "").strip().lower() for item in raw_sources if str(item or "").strip()}
+
+
+def _entry_candidate_source_scores(row: Dict[str, Any]) -> Dict[str, Any]:
+    candidate = row.get("candidate") if isinstance(row.get("candidate"), dict) else {}
+    for value in (row.get("source_scores"), candidate.get("source_scores")):
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
+def _entry_candidate_score_breakdown(row: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(row.get("score_breakdown"), dict):
+        return dict(row.get("score_breakdown") or {})
+    candidate = row.get("candidate") if isinstance(row.get("candidate"), dict) else {}
+    if isinstance(candidate.get("score_breakdown"), dict):
+        return dict(candidate.get("score_breakdown") or {})
+    return {}
+
+
+def _entry_candidate_chart_fit_score(row: Dict[str, Any]) -> float:
+    for key in ("scanner_chart_fit_score", "scanner_macro_chart_fit_score", "entry_compatibility_score"):
+        value = _to_float(row.get(key))
+        if value > 0.0:
+            return value
+    for key in ("scanner_chart_fit", "scanner_macro_chart_fit"):
+        nested = row.get(key) if isinstance(row.get(key), dict) else {}
+        value = _to_float(nested.get("score"))
+        if value > 0.0:
+            return value
+    return 0.0
+
+
+def _entry_candidate_chart_fit_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ("scanner_chart_fit_score", "scanner_macro_chart_fit_score", "entry_compatibility_score"):
+        if row.get(key) not in (None, ""):
+            return {"available": True, "score": _to_float(row.get(key)), "source": key}
+    for key in ("scanner_chart_fit", "scanner_macro_chart_fit"):
+        nested = row.get(key) if isinstance(row.get(key), dict) else {}
+        if nested.get("score") not in (None, ""):
+            return {"available": True, "score": _to_float(nested.get("score")), "source": f"{key}.score"}
+    return {"available": False, "score": 0.0, "source": ""}
+
+
+def _selected_rank_from_candidate(row: Dict[str, Any]) -> int:
+    for key in ("rank", "priority_rank", "scanner_rank", "selected_rank"):
+        rank = _to_int(row.get(key))
+        if rank > 0:
+            return int(rank)
+    return 0
+
+
+def _evaluate_entry_quality_gate(
+    *,
+    selected: Dict[str, Any],
+    entry_info: Dict[str, Any],
+    entry_cost_filter: Dict[str, Any],
+) -> Dict[str, Any]:
+    selected_rank = _selected_rank_from_candidate(selected)
+    chart_fit = _entry_candidate_chart_fit_snapshot(selected)
+    chart_fit_available = bool(chart_fit.get("available"))
+    chart_fit_score = _to_float(chart_fit.get("score"))
+    cost_filter_enabled = bool(entry_cost_filter.get("enabled"))
+    cost_filter_passed = bool(entry_cost_filter.get("passed"))
+    edge_evidence_type = str(entry_cost_filter.get("edge_evidence_type") or "").strip()
+    estimated_gross_edge_available = entry_cost_filter.get("estimated_gross_edge_pct") not in (None, "")
+    directional_edge_available = bool(entry_cost_filter.get("directional_edge_available")) or edge_evidence_type == "directional"
+    fail_reasons = list(entry_cost_filter.get("fail_reasons") or [])
+    reasons: List[str] = []
+
+    hard_min_chart_fit = _config_float({}, "unused", "MONITOR_ENTRY_HARD_MIN_CHART_FIT", 0.35)
+    runner_min_chart_fit = _config_float({}, "unused", "MONITOR_ENTRY_RUNNER_MIN_CHART_FIT", 0.55)
+    runner_rank_floor = _to_int(os.getenv("MONITOR_ENTRY_RUNNER_RANK_FLOOR", "4") or 4)
+    if runner_rank_floor <= 0:
+        runner_rank_floor = 4
+    runner_up = bool(selected_rank >= runner_rank_floor > 0)
+
+    if chart_fit_available and chart_fit_score < hard_min_chart_fit:
+        reasons.append("chart_fit_below_hard_floor")
+    if runner_up:
+        if chart_fit_available and chart_fit_score < runner_min_chart_fit:
+            reasons.append("runner_up_chart_fit_below_min")
+        if cost_filter_enabled and not cost_filter_passed:
+            reasons.append("runner_up_cost_filter_not_passed")
+        if cost_filter_enabled and not (directional_edge_available or estimated_gross_edge_available):
+            reasons.append("runner_up_edge_evidence_missing")
+
+    blocked = bool(bool(entry_info.get("triggered")) and reasons)
+    reason = ""
+    if blocked:
+        if "chart_fit_below_hard_floor" in reasons:
+            reason = "entry_chart_fit_too_low"
+        elif "runner_up_chart_fit_below_min" in reasons:
+            reason = "runner_up_chart_fit_not_enough"
+        elif "runner_up_cost_filter_not_passed" in reasons:
+            reason = "runner_up_cost_edge_not_ready"
+        else:
+            reason = "runner_up_edge_evidence_missing"
+
+    return {
+        "schema_version": "entry_quality_gate.v1",
+        "enabled": True,
+        "blocked": bool(blocked),
+        "reason": reason,
+        "reasons": reasons,
+        "selected_rank": int(selected_rank),
+        "runner_up": bool(runner_up),
+        "runner_rank_floor": int(runner_rank_floor),
+        "chart_fit_available": bool(chart_fit_available),
+        "chart_fit_score": float(chart_fit_score),
+        "chart_fit_source": str(chart_fit.get("source") or ""),
+        "hard_min_chart_fit": float(hard_min_chart_fit),
+        "runner_min_chart_fit": float(runner_min_chart_fit),
+        "cost_filter_enabled": bool(cost_filter_enabled),
+        "cost_filter_passed": bool(cost_filter_passed),
+        "cost_filter_fail_reasons": fail_reasons,
+        "directional_edge_available": bool(directional_edge_available),
+        "estimated_gross_edge_available": bool(estimated_gross_edge_available),
+        "edge_evidence_type": edge_evidence_type,
+    }
+
+
+def _classify_vwap_reclaim_pullback_candidate(
+    *,
+    candidate_row: Dict[str, Any],
+    selected_rank: int,
+    fallback_used: bool,
+    entry_info: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Classify pullback evidence without symbol-specific penalties."""
+    row = dict(candidate_row or {})
+    score_breakdown = _entry_candidate_score_breakdown(row)
+    source_scores = _entry_candidate_source_scores(row)
+    sources = _entry_candidate_sources(row)
+    entry = dict(entry_info or {})
+    metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+    grouped = entry.get("grouped_logic_trace") if isinstance(entry.get("grouped_logic_trace"), dict) else {}
+    condition_scores = entry.get("condition_scores") if isinstance(entry.get("condition_scores"), dict) else {}
+
+    theme_boost = max(0.0, _to_float(score_breakdown.get("theme_boost")))
+    raw_theme_match = row.get("theme_match")
+    theme_match = (
+        bool(raw_theme_match)
+        if isinstance(raw_theme_match, bool)
+        else _is_trueish(raw_theme_match)
+    ) or "sector_theme" in sources or theme_boost > 0.0
+    trading_value = max(0.0, _to_float(score_breakdown.get("trading_value")))
+    if trading_value <= 0.0 and source_scores.get("top_value") not in (None, ""):
+        trading_value = max(0.0, min(1.0, _to_float(source_scores.get("top_value")) / 2.0))
+    top_value_confirmed = "top_value" in sources or trading_value >= 0.20
+    top_volume_confirmed = "top_volume" in sources or _to_float(source_scores.get("top_volume")) > 0.0 or max(
+        _to_float(score_breakdown.get("volume_surge")),
+        _to_float(metrics.get("volume_ratio")) / 2.0,
+    ) >= 0.20
+    volume_confirmation = bool(
+        metrics.get("volume_ok")
+        or grouped.get("breakout_volume_gate_ok")
+        or _to_float(metrics.get("volume_ratio")) >= 1.0
+    )
+    chart_fit_score = max(
+        _entry_candidate_chart_fit_score(row),
+        _to_float(condition_scores.get("entry_quality_score")),
+        _to_float(grouped.get("scanner_chart_fit_score")),
+    )
+    selected_rank = int(selected_rank or 0)
+    fallback_rank_weak = bool(fallback_used and selected_rank >= 4)
+
+    subtype = "vwap_reclaim_setup"
+    if theme_match:
+        subtype = "theme_confirmed_pullback"
+    elif top_value_confirmed and top_volume_confirmed:
+        subtype = "market_representative_pullback"
+    elif trading_value >= 0.20 or top_value_confirmed or top_volume_confirmed:
+        subtype = "liquidity_confirmed_pullback"
+
+    fallback_qualified = True
+    fallback_rejection_reason = ""
+    if fallback_rank_weak:
+        fallback_qualified = bool(
+            theme_match
+            or trading_value >= 0.20
+            or (volume_confirmation and chart_fit_score >= 0.75)
+            or (top_value_confirmed and top_volume_confirmed)
+        )
+        if not fallback_qualified:
+            subtype = "weak_fallback_pullback"
+            fallback_rejection_reason = "theme_unconfirmed_fallback_without_liquidity_edge"
+
+    return {
+        "schema_version": "pullback_evidence_profile.v1",
+        "subtype": subtype,
+        "fallback_qualified": bool(fallback_qualified),
+        "fallback_rejection_reason": fallback_rejection_reason,
+        "fallback_rank_weak": bool(fallback_rank_weak),
+        "selected_rank": int(selected_rank),
+        "theme_match": bool(theme_match),
+        "theme_boost": float(theme_boost),
+        "trading_value": float(trading_value),
+        "top_value_confirmed": bool(top_value_confirmed),
+        "top_volume_confirmed": bool(top_volume_confirmed),
+        "volume_confirmation": bool(volume_confirmation),
+        "chart_fit_score": float(chart_fit_score),
+    }
+
+
 def _position_mark_price(position: Dict[str, Any] | None) -> float | None:
     price, _source = _position_mark_price_with_source(position)
     return price
@@ -4288,6 +4657,12 @@ def _derive_order_lifecycle(order_status: Dict[str, Any] | None) -> Dict[str, An
     status = _normalize_status(order_status.get("status"))
     filled_qty = max(0, _to_int(order_status.get("filled_qty")))
     order_qty = max(0, _to_int(order_status.get("order_qty")))
+    remaining_raw = order_status.get("remaining_qty")
+    if remaining_raw in (None, ""):
+        remaining_raw = order_status.get("ord_remnq")
+    if remaining_raw in (None, ""):
+        remaining_raw = order_status.get("rmnd_qty")
+    remaining_qty = None if remaining_raw in (None, "") else max(0, _to_int(remaining_raw))
 
     if order_qty > 0:
         progress = min(1.0, float(filled_qty) / float(order_qty))
@@ -4308,6 +4683,13 @@ def _derive_order_lifecycle(order_status: Dict[str, Any] | None) -> Dict[str, An
     elif any(k in status for k in rejected_keys):
         stage = "rejected"
         terminal = True
+    elif remaining_qty is not None and remaining_qty > 0 and filled_qty <= 0:
+        stage = "pending_unfilled"
+        terminal = False
+        progress = 0.0
+    elif remaining_qty is not None and remaining_qty > 0 and filled_qty > 0:
+        stage = "partial_fill"
+        terminal = False
     elif (order_qty > 0 and filled_qty >= order_qty) or any(k in status for k in filled_keys):
         stage = "filled"
         terminal = True
@@ -4327,6 +4709,7 @@ def _derive_order_lifecycle(order_status: Dict[str, Any] | None) -> Dict[str, An
         "terminal": terminal,
         "filled_qty": filled_qty,
         "order_qty": order_qty,
+        "remaining_qty": remaining_qty,
         "progress": float(progress),
     }
 
@@ -4397,6 +4780,9 @@ def _evaluate_monitor_entry_candidate(
     persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
     last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
     last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
+    last_trade_symbol = _norm_symbol(persisted.get("last_trade_symbol"))
+    post_exit_cooldown_symbol_match = bool(not last_trade_symbol or last_trade_symbol == symbol)
+    post_exit_cooldown_scope = "same_symbol" if last_trade_symbol else "legacy_global_no_symbol"
     closeout_window_guard = _resolve_entry_closeout_window_guard(state, policy)
     buy_blocked_post_exit_cooldown = False
     post_exit_cooldown_remaining_sec = 0
@@ -4405,6 +4791,7 @@ def _evaluate_monitor_entry_candidate(
         and post_exit_cooldown_sec > 0
         and last_trade_side == "SELL"
         and last_trade_epoch > 0
+        and post_exit_cooldown_symbol_match
     ):
         elapsed = max(0, int(now_epoch_for_entry - last_trade_epoch))
         remaining = max(0, int(post_exit_cooldown_sec - elapsed))
@@ -4465,10 +4852,34 @@ def _evaluate_monitor_entry_candidate(
     entry_scoring_policy = _resolve_monitor_entry_scoring_config(state, policy)
     if symbol and isinstance(minute_ohlcv_by_symbol.get(symbol), list):
         entry_rows = list(minute_ohlcv_by_symbol.get(symbol) or [])
+    quotes_for_entry, _quote_meta_for_entry = extract_market_quotes(state)
+    quote_for_entry = (
+        quotes_for_entry.get(_norm_symbol(symbol))
+        if isinstance(quotes_for_entry.get(_norm_symbol(symbol)), dict)
+        else {}
+    )
+    deviation_signal = extract_etf_deviation_signal(
+        symbol=symbol,
+        candidate=selected,
+        features=selected_features,
+        quote=quote_for_entry,
+        state=state,
+        asset_class_detected=selected_features.get("asset_class_detected") or selected.get("asset_class_detected"),
+    )
+    entry_features = dict(selected_features)
+    if deviation_signal.get("etf_deviation_pct") is not None:
+        entry_features["etf_deviation_pct"] = deviation_signal.get("etf_deviation_pct")
+        entry_features["etf_deviation_source"] = deviation_signal.get("etf_deviation_source")
+        entry_features["etf_deviation_available"] = bool(deviation_signal.get("available"))
+    if deviation_signal.get("asset_class_detected"):
+        entry_features["asset_class_detected"] = deviation_signal.get("asset_class_detected")
+    entry_features["etf_deviation_entry_score"] = deviation_signal.get("entry_discount_score")
+    entry_features["etf_deviation_premium_score"] = deviation_signal.get("exit_premium_score")
+    selected["features"] = entry_features
     entry_info = evaluate_intraday_entry_signal(
         entry_rows,
         current_price=selected.get("price") if isinstance(selected, dict) else None,
-        features=selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {},
+        features=entry_features,
         policy=entry_policy,
         scoring=entry_scoring_policy,
         frame=strategy_frame,
@@ -4487,6 +4898,9 @@ def _evaluate_monitor_entry_candidate(
     entry_info["pending_buy_symbols"] = sorted(pending_buy_symbols)
     entry_info["selected_symbol_already_held"] = bool(selected_already_held)
     entry_info["selected_symbol_pending_buy"] = bool(selected_pending_buy)
+    entry_info["post_exit_cooldown_scope"] = str(post_exit_cooldown_scope)
+    entry_info["post_exit_cooldown_last_trade_symbol"] = str(last_trade_symbol)
+    entry_info["post_exit_cooldown_symbol_match"] = bool(post_exit_cooldown_symbol_match)
     if commander_entry_control:
         entry_info["commander_entry_control"] = dict(commander_entry_control)
     entry_info["applied_policy"] = dict(entry_info.get("applied_policy") or entry_info.get("thresholds") or entry_policy.to_dict())
@@ -4623,6 +5037,12 @@ def _evaluate_monitor_entry_candidate(
     entry_info["cost_adjusted_edge_ok"] = bool(entry_cost_filter.get("cost_adjusted_edge_ok"))
     entry_info["cost_adjusted_edge_pct"] = entry_cost_filter.get("cost_adjusted_edge_pct")
     entry_info["cost_drag_pct"] = entry_cost_filter.get("cost_drag_pct")
+    entry_quality_gate = _evaluate_entry_quality_gate(
+        selected=selected,
+        entry_info=entry_info,
+        entry_cost_filter=entry_cost_filter,
+    )
+    entry_info["entry_quality_gate"] = dict(entry_quality_gate)
     entry_info["entry_lane"] = "strict"
     entry_info["scoring_mode"] = str(entry_info.get("scoring_mode") or "disabled")
     entry_intent_cooldown_sec = max(0, _to_int((entry_info.get("thresholds") or {}).get("intent_cooldown_sec")))
@@ -4666,6 +5086,17 @@ def _evaluate_monitor_entry_candidate(
     elif entry_intent_cooldown_sec > 0 and cooldown_until > now_epoch_for_entry:
         entry_guard_blocked = True
         entry_guard_reason = f"entry_guard_cooldown:{max(0, cooldown_until - now_epoch_for_entry)}s_remaining"
+    elif bool(entry_quality_gate.get("blocked")):
+        entry_guard_blocked = True
+        entry_guard_reason = str(entry_quality_gate.get("reason") or "entry_quality_gate_blocked")
+        failed_checks = list(entry_info.get("failed_checks") or [])
+        if "entry_quality_gate" not in failed_checks:
+            failed_checks.append("entry_quality_gate")
+        for reason_item in list(entry_quality_gate.get("reasons") or []):
+            if reason_item not in failed_checks:
+                failed_checks.append(str(reason_item))
+        entry_info["failed_checks"] = failed_checks
+        entry_info["primary_failure_axis"] = "entry_quality_gate"
     elif bool(entry_info.get("triggered")) and not bool(entry_cost_filter.get("passed")):
         entry_guard_blocked = True
         entry_guard_reason = "cost_adjusted_edge_not_ready"
@@ -5101,9 +5532,34 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 if not bool(runner_entry.get("intent_submitted")):
                     continue
+                runner_rank = int(_to_int(runner_row.get("rank") or runner_row.get("priority_rank")))
+                runner_subtype = _classify_vwap_reclaim_pullback_candidate(
+                    candidate_row=dict(runner_row),
+                    selected_rank=runner_rank,
+                    fallback_used=True,
+                    entry_info=runner_entry,
+                )
+                if fallback_trace and isinstance(fallback_trace[-1], dict):
+                    fallback_trace[-1]["pullback_evidence_profile"] = dict(runner_subtype)
+                if not bool(runner_subtype.get("fallback_qualified")):
+                    runner_entry["intent_submitted"] = False
+                    runner_entry["triggered"] = False
+                    runner_entry["reason"] = str(
+                        runner_subtype.get("fallback_rejection_reason")
+                        or "weak_fallback_pullback"
+                    )
+                    runner_entry["pullback_evidence_profile"] = dict(runner_subtype)
+                    runner_entry["weak_fallback_blocked"] = True
+                    if fallback_trace and isinstance(fallback_trace[-1], dict):
+                        fallback_trace[-1]["triggered"] = False
+                        fallback_trace[-1]["reason"] = str(runner_entry.get("reason") or "")
+                        fallback_trace[-1]["weak_fallback_blocked"] = True
+                    continue
                 entry_candidate_cascade["fallback_used"] = True
                 entry_candidate_cascade["fallback_to_symbol"] = runner_symbol
                 entry_candidate_cascade["fallback_to_rank"] = runner_row.get("rank") or runner_row.get("priority_rank")
+                entry_candidate_cascade["pullback_evidence_profile"] = dict(runner_subtype)
+                entry_candidate_cascade["fallback_candidate_subtype"] = str(runner_subtype.get("subtype") or "")
                 entry_candidate_cascade["fallback_from_symbol"] = symbol
                 selected = dict(runner_result.get("selected") or runner_selected)
                 sizing_info = dict(runner_result.get("sizing_info") or sizing_info)
@@ -5125,6 +5581,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 qty = int(runner_result.get("qty") or 0)
                 entry_info["fallback_from_symbol"] = entry_candidate_cascade.get("fallback_from_symbol")
                 entry_info["fallback_to_symbol"] = runner_symbol
+                entry_info["pullback_evidence_profile"] = dict(runner_subtype)
                 break
         entry_candidate_cascade["fallback_trace"] = fallback_trace
         entry_candidate_cascade["final_selected_symbol"] = symbol
@@ -5192,6 +5649,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "entry_chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
                     "entry_lane": str(entry_info.get("entry_lane") or "strict"),
                     "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+                    "entry_quality_gate": dict(entry_info.get("entry_quality_gate") or {}),
                     "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
                     "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
                     "cost_drag_pct": entry_info.get("cost_drag_pct"),
@@ -5271,6 +5729,19 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     if use_exit_policy and (selected_symbol or has_open_position_for_exit):
         pos_map = all_pos_map
+        preliminary_exit_symbol = _select_exit_symbol(
+            selected_symbol,
+            pos_map,
+            state=state,
+            selected=selected_snapshot,
+            policy=policy,
+            exit_policy_base=exit_policy_base,
+        )
+        exit_strategy_frame = _position_strategy_frame_for_symbol(
+            state,
+            preliminary_exit_symbol,
+            strategy_frame,
+        )
         min_hold_sec = _resolve_min_hold_sec(state, monitor_policy)
         sell_cooldown_sec = _resolve_sell_cooldown_sec(state, monitor_policy)
         confirm_ticks = _resolve_exit_confirm_ticks(state, monitor_policy)
@@ -5278,7 +5749,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             min_hold_sec=min_hold_sec,
             sell_cooldown_sec=sell_cooldown_sec,
             confirm_ticks=confirm_ticks,
-            frame=strategy_frame,
+            frame=exit_strategy_frame,
         )
         min_hold_sec = int(frame_applied.get("min_hold_sec") or min_hold_sec)
         sell_cooldown_sec = int(frame_applied.get("sell_cooldown_sec") or sell_cooldown_sec)
@@ -5382,6 +5853,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             policy=policy,
             exit_policy_base=effective_exit_policy_base,
         )
+        if preliminary_exit_symbol and symbol != preliminary_exit_symbol:
+            exit_policy_guard_adjustments.append(
+                f"exit_symbol_reselected_after_policy:{preliminary_exit_symbol}->{symbol}"
+            )
         selected_for_exit: Dict[str, Any] = dict(selected_snapshot)
         if symbol and symbol != selected_symbol:
             selected_for_exit = {"symbol": symbol}
@@ -5501,7 +5976,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
             if bool(decision.get("peak_drawdown_profit_protection_urgent")):
                 peak_drawdown_confirm_ticks = 1
-            effective_confirm_ticks = max(effective_confirm_ticks, peak_drawdown_confirm_ticks)
+                effective_confirm_ticks = 1
+            else:
+                effective_confirm_ticks = max(effective_confirm_ticks, peak_drawdown_confirm_ticks)
 
         if exit_signal_detected:
             if qty <= 0:
@@ -5665,8 +6142,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "peak_drawdown_from_peak": decision.get("peak_drawdown_from_peak"),
             "peak_drawdown_armed": bool(decision.get("peak_drawdown_armed")),
             "peak_drawdown_mode": str(decision.get("peak_drawdown_mode") or ""),
+            "peak_drawdown_blocked": bool(decision.get("peak_drawdown_blocked")),
+            "peak_drawdown_block_reason": str(decision.get("peak_drawdown_block_reason") or ""),
+            "peak_drawdown_profit_floor_required_pct": decision.get("peak_drawdown_profit_floor_required_pct"),
+            "peak_drawdown_profit_floor_met": bool(decision.get("peak_drawdown_profit_floor_met")),
             "peak_drawdown_profit_protection_urgent": bool(decision.get("peak_drawdown_profit_protection_urgent")),
             "peak_drawdown_profit_protection_reason": str(decision.get("peak_drawdown_profit_protection_reason") or ""),
+            "etf_deviation_pct": decision.get("etf_deviation_pct"),
+            "etf_deviation_source": str(decision.get("etf_deviation_source") or ""),
+            "asset_class_detected": str(decision.get("asset_class_detected") or features.get("asset_class_detected") or ""),
             "final_peak_drawdown_ratio": decision.get("final_peak_drawdown_ratio"),
             "peak_drawdown_source": str(decision.get("peak_drawdown_source") or ""),
             "exit_trigger_metric_name": str(decision.get("exit_trigger_metric_name") or ""),
@@ -5715,6 +6199,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "sell_guard_reason": str(sell_guard_reason),
             "position_age_seconds": hold_sec if hold_sec > 0 else None,
             "exit_signal_detected": bool(exit_signal_detected),
+            "hold_limit_sec": decision.get("hold_limit_sec"),
+            "max_hold_reached": bool(decision.get("max_hold_reached")),
+            "time_stop_reached": bool(decision.get("time_stop_reached")),
+            "time_limit_reached": bool(decision.get("time_limit_reached")),
+            "time_limit_reason": str(decision.get("time_limit_reason") or ""),
+            "time_limit_reassessment_required": bool(decision.get("time_limit_reassessment_required")),
+            "time_limit_reassessment_blocked": bool(decision.get("time_limit_reassessment_blocked")),
+            "time_limit_reassessment_blocked_reason": str(
+                decision.get("time_limit_reassessment_blocked_reason") or ""
+            ),
             "min_hold_blocked": bool(min_hold_blocked),
             "sell_cooldown_blocked": bool(sell_cooldown_blocked),
             "hold_block_reason": str(hold_block_reason),
@@ -5731,6 +6225,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "strategy_horizon": str(frame_applied.get("strategy_horizon") or ""),
             "source_strategy_horizon": str(frame_applied.get("source_strategy_horizon") or ""),
             "horizon_behavior_translation": dict(frame_applied.get("horizon_behavior_translation") or {}),
+            "position_strategy_context_applied": bool(frame_applied.get("position_strategy_context_applied")),
+            "position_strategy_context_symbol": str(frame_applied.get("position_strategy_context_symbol") or ""),
+            "position_strategy_context_source": str(frame_applied.get("position_strategy_context_source") or ""),
+            "position_strategy_context_generated_epoch": frame_applied.get("position_strategy_context_generated_epoch"),
             "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
             "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
             "monitor_memory_bias_observation_only": bool(monitor_memory_bias_observation_only),
@@ -5831,6 +6329,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "cost_drag_pressure_reason": str(decision.get("cost_drag_pressure_reason") or ""),
                         "stop_loss_cost_drag_blocked": bool(decision.get("stop_loss_cost_drag_blocked")),
                         "stop_loss_cost_drag_blocked_reason": str(decision.get("stop_loss_cost_drag_blocked_reason") or ""),
+                        "etf_deviation_pct": decision.get("etf_deviation_pct"),
+                        "etf_deviation_source": str(decision.get("etf_deviation_source") or ""),
+                        "asset_class_detected": str(decision.get("asset_class_detected") or ""),
                         "avg_price": avg_price if avg_price > 0.0 else None,
                         "price": price,
                         "technical_price": decision.get("technical_price"),
@@ -5860,6 +6361,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "strategy_horizon": str(frame_applied.get("strategy_horizon") or ""),
                         "source_strategy_horizon": str(frame_applied.get("source_strategy_horizon") or ""),
                         "horizon_behavior_translation": dict(frame_applied.get("horizon_behavior_translation") or {}),
+                        "position_strategy_context_applied": bool(frame_applied.get("position_strategy_context_applied")),
+                        "position_strategy_context_symbol": str(frame_applied.get("position_strategy_context_symbol") or ""),
+                        "position_strategy_context_source": str(frame_applied.get("position_strategy_context_source") or ""),
                         "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
                         "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
                         "exit_vs_strategy_intent": dict(exit_vs_strategy_intent),
@@ -5952,6 +6456,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "cost_aware_profit_floor_met": bool(exit_info.get("cost_aware_profit_floor_met")),
         "cost_aware_profit_floor_gap_pct": exit_info.get("cost_aware_profit_floor_gap_pct"),
         "cost_aware_profit_floor_blocked": bool(exit_info.get("cost_aware_profit_floor_blocked")),
+        "peak_drawdown_blocked": bool(exit_info.get("peak_drawdown_blocked")),
+        "peak_drawdown_block_reason": str(exit_info.get("peak_drawdown_block_reason") or ""),
+        "peak_drawdown_profit_floor_required_pct": exit_info.get("peak_drawdown_profit_floor_required_pct"),
+        "peak_drawdown_profit_floor_met": bool(exit_info.get("peak_drawdown_profit_floor_met")),
         "exit_expected_exit_price": exit_info.get("expected_exit_price"),
         "exit_expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
         "exit_expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
@@ -6055,6 +6563,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
         "entry_lane": str(entry_info.get("entry_lane") or "strict"),
         "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+        "entry_quality_gate": dict(entry_info.get("entry_quality_gate") or {}),
         "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
         "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
         "cost_drag_pct": entry_info.get("cost_drag_pct"),
@@ -6097,6 +6606,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_candidate_cascade": dict(entry_candidate_cascade),
         "entry_lane": str(entry_info.get("entry_lane") or "strict"),
         "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+        "entry_quality_gate": dict(entry_info.get("entry_quality_gate") or {}),
         "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
         "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
         "cost_drag_pct": entry_info.get("cost_drag_pct"),
@@ -6195,10 +6705,24 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "final_exit_thresholds": dict(exit_info.get("final_exit_thresholds") or {}),
         "exit_threshold_source": str(exit_info.get("exit_threshold_source") or ""),
         "hold_block_reason": str(exit_info.get("hold_block_reason") or ""),
+        "hold_limit_sec": exit_info.get("hold_limit_sec"),
+        "max_hold_reached": bool(exit_info.get("max_hold_reached")),
+        "time_stop_reached": bool(exit_info.get("time_stop_reached")),
+        "time_limit_reached": bool(exit_info.get("time_limit_reached")),
+        "time_limit_reason": str(exit_info.get("time_limit_reason") or ""),
+        "time_limit_reassessment_required": bool(exit_info.get("time_limit_reassessment_required")),
+        "time_limit_reassessment_blocked": bool(exit_info.get("time_limit_reassessment_blocked")),
+        "time_limit_reassessment_blocked_reason": str(
+            exit_info.get("time_limit_reassessment_blocked_reason") or ""
+        ),
         "max_runup_pct": exit_info.get("max_runup_pct"),
         "peak_drawdown_from_peak": exit_info.get("peak_drawdown_from_peak"),
         "peak_drawdown_armed": bool(exit_info.get("peak_drawdown_armed")),
         "peak_drawdown_mode": str(exit_info.get("peak_drawdown_mode") or ""),
+        "peak_drawdown_blocked": bool(exit_info.get("peak_drawdown_blocked")),
+        "peak_drawdown_block_reason": str(exit_info.get("peak_drawdown_block_reason") or ""),
+        "peak_drawdown_profit_floor_required_pct": exit_info.get("peak_drawdown_profit_floor_required_pct"),
+        "peak_drawdown_profit_floor_met": bool(exit_info.get("peak_drawdown_profit_floor_met")),
         "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
         "peak_drawdown_source": str(exit_info.get("peak_drawdown_source") or ""),
         "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
@@ -6693,6 +7217,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "peak_drawdown_from_peak": exit_info.get("peak_drawdown_from_peak"),
         "peak_drawdown_armed": bool(exit_info.get("peak_drawdown_armed")),
         "peak_drawdown_mode": str(exit_info.get("peak_drawdown_mode") or ""),
+        "peak_drawdown_blocked": bool(exit_info.get("peak_drawdown_blocked")),
+        "peak_drawdown_block_reason": str(exit_info.get("peak_drawdown_block_reason") or ""),
+        "peak_drawdown_profit_floor_required_pct": exit_info.get("peak_drawdown_profit_floor_required_pct"),
+        "peak_drawdown_profit_floor_met": bool(exit_info.get("peak_drawdown_profit_floor_met")),
         "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
         "peak_drawdown_source": str(exit_info.get("peak_drawdown_source") or ""),
         "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
@@ -6795,6 +7323,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["peak_drawdown_from_peak"] = exit_info.get("peak_drawdown_from_peak")
         state["monitor_output"]["peak_drawdown_armed"] = bool(exit_info.get("peak_drawdown_armed"))
         state["monitor_output"]["peak_drawdown_mode"] = str(exit_info.get("peak_drawdown_mode") or "")
+        state["monitor_output"]["peak_drawdown_blocked"] = bool(exit_info.get("peak_drawdown_blocked"))
+        state["monitor_output"]["peak_drawdown_block_reason"] = str(exit_info.get("peak_drawdown_block_reason") or "")
+        state["monitor_output"]["peak_drawdown_profit_floor_required_pct"] = exit_info.get(
+            "peak_drawdown_profit_floor_required_pct"
+        )
+        state["monitor_output"]["peak_drawdown_profit_floor_met"] = bool(exit_info.get("peak_drawdown_profit_floor_met"))
         state["monitor_output"]["final_peak_drawdown_ratio"] = exit_info.get("final_peak_drawdown_ratio")
         state["monitor_output"]["peak_drawdown_source"] = str(exit_info.get("peak_drawdown_source") or "")
         state["monitor_output"]["exit_trigger_metric_name"] = str(exit_info.get("exit_trigger_metric_name") or "")
@@ -7142,6 +7676,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "strategy_horizon": str(exit_info.get("strategy_horizon") or ""),
             "source_strategy_horizon": str(exit_info.get("source_strategy_horizon") or ""),
             "horizon_behavior_translation": dict(exit_info.get("horizon_behavior_translation") or {}),
+            "position_strategy_context_applied": bool(exit_info.get("position_strategy_context_applied")),
+            "position_strategy_context_symbol": str(exit_info.get("position_strategy_context_symbol") or ""),
+            "position_strategy_context_source": str(exit_info.get("position_strategy_context_source") or ""),
             "strategy_frame_adjustments": list(exit_info.get("strategy_frame_adjustments") or []),
             "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
             "entry_evaluated": bool(entry_info.get("evaluated")),

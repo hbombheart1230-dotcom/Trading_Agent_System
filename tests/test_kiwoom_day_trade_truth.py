@@ -56,6 +56,52 @@ def test_attach_broker_day_pnl_matches_exact_symbol_qty_and_price() -> None:
     assert broker_day_pnl.get("tax") == 8
 
 
+def test_attach_broker_day_pnl_uses_kiwoom_truth_for_mock_broker_execution() -> None:
+    class _FakeReader:
+        def get_day_realized_details(self, *, symbol: str = ""):
+            assert symbol == "005930"
+            return {
+                "rows": [
+                    {
+                        "symbol": "005930",
+                        "filled_qty": 10,
+                        "filled_price": 295500,
+                        "buy_price": 291975,
+                        "realized_pnl": -14306,
+                        "pnl_ratio": -0.0049,
+                        "fee": 20550,
+                        "tax": 5909,
+                    }
+                ],
+                "source": "kiwoom.ka10077",
+            }
+
+    out = attach_broker_day_pnl(
+        {
+            "executor": {
+                "broker_env": "mock",
+                "effective_mode": "mock_broker_http",
+                "order_request_summary": {"action": "SELL", "symbol": "005930"},
+            }
+        },
+        context={
+            "trade_day": "2026-05-14",
+            "action": "SELL",
+            "symbol": "005930",
+            "broker_day_pnl_reader": _FakeReader(),
+            "broker_day_truth_lookup_enabled": True,
+            "execution_details": {"filled_qty": 10, "filled_price": 295500.0},
+        },
+    )
+
+    execution_context = out.get("execution_context") or {}
+    broker_day_pnl = execution_context.get("broker_day_pnl") or {}
+    assert broker_day_pnl.get("authoritative") is True
+    assert broker_day_pnl.get("source") == "kiwoom.ka10077"
+    assert broker_day_pnl.get("pnl_ratio") == -0.0049
+    assert broker_day_pnl.get("realized_pnl") == -14306.0
+
+
 def test_attach_broker_day_pnl_keeps_ratio_scaled_kiwoom_return_rate() -> None:
     class _FakeReader:
         def get_day_realized_details(self, *, symbol: str = ""):

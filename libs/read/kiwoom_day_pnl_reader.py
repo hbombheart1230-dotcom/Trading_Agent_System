@@ -22,6 +22,13 @@ def _normalize_ratio(v: Any) -> Optional[float]:
     return out / 100.0 if abs(out) > 1.0 else out
 
 
+def _normalize_percent(v: Any) -> Optional[float]:
+    out = to_float(v)
+    if out is None:
+        return None
+    return out / 100.0
+
+
 def _detail_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows = payload.get("tdy_rlzt_pl_dtl")
     return rows if isinstance(rows, list) else []
@@ -65,6 +72,7 @@ class KiwoomDayPnlReader:
         for row in _detail_rows(payload):
             if not isinstance(row, dict):
                 continue
+            raw_pl_rt = first_present(row, ["pl_rt"])
             rows.append(
                 {
                     "symbol": normalize_symbol(first_present(row, ["stk_cd", "symbol"])),
@@ -73,7 +81,11 @@ class KiwoomDayPnlReader:
                     "buy_price": to_float(first_present(row, ["buy_uv", "buy_price"])),
                     "filled_price": to_float(first_present(row, ["cntr_pric", "filled_price"])),
                     "realized_pnl": to_float(first_present(row, ["tdy_sel_pl", "realized_pnl"])),
-                    "pnl_ratio": _normalize_ratio(first_present(row, ["pl_rt", "pnl_ratio"])),
+                    "pnl_ratio": (
+                        _normalize_percent(raw_pl_rt)
+                        if raw_pl_rt not in (None, "")
+                        else _normalize_ratio(first_present(row, ["pnl_ratio"]))
+                    ),
                     "fee": to_int(first_present(row, ["tdy_trde_cmsn", "fee"])),
                     "tax": to_int(first_present(row, ["tdy_trde_tax", "tax"])),
                 }

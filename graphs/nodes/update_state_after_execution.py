@@ -403,6 +403,66 @@ def _resolve_mock_fill_price(state: dict, ex: dict, symbol: str) -> float:
     return 0.0
 
 
+def _execution_fill_quantity_snapshot(ex: dict) -> dict:
+    payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
+    containers = [
+        ex,
+        payload,
+        ex.get("order_status") if isinstance(ex.get("order_status"), dict) else {},
+        payload.get("order_status") if isinstance(payload.get("order_status"), dict) else {},
+        ex.get("broker_result") if isinstance(ex.get("broker_result"), dict) else {},
+        payload.get("broker_result") if isinstance(payload.get("broker_result"), dict) else {},
+        ex.get("response_payload") if isinstance(ex.get("response_payload"), dict) else {},
+        payload.get("response_payload") if isinstance(payload.get("response_payload"), dict) else {},
+    ]
+
+    def first_value(*keys):  # type: ignore[no-untyped-def]
+        for container in containers:
+            if not isinstance(container, dict):
+                continue
+            for key in keys:
+                if container.get(key) not in (None, ""):
+                    return container.get(key), key
+        return None, ""
+
+    filled_raw, filled_key = first_value("filled_qty", "cntr_qty", "exec_qty")
+    remaining_raw, remaining_key = first_value("remaining_qty", "ord_remnq", "rmnd_qty", "unfilled_qty", "unfilled")
+    order_raw, order_key = first_value("order_qty", "ord_qty", "qty")
+    filled_qty = max(0, _as_int(filled_raw, 0)) if filled_raw not in (None, "") else None
+    remaining_qty = max(0, _as_int(remaining_raw, 0)) if remaining_raw not in (None, "") else None
+    order_qty = max(0, _as_int(order_raw, 0)) if order_raw not in (None, "") else None
+    return {
+        "has_fill_truth": bool(filled_raw not in (None, "") or remaining_raw not in (None, "")),
+        "filled_qty": filled_qty,
+        "remaining_qty": remaining_qty,
+        "order_qty": order_qty,
+        "filled_qty_source": filled_key,
+        "remaining_qty_source": remaining_key,
+        "order_qty_source": order_key,
+        "pending_unfilled": bool((filled_qty or 0) <= 0 and remaining_qty is not None and remaining_qty > 0),
+    }
+
+
+def _remember_pending_unfilled_order(ps: dict, ex: dict, order: dict, snapshot: dict, *, now_epoch: int | None = None) -> None:
+    symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd"))
+    action = str(order.get("action") or "").strip().upper()
+    if not symbol or action not in ("BUY", "SELL"):
+        return
+    payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
+    pending = ps.get("pending_unfilled_orders") if isinstance(ps.get("pending_unfilled_orders"), dict) else {}
+    pending[symbol] = {
+        "symbol": symbol,
+        "action": action,
+        "order_id": str(ex.get("order_id") or ex.get("ord_no") or payload.get("order_id") or payload.get("ord_no") or ""),
+        "order_qty": int(snapshot.get("order_qty") or _as_int(order.get("qty"), 0)),
+        "filled_qty": int(snapshot.get("filled_qty") or 0),
+        "remaining_qty": int(snapshot.get("remaining_qty") or 0),
+        "recorded_epoch": int(now_epoch if now_epoch is not None else time.time()),
+        "source": "execution_fill_quantity_snapshot",
+    }
+    ps["pending_unfilled_orders"] = pending
+
+
 def _resolve_post_exit_watch_exit_price(state: dict, ex: dict, symbol: str) -> tuple[float, str]:
     order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
     payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
@@ -451,8 +511,17 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
     price = _as_float(order.get("price"), 0.0)
     if price <= 0.0 and isinstance(state, dict):
         price = _resolve_mock_fill_price(state, ex, symbol)
+    fill_snapshot = _execution_fill_quantity_snapshot(ex)
+    if qty <= 0 and _as_int(fill_snapshot.get("filled_qty"), 0) > 0:
+        qty = _as_int(fill_snapshot.get("filled_qty"), 0)
     if action not in ("BUY", "SELL") or not symbol or qty <= 0:
         return
+    if bool(fill_snapshot.get("pending_unfilled")):
+        _remember_pending_unfilled_order(ps, ex, order, fill_snapshot)
+        return
+    filled_qty = _as_int(fill_snapshot.get("filled_qty"), 0)
+    if bool(fill_snapshot.get("has_fill_truth")) and filled_qty > 0:
+        qty = min(qty, filled_qty)
 
     pos = _normalize_mock_positions(ps.get("mock_positions"))
     by_symbol = {str(r.get("symbol")): dict(r) for r in pos if isinstance(r, dict)}
@@ -470,6 +539,12 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
     now_epoch = _as_int(time.time(), 0)
 
     if action == "BUY":
+        pending_orders = ps.get("pending_unfilled_orders") if isinstance(ps.get("pending_unfilled_orders"), dict) else {}
+        pending_orders.pop(symbol, None)
+        if pending_orders:
+            ps["pending_unfilled_orders"] = pending_orders
+        else:
+            ps.pop("pending_unfilled_orders", None)
         prev_qty = _as_int(cur.get("qty"), 0)
         prev_avg = _as_float(cur.get("avg_price"), 0.0)
         new_qty = prev_qty + qty
@@ -500,6 +575,12 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
         if entry_risk:
             entry_risk_map[symbol] = entry_risk
     else:
+        pending_orders = ps.get("pending_unfilled_orders") if isinstance(ps.get("pending_unfilled_orders"), dict) else {}
+        pending_orders.pop(symbol, None)
+        if pending_orders:
+            ps["pending_unfilled_orders"] = pending_orders
+        else:
+            ps.pop("pending_unfilled_orders", None)
         prev_qty = _as_int(cur.get("qty"), 0)
         if prev_qty <= 0:
             return
@@ -1200,7 +1281,13 @@ def update_state_after_execution(state: dict) -> dict:
         ps["last_order_epoch"] = now_epoch
 
     # Keep recent side/epoch for runtime cooldown and replay guards.
-    if ok:
+    fill_snapshot = _execution_fill_quantity_snapshot(ex)
+    pending_unfilled = bool(fill_snapshot.get("pending_unfilled"))
+    if ok and pending_unfilled:
+        order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+        _remember_pending_unfilled_order(ps, ex, order, fill_snapshot, now_epoch=now_epoch)
+
+    if ok and not pending_unfilled:
         side = _extract_trade_side(ex)
         if side:
             ps["last_trade_side"] = side

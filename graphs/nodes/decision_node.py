@@ -3,6 +3,50 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 
+def _monitor_exit_guard_blocks_sell(state: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    monitor_exit = state.get("monitor_exit") if isinstance(state.get("monitor_exit"), dict) else {}
+    if not monitor_exit:
+        return False, "", {"guard_applied": False}
+
+    trigger_details = (
+        monitor_exit.get("trigger_details")
+        if isinstance(monitor_exit.get("trigger_details"), dict)
+        else {}
+    )
+    guard_reason = str(
+        trigger_details.get("sell_guard_reason")
+        or monitor_exit.get("sell_guard_reason")
+        or monitor_exit.get("guard_reason")
+        or ""
+    ).strip()
+    exit_reason = str(monitor_exit.get("reason") or monitor_exit.get("exit_reason") or "").strip()
+    monitor_reason = str(monitor_exit.get("monitor_reason") or "").strip()
+    guard_blocked = bool(
+        trigger_details.get("sell_guard_blocked")
+        or monitor_exit.get("sell_guard_blocked")
+        or monitor_exit.get("guard_blocked")
+    )
+
+    pending_reason = (
+        guard_reason.startswith("exit_confirmation_pending:")
+        or exit_reason.startswith("exit_confirmation_pending:")
+        or monitor_reason == "exit_signal_pending_confirmation"
+    )
+    if not guard_blocked and not pending_reason:
+        return False, "", {"guard_applied": True, "blocked": False}
+
+    details = {
+        "guard_applied": True,
+        "blocked": True,
+        "monitor_exit_triggered": bool(monitor_exit.get("triggered")),
+        "monitor_exit_reason": exit_reason,
+        "monitor_reason": monitor_reason,
+        "sell_guard_reason": guard_reason,
+        "sell_guard_blocked": guard_blocked,
+    }
+    return True, guard_reason or exit_reason or monitor_reason or "monitor_exit_not_confirmed", details
+
+
 def _extract_risk_confidence(state: Dict[str, Any]) -> Tuple[float, float]:
     """Extract (risk_score, confidence) from state.
 
@@ -73,6 +117,17 @@ def decision_node(state: Dict[str, Any]) -> Dict[str, Any]:
         monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
         monitor_intent_side = str(monitor_output.get("intent_side") or "").strip().upper()
         if raw_side in ("SELL", "CLOSE", "EXIT"):
+            blocked, reason, details = _monitor_exit_guard_blocks_sell(state)
+            if blocked:
+                state["decision"] = "reject"
+                state["decision_reason"] = "monitor_exit_not_confirmed"
+                state["decision_detail"] = reason
+                state["monitor_exit_execution_guard"] = details
+                state["risk"] = {
+                    "risk_score": float(first_intent.get("risk_score") or 0.0),
+                    "confidence": float(first_intent.get("confidence") or 1.0),
+                }
+                return state
             state["decision"] = "approve"
             state["decision_reason"] = "exit_within_policy"
             state["risk"] = {

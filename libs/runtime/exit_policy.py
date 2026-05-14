@@ -4,6 +4,12 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from libs.runtime.etf_deviation import (
+    DEFAULT_PREMIUM_TRIGGER_PCT,
+    normalize_deviation_pct,
+    score_etf_deviation_for_exit,
+)
+
 
 def _to_float(v: Any, default: float = 0.0) -> float:
     try:
@@ -384,6 +390,10 @@ def evaluate_exit_policy(
         "peak_drawdown_from_peak": None,
         "peak_drawdown_armed": False,
         "peak_drawdown_mode": "",
+        "peak_drawdown_blocked": False,
+        "peak_drawdown_block_reason": "",
+        "peak_drawdown_profit_floor_required_pct": None,
+        "peak_drawdown_profit_floor_met": False,
         "peak_drawdown_profit_protection_urgent": False,
         "peak_drawdown_profit_protection_reason": "",
         "final_peak_drawdown_ratio": None,
@@ -404,6 +414,10 @@ def evaluate_exit_policy(
         "execution_strength": None,
         "trade_strength": None,
         "opening_gap_chase_observed": False,
+        "etf_deviation_pct": None,
+        "etf_deviation_source": "",
+        "etf_premium_take_profit_score": 0.0,
+        "etf_premium_take_profit_armed": False,
         "exit_trigger_metric_name": "",
         "exit_trigger_metric_value": None,
         "exit_trigger_metric_source": "",
@@ -411,6 +425,8 @@ def evaluate_exit_policy(
         "protective_exit_floor_blocked_reason": "",
         "protective_exit_hard_invalidation": False,
         "protective_exit_hard_invalidation_reason": "",
+        "protective_exit_hard_invalidation_suppressed_by_cost_floor": False,
+        "protective_exit_hard_invalidation_suppressed_reason": "",
         "pnl_ratio": None,
         "raw_pnl_ratio": None,
         "gross_pnl_ratio": None,
@@ -519,6 +535,16 @@ def evaluate_exit_policy(
             "opening_gap_profit_take_fraction": _clamp_non_negative(
                 _to_float(p.get("opening_gap_profit_take_fraction"), 0.0)
             ),
+            "etf_premium_take_profit_enabled": _to_bool(
+                p.get("etf_premium_take_profit_enabled"),
+                True,
+            ),
+            "etf_premium_take_profit_pct": _clamp_non_negative(
+                _to_float(p.get("etf_premium_take_profit_pct"), DEFAULT_PREMIUM_TRIGGER_PCT)
+            ),
+            "etf_premium_take_profit_min_pct": _clamp_non_negative(
+                _to_float(p.get("etf_premium_take_profit_min_pct"), 0.0)
+            ),
             "cost_aware_profit_floor_enabled": _to_bool(p.get("cost_aware_profit_floor_enabled"), False),
             "round_trip_cost_floor_pct": _clamp_non_negative(_to_float(p.get("round_trip_cost_floor_pct"), 0.0)),
             "min_net_profit_buffer_pct": _clamp_non_negative(_to_float(p.get("min_net_profit_buffer_pct"), 0.0)),
@@ -615,6 +641,7 @@ def evaluate_exit_policy(
             "profit_ladder",
             "risk_reward_take_profit",
             "opening_gap_profit_take",
+            "etf_premium_take_profit",
             "time_decay_profit_exit",
         }:
             inferred_metric_name = "effective_pnl_ratio"
@@ -695,11 +722,16 @@ def evaluate_exit_policy(
     hold_limit = time_stop_sec if time_stop_sec > 0 else max_hold_sec
     hs = None if hold_sec is None else max(0, int(hold_sec))
     out["hold_sec"] = hs
-    if hold_limit > 0 and hs is not None and hs >= hold_limit:
-        return _finalize(
-            triggered=True,
-            reason="time_stop" if has_explicit_time_stop and time_stop_sec > 0 else "max_hold",
-        )
+    time_limit_reason = "time_stop" if has_explicit_time_stop and time_stop_sec > 0 else "max_hold"
+    time_limit_reached = bool(hold_limit > 0 and hs is not None and hs >= hold_limit)
+    out["hold_limit_sec"] = int(hold_limit)
+    out["max_hold_reached"] = bool(max_hold_sec > 0 and hs is not None and hs >= max_hold_sec)
+    out["time_stop_reached"] = bool(time_stop_sec > 0 and hs is not None and hs >= time_stop_sec)
+    out["time_limit_reached"] = bool(time_limit_reached)
+    out["time_limit_reason"] = time_limit_reason if time_limit_reached else ""
+    out["time_limit_reassessment_required"] = bool(time_limit_reached)
+    out["time_limit_reassessment_blocked"] = False
+    out["time_limit_reassessment_blocked_reason"] = ""
 
     # News shock exit (optional): sentiment crash forces immediate flattening.
     news_shock_th = float(out["thresholds"]["news_shock_threshold"])
@@ -784,9 +816,30 @@ def evaluate_exit_policy(
         out["cost_drag_pressure_reason"] = str(out.get("pnl_crosscheck_reason") or "effective_pnl_below_gross_pnl")
     profit_floor_pct = float(out["thresholds"].get("cost_aware_profit_floor_pct") or 0.0)
     profit_floor_enabled = bool(out["thresholds"].get("cost_aware_profit_floor_enabled")) and profit_floor_pct > 0.0
-    out["cost_aware_profit_floor_met"] = bool((not profit_floor_enabled) or pnl_ratio >= profit_floor_pct)
-    if profit_floor_enabled:
-        out["cost_aware_profit_floor_gap_pct"] = float(profit_floor_pct - pnl_ratio)
+    round_trip_cost_floor_pct = float(out["thresholds"].get("round_trip_cost_floor_pct") or 0.0)
+    min_expected_net_profit_pct = float(out["thresholds"].get("min_expected_net_profit_pct") or 0.0)
+    gross_net_profit_ratio = float(gross_pnl_ratio - round_trip_cost_floor_pct)
+    gross_profit_floor_gap_pct = (
+        float(
+            max(
+                profit_floor_pct - gross_pnl_ratio,
+                min_expected_net_profit_pct - gross_net_profit_ratio,
+                0.0,
+            )
+        )
+        if profit_floor_enabled
+        else 0.0
+    )
+    gross_profit_floor_met = bool(
+        (not profit_floor_enabled)
+        or (
+            gross_pnl_ratio >= profit_floor_pct
+            and gross_net_profit_ratio >= min_expected_net_profit_pct
+        )
+    )
+    out["gross_net_profit_ratio"] = float(gross_net_profit_ratio)
+    out["gross_profit_floor_met"] = bool(gross_profit_floor_met)
+    out["gross_profit_floor_gap_pct"] = float(gross_profit_floor_gap_pct)
 
     def _first_positive_price(*keys: str) -> tuple[float, str]:
         for key in keys:
@@ -802,7 +855,10 @@ def evaluate_exit_policy(
     expected_exit_source = ""
     expected_exit_fallback_used = False
     expected_exit_slippage_buffer_pct = float(out["thresholds"].get("sell_slippage_buffer_pct") or 0.0)
-    observed_exit_price = min(v for v in (px, technical_px) if v > 0.0)
+    # Profit exits are evaluated against executable/raw price context, not
+    # account PnL marks that may already include fee/tax drag. Otherwise the
+    # round-trip floor is effectively counted twice.
+    observed_exit_price = float(technical_px if technical_px > 0.0 else px)
     best_bid, best_bid_source = _first_positive_price(
         "expected_exit_best_bid",
         "best_bid",
@@ -826,8 +882,6 @@ def evaluate_exit_policy(
         if expected_exit_price > 0.0 and apx > 0.0
         else None
     )
-    round_trip_cost_floor_pct = float(out["thresholds"].get("round_trip_cost_floor_pct") or 0.0)
-    min_expected_net_profit_pct = float(out["thresholds"].get("min_expected_net_profit_pct") or 0.0)
     expected_exit_net_pnl_ratio = (
         float(expected_exit_pnl_ratio - round_trip_cost_floor_pct)
         if expected_exit_pnl_ratio is not None
@@ -847,15 +901,34 @@ def evaluate_exit_policy(
             max(
                 profit_floor_pct - expected_exit_pnl_ratio,
                 min_expected_net_profit_pct - float(expected_exit_net_pnl_ratio or 0.0),
+                0.0,
             )
         )
+    floor_source = "expected_exit_pnl_ratio" if expected_exit_pnl_ratio is not None else "gross_pnl_ratio"
+    cost_aware_profit_floor_met = (
+        bool(expected_exit_profit_floor_met)
+        if profit_floor_enabled
+        and bool(out["thresholds"].get("cost_aware_profit_floor_use_expected_exit"))
+        and expected_exit_pnl_ratio is not None
+        else bool(gross_profit_floor_met)
+    )
     expected_exit_floor_blocked = bool(
         profit_floor_enabled
         and bool(out["thresholds"].get("cost_aware_profit_floor_use_expected_exit"))
-        and pnl_ratio >= profit_floor_pct
-        and gross_pnl_ratio > 0.0
+        and gross_profit_floor_met
         and not expected_exit_profit_floor_met
     )
+    out["cost_aware_profit_floor_met"] = bool(cost_aware_profit_floor_met)
+    out["cost_aware_profit_floor_source"] = str(floor_source if profit_floor_enabled else "disabled")
+    if profit_floor_enabled:
+        out["cost_aware_profit_floor_gap_pct"] = (
+            expected_exit_profit_floor_gap_pct
+            if (
+                bool(out["thresholds"].get("cost_aware_profit_floor_use_expected_exit"))
+                and expected_exit_pnl_ratio is not None
+            )
+            else gross_profit_floor_gap_pct
+        )
     out["expected_exit_price"] = expected_exit_price if expected_exit_price > 0.0 else None
     out["expected_exit_price_source"] = expected_exit_source
     out["expected_exit_price_fallback_used"] = bool(expected_exit_fallback_used)
@@ -867,6 +940,20 @@ def evaluate_exit_policy(
     out["expected_exit_profit_floor_blocked"] = bool(expected_exit_floor_blocked)
     if expected_exit_floor_blocked:
         out["expected_exit_profit_floor_blocked_reason"] = "expected_exit_price_below_cost_aware_floor"
+    profit_exit_pnl_ratio = (
+        float(expected_exit_pnl_ratio)
+        if expected_exit_pnl_ratio is not None
+        and bool(out["thresholds"].get("cost_aware_profit_floor_use_expected_exit"))
+        else float(gross_pnl_ratio)
+    )
+    profit_exit_metric_name = (
+        "expected_exit_pnl_ratio"
+        if expected_exit_pnl_ratio is not None
+        and bool(out["thresholds"].get("cost_aware_profit_floor_use_expected_exit"))
+        else "gross_pnl_ratio"
+    )
+    out["profit_exit_pnl_ratio"] = float(profit_exit_pnl_ratio)
+    out["profit_exit_metric_name"] = str(profit_exit_metric_name)
 
     def _profit_threshold(base: float) -> float:
         return float(max(float(base or 0.0), profit_floor_pct if profit_floor_enabled else 0.0))
@@ -875,7 +962,7 @@ def evaluate_exit_policy(
         return bool(
             profit_floor_enabled
             and 0.0 < gross_pnl_ratio
-            and (gross_pnl_ratio < profit_floor_pct or expected_exit_floor_blocked)
+            and (not bool(out.get("cost_aware_profit_floor_met")) or expected_exit_floor_blocked)
         )
 
     def _mark_profit_floor_blocked() -> None:
@@ -929,8 +1016,15 @@ def evaluate_exit_policy(
         if not _profit_floor_blocks_current_profit():
             return False
         if _protective_exit_hard_invalidation(reason):
+            hard_reason = str(out.get("protective_exit_hard_invalidation_reason") or "")
+            metric_only_hard_invalidation = hard_reason.startswith(
+                ("vwap_breakdown_deep:", "intraday_low_break_deep:")
+            )
             out["protective_exit_hard_invalidation"] = True
-            return False
+            if not (metric_only_hard_invalidation and 0.0 < gross_pnl_ratio < profit_floor_pct):
+                return False
+            out["protective_exit_hard_invalidation_suppressed_by_cost_floor"] = True
+            out["protective_exit_hard_invalidation_suppressed_reason"] = hard_reason
         _mark_profit_floor_blocked()
         out["protective_exit_floor_blocked"] = True
         out["protective_exit_floor_blocked_reason"] = str(reason or "")
@@ -940,6 +1034,15 @@ def evaluate_exit_policy(
     sl = float(out["thresholds"]["stop_loss_pct"])
     hard_sl = float(out["thresholds"]["hard_stop_pct"])
     tp = float(out["thresholds"]["take_profit_pct"])
+    etf_deviation_pct = normalize_deviation_pct(p.get("etf_deviation_pct"))
+    etf_deviation_source = str(p.get("etf_deviation_source") or "")
+    out["etf_deviation_pct"] = etf_deviation_pct
+    out["etf_deviation_source"] = etf_deviation_source
+    etf_premium_score = score_etf_deviation_for_exit(
+        etf_deviation_pct,
+        premium_trigger_pct=float(out["thresholds"].get("etf_premium_take_profit_pct") or DEFAULT_PREMIUM_TRIGGER_PCT),
+    )
+    out["etf_premium_take_profit_score"] = float(etf_premium_score)
 
     effective_stop_candidates = [
         (reason, threshold)
@@ -986,7 +1089,31 @@ def evaluate_exit_policy(
         if not str(out.get("hold_block_reason") or "").strip():
             out["hold_block_reason"] = "stop_loss_cost_drag_only"
 
-    if tp > 0.0 and pnl_ratio >= _profit_threshold(tp) and not _profit_floor_blocks_current_profit():
+    etf_premium_take_profit_enabled = bool(out["thresholds"].get("etf_premium_take_profit_enabled"))
+    etf_premium_take_profit_pct = float(out["thresholds"].get("etf_premium_take_profit_pct") or 0.0)
+    etf_premium_take_profit_min_pct = float(out["thresholds"].get("etf_premium_take_profit_min_pct") or 0.0)
+    etf_premium_take_profit_armed = bool(
+        etf_premium_take_profit_enabled
+        and etf_deviation_pct is not None
+        and etf_premium_take_profit_pct > 0.0
+        and float(etf_deviation_pct) >= etf_premium_take_profit_pct
+    )
+    out["etf_premium_take_profit_armed"] = bool(etf_premium_take_profit_armed)
+    if etf_premium_take_profit_armed:
+        min_profit = _profit_threshold(etf_premium_take_profit_min_pct)
+        if profit_exit_pnl_ratio >= min_profit and not _profit_floor_blocks_current_profit():
+            return _finalize(
+                triggered=True,
+                reason="etf_premium_take_profit",
+                metric_name="etf_deviation_pct",
+                metric_value=etf_deviation_pct,
+                metric_source=etf_deviation_source or "selected.features.etf_deviation_pct",
+            )
+        if _profit_floor_blocks_current_profit():
+            _mark_profit_floor_blocked()
+            out["hold_block_reason"] = "etf_premium_take_profit:cost_aware_profit_floor_not_met"
+
+    if tp > 0.0 and profit_exit_pnl_ratio >= _profit_threshold(tp) and not _profit_floor_blocks_current_profit():
         return _finalize(triggered=True, reason="take_profit")
 
     peak_price = _to_float(p.get("peak_price"), 0.0)
@@ -999,17 +1126,27 @@ def evaluate_exit_policy(
         if not peak_drawdown_mode:
             peak_drawdown_mode = "profit_protection"
         activation_pct = _profit_threshold(float(out["thresholds"].get("profit_protection_activation_pct") or 0.0))
+        peak_profit_floor_required_pct = float(activation_pct)
+        peak_profit_floor_met = bool(max_runup_pct >= peak_profit_floor_required_pct)
+        peak_drawdown_block_reason = ""
         if peak_drawdown_mode in {"disabled", "off", "none"}:
             peak_drawdown_armed = False
         elif peak_drawdown_mode in {"profit_protection", "profit-protection"}:
-            peak_drawdown_armed = bool(max_runup_pct >= activation_pct)
+            peak_drawdown_armed = bool(peak_profit_floor_met)
+            if not peak_drawdown_armed:
+                peak_drawdown_block_reason = "profit_floor_not_reached"
         else:
             peak_drawdown_armed = True
+            peak_profit_floor_met = True
         out["max_runup_pct"] = max_runup_pct
         out["peak_drawdown"] = peak_drawdown
         out["peak_drawdown_from_peak"] = peak_drawdown
         out["peak_drawdown_armed"] = bool(peak_drawdown_armed)
         out["peak_drawdown_mode"] = str(peak_drawdown_mode)
+        out["peak_drawdown_blocked"] = bool(not peak_drawdown_armed and bool(peak_drawdown_block_reason))
+        out["peak_drawdown_block_reason"] = str(peak_drawdown_block_reason)
+        out["peak_drawdown_profit_floor_required_pct"] = float(peak_profit_floor_required_pct)
+        out["peak_drawdown_profit_floor_met"] = bool(peak_profit_floor_met)
         out["final_peak_drawdown_ratio"] = peak_drawdown
         out["peak_drawdown_source"] = f"{str(out.get('technical_price_source') or 'technical_price')}_vs_peak_price"
 
@@ -1020,7 +1157,7 @@ def evaluate_exit_policy(
             and peak_drawdown <= -peak_drawdown_th
             and profit_floor_enabled
             and profit_floor_pct > 0.0
-            and max_runup_pct >= profit_floor_pct
+            and peak_profit_floor_met
             and gross_pnl_ratio < profit_floor_pct
         )
         out["peak_drawdown_profit_protection_urgent"] = bool(profit_protection_urgent)
@@ -1044,12 +1181,19 @@ def evaluate_exit_policy(
     if vwap_breakdown_th > 0.0:
         vwap_distance = _to_float(p.get("vwap_distance"), 0.0)
         out["vwap_distance"] = float(vwap_distance)
+        vwap_distance_source = str(p.get("vwap_distance_source") or "selected.features.engine_vwap_distance")
         require_profit = _to_bool(p.get("vwap_break_requires_profit"), True)
         if vwap_distance <= -vwap_breakdown_th and (not require_profit or peak_price > apx or gross_pnl_ratio > 0.0):
             if _block_protective_exit_below_floor("vwap_breakdown"):
                 pass
             else:
-                return _finalize(triggered=True, reason="vwap_breakdown")
+                return _finalize(
+                    triggered=True,
+                    reason="vwap_breakdown",
+                    metric_name="vwap_distance",
+                    metric_value=vwap_distance,
+                    metric_source=vwap_distance_source,
+                )
 
     intraday_low_break_pct = float(out["thresholds"]["intraday_low_break_pct"])
     if intraday_low_break_pct > 0.0:
@@ -1073,7 +1217,7 @@ def evaluate_exit_policy(
     opening_gap_min_pct = float(out["thresholds"]["opening_gap_profit_take_min_pct"])
     opening_gap_min_pct = _profit_threshold(opening_gap_min_pct)
     opening_gap_window_sec = int(out["thresholds"]["opening_gap_profit_take_window_sec"])
-    if opening_gap_min_pct > 0.0 and pnl_ratio >= opening_gap_min_pct and not _profit_floor_blocks_current_profit():
+    if opening_gap_min_pct > 0.0 and profit_exit_pnl_ratio >= opening_gap_min_pct and not _profit_floor_blocks_current_profit():
         opening_gap_observed = _to_bool(p.get("opening_gap_chase_observed"), False)
         open_gap_pct = _to_float(p.get("open_gap_pct"), 0.0)
         prev_close_distance_pct = _to_float(p.get("prev_close_distance_pct"), 0.0)
@@ -1088,16 +1232,16 @@ def evaluate_exit_policy(
             return _finalize(
                 triggered=True,
                 reason="opening_gap_profit_take",
-                metric_name="effective_pnl_ratio",
-                metric_value=pnl_ratio,
-                metric_source="effective_pnl_ratio",
+                metric_name=profit_exit_metric_name,
+                metric_value=profit_exit_pnl_ratio,
+                metric_source=profit_exit_metric_name,
             )
 
     volume_exhaustion_min_pct = float(out["thresholds"]["volume_exhaustion_take_profit_min_pct"])
     volume_exhaustion_min_pct = _profit_threshold(volume_exhaustion_min_pct)
     if (
         volume_exhaustion_min_pct > 0.0
-        and pnl_ratio >= volume_exhaustion_min_pct
+        and profit_exit_pnl_ratio >= volume_exhaustion_min_pct
         and not _profit_floor_blocks_current_profit()
     ):
         volume_ratio = _to_float(p.get("volume_ratio"), 0.0)
@@ -1132,7 +1276,7 @@ def evaluate_exit_policy(
     if (
         partial_take_profit_pct > 0.0
         and not partial_take_profit_taken
-        and pnl_ratio >= partial_take_profit_effective_pct
+        and profit_exit_pnl_ratio >= partial_take_profit_effective_pct
         and not _profit_floor_blocks_current_profit()
     ):
         _mark_exit_sizing(
@@ -1142,9 +1286,9 @@ def evaluate_exit_policy(
         return _finalize(
             triggered=True,
             reason="partial_take_profit",
-            metric_name="effective_pnl_ratio",
-            metric_value=pnl_ratio,
-            metric_source="effective_pnl_ratio",
+            metric_name=profit_exit_metric_name,
+            metric_value=profit_exit_pnl_ratio,
+            metric_source=profit_exit_metric_name,
         )
 
     profit_ladder_levels = list(out["thresholds"].get("profit_ladder_levels_pct") or [])
@@ -1154,7 +1298,7 @@ def evaluate_exit_policy(
             float(level)
             for level in profit_ladder_levels
             if float(level) >= _profit_threshold(0.0)
-            and pnl_ratio >= float(level)
+            and profit_exit_pnl_ratio >= float(level)
             and round(float(level), 6) not in profit_ladder_taken
             and not (partial_take_profit_pct > 0.0 and float(level) <= partial_take_profit_pct)
         ]
@@ -1169,9 +1313,9 @@ def evaluate_exit_policy(
             return _finalize(
                 triggered=True,
                 reason="profit_ladder",
-                metric_name="effective_pnl_ratio",
-                metric_value=pnl_ratio,
-                metric_source="effective_pnl_ratio",
+                metric_name=profit_exit_metric_name,
+                metric_value=profit_exit_pnl_ratio,
+                metric_source=profit_exit_metric_name,
             )
 
     rr_take_profit_rungs = list(out["thresholds"].get("risk_reward_take_profit_rungs") or [])
@@ -1183,7 +1327,7 @@ def evaluate_exit_policy(
         rr_candidates = [
             float(rung)
             for rung in rr_take_profit_rungs
-            if pnl_ratio >= _profit_threshold(
+            if profit_exit_pnl_ratio >= _profit_threshold(
                 max(float(effective_stop_pct * float(rung)), float(out["thresholds"]["risk_reward_take_profit_min_pct"]))
             )
             and round(float(rung), 6) not in rr_taken
@@ -1204,9 +1348,9 @@ def evaluate_exit_policy(
             return _finalize(
                 triggered=True,
                 reason="risk_reward_take_profit",
-                metric_name="effective_pnl_ratio",
-                metric_value=pnl_ratio,
-                metric_source="effective_pnl_ratio",
+                metric_name=profit_exit_metric_name,
+                metric_value=profit_exit_pnl_ratio,
+                metric_source=profit_exit_metric_name,
             )
 
     if peak_price > 0.0:
@@ -1214,7 +1358,7 @@ def evaluate_exit_policy(
         resistance_min_pct = _profit_threshold(float(out["thresholds"]["resistance_take_profit_min_pct"]))
         if (
             resistance_near_pct > 0.0
-            and pnl_ratio >= resistance_min_pct
+            and profit_exit_pnl_ratio >= resistance_min_pct
             and not _profit_floor_blocks_current_profit()
         ):
             resistance_candidates: list[tuple[str, float]] = []
@@ -1250,7 +1394,7 @@ def evaluate_exit_policy(
         vwap_extension_min_pct = _profit_threshold(float(out["thresholds"]["vwap_extension_take_profit_min_pct"]))
         if (
             vwap_extension_th > 0.0
-            and pnl_ratio >= vwap_extension_min_pct
+            and profit_exit_pnl_ratio >= vwap_extension_min_pct
             and not _profit_floor_blocks_current_profit()
         ):
             vwap_distance = _to_float(p.get("vwap_distance"), 0.0)
@@ -1272,16 +1416,16 @@ def evaluate_exit_policy(
             profit_time_stop_sec > 0
             and hs is not None
             and hs >= profit_time_stop_sec
-            and pnl_ratio >= profit_time_stop_min_pct
+            and profit_exit_pnl_ratio >= profit_time_stop_min_pct
             and (profit_time_stop_giveback_pct <= 0.0 or peak_drawdown <= -profit_time_stop_giveback_pct)
             and not _profit_floor_blocks_current_profit()
         ):
             return _finalize(
                 triggered=True,
                 reason="time_decay_profit_exit",
-                metric_name="effective_pnl_ratio",
-                metric_value=pnl_ratio,
-                metric_source="effective_pnl_ratio",
+                metric_name=profit_exit_metric_name,
+                metric_value=profit_exit_pnl_ratio,
+                metric_source=profit_exit_metric_name,
             )
 
     # Trailing stop (optional).
@@ -1292,6 +1436,41 @@ def evaluate_exit_policy(
             out["trailing_drawdown"] = drawdown
             if drawdown <= -trail and not _profit_floor_blocks_current_profit():
                 return _finalize(triggered=True, reason="trailing_stop")
+
+    if time_limit_reached:
+        if not profit_floor_enabled:
+            return _finalize(
+                triggered=True,
+                reason=time_limit_reason,
+                metric_name="hold_sec",
+                metric_value=hs,
+                metric_source="position_age_seconds",
+            )
+        if bool(out.get("cost_aware_profit_floor_met")) and not expected_exit_floor_blocked:
+            return _finalize(
+                triggered=True,
+                reason=time_limit_reason,
+                metric_name="hold_sec",
+                metric_value=hs,
+                metric_source="position_age_seconds",
+            )
+
+        out["time_limit_reassessment_blocked"] = True
+        if gross_pnl_ratio > 0.0:
+            _mark_profit_floor_blocked()
+            blocked_reason = (
+                "expected_exit_profit_floor_not_met"
+                if expected_exit_floor_blocked
+                else "cost_aware_profit_floor_not_met"
+            )
+            out["time_limit_reassessment_blocked_reason"] = f"{time_limit_reason}:{blocked_reason}"
+            out["hold_block_reason"] = f"{time_limit_reason}:{blocked_reason}"
+        else:
+            out["time_limit_reassessment_blocked_reason"] = (
+                f"{time_limit_reason}:time_limit_reached_without_profit_floor"
+            )
+            if not str(out.get("hold_block_reason") or "").strip():
+                out["hold_block_reason"] = f"{time_limit_reason}:time_limit_reached_without_profit_floor"
 
     _mark_profit_floor_blocked()
     if out["price_anomaly_flag"] and not out["hold_block_reason"]:

@@ -232,7 +232,7 @@ def test_strategist_llm_summary_surfaces_strategy_detail_from_canonical(tmp_path
     assert "#### 전략 점수" in md
     assert "opening_range_breakout: 0.82 (선택)" in md
     assert "defensive_observe: 0.18" in md
-    assert "#### 탈락 전략 이유" in md
+    assert "#### 제외 전략 이유" in md
     assert "defensive_observe: risk_on tape supports active watch" in md
     assert "strategy_scores:" not in md
     assert "rejected_strategy_reasons:" not in md
@@ -292,7 +292,7 @@ def test_strategist_llm_summary_renders_stage3_hold_review_without_market_frame_
         json.dumps(
             {
                 "final_playbook": "pullback",
-                "tactical_strategy": "leader_vwap_reclaim_pullback",
+                "tactical_strategy": "vwap_reclaim_pullback",
                 "candidate_watch_policy": {"max_priority_rank": 5, "max_runner_ups": 4, "cascade_enabled": True},
             },
             ensure_ascii=False,
@@ -306,9 +306,9 @@ def test_strategist_llm_summary_renders_stage3_hold_review_without_market_frame_
     assert payload["source_canonical_strategist_json"] == str(canonical_path)
     assert payload["stage_decision"]["decision"] == "tighten_exit"
     assert payload["operator_readout"]["headline"] == "stale_intraday_hold_review / decision=tighten_exit"
-    assert "Stage-Specific LLM Output" in md
+    assert "단계별 전략가 LLM 출력" in md
     assert "decision: **tighten_exit**" in md
     assert "priority_exit_triggers: vwap_breakdown, time_decay" in md
     assert "현재 포지션의 테제가 약화" in md
-    assert "Market-frame fields" in md
+    assert "Market-frame fields" not in md
     assert "theme=none" not in md

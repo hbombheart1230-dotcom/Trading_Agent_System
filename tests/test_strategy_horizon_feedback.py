@@ -26,6 +26,17 @@ def test_build_strategy_horizon_feedback_is_observability_only_and_defaults_intr
     assert payload["behavior_translation"]["applied"] is False
 
 
+def test_build_strategy_horizon_feedback_normalizes_aliases_and_ignores_placeholder() -> None:
+    alias_payload = build_strategy_horizon_feedback({"strategy_horizon": "swing_1_2day"})
+    placeholder_payload = build_strategy_horizon_feedback(
+        {"strategy_horizon": "scalp|intraday|overnight_probe|1_2day_swing"},
+        playbook="pullback",
+    )
+
+    assert alias_payload["strategy_horizon"] == "1_2day_swing"
+    assert placeholder_payload["strategy_horizon"] == "intraday"
+
+
 def test_build_exit_vs_strategy_intent_marks_non_hard_early_exit_as_unproven() -> None:
     state = {
         "strategist_output": {

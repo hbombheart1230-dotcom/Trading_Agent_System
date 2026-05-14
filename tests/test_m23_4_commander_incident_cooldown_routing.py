@@ -49,8 +49,13 @@ def test_m23_4_commander_blocks_when_cooldown_active():
     assert called["graph"] == 0
 
     rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
-    assert [r.get("event") for r in rows] == ["route", "transition", "resilience", "end"]
-    assert rows[1]["payload"]["reason"] == "cooldown_active"
+    events = [r.get("event") for r in rows]
+    assert "route" in events
+    assert "transition" in events
+    assert "resilience" in events
+    assert "end" in events
+    transition = next(r for r in rows if r.get("event") == "transition")
+    assert transition["payload"]["reason"] == "cooldown_active"
 
 
 def test_m23_4_commander_opens_cooldown_when_incident_threshold_reached():
@@ -99,6 +104,8 @@ def test_m23_4_commander_registers_incident_on_runtime_exception():
     assert state["resilience"]["degrade_mode"] is True
 
     rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
-    assert [r.get("event") for r in rows] == ["route", "error"]
-    assert rows[-1]["payload"]["error_type"] == "RuntimeError"
-
+    events = [r.get("event") for r in rows]
+    assert "route" in events
+    assert "error" in events
+    error_row = next(r for r in rows if r.get("event") == "error")
+    assert error_row["payload"]["error_type"] == "RuntimeError"

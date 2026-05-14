@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
+from graphs.nodes.decision_node import decision_node
 from graphs.trading_graph import run_trading_graph
 
 
@@ -65,6 +66,27 @@ def test_m17_exit_intent_bypasses_entry_confidence_gate():
     assert out["decision"] == "approve"
     assert out.get("decision_reason") == "exit_within_policy"
     assert out.get("execution_pending") is True
+
+
+def test_m17_exit_intent_rejected_when_monitor_confirmation_pending():
+    out = decision_node(
+        {
+            "policy": {"max_risk": 0.7, "min_confidence": 0.6, "max_scan_retries": 1},
+            "intents": [{"symbol": "322000", "side": "SELL", "qty": 1}],
+            "monitor_exit": {
+                "triggered": False,
+                "reason": "exit_confirmation_pending:1/2",
+                "monitor_reason": "exit_signal_pending_confirmation",
+                "sell_guard_blocked": True,
+                "sell_guard_reason": "exit_confirmation_pending:1/2",
+            },
+        }
+    )
+
+    assert out["decision"] == "reject"
+    assert out.get("decision_reason") == "monitor_exit_not_confirmed"
+    assert out.get("decision_detail") == "exit_confirmation_pending:1/2"
+    assert out["monitor_exit_execution_guard"]["blocked"] is True
 
 
 def test_m17_monitor_buy_intent_bypasses_default_risk_gate():

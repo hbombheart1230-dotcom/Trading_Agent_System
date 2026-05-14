@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from libs.core.symbols import is_valid_symbol, normalize_symbol
 from libs.runtime.canonical_artifacts import write_executor_artifact, write_supervisor_artifact
@@ -292,6 +292,63 @@ def _evaluate_order_limit_guard(state: Dict[str, Any], order: Dict[str, Any]) ->
     return True, "", details
 
 
+def _evaluate_monitor_exit_confirmation_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    details: Dict[str, Any] = {
+        "guard_applied": True,
+        "action": action,
+        "symbol": _extract_order_symbol(order),
+    }
+    if action != "SELL":
+        details["guard_applied"] = False
+        return True, "", details
+
+    monitor_exit = state.get("monitor_exit") if isinstance(state.get("monitor_exit"), dict) else {}
+    if not monitor_exit:
+        details["monitor_exit_present"] = False
+        return True, "", details
+
+    trigger_details = (
+        monitor_exit.get("trigger_details")
+        if isinstance(monitor_exit.get("trigger_details"), dict)
+        else {}
+    )
+    guard_reason = str(
+        trigger_details.get("sell_guard_reason")
+        or monitor_exit.get("sell_guard_reason")
+        or monitor_exit.get("guard_reason")
+        or ""
+    ).strip()
+    exit_reason = str(monitor_exit.get("reason") or monitor_exit.get("exit_reason") or "").strip()
+    monitor_reason = str(monitor_exit.get("monitor_reason") or "").strip()
+    monitor_triggered = bool(monitor_exit.get("triggered"))
+    guard_blocked = bool(
+        trigger_details.get("sell_guard_blocked")
+        or monitor_exit.get("sell_guard_blocked")
+        or monitor_exit.get("guard_blocked")
+    )
+    pending_confirmation = (
+        guard_reason.startswith("exit_confirmation_pending:")
+        or exit_reason.startswith("exit_confirmation_pending:")
+        or monitor_reason == "exit_signal_pending_confirmation"
+    )
+
+    details.update(
+        {
+            "monitor_exit_present": True,
+            "monitor_exit_triggered": monitor_triggered,
+            "monitor_exit_reason": exit_reason,
+            "monitor_reason": monitor_reason,
+            "sell_guard_reason": guard_reason,
+            "sell_guard_blocked": guard_blocked,
+            "pending_confirmation": pending_confirmation,
+        }
+    )
+    if guard_blocked or pending_confirmation:
+        return False, "monitor_exit_confirmation_pending", details
+    return True, "", details
+
+
 def _extract_upper_limit_quote_snapshot(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "symbol": normalize_symbol(symbol),
@@ -370,6 +427,101 @@ def _augment_quote_snapshot_with_spread(snapshot: Dict[str, Any] | None) -> Dict
     return quote
 
 
+def _order_entry_chart_guard_snapshot(order: Dict[str, Any]) -> Dict[str, Any]:
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    metrics = meta.get("entry_metrics") if isinstance(meta.get("entry_metrics"), dict) else {}
+    grouped = meta.get("entry_grouped_logic_trace") if isinstance(meta.get("entry_grouped_logic_trace"), dict) else {}
+    detail = {}
+    if isinstance(metrics.get("human_chart_detail_observed"), dict):
+        detail = dict(metrics.get("human_chart_detail_observed") or {})
+    elif isinstance(grouped.get("human_chart_detail_observed"), dict):
+        detail = dict(grouped.get("human_chart_detail_observed") or {})
+
+    def first_float(*values: Any) -> float | None:
+        for value in values:
+            if value in (None, ""):
+                continue
+            parsed = _coerce_float(value, 0.0)
+            return float(parsed)
+        return None
+
+    def first_text(*values: Any) -> str:
+        for value in values:
+            text = str(value or "").strip().lower()
+            if text:
+                return text
+        return ""
+
+    reward_room_score = first_float(metrics.get("human_reward_room_score"), grouped.get("human_reward_room_score"))
+    reward_room_pct = first_float(detail.get("reward_room_pct"))
+    prev_close_distance_pct = first_float(
+        metrics.get("prev_close_distance_pct"),
+        metrics.get("entry_prev_close_distance_pct"),
+        grouped.get("prev_close_distance_pct"),
+    )
+    open_gap_pct = first_float(metrics.get("open_gap_pct"), metrics.get("entry_open_gap_pct"), grouped.get("open_gap_pct"))
+    human_chart_entry_score = first_float(
+        metrics.get("human_chart_entry_score"),
+        grouped.get("human_chart_entry_score"),
+    )
+    late_entry_risk = first_text(metrics.get("late_entry_risk"), grouped.get("late_entry_risk"))
+    min_reward_room_pct = 0.012
+    no_reward_room = bool(
+        (reward_room_score is not None and reward_room_score <= 0.05)
+        or (reward_room_pct is not None and reward_room_pct <= min_reward_room_pct)
+    )
+    near_upper_limit_zone = bool(
+        (prev_close_distance_pct is not None and prev_close_distance_pct >= 0.29)
+        or (open_gap_pct is not None and open_gap_pct >= 0.29)
+    )
+    weak_human_entry = bool(human_chart_entry_score is not None and human_chart_entry_score < 0.50)
+    insufficient_reward_room = bool(
+        reward_room_pct is not None
+        and 0.0 <= reward_room_pct < min_reward_room_pct
+        and (late_entry_risk in {"medium", "high"} or near_upper_limit_zone)
+    )
+    block = bool(
+        insufficient_reward_room
+        or (
+            late_entry_risk == "high"
+            and no_reward_room
+            and (near_upper_limit_zone or weak_human_entry)
+        )
+    )
+    reasons: List[str] = []
+    if late_entry_risk == "high" and no_reward_room:
+        reasons.append("late_entry_risk=high_with_no_reward_room")
+    if near_upper_limit_zone and late_entry_risk == "high" and no_reward_room:
+        reasons.append("near_upper_limit_zone_with_late_entry_no_reward_room")
+    if weak_human_entry and late_entry_risk == "high" and no_reward_room:
+        reasons.append("human_chart_entry_score<0.50_with_late_entry_no_reward_room")
+    if insufficient_reward_room:
+        reasons.append(f"reward_room_pct<{min_reward_room_pct:.3f}_cost_floor")
+
+    return {
+        "present": bool(metrics or grouped or detail),
+        "block": bool(block),
+        "reasons": reasons,
+        "thresholds": {
+            "near_upper_prev_close_distance_pct": 0.29,
+            "min_human_chart_entry_score": 0.50,
+            "no_reward_room_score": 0.05,
+            "no_reward_room_pct": min_reward_room_pct,
+        },
+        "observed": {
+            "reward_room_score": reward_room_score,
+            "reward_room_pct": reward_room_pct,
+            "prev_close_distance_pct": prev_close_distance_pct,
+            "open_gap_pct": open_gap_pct,
+            "late_entry_risk": late_entry_risk,
+            "human_chart_entry_score": human_chart_entry_score,
+            "no_reward_room": bool(no_reward_room),
+            "insufficient_reward_room": bool(insufficient_reward_room),
+            "near_upper_limit_zone": bool(near_upper_limit_zone),
+        },
+    }
+
+
 def _evaluate_upper_limit_buy_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
     action = str(order.get("action") or "").strip().upper()
     if action != "BUY":
@@ -388,6 +540,12 @@ def _evaluate_upper_limit_buy_guard(state: Dict[str, Any], order: Dict[str, Any]
 
     quote = _extract_upper_limit_quote_snapshot(state, symbol)
     details["quote"] = quote
+    entry_chart_guard = _order_entry_chart_guard_snapshot(order)
+    details["entry_chart_guard"] = entry_chart_guard
+    if bool(entry_chart_guard.get("block")):
+        details["block_reason"] = "entry_chart_hard_guard_blocked"
+        return False, "entry_chart_hard_guard_blocked", details
+
     if not bool(quote.get("quote_present")):
         details["quote_evaluable"] = False
         return True, "", details
@@ -482,6 +640,211 @@ def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor
     except Exception as exc:
         result["cancel_ok"] = False
         result["cancel_error"] = str(exc)
+        return result
+
+
+def _execution_fill_quantity_snapshot(execution: Dict[str, Any], order: Dict[str, Any]) -> Dict[str, Any]:
+    payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
+    response_payload = payload.get("response_payload") if isinstance(payload.get("response_payload"), dict) else {}
+    broker_result = payload.get("broker_result") if isinstance(payload.get("broker_result"), dict) else {}
+    containers = [
+        execution,
+        payload,
+        response_payload,
+        execution.get("order_status") if isinstance(execution.get("order_status"), dict) else {},
+        payload.get("order_status") if isinstance(payload.get("order_status"), dict) else {},
+        execution.get("broker_result") if isinstance(execution.get("broker_result"), dict) else {},
+        broker_result,
+    ]
+
+    def first_value(*keys: str) -> Tuple[Any, str]:
+        for container in containers:
+            if not isinstance(container, dict):
+                continue
+            for key in keys:
+                if container.get(key) not in (None, ""):
+                    return container.get(key), key
+        return None, ""
+
+    filled_raw, filled_key = first_value("filled_qty", "cntr_qty", "exec_qty", "cnfm_qty")
+    remaining_raw, remaining_key = first_value("remaining_qty", "ord_remnq", "rmnd_qty", "unfilled_qty", "unfilled")
+    order_raw, order_key = first_value("order_qty", "ord_qty", "qty")
+    order_qty = max(0, _coerce_int(order_raw, 0)) if order_raw not in (None, "") else max(0, _coerce_int(order.get("qty"), 0))
+    filled_qty = max(0, _coerce_int(filled_raw, 0)) if filled_raw not in (None, "") else None
+    remaining_qty = max(0, _coerce_int(remaining_raw, 0)) if remaining_raw not in (None, "") else None
+    has_fill_truth = bool(filled_raw not in (None, "") or remaining_raw not in (None, ""))
+    pending_unfilled = bool(remaining_qty is not None and remaining_qty > 0)
+    fully_filled = bool(has_fill_truth and (remaining_qty == 0 or (order_qty > 0 and (filled_qty or 0) >= order_qty)))
+    return {
+        "has_fill_truth": bool(has_fill_truth),
+        "filled_qty": filled_qty,
+        "remaining_qty": remaining_qty,
+        "order_qty": int(order_qty),
+        "filled_qty_source": filled_key,
+        "remaining_qty_source": remaining_key,
+        "order_qty_source": order_key,
+        "pending_unfilled": bool(pending_unfilled),
+        "fully_filled": bool(fully_filled),
+    }
+
+
+def _execution_market_open_for_recovery(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    details: Dict[str, Any] = {"clock_evaluable": False}
+    epoch = _coerce_int(state.get("tick_ts"), 0) or _coerce_int(state.get("now_epoch"), 0)
+    if epoch <= 0:
+        return True, details
+    try:
+        from libs.runtime.market_hours import MarketHours
+
+        mh = MarketHours()
+        dt_kst = datetime.fromtimestamp(epoch, tz=mh.tz)
+        details.update(
+            {
+                "clock_evaluable": True,
+                "epoch": int(epoch),
+                "kst_time": dt_kst.isoformat(),
+                "regular_session_open": bool(mh.is_open(dt_kst)),
+            }
+        )
+        return bool(mh.is_open(dt_kst)), details
+    except Exception as exc:
+        details["clock_error"] = str(exc)
+        return True, details
+
+
+def _build_cancel_order_for_unfilled(order: Dict[str, Any], order_id: str, *, reason: str) -> Dict[str, Any]:
+    symbol = _extract_order_symbol(order)
+    return {
+        "api_id": "kt10003",
+        "action": "CANCEL",
+        "symbol": symbol,
+        "stk_cd": symbol,
+        "orig_ord_no": order_id,
+        "cncl_qty": "0",
+        "dmst_stex_tp": str(order.get("dmst_stex_tp") or "KRX"),
+        "rationale": reason,
+    }
+
+
+def _build_market_replacement_sell_order(order: Dict[str, Any], qty: int, *, reason: str) -> Dict[str, Any]:
+    symbol = _extract_order_symbol(order)
+    replacement = dict(order)
+    replacement.update(
+        {
+            "api_id": "ORDER_SUBMIT",
+            "order_api_id": "ORDER_SUBMIT",
+            "action": "SELL",
+            "symbol": symbol,
+            "stk_cd": symbol,
+            "qty": int(max(0, qty)),
+            "ord_qty": str(int(max(0, qty))),
+            "price": None,
+            "ord_uv": "",
+            "order_type": "market",
+            "trde_tp": "3",
+            "dmst_stex_tp": str(order.get("dmst_stex_tp") or "KRX"),
+            "rationale": reason,
+        }
+    )
+    meta = replacement.get("meta") if isinstance(replacement.get("meta"), dict) else {}
+    replacement["meta"] = {**meta, "unfilled_order_recovery": True, "source_order_id": str(order.get("order_id") or "")}
+    return replacement
+
+
+def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, executor: Any, order: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(order.get("action") or "").strip().upper()
+    result: Dict[str, Any] = {"attempted": False, "action": action, "guard_applied": True}
+    if action not in ("BUY", "SELL"):
+        result["reason"] = "unsupported_action"
+        return result
+    if str(order.get("api_id") or order.get("order_api_id") or "").strip().lower() == "kt10003":
+        result["reason"] = "cancel_order_not_recovered"
+        return result
+    if not bool(execution.get("allowed")) or not bool(execution.get("ok")):
+        result["reason"] = "execution_not_accepted"
+        return result
+
+    snapshot = _execution_fill_quantity_snapshot(execution, order)
+    result["fill_snapshot"] = snapshot
+    if not bool(snapshot.get("has_fill_truth")):
+        result["reason"] = "fill_truth_missing"
+        return result
+    if not bool(snapshot.get("pending_unfilled")):
+        result["reason"] = "not_pending_unfilled"
+        return result
+
+    order_id = str(execution.get("order_id") or execution.get("ord_no") or ((execution.get("payload") or {}) if isinstance(execution.get("payload"), dict) else {}).get("order_id") or "").strip()
+    if not order_id:
+        result["reason"] = "missing_order_id"
+        return result
+
+    symbol = _extract_order_symbol(order)
+    remaining_qty = _coerce_int(snapshot.get("remaining_qty"), 0)
+    result.update({"attempted": True, "symbol": symbol, "order_id": order_id, "remaining_qty": int(remaining_qty)})
+    cancel_order = _build_cancel_order_for_unfilled(
+        order,
+        order_id,
+        reason="buy_unfilled_auto_cancel" if action == "BUY" else "sell_unfilled_cancel_before_market_replacement",
+    )
+    try:
+        cancel_req = _prepare_request(cancel_order, catalog)
+        cancel_execution_result = executor.execute(cancel_req)
+        cancel_payload = _normalize_execution(
+            allowed=True,
+            execution_result=cancel_execution_result,
+            allow_result=None,
+            order=cancel_order,
+            reason=str(cancel_order.get("rationale") or ""),
+            strategy_policy_summary=None,
+        )
+        result["cancel"] = cancel_payload
+        result["cancel_ok"] = bool(cancel_payload.get("ok"))
+    except Exception as exc:
+        result["cancel_ok"] = False
+        result["cancel_error"] = str(exc)
+        return result
+
+    if action == "BUY":
+        result["reason"] = "buy_unfilled_cancelled"
+        return result
+    if not bool(result.get("cancel_ok")):
+        result["reason"] = "sell_cancel_failed_no_replacement"
+        return result
+    if remaining_qty <= 0:
+        result["reason"] = "sell_remaining_qty_missing"
+        return result
+
+    regular_open, clock_details = _execution_market_open_for_recovery(state)
+    result["market_clock"] = clock_details
+    if not regular_open:
+        result["reason"] = "regular_session_closed_after_hours_policy_required"
+        result["after_hours_policy_required"] = True
+        return result
+
+    market_order = _build_market_replacement_sell_order(
+        order,
+        remaining_qty,
+        reason="sell_unfilled_market_replacement",
+    )
+    try:
+        market_req = _prepare_request(market_order, catalog)
+        market_execution_result = executor.execute(market_req)
+        market_payload = _normalize_execution(
+            allowed=True,
+            execution_result=market_execution_result,
+            allow_result=None,
+            order=market_order,
+            reason="sell_unfilled_market_replacement",
+            strategy_policy_summary=None,
+        )
+        result["market_replacement"] = market_payload
+        result["market_replacement_ok"] = bool(market_payload.get("ok"))
+        result["reason"] = "sell_unfilled_market_replacement_submitted"
+        return result
+    except Exception as exc:
+        result["market_replacement_ok"] = False
+        result["market_replacement_error"] = str(exc)
+        result["reason"] = "sell_market_replacement_error"
         return result
 
 
@@ -692,6 +1055,15 @@ def _position_qty_hint_from_order(order: Dict[str, Any]) -> int:
     return 0
 
 
+def _exit_reason_from_order(order: Dict[str, Any]) -> str:
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    for key in ("exit_reason", "reason", "monitor_reason", "signal_source"):
+        value = meta.get(key)
+        if value not in (None, ""):
+            return str(value).strip().lower()
+    return str(order.get("reason") or "").strip().lower()
+
+
 def _evaluate_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
     action = str(order.get("action") or "").strip().upper()
     details: Dict[str, Any] = {
@@ -732,7 +1104,74 @@ def _evaluate_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any
         details["remaining_sec"] = int(max(0, expires_epoch - now_epoch))
         details["order_id"] = str(record.get("order_id") or "")
         details["run_id"] = str(record.get("run_id") or "")
+        details["pending_management_status"] = str(record.get("pending_management_status") or "recent_buy_pending")
+        details["filled_qty"] = _coerce_int(record.get("filled_qty"), -1)
+        details["remaining_qty"] = _coerce_int(record.get("remaining_qty"), -1)
         return False, "duplicate_buy_recent_order_exists", details
+    return True, "", details
+
+
+def _evaluate_recent_buy_settle_sell_guard(
+    state: Dict[str, Any],
+    order: Dict[str, Any],
+) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    details: Dict[str, Any] = {
+        "enabled": bool(_recent_buy_guard_enabled(state)),
+        "action": action,
+        "guard_applied": False,
+    }
+    if action != "SELL" or not details["enabled"]:
+        return True, "", details
+
+    symbol = _extract_order_symbol(order)
+    details["symbol"] = symbol
+    details["guard_applied"] = True
+    if not symbol:
+        details["symbol_evaluable"] = False
+        return True, "", details
+
+    path = _recent_buy_guard_path(state)
+    now_epoch = _recent_buy_guard_now_epoch(state)
+    ttl_sec = _recent_buy_guard_ttl_sec(state)
+    data = _read_recent_buy_guard(path)
+    orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
+    record = orders.get(symbol) if isinstance(orders.get(symbol), dict) else {}
+    expires_epoch = _coerce_int(record.get("expires_epoch"), 0)
+    buy_qty = _coerce_int(record.get("qty"), 0)
+    order_qty = _coerce_int(order.get("qty"), 0)
+    position_qty_hint = _position_qty_hint_from_order(order)
+    exit_reason = _exit_reason_from_order(order)
+    emergency_reasons = {"emergency_halt", "news_shock", "hard_stop", "stop_loss", "eod_flat"}
+
+    partial_position_after_recent_buy = bool(
+        record
+        and expires_epoch > 0
+        and now_epoch <= expires_epoch
+        and buy_qty > 0
+        and (
+            (position_qty_hint > 0 and position_qty_hint < buy_qty)
+            or (position_qty_hint <= 0 and order_qty > 0 and order_qty < buy_qty)
+        )
+    )
+    details.update(
+        {
+            "path": str(path),
+            "now_epoch": int(now_epoch),
+            "ttl_sec": int(ttl_sec),
+            "last_buy_epoch": _coerce_int(record.get("last_buy_epoch"), 0),
+            "expires_epoch": int(expires_epoch),
+            "remaining_sec": int(max(0, expires_epoch - now_epoch)) if expires_epoch > 0 else 0,
+            "recent_order_found": bool(record),
+            "recent_buy_qty": int(buy_qty),
+            "order_qty": int(order_qty),
+            "position_qty_hint": int(position_qty_hint),
+            "exit_reason": str(exit_reason),
+            "partial_position_after_recent_buy": bool(partial_position_after_recent_buy),
+        }
+    )
+    if partial_position_after_recent_buy and exit_reason not in emergency_reasons:
+        return False, "sell_guard_recent_buy_fill_settle_partial_position", details
     return True, "", details
 
 
@@ -823,6 +1262,14 @@ def _update_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any],
         }
 
     payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
+    filled_qty = _coerce_int(
+        execution.get("filled_qty") if execution.get("filled_qty") not in (None, "") else payload.get("filled_qty"),
+        -1,
+    )
+    remaining_qty = _coerce_int(
+        execution.get("remaining_qty") if execution.get("remaining_qty") not in (None, "") else payload.get("remaining_qty"),
+        -1,
+    )
     orders[symbol] = {
         "symbol": symbol,
         "last_buy_epoch": int(now_epoch),
@@ -831,6 +1278,10 @@ def _update_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any],
         "order_id": str(execution.get("order_id") or execution.get("ord_no") or payload.get("order_id") or ""),
         "run_id": str(state.get("run_id") or ""),
         "qty": _coerce_int(order.get("qty"), 0),
+        "filled_qty": int(filled_qty),
+        "remaining_qty": int(remaining_qty),
+        "pending_management_status": "pending_until_fill_truth_or_ttl",
+        "cancel_after_epoch": int(now_epoch + ttl_sec),
         "effective_mode": str(_execution_mode_details().get("effective_mode") or ""),
     }
     _write_recent_buy_guard(path, data)
@@ -2139,30 +2590,30 @@ def execute_from_packet(state: dict) -> dict:
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
-        asset_allowed, asset_reason, asset_details = _evaluate_asset_universe_guard(state, order)
-        if not asset_allowed:
+        monitor_exit_allowed, monitor_exit_reason, monitor_exit_details = _evaluate_monitor_exit_confirmation_guard(state, order)
+        if not monitor_exit_allowed:
             state["execution"] = _normalize_execution(
                 allowed=False,
                 execution_result=None,
                 allow_result=None,
                 order=order,
-                reason=asset_reason,
+                reason=monitor_exit_reason,
                 strategy_policy_summary=strategy_policy_summary,
             )
-            state["execution"]["asset_universe_guard"] = asset_details
+            state["execution"]["monitor_exit_execution_guard"] = monitor_exit_details
             _append_execution_trace_entries(
                 state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
             )
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
-                event="asset_universe_guard_block",
-                payload={"allowed": False, "reason": asset_reason, **asset_details},
+                event="monitor_exit_guard_block",
+                payload={"allowed": False, "reason": monitor_exit_reason, **monitor_exit_details},
             )
             _persist_execution_artifacts(
                 supervisor_allowed=False,
-                supervisor_reason=asset_reason,
-                supervisor_details=asset_details,
+                supervisor_reason=monitor_exit_reason,
+                supervisor_details=monitor_exit_details,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -2191,6 +2642,34 @@ def execute_from_packet(state: dict) -> dict:
                 supervisor_allowed=False,
                 supervisor_reason=restricted_reason,
                 supervisor_details=restricted_details,
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        asset_allowed, asset_reason, asset_details = _evaluate_asset_universe_guard(state, order)
+        if not asset_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=asset_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["asset_universe_guard"] = asset_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="asset_universe_guard_block",
+                payload={"allowed": False, "reason": asset_reason, **asset_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=asset_reason,
+                supervisor_details=asset_details,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -2331,6 +2810,43 @@ def execute_from_packet(state: dict) -> dict:
                 supervisor_allowed=False,
                 supervisor_reason=recent_buy_reason,
                 supervisor_details={**dict(portfolio_details or {}), **dict(recent_buy_details or {})},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        recent_buy_settle_allowed, recent_buy_settle_reason, recent_buy_settle_details = _evaluate_recent_buy_settle_sell_guard(
+            state,
+            order,
+        )
+        if not recent_buy_settle_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=recent_buy_settle_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["portfolio_guard"] = portfolio_details
+            state["execution"]["recent_buy_settle_sell_guard"] = recent_buy_settle_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="recent_buy_settle_sell_guard_block",
+                payload={
+                    "allowed": False,
+                    "reason": recent_buy_settle_reason,
+                    "portfolio_guard": portfolio_details,
+                    **recent_buy_settle_details,
+                },
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=recent_buy_settle_reason,
+                supervisor_details={**dict(portfolio_details or {}), **dict(recent_buy_settle_details or {})},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -2513,6 +3029,23 @@ def execute_from_packet(state: dict) -> dict:
                 event="upper_limit_cancel_attempt",
                 payload=upper_limit_cancel,
             )
+        if not bool((upper_limit_cancel or {}).get("attempted")):
+            unfilled_recovery = _attempt_unfilled_order_recovery(
+                state=state,
+                catalog=catalog,
+                executor=executor,
+                order=order,
+                execution=state["execution"],
+            )
+            if unfilled_recovery:
+                state["execution"]["unfilled_order_recovery"] = unfilled_recovery
+                if bool(unfilled_recovery.get("attempted")):
+                    logger.log(
+                        run_id=run_id,
+                        stage="execute_from_packet",
+                        event="unfilled_order_recovery_attempt",
+                        payload=unfilled_recovery,
+                    )
         logger.log(run_id=run_id, stage="execute_from_packet", event="execution", payload=state["execution"])
         _persist_execution_artifacts(
             supervisor_allowed=True,

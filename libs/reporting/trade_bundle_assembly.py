@@ -35,6 +35,7 @@ from libs.reporting.trade_story_pipeline import (
     safe_int,
 )
 from libs.runtime.canonical_artifacts import load_run_canonical_artifacts
+from libs.runtime.broker_cost_profile import update_broker_cost_profile_from_execution_details
 from libs.runtime.strategy_horizon_feedback import (
     build_post_exit_shadow_placeholder,
     update_post_exit_shadow_with_price_observations,
@@ -46,6 +47,125 @@ def _coalesce_non_empty(*values: Any) -> Any:
         if value not in (None, ""):
             return value
     return None
+
+
+def _latest_exit_monitor_context_from_timeline(
+    monitor_timeline: Mapping[str, Any] | None,
+    *,
+    exit_run_id: str,
+    symbol: str,
+) -> Dict[str, Any]:
+    if not exit_run_id:
+        return {}
+    timeline = dict(monitor_timeline or {})
+    rows_by_ts: Dict[str, List[tuple[str, Dict[str, Any]]]] = {}
+    collection_order = (
+        "threshold_snapshots",
+        "exit_decision_details",
+        "cycle_summaries",
+        "state_transitions",
+    )
+    for collection_name in collection_order:
+        for row in list(timeline.get(collection_name) or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("run_id") or "").strip() != exit_run_id:
+                continue
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            if not payload:
+                continue
+            ts = str(row.get("ts") or "").strip()
+            if not ts:
+                continue
+            rows_by_ts.setdefault(ts, []).append((collection_name, dict(payload)))
+    if not rows_by_ts:
+        return {}
+
+    latest_ts = sorted(rows_by_ts.keys())[-1]
+    merged: Dict[str, Any] = {}
+    for collection_name in collection_order:
+        for row_collection, payload in rows_by_ts.get(latest_ts, []):
+            if row_collection == collection_name:
+                merged.update(payload)
+
+    final_thresholds = merged.get("final_exit_thresholds")
+    if isinstance(final_thresholds, dict) and not isinstance(merged.get("thresholds"), dict):
+        merged["thresholds"] = dict(final_thresholds)
+    triggered_rule = str(merged.get("triggered_rule") or "").strip()
+    if triggered_rule:
+        merged.setdefault("exit_reason", triggered_rule)
+        merged.setdefault("trigger_type", triggered_rule)
+        merged.setdefault("reason", triggered_rule)
+    if bool(merged.get("exit_triggered")) and not str(merged.get("monitor_reason") or "").strip():
+        merged["monitor_reason"] = "confirmed_exit_signal"
+    if str(merged.get("intent_side") or "").strip().upper() == "SELL":
+        merged.setdefault("posture", "SELL")
+    if str(merged.get("current_posture") or "").strip().upper() == "SELL":
+        merged.setdefault("posture", "SELL")
+    merged.setdefault("run_id", exit_run_id)
+    merged.setdefault("ts", latest_ts)
+    if symbol:
+        merged.setdefault("symbol", symbol)
+        merged.setdefault("selected_symbol", symbol)
+        merged.setdefault("monitor_symbol", symbol)
+    merged["source"] = "monitor_timeline.latest_exit_run"
+    return merged
+
+
+def apply_latest_exit_monitor_context_from_timeline(
+    lifecycle_bundle: Mapping[str, Any] | None,
+    monitor_timeline: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    out = dict(lifecycle_bundle or {})
+    exit_obj = out.get("exit") if isinstance(out.get("exit"), dict) else {}
+    if not exit_obj:
+        return out
+    exit_run_id = str(exit_obj.get("run_id") or "").strip()
+    symbol = normalize_symbol(
+        out.get("symbol") or exit_obj.get("symbol") or "",
+        allow_test_symbols=True,
+    )
+    latest_exit_monitor_context = _latest_exit_monitor_context_from_timeline(
+        monitor_timeline,
+        exit_run_id=exit_run_id,
+        symbol=symbol,
+    )
+    if not latest_exit_monitor_context:
+        return out
+
+    exit_obj = dict(exit_obj)
+    monitor_context = (
+        dict(exit_obj.get("monitor_context") or {})
+        if isinstance(exit_obj.get("monitor_context"), dict)
+        else {}
+    )
+    monitor_context = {**monitor_context, **latest_exit_monitor_context}
+    exit_obj["monitor_context"] = monitor_context
+    out["monitor"] = {
+        **(out.get("monitor") if isinstance(out.get("monitor"), dict) else {}),
+        **latest_exit_monitor_context,
+    }
+    monitor_reason_human = build_monitor_reason_human(
+        monitor_context,
+        {"action": str(exit_obj.get("action") or "SELL").strip().upper() or "SELL"},
+    )
+    out["monitor_reason_human"] = monitor_reason_human
+    summary = str(monitor_reason_human.get("summary") or "").strip()
+    if summary:
+        exit_obj["reason_human"] = summary
+        exit_obj["summary"] = summary
+        trade_outcome = out.get("trade_outcome") if isinstance(out.get("trade_outcome"), dict) else {}
+        if trade_outcome:
+            trade_outcome = dict(trade_outcome)
+            trade_outcome["exit_reason"] = summary
+            out["trade_outcome"] = trade_outcome
+    out["exit"] = exit_obj
+    lifecycle_obj = out.get("lifecycle") if isinstance(out.get("lifecycle"), dict) else {}
+    if lifecycle_obj:
+        lifecycle_obj = dict(lifecycle_obj)
+        lifecycle_obj["exit"] = exit_obj
+        out["lifecycle"] = lifecycle_obj
+    return out
 
 
 def _resolve_trade_day_hint(*values: Any) -> str:
@@ -743,9 +863,36 @@ def build_strategist_trace_summary_mirror(
 ) -> Dict[str, Any]:
     strategist = dict(strategist_summary or {})
     trace = strategist.get("trace_summary") if isinstance(strategist.get("trace_summary"), dict) else {}
-    if trace:
-        return dict(trace)
     market_context = dict(market_context_human or {})
+    strategy_frame = strategist.get("strategy_frame") if isinstance(strategist.get("strategy_frame"), dict) else {}
+    policy_selected = strategist.get("policy_selected") if isinstance(strategist.get("policy_selected"), dict) else {}
+    if trace:
+        out = dict(trace)
+        if not out.get("risk_tone"):
+            out["risk_tone"] = str(
+                strategist.get("risk_tone")
+                or strategy_frame.get("risk_tone")
+                or policy_selected.get("risk_tone")
+                or market_context.get("risk_tone")
+                or ""
+            )
+        if not out.get("trade_aggressiveness"):
+            out["trade_aggressiveness"] = str(
+                strategist.get("trade_aggressiveness")
+                or strategy_frame.get("trade_aggressiveness")
+                or policy_selected.get("trade_aggressiveness")
+                or market_context.get("trade_aggressiveness")
+                or ""
+            )
+        if not out.get("monitor_guidance"):
+            out["monitor_guidance"] = str(
+                strategist.get("monitor_guidance")
+                or strategy_frame.get("monitor_guidance")
+                or policy_selected.get("monitor_guidance")
+                or market_context.get("monitor_guidance")
+                or ""
+            )
+        return out
     highlights = [
         str(x or "")
         for x in list(market_context.get("bullets") or [])
@@ -757,6 +904,21 @@ def build_strategist_trace_summary_mirror(
         "market_regime": str(strategist.get("market_regime") or market_context.get("regime") or ""),
         "market_sentiment": str(strategist.get("market_sentiment") or market_context.get("market_sentiment") or ""),
         "playbook": str(strategist.get("playbook") or market_context.get("playbook") or ""),
+        "risk_tone": str(strategist.get("risk_tone") or strategy_frame.get("risk_tone") or policy_selected.get("risk_tone") or market_context.get("risk_tone") or ""),
+        "trade_aggressiveness": str(
+            strategist.get("trade_aggressiveness")
+            or strategy_frame.get("trade_aggressiveness")
+            or policy_selected.get("trade_aggressiveness")
+            or market_context.get("trade_aggressiveness")
+            or ""
+        ),
+        "monitor_guidance": str(
+            strategist.get("monitor_guidance")
+            or strategy_frame.get("monitor_guidance")
+            or policy_selected.get("monitor_guidance")
+            or market_context.get("monitor_guidance")
+            or ""
+        ),
         "themes": list(strategist.get("themes") or market_context.get("themes") or []),
         "global_sentiment_score": strategist.get("global_sentiment_score", market_context.get("global_sentiment_score")),
         "vix_level": (strategist.get("fear_index") or {}).get("level") if isinstance(strategist.get("fear_index"), dict) else market_context.get("vix_level"),
@@ -1073,13 +1235,50 @@ def apply_entry_exit_holding_enrichment(
 
     exit_ctx_live = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
     if exit_ctx_live:
+        exit_monitor_context = (
+            dict(exit_ctx_live.get("monitor_context") or {})
+            if isinstance(exit_ctx_live.get("monitor_context"), dict)
+            else {}
+        )
+        latest_exit_monitor_context = _latest_exit_monitor_context_from_timeline(
+            monitor_timeline,
+            exit_run_id=exit_run_id,
+            symbol=symbol,
+        )
+        if latest_exit_monitor_context:
+            exit_monitor_context = {**exit_monitor_context, **latest_exit_monitor_context}
+            lifecycle_bundle["monitor"] = {
+                **(
+                    lifecycle_bundle.get("monitor")
+                    if isinstance(lifecycle_bundle.get("monitor"), dict)
+                    else {}
+                ),
+                **latest_exit_monitor_context,
+            }
         exit_ctx_live["monitor_context"] = attach_strategy_anchor(
-            exit_ctx_live.get("monitor_context") if isinstance(exit_ctx_live.get("monitor_context"), dict) else {},
+            exit_monitor_context,
             strategy_anchor_run_id=strategy_anchor_run_id,
             strategist_input_path=strategist_input_path,
             strategist_compact_input_path=strategist_compact_input_path,
             strategist_llm_response_path=strategist_llm_response_path,
         )
+        if latest_exit_monitor_context:
+            refreshed_exit_reason = build_monitor_reason_human(
+                exit_ctx_live["monitor_context"],
+                {"action": "SELL"},
+            )
+            lifecycle_bundle["monitor_reason_human"] = attach_strategy_anchor(
+                refreshed_exit_reason,
+                strategy_anchor_run_id=strategy_anchor_run_id,
+                strategist_input_path=strategist_input_path,
+                strategist_compact_input_path=strategist_compact_input_path,
+                strategist_llm_response_path=strategist_llm_response_path,
+            )
+            summary_text = str(refreshed_exit_reason.get("summary") or "").strip()
+            if summary_text:
+                exit_ctx_live["reason_human"] = summary_text
+                summary_obj["exit_reason_human"] = summary_text
+                lifecycle["summary"] = summary_obj
         lifecycle["exit"] = exit_ctx_live
 
     holding_live = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
@@ -1295,6 +1494,12 @@ def apply_live_trade_context(
     exit_context["entry_execution_details"] = dict(entry_execution_details)
     exit_execution_details = build_execution_details_from_bundle(exit_bundle, context=exit_context)
     execution_details = dict(exit_execution_details if str(status or "").strip().lower() == "closed" else entry_execution_details)
+    broker_cost_profile = {}
+    if str(status or "").strip().lower() == "closed":
+        broker_cost_details = dict(exit_execution_details)
+        if broker_cost_details.get("symbol") in (None, ""):
+            broker_cost_details["symbol"] = lifecycle_bundle.get("symbol") or lifecycle.get("symbol")
+        broker_cost_profile = update_broker_cost_profile_from_execution_details(broker_cost_details)
 
     holding_phase_observability = build_holding_phase_observability(
         lifecycle,
@@ -1357,6 +1562,8 @@ def apply_live_trade_context(
     lifecycle_bundle["entry_execution_details"] = dict(entry_execution_details)
     lifecycle_bundle["exit_execution_details"] = dict(exit_execution_details)
     lifecycle_bundle["execution_details"] = dict(execution_details)
+    if broker_cost_profile:
+        lifecycle_bundle["broker_cost_profile"] = dict(broker_cost_profile)
     lifecycle_bundle["hold_duration"] = holding_phase_observability.get("hold_duration")
     lifecycle_bundle["hold_duration_sec"] = holding_phase_observability.get("hold_duration_sec")
     lifecycle_bundle["holding_phase_summary"] = holding_phase_observability.get("holding_phase_summary")

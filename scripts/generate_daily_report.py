@@ -304,7 +304,11 @@ def _render_residual_positions_markdown(residual: Dict[str, Any]) -> List[str]:
     closeout_mode = str(closeout.get("mode") or "").strip()
     closeout_reason = str(closeout.get("reason") or "").strip()
     if closeout_mode or closeout_reason:
-        lines.append(f"- closeout 상태: {closeout_mode or '-'} / {closeout_reason or '-'}")
+        closeout_line = f"- closeout 상태: {closeout_mode or '-'} / {closeout_reason or '-'}"
+        closeout_note = str(closeout.get("report_note") or "").strip()
+        if closeout_note:
+            closeout_line += f" ({closeout_note})"
+        lines.append(closeout_line)
     if reconciled:
         symbols = ", ".join(
             str(row.get("symbol") or "").strip()
@@ -323,11 +327,14 @@ def _render_residual_positions_markdown(residual: Dict[str, Any]) -> List[str]:
         current_price = row.get("current_price")
         pnl_ratio = row.get("account_pnl_ratio")
         reason = str(row.get("overnight_reason") or "").strip()
+        decision_label = str(row.get("overnight_decision_label") or "").strip()
         price_text = f"평균 {avg_price:,.0f}" if isinstance(avg_price, (int, float)) and avg_price else "평균 -"
         current_text = f"현재 {current_price:,.0f}" if isinstance(current_price, (int, float)) and current_price else "현재 -"
         ratio_text = f" / 평가손익률 {float(pnl_ratio) * 100:.2f}%" if isinstance(pnl_ratio, (int, float)) else ""
         detail = f"- {symbol}: {status} / {qty}주 / {price_text} / {current_text}{ratio_text}"
-        if reason:
+        if decision_label:
+            detail += f" / 오버나이트 판단: {decision_label}"
+        if reason and not bool(row.get("overnight_decision_missing")):
             detail += f" / 사유 {reason}"
         if bool(row.get("weekend_carry")):
             detail += f" / 주말보유 {int(row.get('holding_gap_days') or 3)}일"
@@ -336,7 +343,7 @@ def _render_residual_positions_markdown(residual: Dict[str, Any]) -> List[str]:
             lines.append("  - 주의: 금요일 carry 승인이라 주말 갭 리스크가 포함됩니다.")
         missing_detail = str(row.get("overnight_missing_detail") or "").strip()
         if bool(row.get("overnight_decision_missing")) and missing_detail:
-            lines.append(f"  - 판단 기록 상태: {missing_detail}")
+            lines.append(f"  - 판단 기록 근거: {missing_detail}")
         signals = [str(x) for x in list(row.get("overnight_positive_signals") or []) if str(x or "").strip()]
         blockers = [str(x) for x in list(row.get("overnight_blockers") or []) if str(x or "").strip()]
         if signals:

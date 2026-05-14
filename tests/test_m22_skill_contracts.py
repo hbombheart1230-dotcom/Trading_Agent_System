@@ -57,6 +57,9 @@ def test_m22_contract_account_order_pending_only_for_open_rows():
     assert account_order_is_pending(
         {"symbol": "005930", "side": "BUY", "order_qty": "10", "filled_qty": "0", "remaining_qty": "10", "status": "OPEN"}
     )
+    assert account_order_is_pending(
+        {"symbol": "005930", "side": "BUY", "order_qty": "10", "filled_qty": "0", "remaining_qty": "10", "status": "COMPLETE"}
+    )
     assert not account_order_is_pending(
         {"symbol": "005930", "side": "BUY", "order_qty": "10", "filled_qty": "10", "remaining_qty": "0", "status": "FILLED"}
     )

@@ -163,7 +163,9 @@ def _build_trade_report_feedback_summary(reports_root: Path, day: str) -> Dict[s
         "win_count": 0,
         "loss_count": 0,
         "flat_count": 0,
+        "unknown_pnl_count": 0,
         "avg_pnl_pct": 0.0,
+        "pnl_pct_sample_count": 0,
         "same_price_cost_loss_count": 0,
         "broker_truth_count": 0,
         "exit_reason_counts": {},
@@ -197,15 +199,20 @@ def _build_trade_report_feedback_summary(reports_root: Path, day: str) -> Dict[s
 
         pnl_value = pnl.get("value")
         pnl_pct = pnl.get("pct")
-        pnl_value_num = _safe_float(pnl_value, 0.0) if pnl_value not in (None, "") else 0.0
-        if pnl_value not in (None, ""):
-            if pnl_value_num > 0.0:
+        pnl_value_known = pnl_value not in (None, "")
+        pnl_pct_known = pnl_pct not in (None, "")
+        pnl_value_num = _safe_float(pnl_value, 0.0) if pnl_value_known else 0.0
+        classification_value = pnl_value_num if pnl_value_known else (_safe_float(pnl_pct, 0.0) if pnl_pct_known else None)
+        if classification_value is None:
+            summary["unknown_pnl_count"] += 1
+        else:
+            if classification_value > 0.0:
                 summary["win_count"] += 1
-            elif pnl_value_num < 0.0:
+            elif classification_value < 0.0:
                 summary["loss_count"] += 1
             else:
                 summary["flat_count"] += 1
-        if pnl_pct not in (None, ""):
+        if pnl_pct_known:
             pnl_pct_values.append(_safe_float(pnl_pct, 0.0))
 
         if bool(availability.get("broker_fill_present")) and bool(availability.get("broker_pnl_present")):
@@ -226,6 +233,7 @@ def _build_trade_report_feedback_summary(reports_root: Path, day: str) -> Dict[s
 
     if pnl_pct_values:
         summary["avg_pnl_pct"] = round(sum(pnl_pct_values) / len(pnl_pct_values), 4)
+        summary["pnl_pct_sample_count"] = len(pnl_pct_values)
     summary["exit_reason_counts"] = exit_reason_counts
     summary["symbols"] = [name for name, _count in sorted(symbol_counts.items(), key=lambda item: (-item[1], item[0]))[:5]]
     return summary
@@ -449,9 +457,18 @@ def _build_insight_summary(
     if closed_trade_count > 0:
         win_count = _safe_int(trade_summary.get("win_count"), 0)
         loss_count = _safe_int(trade_summary.get("loss_count"), 0)
+        flat_count = _safe_int(trade_summary.get("flat_count"), 0)
+        unknown_pnl_count = _safe_int(trade_summary.get("unknown_pnl_count"), 0)
         avg_pnl_pct = trade_summary.get("avg_pnl_pct")
+        pnl_pct_sample_count = _safe_int(trade_summary.get("pnl_pct_sample_count"), 0)
+        result_bits = [f"{win_count} wins", f"{loss_count} losses"]
+        if flat_count > 0:
+            result_bits.append(f"{flat_count} flat")
+        if unknown_pnl_count > 0:
+            result_bits.append(f"{unknown_pnl_count} unknown pnl")
+        avg_text = f", avg pnl pct {avg_pnl_pct}" if pnl_pct_sample_count > 0 else ""
         parts.append(
-            f"Same-day closed trade reports show {closed_trade_count} trades with {win_count} wins, {loss_count} losses, avg pnl pct {avg_pnl_pct}."
+            f"Same-day closed trade reports show {closed_trade_count} trades with {', '.join(result_bits)}{avg_text}."
         )
     if not parts:
         parts.append("Feedback packet is available but source evidence is limited.")

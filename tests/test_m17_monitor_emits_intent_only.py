@@ -13,8 +13,9 @@ def test_m17_monitor_emits_at_most_one_intent_from_selected():
     out = monitor_node(state)
     intents = out.get("intents")
     assert isinstance(intents, list)
-    assert len(intents) == 1
-    assert intents[0]["symbol"] == "AAA"
+    assert intents == []
+    assert out["monitor"]["entry_reason"] == "minute_candle_missing"
+    assert out["monitor"]["entry_intent_submitted"] is False
     assert "monitor" in out
 
 

@@ -5,7 +5,7 @@ import html
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from libs.reporting.reasoning_trace import (
     build_reasoning_provenance,
@@ -542,6 +542,112 @@ def _top_numeric_drivers(values: Any, *, limit: int = 4) -> Dict[str, float]:
     return out
 
 
+def _scanner_chart_fit_payload(row: Mapping[str, Any] | None) -> Dict[str, Any]:
+    obj = dict(row or {}) if isinstance(row, Mapping) else {}
+    score = obj.get("scanner_chart_fit_score")
+    authority = str(obj.get("scanner_chart_fit_authority") or "").strip()
+    components = obj.get("scanner_chart_fit_components") if isinstance(obj.get("scanner_chart_fit_components"), dict) else {}
+    if score in (None, "") and not authority and not components:
+        return {}
+    return {
+        "score": safe_float(score, 0.0) if score not in (None, "") else None,
+        "authority": authority,
+        "components": dict(components or {}),
+    }
+
+
+def _scanner_macro_chart_fit_payload(row: Mapping[str, Any] | None) -> Dict[str, Any]:
+    obj = dict(row or {}) if isinstance(row, Mapping) else {}
+    score = obj.get("scanner_macro_chart_fit_score")
+    authority = str(obj.get("scanner_macro_chart_fit_authority") or "").strip()
+    components = (
+        obj.get("scanner_macro_chart_fit_components")
+        if isinstance(obj.get("scanner_macro_chart_fit_components"), dict)
+        else {}
+    )
+    bias = obj.get("scanner_macro_chart_fit_bias")
+    if score in (None, "") and bias in (None, "") and not authority and not components:
+        return {}
+    return {
+        "score": safe_float(score, 0.0) if score not in (None, "") else None,
+        "bias": safe_float(bias, 0.0) if bias not in (None, "") else None,
+        "authority": authority,
+        "components": dict(components or {}),
+    }
+
+
+def _candidate_sources_from_score_breakdown(score_breakdown: Mapping[str, Any] | None) -> List[str]:
+    scores = dict(score_breakdown or {})
+    sources: List[str] = []
+    if safe_float(scores.get("trading_value"), 0.0) > 0.0:
+        sources.append("top_value")
+    if safe_float(scores.get("volume_surge"), 0.0) > 0.0:
+        sources.append("top_volume")
+    if safe_float(scores.get("theme_boost"), 0.0) > 0.0:
+        sources.append("sector_theme")
+    if safe_float(scores.get("sentiment"), 0.0) > 0.0:
+        sources.append("sentiment")
+    return sources
+
+
+def _selection_basis_from_scores(
+    score_breakdown: Mapping[str, Any] | None,
+    sources: List[str],
+) -> List[str]:
+    scores = dict(score_breakdown or {})
+    basis: List[str] = []
+    if safe_float(scores.get("trading_value"), 0.0) > 0.0 or "top_value" in sources:
+        basis.append("trading value")
+    if safe_float(scores.get("volume_surge"), 0.0) > 0.0 or "top_volume" in sources:
+        basis.append("turnover and volume")
+    if safe_float(scores.get("theme_boost"), 0.0) > 0.0 or "sector_theme" in sources:
+        basis.append("theme and sector alignment")
+    if safe_float(scores.get("sentiment"), 0.0) > 0.0 or "sentiment" in sources:
+        basis.append("sentiment support")
+    if not basis and safe_float(scores.get("momentum"), 0.0) > 0.0:
+        basis.append("momentum")
+    if not basis and safe_float(scores.get("trend"), 0.0) > 0.0:
+        basis.append("trend")
+    if not basis:
+        basis.append("combined scanner ranking score")
+    return basis
+
+
+def _scanner_candidate_row_from_evidence(
+    scanner_evidence: Mapping[str, Any] | None,
+    *,
+    selected_symbol: str,
+) -> Dict[str, Any]:
+    symbol = str(selected_symbol or "").strip()
+    if not symbol:
+        return {}
+    evidence = dict(scanner_evidence or {})
+    for collection_name in ("candidate_ranking_tables", "selection_outputs"):
+        for event in list(evidence.get(collection_name) or []):
+            payload = event.get("payload") if isinstance(event, dict) and isinstance(event.get("payload"), dict) else {}
+            rows: List[Any] = []
+            if collection_name == "candidate_ranking_tables":
+                rows = list(payload.get("rows") or [])
+            else:
+                rows = list(payload.get("ranking_top_n") or payload.get("scanner_top_candidates") or [])
+                selected_candidate = payload.get("selected_candidate") if isinstance(payload.get("selected_candidate"), dict) else {}
+                if selected_candidate:
+                    rows.append(selected_candidate)
+            for row in rows:
+                if not isinstance(row, dict) or str(row.get("symbol") or "").strip() != symbol:
+                    continue
+                candidate = dict(row)
+                score_breakdown = (
+                    candidate.get("score_breakdown")
+                    if isinstance(candidate.get("score_breakdown"), dict)
+                    else {}
+                )
+                if not isinstance(candidate.get("sources"), list):
+                    candidate["sources"] = _candidate_sources_from_score_breakdown(score_breakdown)
+                return candidate
+    return {}
+
+
 def _build_strategist_evidence_trace(
     strategist: Dict[str, Any],
     *,
@@ -640,6 +746,12 @@ def _build_scanner_selection_trace(scanner_reason: Dict[str, Any], scanner_artif
         or clip(reason.get("summary"), max_len=260)
     )
     chart_feature_coverage = reason.get("feature_coverage") if isinstance(reason.get("feature_coverage"), dict) else {}
+    scanner_chart_fit = reason.get("scanner_chart_fit") if isinstance(reason.get("scanner_chart_fit"), dict) else {}
+    scanner_macro_chart_fit = (
+        reason.get("scanner_macro_chart_fit")
+        if isinstance(reason.get("scanner_macro_chart_fit"), dict)
+        else {}
+    )
     if not chart_feature_coverage:
         selected_row: Dict[str, Any] = {}
         for row in ranked_candidates:
@@ -656,6 +768,14 @@ def _build_scanner_selection_trace(scanner_reason: Dict[str, Any], scanner_artif
                     break
         if isinstance(selected_row.get("feature_coverage"), dict):
             chart_feature_coverage = dict(selected_row.get("feature_coverage") or {})
+        if not scanner_chart_fit:
+            scanner_chart_fit = _scanner_chart_fit_payload(selected_row)
+        if not scanner_macro_chart_fit:
+            scanner_macro_chart_fit = _scanner_macro_chart_fit_payload(selected_row)
+    if not scanner_chart_fit:
+        scanner_chart_fit = _scanner_chart_fit_payload(artifact)
+    if not scanner_macro_chart_fit:
+        scanner_macro_chart_fit = _scanner_macro_chart_fit_payload(artifact)
     return {
         "ranked_candidates": ranked_candidates[:5],
         "selected_symbol": selected_symbol,
@@ -663,6 +783,8 @@ def _build_scanner_selection_trace(scanner_reason: Dict[str, Any], scanner_artif
         "selection_reason": selection_reason,
         "selected_symbol_score_drivers": score_drivers,
         "chart_feature_coverage": chart_feature_coverage,
+        "scanner_chart_fit": scanner_chart_fit,
+        "scanner_macro_chart_fit": scanner_macro_chart_fit,
     }
 
 
@@ -1934,6 +2056,16 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
     selected_confidence = selected.get("confidence")
     if selected_confidence in (None, ""):
         selected_confidence = selected_row.get("confidence")
+    scanner_chart_fit = _scanner_chart_fit_payload(selected)
+    if not scanner_chart_fit:
+        scanner_chart_fit = _scanner_chart_fit_payload(selected_row)
+    if not scanner_chart_fit:
+        scanner_chart_fit = _scanner_chart_fit_payload(scanner)
+    scanner_macro_chart_fit = _scanner_macro_chart_fit_payload(selected)
+    if not scanner_macro_chart_fit:
+        scanner_macro_chart_fit = _scanner_macro_chart_fit_payload(selected_row)
+    if not scanner_macro_chart_fit:
+        scanner_macro_chart_fit = _scanner_macro_chart_fit_payload(scanner)
     news_scanner_contribution = _build_news_scanner_contribution_trace(
         selected_symbol=selected_symbol,
         selected_score=selected_score,
@@ -1980,6 +2112,8 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
                 "score_total": row.get("score_total"),
                 "risk_score": row.get("risk_score"),
                 "confidence": row.get("confidence"),
+                "scanner_chart_fit": _scanner_chart_fit_payload(row),
+                "scanner_macro_chart_fit": _scanner_macro_chart_fit_payload(row),
                 "why": "; ".join(why_parts) if why_parts else "lower final ranking than the selected symbol",
             }
         )
@@ -1997,6 +2131,8 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
                 "score_total": row.get("score_total"),
                 "risk_score": row.get("risk_score"),
                 "confidence": row.get("confidence"),
+                "scanner_chart_fit": _scanner_chart_fit_payload(row),
+                "scanner_macro_chart_fit": _scanner_macro_chart_fit_payload(row),
             }
         )
     bullets = [
@@ -2006,6 +2142,20 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         f"Selected because: {top_reasons[0]}",
         f"Selection sources: {', '.join(selected_sources) if selected_sources else 'not captured'}",
         f"Chart / feature coverage: {coverage['present']}/{coverage['total']}" if coverage["total"] else "Chart / feature coverage: not captured",
+        (
+            "Scanner chart-fit: "
+            f"{safe_float(scanner_chart_fit.get('score'), 0.0):.3f} "
+            f"({scanner_chart_fit.get('authority') or 'not_captured'})"
+        )
+        if scanner_chart_fit
+        else "Scanner chart-fit: not captured",
+        (
+            "Scanner macro chart-fit: "
+            f"{safe_float(scanner_macro_chart_fit.get('score'), 0.0):.3f} "
+            f"(bias {safe_float(scanner_macro_chart_fit.get('bias'), 0.0):+.3f})"
+        )
+        if scanner_macro_chart_fit
+        else "Scanner macro chart-fit: not captured",
         (
             "Core score contributions: "
             f"trading_value {safe_float(score_breakdown.get('trading_value'), 0.0):+.3f}, "
@@ -2062,6 +2212,8 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
             "summary": (
                 f"Scanner selected {selected_symbol or '-'} as rank #{selected_rank or 1} out of {universe_size or 0} candidates."
             ),
+            "scanner_chart_fit": dict(scanner_chart_fit or {}),
+            "scanner_macro_chart_fit": dict(scanner_macro_chart_fit or {}),
         },
         scanner,
     )
@@ -2083,6 +2235,8 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         "ranked_candidates": list(scanner_selection_trace.get("ranked_candidates") or [])[:5],
         "selection_reason": clip(scanner_selection_trace.get("selection_reason"), max_len=260),
         "selected_symbol_score_drivers": dict(scanner_selection_trace.get("selected_symbol_score_drivers") or {}),
+        "scanner_chart_fit": dict(scanner_chart_fit or {}),
+        "scanner_macro_chart_fit": dict(scanner_macro_chart_fit or {}),
         "news_scanner_contribution": dict(news_scanner_contribution),
         "scanner_selection_trace": dict(scanner_selection_trace or {}),
         "summary": (
@@ -2141,6 +2295,71 @@ def enrich_scanner_reason_from_evidence(
             break
 
     selected_symbol = str(out.get("selected_symbol") or "").strip()
+    selected_evidence_row = _scanner_candidate_row_from_evidence(
+        scanner_evidence,
+        selected_symbol=selected_symbol,
+    )
+    selected_evidence_score_breakdown = (
+        selected_evidence_row.get("score_breakdown")
+        if isinstance(selected_evidence_row.get("score_breakdown"), dict)
+        else {}
+    )
+    selected_evidence_sources = [
+        str(x or "")
+        for x in list(selected_evidence_row.get("sources") or [])
+        if str(x or "").strip()
+    ]
+    selected_evidence_has_selection_metrics = bool(
+        selected_evidence_score_breakdown
+        or selected_evidence_sources
+        or selected_evidence_row.get("score_total") not in (None, "")
+        or selected_evidence_row.get("rank") not in (None, "")
+    )
+    selected_evidence_basis = _selection_basis_from_scores(
+        selected_evidence_score_breakdown,
+        selected_evidence_sources,
+    )
+    if selected_evidence_row and selected_evidence_has_selection_metrics:
+        selected_score = selected_evidence_row.get("score_total")
+        out["selected_candidate"] = dict(selected_evidence_row)
+        out["selected_score"] = selected_score
+        out["selected_rank"] = safe_int(selected_evidence_row.get("rank"), safe_int(out.get("selected_rank"), 0))
+        out["selected_sources"] = selected_evidence_sources
+        out["score_breakdown"] = dict(selected_evidence_score_breakdown)
+        out["ranking_basis"] = list(selected_evidence_basis)
+        out["selected_symbol_score_drivers"] = _top_numeric_drivers(selected_evidence_score_breakdown)
+        out["selection_reason"] = (
+            f"final selected symbol {selected_symbol} ranked #{safe_int(out.get('selected_rank'), 0) or '?'} "
+            f"with score {safe_float(selected_score, 0.0):.3f}; led on {', '.join(selected_evidence_basis[:3])}"
+        )
+        out["summary"] = (
+            f"Scanner selected {selected_symbol or '-'} as rank #{safe_int(out.get('selected_rank'), 0) or 1} "
+            f"with score {safe_float(selected_score, 0.0):.3f} because it led on {', '.join(selected_evidence_basis[:3])}."
+        )
+        news_scanner_contribution = (
+            out.get("news_scanner_contribution")
+            if isinstance(out.get("news_scanner_contribution"), dict)
+            else {}
+        )
+        if news_scanner_contribution:
+            core_rows = news_scanner_contribution.get("core_score_contributions")
+            if isinstance(core_rows, dict):
+                positive_total = sum(
+                    max(safe_float(value, 0.0), 0.0)
+                    for value in dict(selected_evidence_score_breakdown or {}).values()
+                )
+                for key in ("trading_value", "momentum", "trend", "theme_boost", "sentiment"):
+                    value = safe_float(selected_evidence_score_breakdown.get(key), 0.0)
+                    core_rows[key] = {
+                        "value": value,
+                        "positive_share_pct": (100.0 * value / positive_total) if positive_total > 0 else 0.0,
+                    }
+            theme_trace = news_scanner_contribution.get("theme_alignment_trace")
+            if isinstance(theme_trace, dict):
+                theme_score = safe_float(selected_evidence_score_breakdown.get("theme_boost"), 0.0)
+                theme_trace["theme_boost_score_contribution"] = theme_score
+                theme_trace["theme_source_matched"] = "sector_theme" in selected_evidence_sources or theme_score > 0.0
+            out["news_scanner_contribution"] = news_scanner_contribution
     coverage = _normalized_feature_coverage_from_scanner_evidence(scanner_evidence, selected_symbol=selected_symbol)
     if coverage:
         out["feature_coverage"] = dict(coverage)
@@ -2172,6 +2391,28 @@ def enrich_scanner_reason_from_evidence(
                 selection_reason = f"chart feature coverage {present}/{total}"
             out["selection_reason"] = selection_reason
 
+    chart_fit = (
+        out.get("scanner_chart_fit")
+        if isinstance(out.get("scanner_chart_fit"), dict)
+        else {}
+    )
+    if not chart_fit:
+        chart_fit = _scanner_chart_fit_from_scanner_evidence(scanner_evidence, selected_symbol=selected_symbol)
+        if chart_fit:
+            out["scanner_chart_fit"] = dict(chart_fit)
+    macro_chart_fit = (
+        out.get("scanner_macro_chart_fit")
+        if isinstance(out.get("scanner_macro_chart_fit"), dict)
+        else {}
+    )
+    if not macro_chart_fit:
+        macro_chart_fit = _scanner_macro_chart_fit_from_scanner_evidence(
+            scanner_evidence,
+            selected_symbol=selected_symbol,
+        )
+        if macro_chart_fit:
+            out["scanner_macro_chart_fit"] = dict(macro_chart_fit)
+
     if why_selected:
         out["why_selected"] = why_selected
     if selection_basis:
@@ -2182,6 +2423,46 @@ def enrich_scanner_reason_from_evidence(
         out["runner_ups_lost"] = runner_ups_lost
 
     bullets = [str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()]
+    if selected_evidence_row and selected_evidence_has_selection_metrics:
+        stale_prefixes = (
+            "Selected because:",
+            "Selection sources:",
+            "Core score contributions:",
+            "Theme linkage:",
+        )
+        bullets = [
+            bullet
+            for bullet in bullets
+            if not any(bullet.startswith(prefix) for prefix in stale_prefixes)
+        ]
+        bullets.insert(
+            0,
+            (
+                "Selected because: "
+                f"{selected_symbol} rank #{safe_int(out.get('selected_rank'), 0) or '?'} "
+                f"score {safe_float(out.get('selected_score'), 0.0):.3f}"
+            ),
+        )
+        bullets.insert(
+            1,
+            "Selection sources: " + (", ".join(selected_evidence_sources) if selected_evidence_sources else "score_breakdown_only"),
+        )
+        bullets.insert(
+            2,
+            "Core score contributions: "
+            f"trading_value {safe_float(selected_evidence_score_breakdown.get('trading_value'), 0.0):+.3f}, "
+            f"momentum {safe_float(selected_evidence_score_breakdown.get('momentum'), 0.0):+.3f}, "
+            f"trend {safe_float(selected_evidence_score_breakdown.get('trend'), 0.0):+.3f}, "
+            f"theme_boost {safe_float(selected_evidence_score_breakdown.get('theme_boost'), 0.0):+.3f}, "
+            f"sentiment {safe_float(selected_evidence_score_breakdown.get('sentiment'), 0.0):+.3f}",
+        )
+        theme_score = safe_float(selected_evidence_score_breakdown.get("theme_boost"), 0.0)
+        bullets.insert(
+            3,
+            "Theme linkage: "
+            f"matched={bool('sector_theme' in selected_evidence_sources or theme_score > 0.0)}, "
+            f"theme_boost={theme_score:+.3f}",
+        )
     if coverage:
         present = safe_int(coverage.get("present"), 0)
         total = safe_int(coverage.get("total"), 0)
@@ -2219,6 +2500,22 @@ def enrich_scanner_reason_from_evidence(
             updated_bullets.append(f"Chart / feature coverage: {present}/{total}")
             _append_coverage_details(updated_bullets)
         bullets = updated_bullets
+    if chart_fit:
+        fit_line = (
+            "Scanner chart-fit: "
+            f"{safe_float(chart_fit.get('score'), 0.0):.3f} "
+            f"({chart_fit.get('authority') or 'not_captured'})"
+        )
+        if fit_line not in bullets:
+            bullets.append(fit_line)
+    if macro_chart_fit:
+        macro_fit_line = (
+            "Scanner macro chart-fit: "
+            f"{safe_float(macro_chart_fit.get('score'), 0.0):.3f} "
+            f"(bias {safe_float(macro_chart_fit.get('bias'), 0.0):+.3f})"
+        )
+        if macro_fit_line not in bullets:
+            bullets.append(macro_fit_line)
     if why_selected:
         bullets.append("Selection decision: " + "; ".join(why_selected))
     if selection_basis:
@@ -2244,7 +2541,82 @@ def enrich_scanner_reason_from_evidence(
     if trace and coverage:
         trace["chart_feature_coverage"] = dict(coverage)
         out["scanner_selection_trace"] = trace
+    if trace and chart_fit:
+        trace["scanner_chart_fit"] = dict(chart_fit)
+        out["scanner_selection_trace"] = trace
+    if trace and macro_chart_fit:
+        trace["scanner_macro_chart_fit"] = dict(macro_chart_fit)
+        out["scanner_selection_trace"] = trace
+    if selected_evidence_row and selected_evidence_has_selection_metrics:
+        trace = dict(out.get("scanner_selection_trace") or {})
+        trace["selected_symbol"] = selected_symbol
+        trace["selected_rank"] = safe_int(out.get("selected_rank"), 0)
+        trace["selected_symbol_score_drivers"] = dict(out.get("selected_symbol_score_drivers") or {})
+        trace["selection_reason"] = str(out.get("selection_reason") or "")
+        out["scanner_selection_trace"] = trace
     return out
+
+
+def _scanner_chart_fit_from_scanner_evidence(
+    scanner_evidence: Dict[str, Any],
+    *,
+    selected_symbol: str,
+) -> Dict[str, Any]:
+    symbol = str(selected_symbol or "").strip()
+    if not symbol:
+        return {}
+    ranking_sources: List[Dict[str, Any]] = []
+    for row in list((scanner_evidence or {}).get("candidate_ranking_tables") or []):
+        payload = row.get("payload") if isinstance(row, dict) and isinstance(row.get("payload"), dict) else {}
+        for ranking_row in list(payload.get("rows") or []):
+            if isinstance(ranking_row, dict):
+                ranking_sources.append(ranking_row)
+    for row in list((scanner_evidence or {}).get("selection_outputs") or []):
+        payload = row.get("payload") if isinstance(row, dict) and isinstance(row.get("payload"), dict) else {}
+        for ranking_row in list(payload.get("ranking_top_n") or []):
+            if isinstance(ranking_row, dict):
+                ranking_sources.append(ranking_row)
+        selected_candidate = payload.get("selected_candidate") if isinstance(payload.get("selected_candidate"), dict) else {}
+        if selected_candidate:
+            ranking_sources.append(selected_candidate)
+    for row in ranking_sources:
+        if str(row.get("symbol") or "").strip() != symbol:
+            continue
+        chart_fit = _scanner_chart_fit_payload(row)
+        if chart_fit:
+            return chart_fit
+    return {}
+
+
+def _scanner_macro_chart_fit_from_scanner_evidence(
+    scanner_evidence: Dict[str, Any],
+    *,
+    selected_symbol: str,
+) -> Dict[str, Any]:
+    symbol = str(selected_symbol or "").strip()
+    if not symbol:
+        return {}
+    ranking_sources: List[Dict[str, Any]] = []
+    for row in list((scanner_evidence or {}).get("candidate_ranking_tables") or []):
+        payload = row.get("payload") if isinstance(row, dict) and isinstance(row.get("payload"), dict) else {}
+        for ranking_row in list(payload.get("rows") or []):
+            if isinstance(ranking_row, dict):
+                ranking_sources.append(ranking_row)
+    for row in list((scanner_evidence or {}).get("selection_outputs") or []):
+        payload = row.get("payload") if isinstance(row, dict) and isinstance(row.get("payload"), dict) else {}
+        for ranking_row in list(payload.get("ranking_top_n") or []):
+            if isinstance(ranking_row, dict):
+                ranking_sources.append(ranking_row)
+        selected_candidate = payload.get("selected_candidate") if isinstance(payload.get("selected_candidate"), dict) else {}
+        if selected_candidate:
+            ranking_sources.append(selected_candidate)
+    for row in ranking_sources:
+        if str(row.get("symbol") or "").strip() != symbol:
+            continue
+        chart_fit = _scanner_macro_chart_fit_payload(row)
+        if chart_fit:
+            return chart_fit
+    return {}
 
 
 def _normalized_feature_coverage_from_scanner_evidence(
@@ -2350,6 +2722,34 @@ def enrich_filters_from_evidence(
 ) -> Dict[str, Any]:
     out = dict(filters_human or {})
     coverage = _normalized_feature_coverage_from_scanner_evidence(scanner_evidence, selected_symbol=selected_symbol)
+    selected_evidence_row = _scanner_candidate_row_from_evidence(
+        scanner_evidence,
+        selected_symbol=selected_symbol,
+    )
+    theme_check_override: Optional[Dict[str, str]] = None
+    if selected_evidence_row:
+        score_breakdown = (
+            selected_evidence_row.get("score_breakdown")
+            if isinstance(selected_evidence_row.get("score_breakdown"), dict)
+            else {}
+        )
+        sources = [
+            str(x or "")
+            for x in list(selected_evidence_row.get("sources") or [])
+            if str(x or "").strip()
+        ]
+        if score_breakdown or sources:
+            theme_score = safe_float(score_breakdown.get("theme_boost"), 0.0)
+            theme_pass = "sector_theme" in sources or theme_score > 0.0
+            theme_check_override = {
+                "name": "sector/theme alignment",
+                "status": "PASS" if theme_pass else "FAIL",
+                "detail": (
+                    f"final selected candidate theme boost was {theme_score:+.3f} or sector_theme source matched"
+                    if theme_pass
+                    else f"final selected candidate had no sector_theme source and theme boost was {theme_score:+.3f}"
+                ),
+            }
     price_anomaly_check: Optional[Dict[str, str]] = None
     execution_spread_check: Optional[Dict[str, str]] = None
 
@@ -2472,6 +2872,7 @@ def enrich_filters_from_evidence(
     checks = [dict(x) for x in list(out.get("checks") or []) if isinstance(x, dict)]
     updated_checks: List[Dict[str, Any]] = []
     replaced_check = False
+    replaced_theme_check = False
     replaced_price_anomaly = False
     replaced_spread_check = False
     for check in checks:
@@ -2480,6 +2881,10 @@ def enrich_filters_from_evidence(
             check["status"] = chart_status
             check["detail"] = chart_note
             replaced_check = True
+        elif name == "sector/theme alignment" and theme_check_override is not None:
+            check["status"] = str(theme_check_override.get("status") or "")
+            check["detail"] = str(theme_check_override.get("detail") or "")
+            replaced_theme_check = True
         elif name == "price anomaly filter" and price_anomaly_check is not None:
             check["status"] = str(price_anomaly_check.get("status") or check.get("status") or "")
             check["detail"] = str(price_anomaly_check.get("detail") or check.get("detail") or "")
@@ -2499,6 +2904,8 @@ def enrich_filters_from_evidence(
                 "detail": chart_note,
             }
         )
+    if theme_check_override is not None and not replaced_theme_check:
+        updated_checks.append(dict(theme_check_override))
     if price_anomaly_check is not None and not replaced_price_anomaly:
         updated_checks.append(dict(price_anomaly_check))
     if execution_spread_check is not None and not replaced_spread_check:
@@ -2509,12 +2916,18 @@ def enrich_filters_from_evidence(
     bullets = [str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()]
     updated_bullets: List[str] = []
     replaced = False
+    replaced_theme_bullet = False
     replaced_price_bullet = False
     replaced_spread_bullet = False
     for bullet in bullets:
         if bullet.lower().startswith("chart completeness filter:") and chart_available:
             updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
             replaced = True
+        elif bullet.lower().startswith("sector/theme alignment:") and theme_check_override is not None:
+            updated_bullets.append(
+                f"sector/theme alignment: {theme_check_override['status']} - {theme_check_override['detail']}"
+            )
+            replaced_theme_bullet = True
         elif bullet.lower().startswith("price anomaly filter:") and price_anomaly_check is not None:
             updated_bullets.append(
                 f"price anomaly filter: {price_anomaly_check['status']} - {price_anomaly_check['detail']}"
@@ -2536,6 +2949,10 @@ def enrich_filters_from_evidence(
             updated_bullets.append(bullet)
     if chart_available and not replaced:
         updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
+    if theme_check_override is not None and not replaced_theme_bullet:
+        updated_bullets.append(
+            f"sector/theme alignment: {theme_check_override['status']} - {theme_check_override['detail']}"
+        )
     if price_anomaly_check is not None and not replaced_price_bullet:
         updated_bullets.append(
             f"price anomaly filter: {price_anomaly_check['status']} - {price_anomaly_check['detail']}"
@@ -2564,7 +2981,13 @@ def build_filters_human(scanner: Dict[str, Any], strategist: Dict[str, Any], sup
 
     liquidity_pass = "top_value" in sources or safe_float(components.get("trading_value_component"), 0.0) > 0
     turnover_pass = "top_volume" in sources or safe_float(score_breakdown.get("volume_surge"), 0.0) > 0
-    theme_pass = "sector_theme" in sources or safe_float(score_breakdown.get("theme_boost"), 0.0) > 0 or bool(strategist.get("themes"))
+    theme_score = safe_float(score_breakdown.get("theme_boost"), 0.0)
+    theme_pass = "sector_theme" in sources or theme_score > 0.0
+    theme_detail = (
+        f"selected candidate theme boost was {theme_score:+.3f} or sector_theme source matched"
+        if theme_pass
+        else f"selected candidate had no sector_theme source and theme boost was {theme_score:+.3f}"
+    )
     if coverage["total"] <= 0:
         chart_status = "NOT_AVAILABLE"
     elif coverage["present"] >= 8:
@@ -2591,7 +3014,7 @@ def build_filters_human(scanner: Dict[str, Any], strategist: Dict[str, Any], sup
 
     add_check("liquidity filter", "PASS" if liquidity_pass else "FAIL", "top value or trading-value input supported the selection")
     add_check("turnover filter", "PASS" if turnover_pass else "FAIL", "top volume or turnover input supported the selection")
-    add_check("sector/theme alignment", "PASS" if theme_pass else "FAIL", "theme boost or sector source matched the strategist frame")
+    add_check("sector/theme alignment", "PASS" if theme_pass else "FAIL", theme_detail)
     add_check("chart completeness filter", chart_status, f"{coverage['present']}/{coverage['total']} captured chart features")
     add_check("sentiment gate", "PASS" if sentiment_gate else "FAIL", f"news/global sentiment contribution was {safe_float(components.get('sentiment_component'), 0.0):.3f}")
     add_check("risk gate", "PASS" if risk_gate else "FAIL", f"risk score was {safe_float(selected.get('risk_score'), 0.0):.3f} and supervisor allow={bool(supervisor.get('supervisor_allow'))}")
@@ -2713,6 +3136,18 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
     entry_condition_scores = monitor.get("entry_condition_scores") if isinstance(monitor.get("entry_condition_scores"), dict) else {}
     entry_grouped_logic_trace = monitor.get("entry_grouped_logic_trace") if isinstance(monitor.get("entry_grouped_logic_trace"), dict) else {}
     entry_metrics = monitor.get("entry_metrics") if isinstance(monitor.get("entry_metrics"), dict) else {}
+    human_chart_detail_observed = (
+        entry_metrics.get("human_chart_detail_observed")
+        if isinstance(entry_metrics.get("human_chart_detail_observed"), dict)
+        else {}
+    )
+    human_chart_detail_context = (
+        monitor.get("human_chart_detail_context")
+        if isinstance(monitor.get("human_chart_detail_context"), dict)
+        else {}
+    )
+    if not human_chart_detail_observed and isinstance(human_chart_detail_context.get("observed"), dict):
+        human_chart_detail_observed = dict(human_chart_detail_context.get("observed") or {})
     entry_thresholds = (
         monitor.get("entry_thresholds")
         if isinstance(monitor.get("entry_thresholds"), dict)
@@ -2745,6 +3180,20 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
     peak_drawdown = monitor.get("peak_drawdown")
     current_drawdown = monitor.get("current_drawdown")
     vwap_distance = monitor.get("vwap_distance")
+    hold_limit_sec = monitor.get("hold_limit_sec")
+    if hold_limit_sec in (None, ""):
+        hold_limit_sec = (
+            thresholds.get("time_stop_sec")
+            if safe_int(thresholds.get("time_stop_sec"), 0) > 0
+            else thresholds.get("max_hold_sec")
+        )
+    time_limit_reached = bool(monitor.get("time_limit_reached"))
+    time_limit_reason = str(monitor.get("time_limit_reason") or "").strip()
+    time_limit_reassessment_required = bool(monitor.get("time_limit_reassessment_required"))
+    time_limit_reassessment_blocked = bool(monitor.get("time_limit_reassessment_blocked"))
+    time_limit_reassessment_blocked_reason = str(
+        monitor.get("time_limit_reassessment_blocked_reason") or ""
+    ).strip()
     if current_drawdown in (None, "") and current_price not in (None, "") and peak_price not in (None, ""):
         current_drawdown = (safe_float(current_price, 0.0) / max(safe_float(peak_price, 1.0), 1e-9)) - 1.0
     if current_drawdown in (None, "") and peak_drawdown not in (None, ""):
@@ -2806,6 +3255,21 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
     )
     guard_blocked = bool(trigger_details.get("sell_guard_blocked") or monitor.get("guard_blocked") or monitor.get("sell_guard_blocked"))
     guard_reason = str(trigger_details.get("sell_guard_reason") or monitor.get("guard_reason") or monitor.get("sell_guard_reason") or "").strip()
+    exit_pending_confirmation = (
+        guard_reason.startswith("exit_confirmation_pending:")
+        or exit_reason.startswith("exit_confirmation_pending:")
+        or monitor_reason == "exit_signal_pending_confirmation"
+    )
+    hold_without_confirmed_exit = bool(
+        action == "SELL"
+        and not bool(monitor.get("exit_triggered"))
+        and str(trigger_type or monitor_reason or "").strip().lower() in {"hold", "hold_position"}
+    )
+    monitor_execution_mismatch = bool(
+        action == "SELL"
+        and not bool(monitor.get("exit_triggered"))
+        and (exit_pending_confirmation or hold_without_confirmed_exit)
+    )
     eod_carry_evaluated = bool(monitor.get("eod_carry_evaluated"))
     eod_carry_approved = bool(monitor.get("eod_carry_approved"))
     eod_carry_action = str(monitor.get("eod_carry_action") or "").strip()
@@ -2862,7 +3326,22 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         if entry_condition_path:
             summary += f" Path: {entry_condition_path.replace('_', ' ')}."
     elif action == "SELL":
-        if eod_carry_evaluated and not eod_carry_approved and str(trigger_type or "").strip().lower() in ("eod_flat", "carry_overnight_approved"):
+        if monitor_execution_mismatch:
+            pending_label = (
+                guard_reason
+                or exit_reason
+                or monitor_reason
+                or (
+                    "monitor posture was hold without a confirmed exit trigger"
+                    if hold_without_confirmed_exit
+                    else "exit confirmation was pending"
+                )
+            )
+            summary = (
+                "Executor recorded SELL, but the monitor had not confirmed the exit yet "
+                f"({pending_label}). This is a monitor/executor mismatch, not a confirmed exit trigger."
+            )
+        elif eod_carry_evaluated and not eod_carry_approved and str(trigger_type or "").strip().lower() in ("eod_flat", "carry_overnight_approved"):
             summary = (
                 f"SELL was triggered to flatten before the close because overnight carry was not approved "
                 f"({eod_carry_reason or 'carry conditions were not met'})."
@@ -2882,9 +3361,14 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         summary = f"Monitor posture was {action or 'WAIT'} with trigger {trigger_type or 'not_captured'}."
     bullets = [
         f"Posture: {action or 'WAIT'}",
-        f"Trigger type: {trigger_type or 'not_captured'}",
+        (
+            f"Trigger type: {trigger_type or 'not_captured'} (pending, not confirmed)"
+            if monitor_execution_mismatch
+            else f"Trigger type: {trigger_type or 'not_captured'}"
+        ),
         f"Monitor reason: {monitor_reason or trigger_type or 'not_captured'}",
         f"Position age: {safe_int(monitor.get('position_age_seconds'), 0)} seconds",
+        f"Hold time limit: {safe_int(hold_limit_sec, 0)} seconds" if safe_int(hold_limit_sec, 0) > 0 else "Hold time limit: not configured",
         f"Stop loss: {format_ratio_pct(thresholds.get('stop_loss_pct'))}%",
         f"Effective stop: {format_ratio_pct(thresholds.get('effective_stop_loss_pct'))}%",
         f"Effective stop reason: {str(thresholds.get('effective_stop_reason') or 'not_captured')}",
@@ -2895,6 +3379,12 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         f"Sell cooldown blocked: {'yes' if monitor.get('sell_cooldown_blocked') else 'no'}",
         f"Exit triggered: {'yes' if monitor.get('exit_triggered') else 'no'}",
     ]
+    if time_limit_reassessment_required:
+        bullets.append(
+            "Time-limit reassessment: "
+            f"{'blocked by profit floor' if time_limit_reassessment_blocked else 'allowed'} "
+            f"({time_limit_reassessment_blocked_reason or time_limit_reason or 'time limit reached'})"
+        )
     if monitor_stop_policy_trace.get("hard_stop_pct") not in (None, ""):
         bullets.append(
             f"Hard fail-safe stop: {format_ratio_pct(monitor_stop_policy_trace.get('hard_stop_pct'))}%"
@@ -3024,6 +3514,56 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
             if entry_thresholds.get("pullback_max_pct") not in (None, ""):
                 pullback_bullet += f" (max {format_ratio_pct(entry_thresholds.get('pullback_max_pct'))}%)"
             bullets.append(pullback_bullet)
+        if any(
+            entry_metrics.get(key) not in (None, "")
+            for key in (
+                "human_candle_quality_score",
+                "human_vwap_reference_quality_score",
+                "human_reward_room_score",
+                "human_multi_window_structure_score",
+            )
+        ):
+            bullets.append(
+                "Human chart setup quality: "
+                f"candle {safe_float(entry_metrics.get('human_candle_quality_score'), 0.0):.2f}, "
+                f"VWAP ref {safe_float(entry_metrics.get('human_vwap_reference_quality_score'), 0.0):.2f}, "
+                f"reward room {safe_float(entry_metrics.get('human_reward_room_score'), 0.0):.2f}, "
+                f"multi-window {safe_float(entry_metrics.get('human_multi_window_structure_score'), 0.0):.2f}"
+            )
+        if human_chart_detail_observed:
+            candle_bits: List[str] = []
+            if human_chart_detail_observed.get("close_location") not in (None, ""):
+                candle_bits.append(f"close location {safe_float(human_chart_detail_observed.get('close_location'), 0.0):.2f}")
+            if human_chart_detail_observed.get("upper_wick_ratio") not in (None, ""):
+                candle_bits.append(f"upper wick {safe_float(human_chart_detail_observed.get('upper_wick_ratio'), 0.0):.2f}")
+            if human_chart_detail_observed.get("lower_wick_ratio") not in (None, ""):
+                candle_bits.append(f"lower wick {safe_float(human_chart_detail_observed.get('lower_wick_ratio'), 0.0):.2f}")
+            if human_chart_detail_observed.get("body_ratio") not in (None, ""):
+                candle_bits.append(f"body {safe_float(human_chart_detail_observed.get('body_ratio'), 0.0):.2f}")
+            if candle_bits:
+                bullets.append("Entry candle shape: " + ", ".join(candle_bits))
+            vwap_bits: List[str] = []
+            if human_chart_detail_observed.get("vwap_source") not in (None, ""):
+                vwap_bits.append(f"source {human_chart_detail_observed.get('vwap_source')}")
+            if human_chart_detail_observed.get("vwap_bar_count") not in (None, ""):
+                vwap_bits.append(f"bars {safe_int(human_chart_detail_observed.get('vwap_bar_count'), 0)}")
+            if human_chart_detail_observed.get("explicit_vwap_count") not in (None, ""):
+                vwap_bits.append(f"explicit bars {safe_int(human_chart_detail_observed.get('explicit_vwap_count'), 0)}")
+            if human_chart_detail_observed.get("explicit_vwap_ratio") not in (None, ""):
+                vwap_bits.append(f"explicit ratio {safe_float(human_chart_detail_observed.get('explicit_vwap_ratio'), 0.0):.2f}")
+            if vwap_bits:
+                bullets.append("VWAP reference quality: " + ", ".join(vwap_bits))
+            reward_bits: List[str] = []
+            if human_chart_detail_observed.get("prior_resistance") not in (None, ""):
+                reward_bits.append(f"resistance {safe_float(human_chart_detail_observed.get('prior_resistance'), 0.0):.2f}")
+            if human_chart_detail_observed.get("reward_room_pct") not in (None, ""):
+                reward_bits.append(f"room {format_ratio_pct(human_chart_detail_observed.get('reward_room_pct'))}%")
+            if human_chart_detail_observed.get("breakout_extension_pct") not in (None, ""):
+                reward_bits.append(
+                    f"breakout extension {format_ratio_pct(human_chart_detail_observed.get('breakout_extension_pct'))}%"
+                )
+            if reward_bits:
+                bullets.append("Reward room context: " + ", ".join(reward_bits))
         if entry_check_summary:
             bullets.append(f"Entry check summary: {entry_check_summary}")
         if entry_blockers:
@@ -3072,6 +3612,13 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         bullets.append("Decision chain: " + " -> ".join(decision_reason_chain[:5]))
     if guard_blocked or guard_reason:
         bullets.append(f"Guard blocked: {'yes' if guard_blocked else 'no'} ({guard_reason or 'no guard reason captured'})")
+    if monitor_execution_mismatch:
+        mismatch_label = (
+            "SELL recorded while monitor posture was hold"
+            if hold_without_confirmed_exit
+            else "SELL recorded while monitor exit confirmation was pending"
+        )
+        bullets.append(f"Monitor/executor mismatch: yes ({mismatch_label})")
     if current_price not in (None, ""):
         bullets.append(f"Current price: {safe_float(current_price, 0.0):.2f}")
     if average_price not in (None, ""):
@@ -3096,6 +3643,12 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "summary": summary,
         "bullets": bullets,
         "position_age_seconds": safe_int(monitor.get("position_age_seconds"), 0),
+        "hold_limit_sec": safe_int(hold_limit_sec, 0),
+        "time_limit_reached": time_limit_reached,
+        "time_limit_reason": time_limit_reason,
+        "time_limit_reassessment_required": time_limit_reassessment_required,
+        "time_limit_reassessment_blocked": time_limit_reassessment_blocked,
+        "time_limit_reassessment_blocked_reason": time_limit_reassessment_blocked_reason,
         "stop_loss_pct": thresholds.get("stop_loss_pct"),
         "hard_stop_pct": monitor_stop_policy_trace.get("hard_stop_pct"),
         "adaptive_stop_loss_pct": monitor_stop_policy_trace.get("adaptive_stop_loss_pct"),
@@ -3114,6 +3667,7 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "entry_condition_scores": dict(entry_condition_scores),
         "entry_grouped_logic_trace": dict(entry_grouped_logic_trace),
         "entry_metrics": dict(entry_metrics),
+        "human_chart_detail_observed": dict(human_chart_detail_observed),
         "entry_thresholds": dict(entry_thresholds),
         "entry_check_summary": entry_check_summary,
         "entry_blockers": entry_blockers[:8],
@@ -3141,6 +3695,8 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "confirm_count": confirm_count,
         "guard_blocked": guard_blocked,
         "guard_reason": guard_reason,
+        "pending_confirmation": exit_pending_confirmation,
+        "monitor_execution_mismatch": monitor_execution_mismatch,
         "eod_carry_evaluated": eod_carry_evaluated,
         "eod_carry_approved": eod_carry_approved,
         "eod_carry_action": eod_carry_action,

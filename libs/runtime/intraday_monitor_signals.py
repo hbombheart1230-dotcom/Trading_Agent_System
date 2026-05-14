@@ -9,6 +9,11 @@ from libs.runtime.chart_structure_features import (
     build_chart_structure_features,
     empty_chart_structure_features,
 )
+from libs.runtime.etf_deviation import (
+    is_etf_asset_class,
+    normalize_deviation_pct,
+    score_etf_deviation_for_entry,
+)
 from libs.runtime.monitor_policy import (
     MonitorEntryPolicy,
     extract_monitor_entry_policy_mapping,
@@ -402,6 +407,653 @@ def _empty_chart_structure_decision_hint() -> Dict[str, Any]:
         "blocking_features": [],
         "notes": [],
     }
+
+
+def _empty_human_chart_buy_guard() -> Dict[str, Any]:
+    return {
+        "schema_version": "human_chart_buy_guard.v1",
+        "available": False,
+        "applied": False,
+        "mode": "none",
+        "authority": "hard_buy_block",
+        "thresholds": {
+            "min_entry_chart_score": 0.25,
+            "max_exit_risk_score": 0.40,
+            "min_late_entry_chart_score": 0.50,
+            "near_upper_prev_close_distance_pct": 0.29,
+            "no_reward_room_score": 0.05,
+            "no_reward_room_pct": 0.012,
+        },
+        "observed": {},
+        "blocking_features": [],
+        "notes": [],
+    }
+
+
+def _empty_human_chart_entry_setup() -> Dict[str, Any]:
+    return {
+        "schema_version": "human_chart_entry_setup.v1",
+        "available": False,
+        "applied": False,
+        "mode": "none",
+        "authority": "qualified_buy_promotion",
+        "setup_label": "",
+        "setup_quality": "none",
+        "setup_score": 0.0,
+        "thresholds": {
+            "min_a_setup_score": 0.72,
+            "min_entry_chart_score": 0.68,
+            "min_live_promotion_entry_chart_score": 0.48,
+            "min_live_promotion_entry_quality_score": 0.78,
+            "min_live_promotion_transition_readiness_score": 0.72,
+            "max_exit_risk_score": 0.20,
+            "min_candle_quality_score": 0.45,
+            "min_vwap_reference_quality_score": 0.35,
+            "min_reward_room_score": 0.25,
+            "min_multi_window_structure_score": 0.35,
+            "reclaim_near_ready_distance_min": -0.0025,
+            "breakout_near_ready_distance_min": -0.0015,
+            "volume_near_ready_distance_min": -0.15,
+        },
+        "observed": {},
+        "matched_features": [],
+        "blocking_features": [],
+        "notes": [],
+    }
+
+
+def _empty_human_chart_detail_context() -> Dict[str, Any]:
+    return {
+        "schema_version": "human_chart_detail_context.v1",
+        "available": False,
+        "candle_quality_score": 0.5,
+        "vwap_reference_quality_score": 0.5,
+        "reward_room_score": 0.5,
+        "multi_window_structure_score": 0.5,
+        "observed": {},
+        "notes": [],
+    }
+
+
+def _build_human_chart_detail_context(
+    candles: Sequence[Mapping[str, Any]],
+    *,
+    current_close: float,
+    current_vwap: float,
+    recent_high: float,
+    breakout_level: float,
+    volume_ratio: float,
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = _empty_human_chart_detail_context()
+    if not candles:
+        out["notes"] = ["minute_candles_unavailable"]
+        return out
+
+    last = dict(candles[-1] or {})
+    current_open = _to_float(last.get("open"), _to_float(last.get("close")))
+    current_high = max(_to_float(last.get("high")), current_close, current_open)
+    current_low = min(_to_float(last.get("low")), current_close, current_open)
+    candle_range = max(0.0, current_high - current_low)
+    if candle_range > 0.0:
+        body_ratio = _clamp_score(abs(current_close - current_open) / candle_range)
+        close_location = _clamp_score((current_close - current_low) / candle_range)
+        upper_wick_ratio = _clamp_score((current_high - max(current_open, current_close)) / candle_range)
+        lower_wick_ratio = _clamp_score((min(current_open, current_close) - current_low) / candle_range)
+        candle_quality_score = _clamp_score(
+            0.15
+            + (0.35 * close_location)
+            + (0.20 * body_ratio)
+            + (0.15 if current_close >= current_open else 0.0)
+            + (0.10 * lower_wick_ratio)
+            - (0.25 * upper_wick_ratio)
+        )
+    else:
+        body_ratio = 0.0
+        close_location = 0.5
+        upper_wick_ratio = 0.0
+        lower_wick_ratio = 0.0
+        candle_quality_score = 0.5
+
+    explicit_vwap_count = sum(1 for row in candles if _to_float((row or {}).get("vwap")) > 0.0)
+    volume_count = sum(1 for row in candles if _to_float((row or {}).get("volume")) > 0.0)
+    row_count = len(candles)
+    explicit_vwap_ratio = explicit_vwap_count / float(row_count or 1)
+    volume_presence_ratio = volume_count / float(row_count or 1)
+    last_has_explicit_vwap = _to_float(last.get("vwap")) > 0.0
+    vwap_source = "explicit_bar_vwap" if last_has_explicit_vwap else "session_vwap_fallback"
+    vwap_reference_quality_score = (
+        0.0
+        if current_vwap <= 0.0
+        else _clamp_score(
+            0.25
+            + (0.35 * explicit_vwap_ratio)
+            + (0.20 * min(1.0, row_count / 10.0))
+            + (0.20 * volume_presence_ratio)
+        )
+    )
+
+    prior_highs = [
+        _to_float(row.get("high"))
+        for row in candles[-20:-1]
+        if isinstance(row, Mapping) and _to_float(row.get("high")) > 0.0
+    ]
+    prior_resistance = max(prior_highs, default=recent_high)
+    reward_room_pct: float | None = None
+    breakout_extension_pct: float | None = None
+    if current_close > 0.0 and prior_resistance > 0.0:
+        if current_close <= prior_resistance:
+            reward_room_pct = (prior_resistance / current_close) - 1.0
+            reward_room_score = _min_threshold_score(reward_room_pct, 0.006)
+        else:
+            breakout_extension_pct = (current_close / prior_resistance) - 1.0
+            reward_room_score = _clamp_score(0.72 - (max(0.0, breakout_extension_pct - 0.008) / 0.04))
+    else:
+        reward_room_score = 0.5
+
+    closes = [_to_float(row.get("close")) for row in candles if isinstance(row, Mapping) and _to_float(row.get("close")) > 0.0]
+    lows = [_to_float(row.get("low")) for row in candles if isinstance(row, Mapping) and _to_float(row.get("low")) > 0.0]
+    if len(closes) >= 5:
+        short_base = closes[-3] if len(closes) >= 3 else closes[0]
+        mid_base = closes[-6] if len(closes) >= 6 else closes[0]
+        short_progress = _clamp_score((current_close / short_base) if short_base > 0.0 else 0.0)
+        mid_progress = _clamp_score((current_close / mid_base) if mid_base > 0.0 else 0.0)
+        recent_lows = lows[-3:] if len(lows) >= 3 else lows
+        prior_lows = lows[-6:-3] if len(lows) >= 6 else lows[:-3]
+        higher_low_score = 0.5
+        if recent_lows and prior_lows:
+            higher_low_score = 1.0 if min(recent_lows) >= min(prior_lows) else 0.35
+        multi_window_structure_score = _clamp_score(
+            (0.34 * short_progress)
+            + (0.28 * mid_progress)
+            + (0.23 * higher_low_score)
+            + (0.15 * _min_threshold_score(volume_ratio, 1.0))
+        )
+    else:
+        short_progress = 0.5
+        mid_progress = 0.5
+        higher_low_score = 0.5
+        multi_window_structure_score = 0.5
+
+    out.update(
+        {
+            "available": True,
+            "candle_quality_score": round(float(candle_quality_score), 4),
+            "vwap_reference_quality_score": round(float(vwap_reference_quality_score), 4),
+            "reward_room_score": round(float(reward_room_score), 4),
+            "multi_window_structure_score": round(float(multi_window_structure_score), 4),
+            "observed": {
+                "current_open": current_open if current_open > 0.0 else None,
+                "current_close": current_close if current_close > 0.0 else None,
+                "current_high": current_high if current_high > 0.0 else None,
+                "current_low": current_low if current_low > 0.0 else None,
+                "body_ratio": round(float(body_ratio), 4),
+                "close_location": round(float(close_location), 4),
+                "upper_wick_ratio": round(float(upper_wick_ratio), 4),
+                "lower_wick_ratio": round(float(lower_wick_ratio), 4),
+                "vwap_source": vwap_source,
+                "vwap_bar_count": int(row_count),
+                "explicit_vwap_count": int(explicit_vwap_count),
+                "explicit_vwap_ratio": round(float(explicit_vwap_ratio), 4),
+                "volume_presence_ratio": round(float(volume_presence_ratio), 4),
+                "prior_resistance": prior_resistance if prior_resistance > 0.0 else None,
+                "breakout_level": breakout_level if breakout_level > 0.0 else None,
+                "reward_room_pct": round(float(reward_room_pct), 6) if reward_room_pct is not None else None,
+                "breakout_extension_pct": round(float(breakout_extension_pct), 6)
+                if breakout_extension_pct is not None
+                else None,
+                "short_progress": round(float(short_progress), 4),
+                "mid_progress": round(float(mid_progress), 4),
+                "higher_low_score": round(float(higher_low_score), 4),
+            },
+        }
+    )
+    return out
+
+
+def _build_human_chart_buy_guard(
+    *,
+    chart_human_context: Mapping[str, Any] | None = None,
+    chart_detail_context: Mapping[str, Any] | None = None,
+    prev_close_distance_pct: Any = None,
+    open_gap_pct: Any = None,
+    candidate_triggered: bool = False,
+) -> Dict[str, Any]:
+    """Final sanity guard for human-like chart context before emitting BUY.
+
+    The chart feature layer is intentionally allowed to be soft inside scoring,
+    but a BUY should not pass when the same snapshot already shows a broken
+    VWAP structure or elevated exit risk. This guard only blocks; it never
+    creates a BUY.
+    """
+
+    out = _empty_human_chart_buy_guard()
+    context = dict(chart_human_context or {}) if isinstance(chart_human_context, Mapping) else {}
+    if not bool(context.get("available")):
+        out["notes"] = ["human_chart_context_unavailable"]
+        return out
+    out["available"] = True
+    if not bool(candidate_triggered):
+        out["notes"] = ["candidate_decision_not_buy"]
+        return out
+
+    min_entry_score = float(out["thresholds"]["min_entry_chart_score"])
+    max_exit_risk = float(out["thresholds"]["max_exit_risk_score"])
+    min_late_entry_score = float(out["thresholds"]["min_late_entry_chart_score"])
+    near_upper_prev_close_distance = float(out["thresholds"]["near_upper_prev_close_distance_pct"])
+    no_reward_room_score_threshold = float(out["thresholds"]["no_reward_room_score"])
+    no_reward_room_pct_threshold = float(out["thresholds"]["no_reward_room_pct"])
+    entry_score = _clamp_score(_to_float(context.get("entry_chart_score")))
+    exit_risk_score = _clamp_score(_to_float(context.get("exit_risk_score")))
+    vwap_breakdown = str(context.get("vwap_breakdown_persistence") or "").strip().lower()
+    vwap_reclaim = str(context.get("vwap_reclaim_persistence") or "").strip().lower()
+    late_entry_risk = str(context.get("late_entry_risk") or "").strip().lower()
+    swing_low_break = bool(context.get("swing_low_break"))
+    lower_high_failure = bool(context.get("lower_high_failure"))
+    detail = dict(chart_detail_context or {}) if isinstance(chart_detail_context, Mapping) else {}
+    detail_observed = dict(detail.get("observed") or {}) if isinstance(detail.get("observed"), Mapping) else {}
+    detail_available = bool(detail.get("available"))
+    reward_room_score = _clamp_score(_to_float(detail.get("reward_room_score"))) if detail_available else None
+    reward_room_pct = (
+        _to_float(detail_observed.get("reward_room_pct"))
+        if detail_observed.get("reward_room_pct") not in (None, "")
+        else None
+    )
+    breakout_extension_pct = (
+        _to_float(detail_observed.get("breakout_extension_pct"))
+        if detail_observed.get("breakout_extension_pct") not in (None, "")
+        else None
+    )
+    prev_close_distance = (
+        _to_float(prev_close_distance_pct) if prev_close_distance_pct not in (None, "") else None
+    )
+    open_gap = _to_float(open_gap_pct) if open_gap_pct not in (None, "") else None
+    no_reward_room = bool(
+        detail_available
+        and (
+            (reward_room_score is not None and reward_room_score <= no_reward_room_score_threshold)
+            or (reward_room_pct is not None and reward_room_pct <= no_reward_room_pct_threshold)
+        )
+    )
+    near_upper_limit_zone = bool(
+        (prev_close_distance is not None and prev_close_distance >= near_upper_prev_close_distance)
+        or (open_gap is not None and open_gap >= near_upper_prev_close_distance)
+    )
+
+    out["observed"] = {
+        "entry_chart_score": entry_score,
+        "exit_risk_score": exit_risk_score,
+        "vwap_breakdown_persistence": vwap_breakdown,
+        "vwap_reclaim_persistence": vwap_reclaim,
+        "late_entry_risk": late_entry_risk,
+        "swing_low_break": swing_low_break,
+        "lower_high_failure": lower_high_failure,
+        "reward_room_score": reward_room_score,
+        "reward_room_pct": reward_room_pct,
+        "breakout_extension_pct": breakout_extension_pct,
+        "prev_close_distance_pct": prev_close_distance,
+        "open_gap_pct": open_gap,
+        "no_reward_room": bool(no_reward_room),
+        "near_upper_limit_zone": bool(near_upper_limit_zone),
+    }
+
+    blockers: List[str] = []
+    if exit_risk_score >= max_exit_risk:
+        blockers.append(f"exit_risk_score>={max_exit_risk:.2f}")
+    if vwap_breakdown == "strong":
+        blockers.append("vwap_breakdown_persistence=strong")
+    if entry_score < min_entry_score and (vwap_breakdown == "strong" or vwap_reclaim == "absent"):
+        blockers.append(f"entry_chart_score<{min_entry_score:.2f}")
+    if swing_low_break:
+        blockers.append("swing_low_break=true")
+    if lower_high_failure and vwap_reclaim != "strong":
+        blockers.append("lower_high_failure_without_strong_vwap_reclaim")
+    if late_entry_risk == "high" and entry_score < 0.45:
+        blockers.append("late_entry_risk=high_with_weak_entry_score")
+    if late_entry_risk == "high" and no_reward_room:
+        blockers.append("late_entry_risk=high_with_no_reward_room")
+    if late_entry_risk == "high" and entry_score < min_late_entry_score and no_reward_room:
+        blockers.append(f"entry_chart_score<{min_late_entry_score:.2f}_with_late_entry_no_reward_room")
+    if near_upper_limit_zone and late_entry_risk == "high" and no_reward_room:
+        blockers.append("near_upper_limit_zone_with_late_entry_no_reward_room")
+    insufficient_reward_room = bool(
+        reward_room_pct is not None
+        and 0.0 <= reward_room_pct < no_reward_room_pct_threshold
+        and (late_entry_risk in {"medium", "high"} or near_upper_limit_zone)
+    )
+    if insufficient_reward_room:
+        blockers.append(f"reward_room_pct<{no_reward_room_pct_threshold:.3f}_cost_floor")
+
+    if not blockers:
+        out["notes"] = ["human_chart_context_not_blocking"]
+        return out
+
+    out["applied"] = True
+    out["mode"] = "block"
+    out["blocking_features"] = blockers
+    out["notes"] = ["human_chart_sanity_guard_blocked_buy"]
+    return out
+
+
+def _build_human_chart_entry_setup(
+    *,
+    chart_human_context: Mapping[str, Any] | None = None,
+    chart_detail_context: Mapping[str, Any] | None = None,
+    signal_evidence: Mapping[str, Any] | None = None,
+    policy_alignment_summary: Mapping[str, Any] | None = None,
+    candidate_triggered: bool = False,
+    legacy_reason: str | None = None,
+) -> Dict[str, Any]:
+    """Promote only clear human-chart A setups that legacy gates nearly caught.
+
+    This is the positive counterpart to the buy guard. It can turn WAIT into BUY,
+    but only when the legacy engine is already near a valid entry and the chart
+    context shows a clean reclaim/continuation setup without exit-risk pressure.
+    """
+
+    out = _empty_human_chart_entry_setup()
+    context = dict(chart_human_context or {}) if isinstance(chart_human_context, Mapping) else {}
+    detail = dict(chart_detail_context or {}) if isinstance(chart_detail_context, Mapping) else {}
+    evidence = dict(signal_evidence or {}) if isinstance(signal_evidence, Mapping) else {}
+    checks = dict(evidence.get("checks") or {}) if isinstance(evidence.get("checks"), Mapping) else {}
+    derived = dict(evidence.get("derived") or {}) if isinstance(evidence.get("derived"), Mapping) else {}
+    scores = dict(evidence.get("scores") or {}) if isinstance(evidence.get("scores"), Mapping) else {}
+    summary = (
+        dict(policy_alignment_summary or {})
+        if isinstance(policy_alignment_summary, Mapping)
+        else {}
+    )
+
+    if not bool(context.get("available")):
+        out["notes"] = ["human_chart_context_unavailable"]
+        return out
+    out["available"] = True
+    if bool(candidate_triggered):
+        out["notes"] = ["candidate_decision_already_buy"]
+        return out
+    if not bool(summary.get("policy_available")):
+        out["notes"] = ["policy_context_unavailable"]
+        return out
+
+    min_a_setup_score = float(out["thresholds"]["min_a_setup_score"])
+    min_entry_score = float(out["thresholds"]["min_entry_chart_score"])
+    min_live_entry_score = float(out["thresholds"]["min_live_promotion_entry_chart_score"])
+    min_live_entry_quality = float(out["thresholds"]["min_live_promotion_entry_quality_score"])
+    min_live_transition = float(out["thresholds"]["min_live_promotion_transition_readiness_score"])
+    max_exit_risk = float(out["thresholds"]["max_exit_risk_score"])
+    min_candle_quality_score = float(out["thresholds"]["min_candle_quality_score"])
+    min_vwap_reference_quality_score = float(out["thresholds"]["min_vwap_reference_quality_score"])
+    min_reward_room_score = float(out["thresholds"]["min_reward_room_score"])
+    min_multi_window_structure_score = float(out["thresholds"]["min_multi_window_structure_score"])
+    reclaim_near_ready_min = float(out["thresholds"]["reclaim_near_ready_distance_min"])
+    breakout_near_ready_min = float(out["thresholds"]["breakout_near_ready_distance_min"])
+    volume_near_ready_min = float(out["thresholds"]["volume_near_ready_distance_min"])
+
+    entry_score = _clamp_score(_to_float(context.get("entry_chart_score")))
+    exit_risk_score = _clamp_score(_to_float(context.get("exit_risk_score")))
+    vwap_reclaim = str(context.get("vwap_reclaim_persistence") or "").strip().lower()
+    vwap_breakdown = str(context.get("vwap_breakdown_persistence") or "").strip().lower()
+    volume_state = str(context.get("volume_expansion_persistence") or "").strip().lower()
+    late_entry_risk = str(context.get("late_entry_risk") or "").strip().lower()
+    swing_low_above_vwap = bool(context.get("swing_low_above_vwap"))
+    higher_low_continuation = bool(context.get("higher_low_continuation"))
+    box_breakout_retest_hold = bool(context.get("box_breakout_retest_hold"))
+    swing_low_break = bool(context.get("swing_low_break"))
+    lower_high_failure = bool(context.get("lower_high_failure"))
+    detail_available = bool(detail.get("available"))
+    candle_quality_score = _clamp_score(_to_float(detail.get("candle_quality_score"), 0.5))
+    vwap_reference_quality_score = _clamp_score(_to_float(detail.get("vwap_reference_quality_score"), 0.5))
+    reward_room_score = _clamp_score(_to_float(detail.get("reward_room_score"), 0.5))
+    multi_window_structure_score = _clamp_score(_to_float(detail.get("multi_window_structure_score"), 0.5))
+    required_failures = _dedupe_non_empty(summary.get("top_failed_required_checks") or [])
+    legacy_reason_text = str(legacy_reason or "").strip()
+
+    reclaim_distance = derived.get("reclaim_distance_to_ready")
+    volume_distance = derived.get("volume_distance_to_ready")
+    breakout_distance = derived.get("breakout_distance_to_ready")
+    entry_quality_score = _clamp_score(_to_float(scores.get("entry_quality_score")))
+    transition_readiness_score = _clamp_score(_to_float(derived.get("transition_readiness_score")))
+    reclaim_distance_value = _to_float(reclaim_distance, default=-999.0) if reclaim_distance not in (None, "") else None
+    volume_distance_value = _to_float(volume_distance, default=-999.0) if volume_distance not in (None, "") else None
+    breakout_distance_value = _to_float(breakout_distance, default=-999.0) if breakout_distance not in (None, "") else None
+
+    reclaim_near_ready = bool(
+        reclaim_distance_value is not None
+        and reclaim_near_ready_min <= reclaim_distance_value < 0.0
+    )
+    breakout_near_ready = bool(
+        breakout_distance_value is not None
+        and breakout_near_ready_min <= breakout_distance_value < 0.0
+    )
+    volume_near_ready = bool(
+        volume_distance_value is None
+        or volume_distance_value >= volume_near_ready_min
+    )
+    strong_quality_near_ready = bool(
+        entry_quality_score >= min_live_entry_quality
+        and transition_readiness_score >= min_live_transition
+    )
+    vwap_support_ok = bool(
+        checks.get("reclaim_gate_ok")
+        or vwap_reclaim in {"strong", "partial"}
+        or reclaim_near_ready
+    )
+    volume_support_ok = bool(checks.get("volume_ok") or volume_state in {"strong", "partial"} or volume_near_ready)
+    structure_support_ok = bool(
+        checks.get("breakout_path_ok")
+        or checks.get("pullback_volume_path_ok")
+        or breakout_near_ready
+        or swing_low_above_vwap
+        or higher_low_continuation
+        or box_breakout_retest_hold
+    )
+    near_legacy_path = bool(
+        checks.get("breakout_path_ok")
+        or checks.get("pullback_volume_path_ok")
+        or reclaim_near_ready
+        or breakout_near_ready
+    )
+    extension_ok = bool(checks.get("extension_ok"))
+    confidence_ok = bool(checks.get("confidence_ok"))
+    too_extended = bool(derived.get("too_extended"))
+
+    setup_score = _clamp_score(
+        (0.30 * entry_score)
+        + (0.12 if vwap_support_ok else 0.0)
+        + (0.10 if volume_support_ok else 0.0)
+        + (0.12 if structure_support_ok else 0.0)
+        + (0.08 * candle_quality_score)
+        + (0.07 * vwap_reference_quality_score)
+        + (0.08 * reward_room_score)
+        + (0.07 * multi_window_structure_score)
+        + (0.05 if confidence_ok else 0.0)
+        + (0.06 if extension_ok else 0.0)
+        - (0.18 * exit_risk_score)
+    )
+    if setup_score >= min_a_setup_score:
+        setup_quality = "A"
+    elif setup_score >= 0.62:
+        setup_quality = "B"
+    elif setup_score > 0.0:
+        setup_quality = "C"
+    else:
+        setup_quality = "reject"
+
+    matched: List[str] = []
+    if vwap_support_ok:
+        matched.append("vwap_reclaim_or_near_ready")
+    if volume_support_ok:
+        matched.append("volume_expansion_or_near_ready")
+    if structure_support_ok:
+        matched.append("structure_support")
+    if box_breakout_retest_hold:
+        matched.append("box_breakout_retest_hold")
+    if higher_low_continuation:
+        matched.append("higher_low_continuation")
+    if swing_low_above_vwap:
+        matched.append("swing_low_above_vwap")
+    if "reclaim_gate_ok" in required_failures and reclaim_near_ready:
+        matched.append("required_reclaim_gate_near_ready")
+    if detail_available and candle_quality_score >= min_candle_quality_score:
+        matched.append("candle_quality_confirmed")
+    if detail_available and vwap_reference_quality_score >= min_vwap_reference_quality_score:
+        matched.append("vwap_reference_quality_confirmed")
+    if detail_available and reward_room_score >= min_reward_room_score:
+        matched.append("reward_room_confirmed")
+    if detail_available and multi_window_structure_score >= min_multi_window_structure_score:
+        matched.append("multi_window_structure_confirmed")
+
+    out["observed"] = {
+        "entry_chart_score": entry_score,
+        "exit_risk_score": exit_risk_score,
+        "candle_quality_score": candle_quality_score,
+        "vwap_reference_quality_score": vwap_reference_quality_score,
+        "reward_room_score": reward_room_score,
+        "multi_window_structure_score": multi_window_structure_score,
+        "chart_detail_context_available": detail_available,
+        "chart_detail_observed": dict(detail.get("observed") or {}) if isinstance(detail.get("observed"), Mapping) else {},
+        "vwap_reclaim_persistence": vwap_reclaim,
+        "vwap_breakdown_persistence": vwap_breakdown,
+        "volume_expansion_persistence": volume_state,
+        "late_entry_risk": late_entry_risk,
+        "swing_low_above_vwap": swing_low_above_vwap,
+        "higher_low_continuation": higher_low_continuation,
+        "box_breakout_retest_hold": box_breakout_retest_hold,
+        "swing_low_break": swing_low_break,
+        "lower_high_failure": lower_high_failure,
+        "reclaim_distance_to_ready": reclaim_distance_value,
+        "volume_distance_to_ready": volume_distance_value,
+        "breakout_distance_to_ready": breakout_distance_value,
+        "entry_quality_score": round(entry_quality_score, 4),
+        "transition_readiness_score": round(transition_readiness_score, 4),
+        "strong_quality_near_ready": bool(strong_quality_near_ready),
+        "legacy_reason": legacy_reason_text,
+    }
+    out["matched_features"] = matched
+    out["setup_score"] = round(setup_score, 4)
+    out["setup_quality"] = setup_quality
+
+    blockers: List[str] = []
+    hard_required_failures = [
+        name
+        for name in required_failures
+        if not (name == "reclaim_gate_ok" and reclaim_near_ready)
+    ]
+    if hard_required_failures:
+        blockers.extend(f"required_check_failed:{name}" for name in hard_required_failures)
+    if legacy_reason_text in {"volume_confirmation_missing", "volume_insufficient"} and not (
+        bool(checks.get("volume_ok")) and strong_quality_near_ready
+    ):
+        blockers.append(f"legacy_reason_not_promotable:{legacy_reason_text}")
+    if "vwap_reclaim_not_ready" in legacy_reason_text and not (bool(checks.get("reclaim_gate_ok")) or reclaim_near_ready):
+        blockers.append("vwap_reclaim_not_near_ready")
+    if entry_score < min_entry_score and not (
+        entry_score >= min_live_entry_score and strong_quality_near_ready
+    ):
+        blockers.append(f"entry_chart_score<{min_entry_score:.2f}")
+    if exit_risk_score > max_exit_risk:
+        blockers.append(f"exit_risk_score>{max_exit_risk:.2f}")
+    if not confidence_ok:
+        blockers.append("confidence_gate_not_confirmed")
+    if not extension_ok or too_extended:
+        blockers.append("extension_safety_not_confirmed")
+    if vwap_breakdown == "strong":
+        blockers.append("vwap_breakdown_persistence=strong")
+    if swing_low_break:
+        blockers.append("swing_low_break=true")
+    if lower_high_failure and vwap_reclaim != "strong":
+        blockers.append("lower_high_failure_without_strong_vwap_reclaim")
+    if late_entry_risk == "high":
+        blockers.append("late_entry_risk=high")
+    if detail_available and candle_quality_score < min_candle_quality_score:
+        blockers.append(f"candle_quality_score<{min_candle_quality_score:.2f}")
+    if detail_available and vwap_reference_quality_score < min_vwap_reference_quality_score:
+        blockers.append(f"vwap_reference_quality_score<{min_vwap_reference_quality_score:.2f}")
+    if detail_available and reward_room_score < min_reward_room_score:
+        blockers.append(f"reward_room_score<{min_reward_room_score:.2f}")
+    if detail_available and multi_window_structure_score < min_multi_window_structure_score:
+        blockers.append(f"multi_window_structure_score<{min_multi_window_structure_score:.2f}")
+    if not vwap_support_ok:
+        blockers.append("vwap_reclaim_or_near_ready_missing")
+    if not volume_support_ok:
+        blockers.append("volume_confirmation_or_near_ready_missing")
+    if not structure_support_ok:
+        blockers.append("structure_support_missing")
+    if not near_legacy_path:
+        blockers.append("legacy_entry_path_not_near_ready")
+    if setup_quality != "A":
+        blockers.append("setup_quality_below_A")
+
+    overrideable_blockers = {
+        f"entry_chart_score<{min_entry_score:.2f}",
+        "confidence_gate_not_confirmed",
+        "legacy_entry_path_not_near_ready",
+        "required_check_failed:rebound_ok",
+    }
+    selective_live_promotion_candidate = bool(
+        setup_quality == "A"
+        and setup_score >= (min_a_setup_score if strong_quality_near_ready else max(min_a_setup_score, 0.78))
+        and (
+            entry_score >= 0.60
+            or (entry_score >= min_live_entry_score and strong_quality_near_ready)
+        )
+        and exit_risk_score <= max_exit_risk
+        and vwap_support_ok
+        and volume_support_ok
+        and structure_support_ok
+        and extension_ok
+        and not too_extended
+        and vwap_breakdown != "strong"
+        and not swing_low_break
+        and late_entry_risk != "high"
+        and detail_available
+        and candle_quality_score >= min_candle_quality_score
+        and vwap_reference_quality_score >= min_vwap_reference_quality_score
+        and reward_room_score >= max(min_reward_room_score, 0.35)
+        and multi_window_structure_score >= max(min_multi_window_structure_score, 0.50)
+        and strong_quality_near_ready
+    )
+    overridden_blockers: List[str] = []
+    if selective_live_promotion_candidate and blockers:
+        remaining_blockers: List[str] = []
+        for blocker in blockers:
+            if blocker in overrideable_blockers:
+                overridden_blockers.append(blocker)
+            else:
+                remaining_blockers.append(blocker)
+        if overridden_blockers:
+            blockers = remaining_blockers
+            matched.append("selective_human_chart_live_promotion")
+
+    observed = dict(out.get("observed") or {})
+    observed["selective_live_promotion_candidate"] = bool(selective_live_promotion_candidate)
+    observed["selective_live_promotion_overridden_blockers"] = list(overridden_blockers)
+    out["observed"] = observed
+    out["matched_features"] = _dedupe_non_empty(matched)
+
+    if blockers:
+        out["blocking_features"] = _dedupe_non_empty(blockers)
+        out["notes"] = ["human_chart_setup_not_actionable"]
+        return out
+
+    if box_breakout_retest_hold:
+        setup_label = "breakout_retest_hold"
+    elif higher_low_continuation and vwap_support_ok:
+        setup_label = "higher_low_vwap_reclaim"
+    elif swing_low_above_vwap:
+        setup_label = "vwap_support_reclaim"
+    else:
+        setup_label = "clean_vwap_continuation"
+
+    out["applied"] = True
+    out["mode"] = "promote_wait_to_buy"
+    out["setup_label"] = setup_label
+    out["notes"] = _dedupe_non_empty(
+        [
+            "human_chart_a_setup_confirmed",
+            "selective_live_promotion_override_used" if overridden_blockers else "",
+        ]
+    )
+    return out
 
 
 def _extract_explicit_policy_interpretation_fields(
@@ -837,6 +1489,7 @@ def _build_monitor_policy_interpreter_trace(
 
     checks = dict(evidence.get("checks") or {}) if isinstance(evidence.get("checks"), Mapping) else {}
     derived = dict(evidence.get("derived") or {}) if isinstance(evidence.get("derived"), Mapping) else {}
+    scores = dict(evidence.get("scores") or {}) if isinstance(evidence.get("scores"), Mapping) else {}
 
     def _status_item(spec_value: Any, *, blocker: bool = False) -> Dict[str, Any]:
         spec = _parse_policy_signal_spec(spec_value)
@@ -1751,6 +2404,8 @@ def evaluate_intraday_entry_signal(
     out["policy_alignment_summary"] = _empty_monitor_policy_alignment_summary()
     out["policy_aware_gating"] = _empty_monitor_policy_aware_gating()
     out["chart_structure_decision_hint"] = _empty_chart_structure_decision_hint()
+    out["human_chart_detail_context"] = _empty_human_chart_detail_context()
+    out["human_chart_entry_setup"] = _empty_human_chart_entry_setup()
     _apply_monitor_scoring_fields(
         out,
         scoring_settings=scoring_settings,
@@ -2000,6 +2655,24 @@ def evaluate_intraday_entry_signal(
         ),
         4,
     )
+    feature_payload = features if isinstance(features, Mapping) else {}
+    etf_deviation_pct = normalize_deviation_pct(feature_payload.get("etf_deviation_pct"))
+    etf_deviation_source = str(feature_payload.get("etf_deviation_source") or "")
+    asset_class_detected = str(
+        feature_payload.get("asset_class_detected")
+        or feature_payload.get("asset_class")
+        or feature_payload.get("asset_type")
+        or ""
+    ).strip().lower()
+    etf_deviation_tradeable = bool(is_etf_asset_class(asset_class_detected) or etf_deviation_pct is not None)
+    etf_deviation_entry_score = (
+        score_etf_deviation_for_entry(etf_deviation_pct)
+        if etf_deviation_tradeable
+        else 0.0
+    )
+    etf_deviation_discount_entry_ok = bool(etf_deviation_tradeable and etf_deviation_entry_score > 0.0)
+    etf_deviation_chart_ok = bool(reclaim_gate_ok and extension_ok and confirmation_ok)
+    etf_deviation_entry_path_ok = bool(etf_deviation_discount_entry_ok and etf_deviation_chart_ok)
 
     if current_close <= 0.0 or recent_high <= 0.0 or current_vwap <= 0.0:
         out["reason"] = "data_incomplete"
@@ -2057,6 +2730,12 @@ def evaluate_intraday_entry_signal(
         signal_chain.append("breakout_chase_extension_observed")
         if not volume_ok:
             signal_chain.append("breakout_chase_extension_volume_observed_missing")
+    if etf_deviation_pct is not None:
+        signal_chain.append("etf_deviation_observed")
+    if etf_deviation_discount_entry_ok:
+        signal_chain.append("etf_discount_observed")
+    if etf_deviation_entry_path_ok:
+        signal_chain.append("etf_discount_reversion_path_ready")
 
     playbook = str((frame or {}).get("playbook") or "").strip().lower()
     if playbook in ("pullback", "reversal"):
@@ -2081,6 +2760,9 @@ def evaluate_intraday_entry_signal(
         "breakout_path_ok": bool(breakout_path_ok),
         "pullback_volume_path_ok": bool(pullback_volume_path_ok),
         "confidence_gate_ok": bool(confidence_gate_ok),
+        "etf_deviation_discount_entry_ok": bool(etf_deviation_discount_entry_ok),
+        "etf_deviation_chart_ok": bool(etf_deviation_chart_ok),
+        "etf_deviation_entry_path_ok": bool(etf_deviation_entry_path_ok),
     }
     if playbook in ("pullback", "reversal"):
         relevant_checks = [
@@ -2112,6 +2794,14 @@ def evaluate_intraday_entry_signal(
             "rebound_ok",
             "confidence_gate_ok",
         ]
+    if etf_deviation_tradeable:
+        relevant_checks.extend(
+            [
+                "etf_deviation_discount_entry_ok",
+                "etf_deviation_chart_ok",
+                "etf_deviation_entry_path_ok",
+            ]
+        )
     passed_checks = [name for name in relevant_checks if checks.get(name)]
     failed_checks = [name for name in relevant_checks if not checks.get(name)]
     threshold_margins = {
@@ -2158,6 +2848,14 @@ def evaluate_intraday_entry_signal(
             "volume_gate_required": False,
             "volume_ok": bool(volume_ok),
         },
+        "etf_deviation_pct": {
+            "actual": etf_deviation_pct,
+            "discount_trigger_pct": -0.30,
+            "entry_score": round(float(etf_deviation_entry_score), 4),
+            "source": etf_deviation_source,
+            "asset_class_detected": asset_class_detected,
+            "path_ok": bool(etf_deviation_entry_path_ok),
+        },
     }
 
     pattern = ""
@@ -2170,6 +2868,8 @@ def evaluate_intraday_entry_signal(
         entry_condition_paths_passed.append("breakout_path")
     if pullback_volume_path_ok:
         entry_condition_paths_passed.append("pullback_volume_path")
+    if etf_deviation_entry_path_ok:
+        entry_condition_paths_passed.append("etf_discount_reversion_path")
     grouped_logic_trace = {
         "logic_mode": "reclaim_and_grouped_paths_v1",
         "reclaim_gate_required": bool(resolved_policy.require_vwap_reclaim),
@@ -2186,6 +2886,12 @@ def evaluate_intraday_entry_signal(
         "extension_ok": bool(extension_ok),
         "breakout_path_ok": bool(breakout_path_ok),
         "pullback_volume_path_ok": bool(pullback_volume_path_ok),
+        "etf_deviation_pct": etf_deviation_pct,
+        "etf_deviation_source": etf_deviation_source,
+        "asset_class_detected": asset_class_detected,
+        "etf_deviation_discount_entry_ok": bool(etf_deviation_discount_entry_ok),
+        "etf_deviation_chart_ok": bool(etf_deviation_chart_ok),
+        "etf_deviation_entry_path_ok": bool(etf_deviation_entry_path_ok),
         "paths_passed": list(entry_condition_paths_passed),
         "confidence_gate_ok": bool(confidence_gate_ok),
         "triggered_path": "",
@@ -2298,6 +3004,13 @@ def evaluate_intraday_entry_signal(
                 reason = "entry_signal_not_confirmed"
                 primary_failure_axis = "entry_confirmation"
 
+    if not triggered and etf_deviation_entry_path_ok:
+        triggered = True
+        entry_condition_path = "etf_discount_reversion_path"
+        pattern = "etf_discount_reversion"
+        reason = "etf_discount_reversion_entry"
+        primary_failure_axis = "confirmed_entry"
+
     if triggered and not primary_failure_axis:
         primary_failure_axis = "confirmed_entry"
     grouped_logic_trace["triggered_path"] = entry_condition_path
@@ -2327,6 +3040,8 @@ def evaluate_intraday_entry_signal(
         confidence_gate_ok=bool(confidence_gate_ok),
         chart_structure_features=chart_structure_features,
     )
+    if etf_deviation_tradeable:
+        score_breakdown["etf_deviation_discount"] = round(float(etf_deviation_entry_score), 4)
     scoring_entry_decision = "BUY" if sum(_to_float(v) for v in score_breakdown.values()) >= float(scoring_settings.get("entry_threshold") or 3.0) else "WAIT"
     signal_evidence = _build_monitor_signal_evidence(
         reclaim_score=vwap_reclaim_progress,
@@ -2402,6 +3117,14 @@ def evaluate_intraday_entry_signal(
         if isinstance(chart_structure_features.get("human_chart_context"), Mapping)
         else {}
     )
+    human_chart_detail_context = _build_human_chart_detail_context(
+        candles,
+        current_close=current_close,
+        current_vwap=current_vwap,
+        recent_high=recent_high,
+        breakout_level=breakout_level,
+        volume_ratio=volume_ratio,
+    )
     if bool(policy_aware_gating.get("applied")):
         triggered = True
         pattern = "breakout_policy_reclaim_near_ready"
@@ -2425,6 +3148,56 @@ def evaluate_intraday_entry_signal(
             primary_failure_axis = "chart_structure_continuation"
             if "chart_structure_breakout_continuation_guard" not in signal_chain:
                 signal_chain.append("chart_structure_breakout_continuation_guard")
+
+    human_chart_entry_setup = _build_human_chart_entry_setup(
+        chart_human_context=chart_human_context,
+        chart_detail_context=human_chart_detail_context,
+        signal_evidence=signal_evidence,
+        policy_alignment_summary=policy_alignment_summary,
+        candidate_triggered=bool(triggered),
+        legacy_reason=legacy_reason,
+    )
+    if bool(human_chart_entry_setup.get("applied")):
+        triggered = True
+        setup_label = str(human_chart_entry_setup.get("setup_label") or "clean_vwap_continuation")
+        pattern = f"human_chart_{setup_label}"
+        reason = "human_chart_entry_setup_confirmed"
+        entry_condition_path = "human_chart_setup_path"
+        primary_failure_axis = "confirmed_entry"
+        if "human_chart_setup_path" not in entry_condition_paths_passed:
+            entry_condition_paths_passed.append("human_chart_setup_path")
+        if "human_chart_entry_setup" not in signal_chain:
+            signal_chain.append("human_chart_entry_setup")
+        if "human_chart_entry_setup" not in passed_checks:
+            passed_checks.append("human_chart_entry_setup")
+        policy_alignment_summary["summary_notes"] = _dedupe_non_empty(
+            [
+                *list(policy_alignment_summary.get("summary_notes") or []),
+                "human_chart_entry_setup_applied",
+            ]
+        )
+
+    human_chart_buy_guard = _build_human_chart_buy_guard(
+        chart_human_context=chart_human_context,
+        chart_detail_context=human_chart_detail_context,
+        prev_close_distance_pct=prev_close_distance_pct,
+        open_gap_pct=open_gap_pct,
+        candidate_triggered=bool(triggered),
+    )
+    if bool(human_chart_buy_guard.get("applied")):
+        triggered = False
+        reason = "human_chart_sanity_guard_blocked"
+        primary_failure_axis = "human_chart_sanity"
+        if "human_chart_buy_guard" not in signal_chain:
+            signal_chain.append("human_chart_buy_guard")
+        if "human_chart_buy_guard" not in failed_checks:
+            failed_checks.append("human_chart_buy_guard")
+        policy_alignment_summary["summary_notes"] = _dedupe_non_empty(
+            [
+                *list(policy_alignment_summary.get("summary_notes") or []),
+                "human_chart_buy_guard_applied",
+            ]
+        )
 
     metrics = {
         "timeframe_minutes": timeframe_minutes,
@@ -2499,12 +3272,27 @@ def evaluate_intraday_entry_signal(
         "series_class": series_quality.get("series_class"),
         "human_chart_entry_score": chart_human_context.get("entry_chart_score"),
         "human_chart_exit_risk_score": chart_human_context.get("exit_risk_score"),
+        "human_chart_setup_quality": human_chart_entry_setup.get("setup_quality"),
+        "human_chart_setup_label": human_chart_entry_setup.get("setup_label"),
+        "human_chart_setup_score": human_chart_entry_setup.get("setup_score"),
+        "human_chart_entry_setup_applied": bool(human_chart_entry_setup.get("applied")),
+        "human_candle_quality_score": human_chart_detail_context.get("candle_quality_score"),
+        "human_vwap_reference_quality_score": human_chart_detail_context.get("vwap_reference_quality_score"),
+        "human_reward_room_score": human_chart_detail_context.get("reward_room_score"),
+        "human_multi_window_structure_score": human_chart_detail_context.get("multi_window_structure_score"),
+        "human_chart_detail_observed": dict(human_chart_detail_context.get("observed") or {}),
         "vwap_reclaim_persistence": chart_human_context.get("vwap_reclaim_persistence"),
         "ma_bullish_persistence": chart_human_context.get("ma_bullish_persistence"),
         "volume_expansion_persistence": chart_human_context.get("volume_expansion_persistence"),
         "late_entry_risk": chart_human_context.get("late_entry_risk"),
         "swing_low_above_vwap": chart_human_context.get("swing_low_above_vwap"),
         "box_breakout_retest_hold": chart_human_context.get("box_breakout_retest_hold"),
+        "etf_deviation_pct": etf_deviation_pct,
+        "etf_deviation_source": etf_deviation_source,
+        "asset_class_detected": asset_class_detected,
+        "etf_deviation_discount_entry_ok": bool(etf_deviation_discount_entry_ok),
+        "etf_deviation_entry_score": round(float(etf_deviation_entry_score), 4),
+        "etf_deviation_entry_path_ok": bool(etf_deviation_entry_path_ok),
     }
     transition_trace = _empty_entry_transition_trace()
     transition_trace.update(
@@ -2516,7 +3304,9 @@ def evaluate_intraday_entry_signal(
             "breakout_distance_to_ready": breakout_distance_to_ready,
             "transition_readiness_score": transition_readiness_score,
             "last_blocking_axis": primary_failure_axis if not triggered else "",
-            "became_ready_this_cycle": bool(policy_aware_gating.get("applied")),
+            "became_ready_this_cycle": bool(
+                policy_aware_gating.get("applied") or human_chart_entry_setup.get("applied")
+            ),
         }
     )
     grouped_logic_trace["triggered_path"] = entry_condition_path
@@ -2537,17 +3327,41 @@ def evaluate_intraday_entry_signal(
     grouped_logic_trace["chart_structure_decision_hint_blocking_features"] = list(chart_structure_decision_hint.get("blocking_features") or [])
     grouped_logic_trace["human_chart_entry_score"] = chart_human_context.get("entry_chart_score")
     grouped_logic_trace["human_chart_exit_risk_score"] = chart_human_context.get("exit_risk_score")
+    grouped_logic_trace["human_chart_entry_setup_available"] = bool(human_chart_entry_setup.get("available"))
+    grouped_logic_trace["human_chart_entry_setup_applied"] = bool(human_chart_entry_setup.get("applied"))
+    grouped_logic_trace["human_chart_setup_quality"] = str(human_chart_entry_setup.get("setup_quality") or "none")
+    grouped_logic_trace["human_chart_setup_label"] = str(human_chart_entry_setup.get("setup_label") or "")
+    grouped_logic_trace["human_chart_setup_score"] = human_chart_entry_setup.get("setup_score")
+    grouped_logic_trace["human_candle_quality_score"] = human_chart_detail_context.get("candle_quality_score")
+    grouped_logic_trace["human_vwap_reference_quality_score"] = human_chart_detail_context.get("vwap_reference_quality_score")
+    grouped_logic_trace["human_reward_room_score"] = human_chart_detail_context.get("reward_room_score")
+    grouped_logic_trace["human_multi_window_structure_score"] = human_chart_detail_context.get("multi_window_structure_score")
+    grouped_logic_trace["human_chart_detail_observed"] = dict(human_chart_detail_context.get("observed") or {})
+    grouped_logic_trace["human_chart_entry_setup_matched_features"] = list(
+        human_chart_entry_setup.get("matched_features") or []
+    )
+    grouped_logic_trace["human_chart_entry_setup_blocking_features"] = list(
+        human_chart_entry_setup.get("blocking_features") or []
+    )
+    grouped_logic_trace["human_chart_buy_guard_available"] = bool(human_chart_buy_guard.get("available"))
+    grouped_logic_trace["human_chart_buy_guard_applied"] = bool(human_chart_buy_guard.get("applied"))
+    grouped_logic_trace["human_chart_buy_guard_blocking_features"] = list(
+        human_chart_buy_guard.get("blocking_features") or []
+    )
     grouped_logic_trace["late_entry_risk"] = str(chart_human_context.get("late_entry_risk") or "")
     grouped_logic_trace["chart_structure_scoring_consumed"] = bool(chart_human_context.get("available"))
     grouped_logic_trace["entry_quality_score"] = entry_quality_score
     grouped_logic_trace["entry_quality_tier"] = _entry_quality_tier(entry_quality_score)
     grouped_logic_trace["entry_quality_path"] = entry_quality_path
     grouped_logic_trace["entry_quality_observability_only"] = True
+    grouped_logic_trace["etf_deviation_entry_score"] = round(float(etf_deviation_entry_score), 4)
     _apply_monitor_scoring_fields(
         out,
         scoring_settings=scoring_settings,
-        hard_filter_passed=True,
-        hard_filter_fail_reasons=[],
+        hard_filter_passed=not bool(human_chart_buy_guard.get("applied")),
+        hard_filter_fail_reasons=list(human_chart_buy_guard.get("blocking_features") or [])
+        if bool(human_chart_buy_guard.get("applied"))
+        else [],
         score_breakdown=score_breakdown,
         legacy_entry_decision=legacy_decision,
         scoring_entry_decision="BUY" if sum(_to_float(v) for v in score_breakdown.values()) >= float(scoring_settings.get("entry_threshold") or 3.0) else "WAIT",
@@ -2582,6 +3396,9 @@ def evaluate_intraday_entry_signal(
                 "entry_quality_observability_only": True,
                 "breakout_quality_score": breakout_quality_score,
                 "pullback_quality_score": pullback_quality_score,
+                "etf_deviation_entry_score": round(float(etf_deviation_entry_score), 4),
+                "etf_deviation_discount_entry_ok": bool(etf_deviation_discount_entry_ok),
+                "etf_deviation_entry_path_ok": bool(etf_deviation_entry_path_ok),
                 "extension_score": round(_clamp_score(extension_score), 4),
                 "vwap_structure_score": round(_clamp_score(vwap_structure_score), 4),
                 "confirmation_score": round(_clamp_score(confirmation_score), 4),
@@ -2596,6 +3413,9 @@ def evaluate_intraday_entry_signal(
             "policy_alignment_summary": policy_alignment_summary,
             "policy_aware_gating": policy_aware_gating,
             "chart_structure_decision_hint": chart_structure_decision_hint,
+            "human_chart_detail_context": human_chart_detail_context,
+            "human_chart_entry_setup": human_chart_entry_setup,
+            "human_chart_buy_guard": human_chart_buy_guard,
             "reclaim_distance_to_ready": reclaim_distance_to_ready,
             "vwap_reclaim_progress": round(vwap_reclaim_progress, 4),
             "rebound_progress": rebound_progress,
@@ -2603,7 +3423,9 @@ def evaluate_intraday_entry_signal(
             "breakout_distance_to_ready": breakout_distance_to_ready,
             "transition_readiness_score": transition_readiness_score,
             "last_blocking_axis": str(primary_failure_axis or "") if not triggered else "",
-            "became_ready_this_cycle": False,
+            "became_ready_this_cycle": bool(
+                policy_aware_gating.get("applied") or human_chart_entry_setup.get("applied")
+            ),
             "entry_transition_trace": transition_trace,
         }
     )

@@ -213,3 +213,47 @@ def test_commander_clamps_defensive_candidate_watch_policy_in_risk_off():
     assert entry_control["max_priority_rank"] == 3
     assert entry_control["max_runner_ups"] == 2
     assert decision["scanner_policy"]["max_priority_rank"] == 3
+
+
+def test_commander_opens_defensive_top3_when_rank1_repeatedly_blocked_with_capacity():
+    state = {
+        "global_signal": {"score": -0.22, "fear_index": {"level": 31.0}},
+        "strategist_output": {
+            "playbook": "defensive",
+            "final_playbook": "defensive",
+            "tactical_strategy": "defensive_observe",
+            "candidate_watch_policy": {
+                "source": "strategist_visibility_proposal",
+                "behavior_effect": "visibility_only",
+                "max_priority_rank": 1,
+                "max_runner_ups": 0,
+                "cascade_enabled": False,
+                "reason": "llm requested rank one only",
+            },
+        },
+        "mock_monitor_feedback": {
+            "dominant_blocker": "below_vwap_reclaim_not_ready",
+            "failure_streak": 8,
+            "near_ready_flag": True,
+            "avg_distance_to_ready": 0.80,
+        },
+        "risk_context": {"max_positions": 3},
+        "portfolio_snapshot": {"positions": []},
+    }
+
+    decision = _build_commander_decision(
+        state,
+        mode_value="integrated",
+        phase_value="session",
+        status_value="ok",
+        path_value="",
+    )
+
+    entry_control = decision["entry_control"]
+    assert entry_control["mode"] == "preserve_defensive_no_trade_ok"
+    assert entry_control["decision"] == "defensive_top3_candidate_cascade"
+    assert entry_control["max_priority_rank"] == 3
+    assert entry_control["max_runner_ups"] == 2
+    assert entry_control["cascade_enabled"] is True
+    assert decision["scanner_policy"]["max_priority_rank"] == 3
+    assert decision["scanner_policy"]["max_runner_ups"] == 2

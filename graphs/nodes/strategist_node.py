@@ -502,6 +502,7 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
         "avoid_themes",
         "playbook",
         "tactical_strategy",
+        "tactical_subtype",
         "strategy_scores",
         "rejected_strategy_reasons",
         "candidate_watch_policy",
@@ -773,7 +774,7 @@ def _derive_stage_specific_common_overrides(out: Dict[str, Any]) -> None:
             cascade = decision == "cascade_to_runner_up" and bool(runner_ups)
             max_rank = 1 + len(runner_ups) if cascade else 1
             if cascade and "tactical_strategy" not in out:
-                out["tactical_strategy"] = "leader_vwap_reclaim_pullback"
+                out["tactical_strategy"] = "vwap_reclaim_pullback"
             out["candidate_watch_policy"] = {
                 "max_priority_rank": max(1, min(10, int(max_rank))),
                 "max_runner_ups": len(runner_ups) if cascade else 0,
@@ -1126,6 +1127,8 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
         out["candidate_watch_policy"] = dict(raw.get("candidate_watch_policy") or {})
     if raw.get("tactical_strategy") not in (None, ""):
         out["tactical_strategy"] = str(raw.get("tactical_strategy") or "").strip().lower()
+    if raw.get("tactical_subtype") not in (None, ""):
+        out["tactical_subtype"] = str(raw.get("tactical_subtype") or "").strip().lower()
     if isinstance(raw.get("selected_themes"), list):
         out["selected_themes"] = _extract_theme_names_from_any(raw.get("selected_themes"))
     if isinstance(raw.get("theme_strategy"), dict):
@@ -1803,13 +1806,17 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
     base_contract = {
         "playbook": "breakout|pullback|reversal|defensive",
         "tactical_strategy": (
-            "opening_gap_momentum|opening_range_breakout|leader_vwap_reclaim_pullback|"
+            "opening_gap_momentum|opening_range_breakout|vwap_reclaim_pullback|"
             "volume_breakout|reversal_reclaim|cost_aware_scalp|defensive_observe"
+        ),
+        "tactical_subtype": (
+            "theme_confirmed_pullback|market_representative_pullback|liquidity_confirmed_pullback|"
+            "vwap_reclaim_setup|weak_fallback_pullback|none"
         ),
         "strategy_scores": {
             "opening_gap_momentum": 0.0,
             "opening_range_breakout": 0.0,
-            "leader_vwap_reclaim_pullback": 0.0,
+            "vwap_reclaim_pullback": 0.0,
             "volume_breakout": 0.0,
             "reversal_reclaim": 0.0,
             "cost_aware_scalp": 0.0,
@@ -1912,7 +1919,7 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
             ],
         },
         "strategy_horizon_feedback": {
-            "strategy_horizon": "scalp|intraday|overnight_probe|1_2day_swing",
+            "strategy_horizon": "one_of:scalp,intraday,overnight_probe,1_2day_swing",
             "expected_hold_window": {"min_sec": 300, "target_sec": 1800, "max_sec": 14400},
             "exit_guidance": {
                 "profit_take_style": "trail_after_first_push",
@@ -1943,6 +1950,7 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         f"{memory_user_directives}"
         "Do not produce narrative summary in place of directives. "
         "Do not collapse strategist refresh into one generic summary; strategy_refresh_trace must distinguish 1st/base frame, 2nd/post-scanner refresh, and final application. "
+        "For strategy_horizon_feedback.strategy_horizon, choose exactly one enum value: scalp, intraday, overnight_probe, or 1_2day_swing. Never return the pipe-delimited placeholder. "
         "If available_themes is non-empty, selected_themes must be chosen only from available_themes.theme. "
         "If available_themes is empty, selected_themes must stay empty; fallback_theme_hints are context only and must not be treated as tradable Kiwoom themes. "
         "Do not invent tradable theme names outside Kiwoom available_themes; abstract labels may appear only in rationale or fallback_reason. "
@@ -2752,6 +2760,203 @@ def _hide_stage1_symbol_memory(compact: Dict[str, Any]) -> None:
     }
 
 
+def _compact_monitor_entry_policy_baseline_for_llm(policy: Any) -> Dict[str, Any]:
+    src = policy if isinstance(policy, dict) else {}
+    keep = (
+        "enabled",
+        "timeframe_minutes",
+        "volume_ratio_min",
+        "min_extended_from_vwap_pct",
+        "max_extended_from_vwap_pct",
+        "pullback_min_pct",
+        "pullback_max_pct",
+        "reclaim_tolerance_pct",
+        "intent_cooldown_sec",
+        "require_vwap_reclaim",
+        "require_rebound",
+    )
+    return {key: src.get(key) for key in keep if key in src}
+
+
+def _compact_theme_strength_for_llm(raw: Any, *, limit: int = 6) -> Dict[str, Any]:
+    src = raw if isinstance(raw, dict) else {}
+    rows: list[tuple[str, float]] = []
+    for key, value in src.items():
+        score = _stage_float(value, None)
+        if score is None:
+            continue
+        rows.append((str(key), float(score)))
+    rows.sort(key=lambda item: item[1], reverse=True)
+    return {key: _round_optional(value, 4) for key, value in rows[: max(0, int(limit))]}
+
+
+def _theme_packet_summary_for_llm(packet: Any) -> Dict[str, Any]:
+    src = packet if isinstance(packet, dict) else {}
+    groups = src.get("groups") if isinstance(src.get("groups"), list) else []
+    components = src.get("components_by_theme") if isinstance(src.get("components_by_theme"), dict) else {}
+    return {
+        "status": str(src.get("status") or ""),
+        "source": str(src.get("source") or ""),
+        "group_count": int(len(groups)),
+        "component_theme_count": int(len(components)),
+        "fallback_used": bool(src.get("fallback_used")),
+        "fallback_reason": str(src.get("fallback_reason") or src.get("reason") or "")[:160],
+    }
+
+
+def _compact_candidate_context_for_refresh(row: Any) -> Dict[str, Any]:
+    src = row if isinstance(row, dict) else {}
+    if not src:
+        return {}
+    keep = (
+        "symbol",
+        "rank",
+        "score",
+        "score_total",
+        "reason",
+        "source",
+        "risk_score",
+        "confidence",
+        "entry_compatibility_score",
+        "scanner_chart_fit_score",
+        "scanner_macro_chart_fit_score",
+        "expected_monitor_block_reason",
+        "dominant_block_reason",
+        "market_representative_guard_reason",
+        "selection_reason_with_bias",
+        "status",
+    )
+    out = {key: src.get(key) for key in keep if src.get(key) not in (None, "", [], {})}
+    score_breakdown = src.get("score_breakdown") if isinstance(src.get("score_breakdown"), dict) else {}
+    if score_breakdown:
+        out["score_breakdown"] = {
+            str(key): _round_optional(value, 4) if _stage_float(value, None) is not None else _clip_text_for_llm(value, max_len=60)
+            for key, value in list(score_breakdown.items())[:5]
+        }
+    return out
+
+
+def _slim_refresh_context_for_llm(context: Any) -> Dict[str, Any]:
+    src = context if isinstance(context, dict) else {}
+    out = dict(src)
+    for key in ("scanner_primary_candidate", "actual_selected_candidate", "scanner_rank1_candidate"):
+        out[key] = _compact_candidate_context_for_refresh(src.get(key))
+    out["scanner_runner_ups"] = [
+        _compact_candidate_context_for_refresh(row)
+        for row in list(src.get("scanner_runner_ups") or [])[:3]
+        if isinstance(row, dict)
+    ]
+    out["scanner_top_candidates"] = [
+        _compact_candidate_context_for_refresh(row)
+        for row in list(src.get("scanner_top_candidates") or [])[:4]
+        if isinstance(row, dict)
+    ]
+    selected_memory = src.get("selected_symbol_memory") if isinstance(src.get("selected_symbol_memory"), dict) else {}
+    if selected_memory:
+        out["selected_symbol_memory"] = {
+            "status": str(selected_memory.get("status") or ""),
+            "symbol": str(selected_memory.get("symbol") or ""),
+            "trade_count": int(selected_memory.get("trade_count") or 0),
+            "override_eligible": bool(selected_memory.get("override_eligible")),
+            "operator_summary": _operator_summary_for_llm(selected_memory.get("operator_summary")),
+        }
+    return out
+
+
+def _apply_strategist_llm_token_budget(compact: Dict[str, Any], *, memory_usage_disabled: bool) -> Dict[str, Any]:
+    out = dict(compact or {})
+    call_kind = _resolve_strategist_llm_call_kind(out)
+    raw_theme_packet = out.pop("theme_strength_packet", {})
+    out["theme_strength_packet_summary"] = _theme_packet_summary_for_llm(raw_theme_packet)
+    out["theme_strength"] = _compact_theme_strength_for_llm(out.get("theme_strength"), limit=6)
+    out["monitor_entry_policy_baseline"] = _compact_monitor_entry_policy_baseline_for_llm(
+        out.get("monitor_entry_policy_baseline")
+    )
+    out["token_budget_policy"] = {
+        "schema_version": "strategist_llm_token_budget.v1",
+        "call_kind": str(call_kind),
+        "dedup_theme_strength_packet": True,
+        "stage_specific_context": bool(call_kind != "market_strategy_frame"),
+        "memory_usage_disabled": bool(memory_usage_disabled),
+    }
+    if call_kind == "market_strategy_frame":
+        return out
+
+    out["market_news_sample"] = {}
+    out["candidate_news_sample"] = {}
+    news_policy = out.get("news_collection_policy") if isinstance(out.get("news_collection_policy"), dict) else {}
+    out["news_collection_policy"] = {
+        "provider": str(news_policy.get("provider") or ""),
+        "post_scanner_requery": bool(news_policy.get("post_scanner_requery")),
+        "reuse_policy": str(news_policy.get("reuse_policy") or ""),
+        "collection_symbol_count": len(list(news_policy.get("collection_symbols") or [])),
+    }
+    out["available_themes"] = [
+        {
+            **dict(row),
+            "component_symbols": [str(x or "") for x in list((row or {}).get("component_symbols") or [])[:3]],
+        }
+        for row in list(out.get("available_themes") or [])[:4]
+        if isinstance(row, dict)
+    ]
+    refresh_context = out.get("commander_refresh_context") if isinstance(out.get("commander_refresh_context"), dict) else {}
+    out["commander_refresh_context"] = _slim_refresh_context_for_llm(refresh_context)
+    out["recent_strategy_feedback"] = {
+        "feedback_window_size": int((out.get("recent_strategy_feedback") or {}).get("feedback_window_size") or 0)
+        if isinstance(out.get("recent_strategy_feedback"), dict)
+        else 0,
+        "top_recent_weaknesses": [
+            str(x or "")
+            for x in list(((out.get("recent_strategy_feedback") or {}).get("top_recent_weaknesses") or [])[:2])
+        ]
+        if isinstance(out.get("recent_strategy_feedback"), dict)
+        else [],
+        "recent_playbook_performance": (
+            dict((out.get("recent_strategy_feedback") or {}).get("recent_playbook_performance") or {})
+            if isinstance(out.get("recent_strategy_feedback"), dict)
+            else {}
+        ),
+        "advisory_only": bool((out.get("recent_strategy_feedback") or {}).get("advisory_only", True))
+        if isinstance(out.get("recent_strategy_feedback"), dict)
+        else True,
+    }
+    reporter_feedback = out.get("reporter_feedback_packet") if isinstance(out.get("reporter_feedback_packet"), dict) else {}
+    out["reporter_feedback_packet"] = {
+        "available": bool(reporter_feedback.get("available")),
+        "status": str(reporter_feedback.get("status") or ""),
+        "confidence": str(reporter_feedback.get("confidence") or "none"),
+        "insight_summary": str(reporter_feedback.get("insight_summary") or "")[:140],
+        "blocker_analysis": list(reporter_feedback.get("blocker_analysis") or [])[:2],
+        "recommendation": [str(x or "") for x in list(reporter_feedback.get("recommendation") or [])[:2]],
+        "advisory_only": True,
+    }
+    strategy_memory = out.get("strategy_memory") if isinstance(out.get("strategy_memory"), dict) else {}
+    out["strategy_memory"] = {
+        "status": str(strategy_memory.get("status") or ""),
+        "best_playbooks": list(strategy_memory.get("best_playbooks") or [])[:2],
+        "worst_playbooks": list(strategy_memory.get("worst_playbooks") or [])[:2],
+        "pattern_performance_snapshot": {
+            "problem_patterns": list(
+                ((strategy_memory.get("pattern_performance_snapshot") or {}).get("problem_patterns") or [])
+            )[:3]
+            if isinstance(strategy_memory.get("pattern_performance_snapshot"), dict)
+            else [],
+            "working_patterns": list(
+                ((strategy_memory.get("pattern_performance_snapshot") or {}).get("working_patterns") or [])
+            )[:2]
+            if isinstance(strategy_memory.get("pattern_performance_snapshot"), dict)
+            else [],
+        },
+        "advisory_only": bool(strategy_memory.get("advisory_only", True)),
+    }
+    memory_packets = out.get("memory_packets") if isinstance(out.get("memory_packets"), dict) else {}
+    out["memory_packets"] = {
+        "daily_strategy_memory": dict(memory_packets.get("daily_strategy_memory") or {}),
+        "symbol_memory_packet": dict(memory_packets.get("symbol_memory_packet") or {}),
+    }
+    return out
+
+
 def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     compact = dict(payload or {})
     memory_usage_disabled = _strategy_memory_usage_disabled(compact)
@@ -3029,6 +3234,8 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
             "use only current market, scanner, monitor, refresh, and risk evidence."
         )
     compact["resolved_call_kind"] = _resolve_strategist_llm_call_kind(compact)
+    compact = _apply_strategist_llm_token_budget(compact, memory_usage_disabled=memory_usage_disabled)
+    compact["resolved_call_kind"] = _resolve_strategist_llm_call_kind(compact)
     if not memory_usage_disabled and compact["resolved_call_kind"] == "market_strategy_frame":
         _hide_stage1_symbol_memory(compact)
     return compact
@@ -3186,9 +3393,10 @@ def _run_strategist_frame_llm(
         else {}
     )
     if bool(refresh_context.get("requested")):
-        refresh_token_cap = max(1024, int(_env_int("STRATEGIST_REFRESH_MAX_TOKENS") or 4096))
+        refresh_token_cap = max(1024, int(_env_int("STRATEGIST_REFRESH_MAX_TOKENS") or 2048))
         if max_tokens > refresh_token_cap:
             max_tokens = int(refresh_token_cap)
+            route_policy["max_tokens"] = int(max_tokens)
             effective_config = dict(runtime.get("llm_execution_effective_config") or {})
             effective_config["max_tokens"] = int(max_tokens)
             effective_config["refresh_token_cap_applied"] = True
@@ -4584,23 +4792,42 @@ def _monitor_guidance(*, market_regime: str, playbook: str) -> str:
 _TACTICAL_STRATEGIES = (
     "opening_gap_momentum",
     "opening_range_breakout",
-    "leader_vwap_reclaim_pullback",
+    "vwap_reclaim_pullback",
     "volume_breakout",
     "reversal_reclaim",
     "cost_aware_scalp",
     "defensive_observe",
 )
 
+_TACTICAL_STRATEGY_ALIASES = {
+    "leader_vwap_reclaim_pullback": "vwap_reclaim_pullback",
+}
+
+_TACTICAL_SUBTYPES = (
+    "theme_confirmed_pullback",
+    "market_representative_pullback",
+    "liquidity_confirmed_pullback",
+    "vwap_reclaim_setup",
+    "weak_fallback_pullback",
+    "none",
+)
+
+_TACTICAL_SUBTYPE_ALIASES = {
+    "theme_leader_pullback": "theme_confirmed_pullback",
+    "liquidity_leader_trend": "liquidity_confirmed_pullback",
+    "vwap_reclaim_pullback": "vwap_reclaim_setup",
+}
+
 _TACTICAL_STRATEGY_BY_PLAYBOOK = {
     "breakout": "opening_range_breakout",
-    "pullback": "leader_vwap_reclaim_pullback",
+    "pullback": "vwap_reclaim_pullback",
     "reversal": "reversal_reclaim",
     "defensive": "defensive_observe",
 }
 
 _CANDIDATE_WATCH_DEFAULT_RANK = {
     "defensive_observe": 3,
-    "leader_vwap_reclaim_pullback": 5,
+    "vwap_reclaim_pullback": 5,
     "opening_gap_momentum": 7,
     "opening_range_breakout": 7,
     "volume_breakout": 7,
@@ -4645,9 +4872,20 @@ def _default_tactical_strategy(playbook: str) -> str:
 
 def _normalize_tactical_strategy(value: Any, *, playbook: str) -> str:
     raw = str(value or "").strip().lower()
+    raw = _TACTICAL_STRATEGY_ALIASES.get(raw, raw)
     if raw in _TACTICAL_STRATEGIES:
         return raw
     return _default_tactical_strategy(playbook)
+
+
+def _normalize_tactical_subtype(value: Any, *, tactical_strategy: str) -> str:
+    raw = str(value or "").strip().lower()
+    raw = _TACTICAL_SUBTYPE_ALIASES.get(raw, raw)
+    if raw in _TACTICAL_SUBTYPES:
+        return raw
+    if _normalize_tactical_strategy(tactical_strategy, playbook="pullback") == "vwap_reclaim_pullback":
+        return "vwap_reclaim_setup"
+    return "none"
 
 
 def _unit_score(value: Any, default: float = 0.0) -> float:
@@ -4686,7 +4924,7 @@ def _deterministic_strategy_scores(
     scores = {
         "opening_gap_momentum": (0.30 * risk_on) + (0.30 * bullish) + (0.25 * max(index_trend, 0.0)) + (0.15 * positive_tape),
         "opening_range_breakout": (0.25 * risk_on) + (0.25 * bullish) + (0.30 * trend_structure) + (0.20 * positive_tape),
-        "leader_vwap_reclaim_pullback": (0.20 * risk_on) + (0.20 * bullish) + (0.30 * trend_structure) + (0.20 * positive_tape) + (0.10 * (1.0 - vol_penalty)),
+        "vwap_reclaim_pullback": (0.20 * risk_on) + (0.20 * bullish) + (0.30 * trend_structure) + (0.20 * positive_tape) + (0.10 * (1.0 - vol_penalty)),
         "volume_breakout": (0.25 * risk_on) + (0.25 * bullish) + (0.25 * trend) + (0.15 * positive_tape) + (0.10 * (1.0 - macro_penalty)),
         "reversal_reclaim": (0.25 * range_structure) + (0.25 * (1.0 - positive_tape)) + (0.20 * risk_on) + (0.15 * (1.0 - high_vol)) + (0.15 * bullish),
         "cost_aware_scalp": (0.25 * risk_on) + (0.25 * bullish) + (0.20 * (1.0 - macro_penalty)) + (0.15 * trend_structure) + (0.15 * positive_tape),
@@ -4715,9 +4953,10 @@ def _normalize_strategy_scores(
         market_context_inputs=market_context_inputs,
     )
     if isinstance(raw, dict):
-        for key in _TACTICAL_STRATEGIES:
-            if key in raw:
-                scores[key] = round(_unit_score(raw.get(key), scores.get(key, 0.0)), 4)
+        for raw_key, raw_value in raw.items():
+            key = _TACTICAL_STRATEGY_ALIASES.get(str(raw_key or "").strip().lower(), str(raw_key or "").strip().lower())
+            if key in _TACTICAL_STRATEGIES:
+                scores[key] = round(_unit_score(raw_value, scores.get(key, 0.0)), 4)
     return scores
 
 
@@ -4730,7 +4969,10 @@ def _normalize_rejected_strategy_reasons(
     out: Dict[str, str] = {}
     if isinstance(raw, dict):
         for key, value in raw.items():
-            name = str(key or "").strip().lower()
+            name = _TACTICAL_STRATEGY_ALIASES.get(
+                str(key or "").strip().lower(),
+                str(key or "").strip().lower(),
+            )
             if name not in _TACTICAL_STRATEGIES or name == tactical_strategy:
                 continue
             reason = _clean_directive_reason(value, default="")
@@ -4813,6 +5055,10 @@ def _normalize_candidate_watch_policy(
         "source": "strategist_visibility_proposal",
         "behavior_effect": "visibility_only",
         "tactical_strategy": strategy,
+        "tactical_subtype": _normalize_tactical_subtype(
+            src.get("tactical_subtype"),
+            tactical_strategy=strategy,
+        ),
         "playbook": _norm_playbook(playbook, default="defensive"),
         "market_regime": str(market_regime or ""),
         "risk_tone": str(risk_tone or ""),
@@ -7106,6 +7352,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         fear_index=global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {},
     )
     tactical_strategy = _normalize_tactical_strategy(ai_overrides.get("tactical_strategy"), playbook=playbook)
+    tactical_subtype = _normalize_tactical_subtype(
+        ai_overrides.get("tactical_subtype"),
+        tactical_strategy=tactical_strategy,
+    )
     strategy_scores = _normalize_strategy_scores(
         ai_overrides.get("strategy_scores"),
         playbook=playbook,
@@ -7278,6 +7528,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     market_policy["requested_playbook_source"] = requested_playbook_source
     market_policy["final_playbook"] = playbook
     market_policy["tactical_strategy"] = tactical_strategy
+    market_policy["tactical_subtype"] = tactical_subtype
     market_policy["strategy_scores"] = dict(strategy_scores)
     market_policy["rejected_strategy_reasons"] = dict(rejected_strategy_reasons)
     strategy_policy["market_policy"] = dict(market_policy)
@@ -7503,6 +7754,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["requested_playbook_source"] = requested_playbook_source
     strategist_output["final_playbook"] = playbook
     strategist_output["tactical_strategy"] = tactical_strategy
+    strategist_output["tactical_subtype"] = tactical_subtype
     strategist_output["strategy_scores"] = dict(strategy_scores)
     strategist_output["rejected_strategy_reasons"] = dict(rejected_strategy_reasons)
     strategist_output["candidate_watch_policy"] = dict(candidate_watch_policy)

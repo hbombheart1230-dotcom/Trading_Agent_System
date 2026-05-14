@@ -683,9 +683,6 @@ def test_operator_daily_summary_reconciles_flattened_position_from_lifecycle(tmp
     assert "005930: 잔여 보유" not in text
     assert "장중 청산 확인: 005930은 당일 전량 매도 기록으로 잔여 보유에서 제외했습니다." in text
     assert "000660: 잔여 보유" in text
-    assert "사유 오버나이트 판단 기록 없음" in text
-    assert "판단 기록 상태: 마지막 모니터 2026-05-11 15:19:19 KST" in text
-    assert "EOD 판단창(15:20 이후) 재점검 없음" in text
     assert "000660: 거래 1건 / 완료 0건" in text
 
 

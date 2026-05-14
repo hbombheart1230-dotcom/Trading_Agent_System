@@ -14,10 +14,23 @@ def _entry_breakout_rows() -> list[dict]:
     ]
 
 
+def _entry_selected() -> dict:
+    return {
+        "symbol": "AAA",
+        "price": 101.8,
+        "score": 0.9,
+        "risk_score": 0.2,
+        "confidence": 0.8,
+        "expected_move_pct": 0.03,
+        "scanner_chart_fit_score": 0.86,
+        "scanner_chart_fit_authority": "test_fixture",
+    }
+
+
 def test_m29_4_position_sizing_disabled_keeps_default_qty_one():
     state = {
         "plan": {"thesis": "demo"},
-        "selected": {"symbol": "AAA", "price": 101.8, "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
+        "selected": _entry_selected(),
         "minute_ohlcv_by_symbol": {"AAA": _entry_breakout_rows()},
         "portfolio_snapshot": {"cash": 1_000_000.0, "positions": []},
         "market_snapshot": {"symbol": "AAA", "price": 101.8},
@@ -31,7 +44,7 @@ def test_m29_4_position_sizing_disabled_keeps_default_qty_one():
 def test_m29_4_position_sizing_enabled_sets_risk_based_qty():
     state = {
         "plan": {"thesis": "demo"},
-        "selected": {"symbol": "AAA", "price": 101.8, "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
+        "selected": _entry_selected(),
         "minute_ohlcv_by_symbol": {"AAA": _entry_breakout_rows()},
         "portfolio_snapshot": {"cash": 1_000_000.0, "positions": []},
         "market_snapshot": {"symbol": "AAA", "price": 101.8},
@@ -54,7 +67,7 @@ def test_m29_4_position_sizing_enabled_sets_risk_based_qty():
 def test_m29_4_commander_position_sizing_policy_enables_scaled_entry_qty():
     state = {
         "plan": {"thesis": "demo"},
-        "selected": {"symbol": "AAA", "price": 101.8, "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
+        "selected": _entry_selected(),
         "minute_ohlcv_by_symbol": {"AAA": _entry_breakout_rows()},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
         "market_snapshot": {"symbol": "AAA", "price": 101.8},
@@ -90,7 +103,7 @@ def test_m29_4_commander_position_sizing_policy_enables_scaled_entry_qty():
 def test_m29_4_position_sizing_uses_entry_structure_stop_loss():
     state = {
         "plan": {"thesis": "demo"},
-        "selected": {"symbol": "AAA", "price": 101.8, "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
+        "selected": _entry_selected(),
         "minute_ohlcv_by_symbol": {"AAA": _entry_breakout_rows()},
         "portfolio_snapshot": {"cash": 1_000_000.0, "positions": []},
         "market_snapshot": {"symbol": "AAA", "price": 101.8},

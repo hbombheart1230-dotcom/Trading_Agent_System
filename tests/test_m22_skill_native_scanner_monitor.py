@@ -164,6 +164,28 @@ def test_m22_monitor_maps_filled_lifecycle_from_qty_progress():
     assert life["progress"] == 1.0
 
 
+def test_m22_monitor_maps_remaining_qty_complete_text_as_pending_unfilled():
+    state = {
+        "selected": {"symbol": "AAA"},
+        "order_status": {
+            "ord_no": "ord-2",
+            "symbol": "AAA",
+            "status": "COMPLETE",
+            "filled_qty": 0,
+            "order_qty": 2,
+            "remaining_qty": 2,
+        },
+    }
+
+    out = monitor_node(state)
+    life = out["monitor"]["order_lifecycle"]
+    assert life["stage"] == "pending_unfilled"
+    assert life["terminal"] is False
+    assert life["filled_qty"] == 0
+    assert life["remaining_qty"] == 2
+    assert life["progress"] == 0.0
+
+
 def test_m22_monitor_maps_cancelled_lifecycle_from_status_text():
     state = {
         "selected": {"symbol": "AAA"},

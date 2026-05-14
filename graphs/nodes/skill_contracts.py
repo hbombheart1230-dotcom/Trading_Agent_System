@@ -79,23 +79,25 @@ def account_order_is_pending(row: Dict[str, Any]) -> bool:
     )
     status = status_raw.strip().upper()
 
-    terminal_tokens = (
+    cancel_or_reject_tokens = (
         "CANCEL",
         "CANCELED",
         "CANCELLED",
         "REJECT",
         "DENY",
         "BLOCK",
+        "\ucde8\uc18c",
+        "\uac70\ubd80",
+        "\uac70\uc808",
+        "\u75cd\u2465\ub0fc",
+        "\u5ac4\uacd5",
+    )
+    filled_tokens = (
         "FILLED",
         "DONE",
         "COMPLETE",
         "COMPLETED",
-        "\ucde8\uc18c",
-        "\uac70\ubd80",
-        "\uac70\uc808",
         "\uc644\ub8cc",
-        "\u75cd\u2465\ub0fc",
-        "\u5ac4\uacd5",
     )
     nonterminal_tokens = (
         "OPEN",
@@ -108,12 +110,14 @@ def account_order_is_pending(row: Dict[str, Any]) -> bool:
         "\ubb12\ub2d4",
     )
 
-    if any(token and token in status for token in terminal_tokens):
+    if any(token and token in status for token in cancel_or_reject_tokens):
+        return False
+    if remaining_qty is not None and int(remaining_qty) > 0:
+        return True
+    if any(token and token in status for token in filled_tokens):
         return False
     if "\uccb4\uacb0" in status and "\ubbf8\uccb4\uacb0" not in status:
         return False
-    if remaining_qty is not None:
-        return int(remaining_qty) > 0
     if order_qty > 0 and filled_qty >= order_qty:
         return False
     if order_qty > 0 and filled_qty < order_qty and any(token and token in status for token in nonterminal_tokens):
@@ -389,6 +393,7 @@ def extract_order_status(state: Dict[str, Any]) -> Tuple[Dict[str, Any] | None, 
         "status": row.get("status") or row.get("acpt_tp"),
         "filled_qty": row.get("filled_qty") or row.get("cntr_qty"),
         "order_qty": row.get("order_qty") or row.get("ord_qty"),
+        "remaining_qty": row.get("remaining_qty") or row.get("ord_remnq") or row.get("rmnd_qty"),
         "filled_price": row.get("filled_price") or row.get("cntr_uv"),
         "order_price": row.get("order_price") or row.get("ord_uv"),
     }

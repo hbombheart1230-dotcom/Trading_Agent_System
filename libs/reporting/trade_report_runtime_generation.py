@@ -234,7 +234,17 @@ def plan_live_trade_report_generation(
             diagnostics_out["generation_attempted"] = True
             diagnostics_out["generation_ts"] = _utc_now_iso()
             mode = "generate_ai"
-    elif existing_report_obj:
+    elif str(diagnostics_out.get("report_status") or "").strip().lower() == "pending":
+        trade_report = {}
+        diagnostics_out["generation_attempted"] = False
+        diagnostics_out["generation_ts"] = _utc_now_iso()
+        diagnostics_out["report_output_available"] = False
+        diagnostics_out["report_artifact_available"] = False
+        diagnostics_out["report_generation_reason"] = str(
+            diagnostics_out.get("report_reason_human") or ""
+        )
+        mode = "pending_no_report"
+    elif existing_report_obj and not existing_report_noisy:
         trade_report = (
             dict(existing_report_obj)
             if not report_requested

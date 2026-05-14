@@ -1272,7 +1272,7 @@ def _resolve_commander_behavior_policy(
     scanner_include_change_rate = _is_trueish(scanner_include_change_rate)
     universe_asset_type = _existing_value("universe", "asset_type")
     if universe_asset_type in (None, ""):
-        universe_asset_type = "common_stock_only"
+        universe_asset_type = "all_tradable"
     monitor_scoring_threshold = _existing_value("monitor", "entry", "scoring", "threshold")
     if monitor_scoring_threshold is None:
         monitor_scoring_threshold = 3
@@ -1599,7 +1599,7 @@ def _resolve_commander_behavior_policy(
             },
         },
         "universe": {
-            "asset_type": str(universe_asset_type or "common_stock_only").strip().lower() or "common_stock_only",
+            "asset_type": str(universe_asset_type or "all_tradable").strip().lower() or "all_tradable",
             "policy_source": "commander_applied_policy",
         },
         "scanner": {
@@ -1754,7 +1754,7 @@ def _resolve_commander_behavior_policy(
             ),
             "reporter_feedback_mode": str(feedback_policy.get("reporter_feedback_mode") or "auto"),
             "universe_fields": {
-                "asset_type": str(universe_asset_type or "common_stock_only").strip().lower() or "common_stock_only",
+                "asset_type": str(universe_asset_type or "all_tradable").strip().lower() or "all_tradable",
             },
             "scanner_fields": {
                 "source_type": normalize_scanner_source_type(scanner_source_type),
@@ -2614,13 +2614,32 @@ def _build_commander_entry_control(
                 "reason": "market_or_risk_mode_not_supportive_for_entry_expansion",
             }
         )
+        defensive_top3_ok = bool(expandable_blocker and capacity_remaining > 0 and failure_streak >= 3)
         if candidate_watch_proposal:
             base = _apply_candidate_watch_proposal_to_entry_control(
                 base,
                 candidate_watch_proposal,
                 rank_cap=3,
-                force_disable_cascade=not bool(base.get("cascade_enabled")),
+                force_disable_cascade=not defensive_top3_ok,
                 clamp_reason="market_or_risk_mode_not_supportive_for_entry_expansion",
+            )
+        if defensive_top3_ok:
+            base.update(
+                {
+                    "decision": "defensive_top3_candidate_cascade",
+                    "max_priority_rank": max(3, _clamp_int(base.get("max_priority_rank"), 3, 1, 10)),
+                    "max_runner_ups": 2,
+                    "cascade_enabled": True,
+                    "reason": f"defensive_repeated_expandable_blocker_top3:{blocker}:streak={failure_streak}",
+                    "candidate_watch_policy_effect": (
+                        "commander_defensive_top3_repeated_blocker"
+                        if candidate_watch_proposal
+                        else str(base.get("candidate_watch_policy_effect") or "")
+                    ),
+                    "candidate_watch_policy_clamp_reason": (
+                        f"defensive_repeated_expandable_blocker_top3:{blocker}:streak={failure_streak}"
+                    ),
+                }
             )
         return base
     if repeated_block and not expandable_blocker:
@@ -2644,6 +2663,7 @@ def _build_commander_entry_control(
                 "decision": "expand_candidate_pool",
                 "max_priority_rank": int(max_priority_rank),
                 "max_runner_ups": int(max_priority_rank - 1),
+                "cascade_enabled": bool(max_priority_rank > 1),
                 "scan_aggressiveness_floor": float(scan_floor),
                 "reason": (
                     f"market_supportive_repeated_blocker:{blocker}:"
@@ -4012,8 +4032,10 @@ def _portfolio_preflight_event_summary(state: Dict[str, Any]) -> Dict[str, Any]:
         "portfolio_preflight": {
             "applied": bool(pf.get("applied")),
             "blocked": bool(pf.get("blocked")),
+            "degraded": bool(pf.get("degraded")),
             "reason": str(pf.get("reason") or ""),
             "phase": str(pf.get("phase") or ""),
+            "closeout_fallback": pf.get("closeout_fallback") if isinstance(pf.get("closeout_fallback"), dict) else {},
         }
     }
 
@@ -4063,6 +4085,42 @@ def _portfolio_preflight_block_payload(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _allow_closeout_after_portfolio_preflight_block(
+    state: Dict[str, Any],
+    payload: Dict[str, Any],
+    *,
+    phase: RuntimePhase,
+) -> Tuple[bool, Dict[str, Any]]:
+    if phase != "session":
+        return False, {}
+    if not _is_trueish(os.getenv("COMMANDER_CLOSEOUT_PREFLIGHT_FALLBACK_ENABLED", "true")):
+        return False, {"reason": "closeout_preflight_fallback_disabled"}
+    if str(payload.get("reason") or "") not in {
+        "portfolio_snapshot_reader_error",
+        "portfolio_snapshot_positions_mismatch_unresolved",
+    }:
+        return False, {"reason": "preflight_reason_not_closeout_fallback_eligible"}
+    persisted_positions_count = _coerce_int(payload.get("persisted_positions_count"), 0)
+    if persisted_positions_count <= 0:
+        return False, {"reason": "no_persisted_position_for_closeout_fallback"}
+
+    closeout_active, closeout_payload = _should_use_session_closeout_fast_path(state)
+    if not closeout_active:
+        return False, {
+            "reason": "outside_session_closeout_window",
+            "closeout_guard": dict(closeout_payload or {}),
+        }
+    return True, {
+        "reason": "session_closeout_preflight_fallback",
+        "original_preflight_reason": str(payload.get("reason") or ""),
+        "persisted_positions_count": persisted_positions_count,
+        "reader_positions_count": _coerce_int(payload.get("reader_positions_count"), 0),
+        "positions_source": str(payload.get("positions_source") or ""),
+        "reconciliation_status": str(payload.get("reconciliation_status") or ""),
+        "closeout_guard": dict(closeout_payload or {}),
+    }
+
+
 def _apply_portfolio_preflight_guard(state: Dict[str, Any], *, phase: RuntimePhase) -> Tuple[bool, Dict[str, Any]]:
     payload = _portfolio_preflight_block_payload(state)
     if not payload:
@@ -4071,6 +4129,23 @@ def _apply_portfolio_preflight_guard(state: Dict[str, Any], *, phase: RuntimePha
             "blocked": False,
             "phase": phase,
         }
+        return True, state
+
+    allow_closeout, fallback_payload = _allow_closeout_after_portfolio_preflight_block(
+        state,
+        payload,
+        phase=phase,
+    )
+    if allow_closeout:
+        state["portfolio_preflight"] = {
+            **payload,
+            "applied": True,
+            "blocked": False,
+            "phase": phase,
+            "degraded": True,
+            "closeout_fallback": dict(fallback_payload),
+        }
+        state["portfolio_preflight_closeout_fallback"] = dict(fallback_payload)
         return True, state
 
     state["portfolio_preflight"] = {
@@ -4235,10 +4310,12 @@ def _persist_strategist_output_cache(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output = _normalize_strategist_output_contract(strategist_output)
     state["strategist_output"] = dict(strategist_output)
     persisted_state = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    input_fingerprint = _build_strategist_input_fingerprint(state)
     persisted_state["strategist_output_cache"] = {
         "output": dict(strategist_output),
         "generated_epoch": int(_runtime_now_epoch(state)),
         "source": "strategist_node",
+        "input_fingerprint": dict(input_fingerprint),
     }
     state["persisted_state"] = persisted_state
     return state
@@ -5630,6 +5707,12 @@ def _assess_pre_buy_strategist_refresh_need(
     if not signal:
         payload["reason"] = "no_pre_buy_refresh_signal"
         return payload
+    input_drift = _assess_cached_strategist_input_drift(state)
+    payload["strategist_input_drift"] = dict(input_drift)
+    if bool(input_drift.get("comparable")) and not bool(input_drift.get("material_change")):
+        payload["reason"] = "strategist_input_context_unchanged"
+        payload["refresh_signal_suppressed"] = str(signal)
+        return payload
     payload["requested"] = True
     payload["reason"] = "commander_requested_refresh"
     return payload
@@ -5646,6 +5729,248 @@ def _post_scanner_selected_symbol(state: Dict[str, Any]) -> str:
         or scanner_output.get("selected_symbol")
         or ""
     ).strip().upper()
+
+
+def _score_bucket(value: Any, *, step: float = 0.10) -> str:
+    numeric = _shadow_float(value)
+    if numeric is None:
+        return "unknown"
+    if step <= 0.0:
+        step = 0.10
+    bucket = int(float(numeric) / float(step))
+    return f"{round(bucket * step, 4):.2f}-{round((bucket + 1) * step, 4):.2f}"
+
+
+def _rank_bucket(value: Any) -> str:
+    rank = _coerce_int(value, 0)
+    if rank <= 0:
+        return "unknown"
+    if rank == 1:
+        return "rank1"
+    if rank <= 3:
+        return "rank2_3"
+    if rank <= 10:
+        return "rank4_10"
+    return "rank11_plus"
+
+
+def _entry_gate_bucket(state: Dict[str, Any]) -> str:
+    monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+    monitor = state.get("monitor") if isinstance(state.get("monitor"), dict) else {}
+    entry_detail = state.get("monitor_entry_decision_detail") if isinstance(state.get("monitor_entry_decision_detail"), dict) else {}
+    for key in ("entry_guard_reason", "entry_exit_reason", "primary_reason_code", "reason"):
+        value = (
+            monitor_output.get(key)
+            if monitor_output.get(key) not in (None, "")
+            else monitor.get(key)
+            if monitor.get(key) not in (None, "")
+            else entry_detail.get(key)
+        )
+        text = str(value or "").strip().lower()
+        if text:
+            return text[:80]
+    intent = str(monitor_output.get("intent_side") or monitor.get("intent_side") or "").strip().upper()
+    if intent == "BUY":
+        return "buy_ready"
+    return "unknown"
+
+
+def _candidate_theme_tokens(row: Dict[str, Any]) -> list[str]:
+    raw_values: list[Any] = []
+    for key in ("theme", "primary_theme", "sector", "industry"):
+        raw_values.append(row.get(key))
+    for key in ("themes", "theme_names", "theme_tags", "matched_themes"):
+        value = row.get(key)
+        if isinstance(value, (list, tuple, set)):
+            raw_values.extend(list(value))
+        else:
+            raw_values.append(value)
+    out: list[str] = []
+    for value in raw_values:
+        if value in (None, ""):
+            continue
+        for token in str(value).replace("|", ",").replace("/", ",").split(","):
+            text = token.strip().lower()
+            if text and text not in out:
+                out.append(text[:80])
+    return out[:5]
+
+
+def _candidate_chart_fit_value(row: Dict[str, Any]) -> Any:
+    for key in ("scanner_chart_fit_score", "scanner_macro_chart_fit_score", "entry_compatibility_score", "confidence"):
+        if row.get(key) not in (None, ""):
+            return row.get(key)
+    return None
+
+
+def _candidate_edge_bucket(row: Dict[str, Any], state: Dict[str, Any]) -> str:
+    for key in (
+        "cost_adjusted_edge_pct",
+        "estimated_gross_edge_pct",
+        "expected_edge_pct",
+        "expected_move_pct",
+        "expected_return_pct",
+    ):
+        if row.get(key) not in (None, ""):
+            value = _shadow_float(row.get(key))
+            if value is None:
+                continue
+            if value < 0.0:
+                return "negative"
+            if value < 0.003:
+                return "tiny"
+            if value < 0.012:
+                return "below_cost_floor"
+            if value < 0.025:
+                return "tradable"
+            return "strong"
+    gate = _entry_gate_bucket(state)
+    if "cost" in gate and ("fail" in gate or "not" in gate or "below" in gate):
+        return "below_cost_floor"
+    if "ready" in gate or "buy" in gate:
+        return "tradable"
+    return "unknown"
+
+
+def _build_strategist_input_fingerprint(state: Dict[str, Any]) -> Dict[str, Any]:
+    selected_symbol = _post_scanner_selected_symbol(state)
+    snapshot = _post_scanner_candidate_snapshot(state, selected_symbol) if selected_symbol else {}
+    rows = [dict(row) for row in list(snapshot.get("rows") or []) if isinstance(row, dict)]
+    if not rows:
+        scanner_output = state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {}
+        for key in ("candidates", "top_candidates", "ranked_candidates", "pool"):
+            raw_rows = scanner_output.get(key)
+            if isinstance(raw_rows, list):
+                rows = [
+                    _compact_post_scanner_candidate_row(row, fallback_rank=idx)
+                    for idx, row in enumerate(raw_rows[:10], start=1)
+                    if isinstance(row, dict)
+                ]
+                rows = [row for row in rows if row]
+                break
+    selected_candidate = dict(snapshot.get("selected_candidate") or snapshot.get("primary") or {})
+    if not selected_candidate and selected_symbol:
+        selected_candidate = next((dict(row) for row in rows if str(row.get("symbol") or "").upper() == selected_symbol), {})
+    if not selected_symbol:
+        selected_symbol = str(selected_candidate.get("symbol") or "").strip().upper()
+    market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    open_symbols = _portfolio_open_position_symbols(state)
+    themes: list[str] = []
+    for row in rows[:5]:
+        for token in _candidate_theme_tokens(row):
+            if token not in themes:
+                themes.append(token)
+    top_symbols = [str(row.get("symbol") or "").strip().upper() for row in rows[:5] if str(row.get("symbol") or "").strip()]
+    selected_score = selected_candidate.get("score_total") if selected_candidate.get("score_total") is not None else selected_candidate.get("score")
+    out = {
+        "schema_version": "strategist_input_fingerprint.v1",
+        "selected_symbol": selected_symbol,
+        "selected_rank_bucket": _rank_bucket(selected_candidate.get("rank")),
+        "selected_score_bucket": _score_bucket(selected_score),
+        "selected_chart_fit_bucket": _score_bucket(_candidate_chart_fit_value(selected_candidate)),
+        "selected_edge_bucket": _candidate_edge_bucket(selected_candidate, state),
+        "entry_gate_bucket": _entry_gate_bucket(state),
+        "top_symbols": top_symbols[:5],
+        "top3_symbols": top_symbols[:3],
+        "top_themes": themes[:5],
+        "market_regime": str(
+            state.get("market_regime")
+            or market_context.get("regime")
+            or market_context.get("market_regime")
+            or ""
+        ).strip().lower()[:80],
+        "open_position_count": int(_portfolio_open_position_count(state)),
+        "open_symbols": sorted(open_symbols),
+    }
+    return out
+
+
+def _jaccard_distance(left: list[str], right: list[str]) -> float:
+    left_set = {str(x or "").strip() for x in left if str(x or "").strip()}
+    right_set = {str(x or "").strip() for x in right if str(x or "").strip()}
+    if not left_set and not right_set:
+        return 0.0
+    if not left_set or not right_set:
+        return 1.0
+    return float(1.0 - (len(left_set & right_set) / len(left_set | right_set)))
+
+
+def _assess_strategist_fingerprint_drift(
+    previous: Dict[str, Any],
+    current: Dict[str, Any],
+    *,
+    threshold: float | None = None,
+) -> Dict[str, Any]:
+    prev = dict(previous or {}) if isinstance(previous, dict) else {}
+    cur = dict(current or {}) if isinstance(current, dict) else {}
+    effective_threshold = (
+        float(threshold)
+        if threshold is not None
+        else float(_runtime_float(os.getenv("COMMANDER_STRATEGIST_INPUT_DRIFT_THRESHOLD", "0.45"), 0.45))
+    )
+    reasons: list[str] = []
+    if not prev or not cur:
+        return {
+            "comparable": False,
+            "material_change": True,
+            "change_score": 1.0,
+            "threshold": float(effective_threshold),
+            "reasons": ["fingerprint_missing"],
+            "previous": prev,
+            "current": cur,
+        }
+    score = 0.0
+    if str(prev.get("selected_symbol") or "") != str(cur.get("selected_symbol") or ""):
+        score += 0.30
+        reasons.append("selected_symbol_changed")
+    top_distance = _jaccard_distance(list(prev.get("top_symbols") or []), list(cur.get("top_symbols") or []))
+    if top_distance > 0.0:
+        score += 0.25 * top_distance
+        reasons.append("top_symbols_changed")
+    theme_distance = _jaccard_distance(list(prev.get("top_themes") or []), list(cur.get("top_themes") or []))
+    if theme_distance > 0.0:
+        score += 0.10 * theme_distance
+        reasons.append("top_themes_changed")
+    for key, weight, reason in (
+        ("selected_rank_bucket", 0.08, "selected_rank_bucket_changed"),
+        ("selected_chart_fit_bucket", 0.12, "selected_chart_fit_bucket_changed"),
+        ("selected_edge_bucket", 0.12, "selected_edge_bucket_changed"),
+        ("entry_gate_bucket", 0.10, "entry_gate_changed"),
+        ("market_regime", 0.10, "market_regime_changed"),
+    ):
+        if str(prev.get(key) or "") != str(cur.get(key) or ""):
+            score += weight
+            reasons.append(reason)
+    if int(prev.get("open_position_count") or 0) != int(cur.get("open_position_count") or 0):
+        score += 0.15
+        reasons.append("open_position_count_changed")
+    if sorted(list(prev.get("open_symbols") or [])) != sorted(list(cur.get("open_symbols") or [])):
+        score += 0.12
+        reasons.append("open_symbols_changed")
+    score = min(1.0, float(score))
+    return {
+        "comparable": True,
+        "material_change": bool(score >= effective_threshold),
+        "change_score": round(score, 6),
+        "threshold": float(effective_threshold),
+        "reasons": reasons,
+        "previous": prev,
+        "current": cur,
+    }
+
+
+def _assess_cached_strategist_input_drift(state: Dict[str, Any]) -> Dict[str, Any]:
+    cache_payload = _strategist_cache_payload(state)
+    previous = cache_payload.get("input_fingerprint") if isinstance(cache_payload.get("input_fingerprint"), dict) else {}
+    current = _build_strategist_input_fingerprint(state)
+    out = _assess_strategist_fingerprint_drift(previous, current)
+    out["cache_source"] = str(cache_payload.get("source") or "")
+    out["cache_age_sec"] = (
+        max(0, _runtime_now_epoch(state) - _coerce_int(cache_payload.get("generated_epoch"), 0))
+        if _coerce_int(cache_payload.get("generated_epoch"), 0) > 0
+        else None
+    )
+    return out
 
 
 def _compact_post_scanner_candidate_row(row: Dict[str, Any], *, fallback_rank: int = 0) -> Dict[str, Any]:
@@ -5705,16 +6030,46 @@ def _compact_post_scanner_candidate_row(row: Dict[str, Any], *, fallback_rank: i
         "confidence",
         "entry_compatibility_score",
         "compatibility_bias",
+        "scanner_chart_fit_score",
+        "scanner_chart_fit_penalty",
+        "scanner_macro_chart_fit_score",
+        "scanner_macro_chart_fit_bias",
         "bias_adjustment",
         "pre_adjust_score_total",
         "post_adjust_score_total",
+        "raw_entry_compatibility_bias",
+        "effective_entry_compatibility_bias",
     ):
         value = _shadow_float(row.get(key))
         if value is not None:
             compact[key] = round(float(value), 6)
+    chart_fit_components: Dict[str, Any] = {}
+    if isinstance(row.get("scanner_chart_fit_components"), dict):
+        for key, value in list(dict(row.get("scanner_chart_fit_components") or {}).items())[:10]:
+            numeric = _shadow_float(value)
+            chart_fit_components[str(key)[:50]] = (
+                round(float(numeric), 6)
+                if numeric is not None
+                else _shadow_text(value, max_len=80)
+            )
+    if chart_fit_components:
+        compact["scanner_chart_fit_components"] = chart_fit_components
+    macro_chart_fit_components: Dict[str, Any] = {}
+    if isinstance(row.get("scanner_macro_chart_fit_components"), dict):
+        for key, value in list(dict(row.get("scanner_macro_chart_fit_components") or {}).items())[:10]:
+            numeric = _shadow_float(value)
+            macro_chart_fit_components[str(key)[:50]] = (
+                round(float(numeric), 6)
+                if numeric is not None
+                else _shadow_text(value, max_len=80)
+            )
+    if macro_chart_fit_components:
+        compact["scanner_macro_chart_fit_components"] = macro_chart_fit_components
     for key in (
         "expected_monitor_block_reason",
         "dominant_block_reason",
+        "scanner_chart_fit_authority",
+        "scanner_macro_chart_fit_authority",
         "market_representative_guard_reason",
         "selection_reason_with_bias",
         "status",
@@ -5852,6 +6207,37 @@ def _force_selected_symbol_tactical_refresh_decision(
         return commander_decision
     snapshot = _post_scanner_candidate_snapshot(state, selected_symbol)
     primary = dict(snapshot.get("primary") or {})
+    input_drift = _assess_cached_strategist_input_drift(state)
+    if bool(input_drift.get("comparable")) and not bool(input_drift.get("material_change")):
+        out = dict(commander_decision)
+        refresh_context = (
+            dict(out.get("strategist_refresh_context") or {})
+            if isinstance(out.get("strategist_refresh_context"), dict)
+            else {}
+        )
+        refresh_context.update(
+            {
+                "refresh_scope": "selected_symbol_tactical_refresh",
+                "refresh_signal": "selected_symbol_tactical_refresh",
+                "selected_symbol": selected_symbol,
+                "selected_rank": int(primary.get("rank") or 0),
+                "selected_score": primary.get("score"),
+                "post_scanner_refresh_required": False,
+                "post_scanner_refresh_suppressed": True,
+                "post_scanner_refresh_suppressed_reason": "strategist_input_context_unchanged",
+                "strategist_input_drift": dict(input_drift),
+            }
+        )
+        out["strategist_refresh_context"] = dict(refresh_context)
+        observations = out.get("observations") if isinstance(out.get("observations"), dict) else {}
+        out["observations"] = {
+            **dict(observations),
+            "post_scanner_refresh_requested": False,
+            "post_scanner_refresh_suppressed": True,
+            "post_scanner_refresh_suppressed_reason": "strategist_input_context_unchanged",
+            "strategist_input_change_score": input_drift.get("change_score"),
+        }
+        return out
     refresh_context = (
         dict(commander_decision.get("strategist_refresh_context") or {})
         if isinstance(commander_decision.get("strategist_refresh_context"), dict)
@@ -5872,6 +6258,7 @@ def _force_selected_symbol_tactical_refresh_decision(
             "selected_symbol_was_rank1": bool(snapshot.get("selected_symbol_was_rank1")),
             "stage2_context_quality": str(snapshot.get("stage2_context_quality") or ""),
             "stage2_context_quality_reasons": list(snapshot.get("stage2_context_quality_reasons") or []),
+            "strategist_input_drift": dict(input_drift),
             "post_scanner_refresh_required": True,
             "refresh_summary": f"Selected-symbol tactical refresh after scanner ranking for {selected_symbol}.",
         }
@@ -6624,6 +7011,27 @@ def _run_integrated_chain_impl(
                 }
                 reused_strategist_cache = False
                 state = scanner_node(state)
+        else:
+            refresh_context = (
+                dict(post_scanner_decision.get("strategist_refresh_context") or {})
+                if isinstance(post_scanner_decision.get("strategist_refresh_context"), dict)
+                else {}
+            )
+            if bool(refresh_context.get("post_scanner_refresh_suppressed")):
+                shadow_runtime["post_scanner_refresh_requested"] = False
+                shadow_runtime["post_scanner_refresh_reason"] = ""
+                shadow_runtime["post_scanner_refresh_context"] = dict(refresh_context)
+                state["commander_decision"] = dict(post_scanner_decision)
+                state["commander_shadow_runtime"] = dict(shadow_runtime)
+                _log_commander_event(
+                    state,
+                    "post_scanner_refresh_suppressed",
+                    {
+                        "path": post_scanner_path,
+                        **dict(refresh_context),
+                        "skip_reason": str(refresh_context.get("post_scanner_refresh_suppressed_reason") or ""),
+                    },
+                )
     state = _hydrate_monitor_symbol_features(state)
     state = monitor_node(state)
     shadow_runtime["monitor_decision"] = str(((state.get("monitor_output") or {}).get("intent_side") or "NOOP"))

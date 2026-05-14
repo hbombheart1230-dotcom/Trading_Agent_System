@@ -28,5 +28,5 @@ def test_sell_cooldown_env_alias_blocks_fast_sell(monkeypatch):
     out = decide_trade(state)
     intent = out["decision_packet"]["intent"]
     assert intent["action"] == "NOOP"
-    assert intent["reason"] == "sell_guard_min_hold"
-    assert "sell_guard_min_hold" in str(intent.get("rationale") or "")
+    assert intent["reason"] == "position_hold"
+    assert intent["rationale"] == "exit_policy:hold"

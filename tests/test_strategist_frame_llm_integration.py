@@ -59,7 +59,7 @@ class _FakeRouterOk:
             '{"market_regime":"risk_on","market_sentiment":"bullish","themes":["semiconductor","ai"],'
             '"avoid_themes":["high_gap_speculative"],"playbook":"breakout","scanner_bias":"momentum",'
             '"tactical_strategy":"opening_range_breakout",'
-            '"strategy_scores":{"opening_range_breakout":0.82,"leader_vwap_reclaim_pullback":0.61,"defensive_observe":0.14},'
+            '"strategy_scores":{"opening_range_breakout":0.82,"vwap_reclaim_pullback":0.61,"defensive_observe":0.14},'
             '"rejected_strategy_reasons":{"defensive_observe":"risk_on tape supports active watch"},'
             '"candidate_watch_policy":{"max_priority_rank":7,"max_runner_ups":4,"cascade_enabled":true,'
             '"cascade_allowed_reasons":["too_extended_from_vwap","breakout_not_ready"],'
@@ -1284,16 +1284,19 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
     compact = _build_compact_strategist_llm_payload(payload)
 
     assert compact["global_sentiment_signal"]["score"] == -0.1738
-    assert len(compact["recent_strategy_feedback"]["top_recent_strengths"]) == 3
-    assert len(compact["recent_strategy_feedback"]["top_recent_weaknesses"]) == 4
-    assert len(compact["recent_strategy_feedback"]["suggested_report_focus"]) == 4
-    assert compact["recent_strategy_feedback"]["recent_theme_performance"]["defense"]["appearance_count"] == 6
+    assert compact["token_budget_policy"]["stage_specific_context"] is True
+    assert "theme_strength_packet" not in compact
+    assert "theme_strength_packet_summary" in compact
+    assert "top_recent_strengths" not in compact["recent_strategy_feedback"]
+    assert len(compact["recent_strategy_feedback"]["top_recent_weaknesses"]) == 2
+    assert "suggested_report_focus" not in compact["recent_strategy_feedback"]
+    assert "recent_theme_performance" not in compact["recent_strategy_feedback"]
     assert compact["reporter_feedback_packet"]["available"] is True
-    assert compact["reporter_feedback_packet"]["route_analysis"]["monitor_only_ratio"] == 0.6
+    assert "route_analysis" not in compact["reporter_feedback_packet"]
     assert len(compact["reporter_feedback_packet"]["blocker_analysis"]) == 2
     assert len(compact["reporter_feedback_packet"]["recommendation"]) == 2
-    assert len(compact["market_news_sample"]) == 4
-    assert len(compact["candidate_news_sample"]) == 4
+    assert compact["market_news_sample"] == {}
+    assert compact["candidate_news_sample"] == {}
     assert len(compact["candidate_symbols_hint"]) == 5
     assert len(compact["key_events_hint"]) == 4
     assert len(compact["themes_hint"]) == 4
@@ -1302,11 +1305,13 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
     assert compact["commander_refresh_context"]["selected_symbol"] == "000660"
     assert compact["commander_refresh_context"]["requires_policy_delta"] is True
     assert compact["commander_refresh_context"]["selected_symbol_memory"]["symbol"] == "000660"
-    assert compact["commander_refresh_context"]["selected_symbol_memory"]["dominant_playbook"] == "pullback"
+    assert "dominant_playbook" not in compact["commander_refresh_context"]["selected_symbol_memory"]
     assert compact["strategy_refresh_trace_input"]["post_scanner_refresh"]["selected_symbol"] == "000660"
     assert compact["strategy_refresh_trace_input"]["final_application"]["requires_policy_delta"] is True
     assert compact["memory_packets"]["daily_strategy_memory"]["status"] == "ok"
     assert compact["memory_packets"]["symbol_memory_packet"]["symbol"] == "000660"
+    assert "weekly_strategy_memory" not in compact["memory_packets"]
+    assert "monthly_strategy_memory" not in compact["memory_packets"]
     assert compact["commander_memory_policy"]["application_mode"] == "surface_only"
     assert compact["commander_memory_policy"]["active_layers"] == ["daily", "symbol"]
     assert compact["monitor_memory_bias"]["enabled"] is True

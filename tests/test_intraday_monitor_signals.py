@@ -1,5 +1,7 @@
 from libs.runtime.intraday_monitor_signals import (
     _build_chart_structure_decision_hint,
+    _build_human_chart_entry_setup,
+    _build_human_chart_buy_guard,
     _build_monitor_policy_alignment_summary,
     _build_monitor_policy_aware_gating,
     _build_monitor_policy_interpretation,
@@ -53,8 +55,19 @@ def _rows_breakout_reclaim_tuned_only_band() -> list[dict]:
 
 def _rows_breakout_reclaim_still_too_early() -> list[dict]:
     rows = _rows_breakout()
-    rows[-1]["vwap"] = 102.20
+    rows[-1]["vwap"] = 102.50
     return rows
+
+
+def _rows_etf_discount_reversion() -> list[dict]:
+    return [
+        {"open": 100.0, "high": 100.5, "low": 99.8, "close": 100.1, "volume": 1000, "vwap": 100.0},
+        {"open": 100.1, "high": 101.5, "low": 100.0, "close": 101.0, "volume": 1050, "vwap": 100.4},
+        {"open": 101.0, "high": 102.0, "low": 100.8, "close": 101.8, "volume": 1000, "vwap": 100.8},
+        {"open": 101.8, "high": 101.9, "low": 100.8, "close": 101.0, "volume": 980, "vwap": 100.9},
+        {"open": 101.0, "high": 101.2, "low": 100.7, "close": 100.9, "volume": 950, "vwap": 100.8},
+        {"open": 100.9, "high": 101.3, "low": 100.8, "close": 101.25, "volume": 900, "vwap": 100.8},
+    ]
 
 
 def _rows_daily_seed_like() -> list[dict]:
@@ -180,6 +193,29 @@ def test_intraday_entry_allows_breakout_path_without_strict_volume_confirmation(
     }
 
 
+def test_intraday_entry_allows_etf_discount_reversion_path() -> None:
+    policy = {"entry_volume_ratio_min": 2.0}
+    baseline = evaluate_intraday_entry_signal(_rows_etf_discount_reversion(), policy=policy)
+    out = evaluate_intraday_entry_signal(
+        _rows_etf_discount_reversion(),
+        features={
+            "asset_class_detected": "etf",
+            "etf_deviation_pct": -0.80,
+            "etf_deviation_source": "raw.dstr_rt",
+        },
+        policy=policy,
+    )
+
+    assert baseline["triggered"] is False
+    assert out["triggered"] is True
+    assert out["reason"] == "etf_discount_reversion_entry"
+    assert out["pattern"] == "etf_discount_reversion"
+    assert out["entry_condition_path"] == "etf_discount_reversion_path"
+    assert "etf_discount_reversion_path_ready" in list(out.get("signal_chain") or [])
+    assert (out.get("metrics") or {}).get("etf_deviation_pct") == -0.80
+    assert (out.get("condition_scores") or {}).get("etf_deviation_discount_entry_ok") is True
+
+
 def test_intraday_entry_observes_opening_gap_chase_without_hard_gate() -> None:
     rows = [
         {"ts": 1777444440, "open": 225800.0, "high": 226000.0, "low": 225500.0, "close": 225800.0, "volume": 120000.0},
@@ -256,7 +292,7 @@ def test_intraday_entry_breakout_path_still_blocks_when_reclaim_gate_is_not_read
     rows = _rows_breakout()
     rows[-1]["close"] = 101.8
     rows[-1]["high"] = 101.9
-    rows[-1]["vwap"] = 102.2
+    rows[-1]["vwap"] = 102.5
 
     out = evaluate_intraday_entry_signal(rows, policy={"entry_volume_ratio_min": 1.2})
 
@@ -1289,6 +1325,353 @@ def test_intraday_entry_structure_guard_can_block_legacy_pullback_buy(monkeypatc
     summary = out.get("policy_alignment_summary") or {}
     assert "chart_structure_decision_hint_evaluated" in list(trace.get("notes") or [])
     assert "chart_structure_decision_hint_applied" in list(summary.get("summary_notes") or [])
+
+
+def test_intraday_entry_human_chart_guard_blocks_broken_vwap_buy(monkeypatch) -> None:
+    baseline = evaluate_intraday_entry_signal(_rows_breakout())
+
+    monkeypatch.setattr(
+        "libs.runtime.intraday_monitor_signals.build_chart_structure_features",
+        lambda *args, **kwargs: {
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "structure": {"structure_hh_hl": "weakening"},
+            "trend_alignment": {"ma_alignment_state": "bearish", "trend_regime": "transition"},
+            "support_resistance": {"support_holding": "testing", "failed_breakout": "none"},
+            "continuity_momentum": {"momentum_follow_through": "weak"},
+            "human_chart_context": {
+                "schema_version": "human_chart_context.v1",
+                "available": True,
+                "entry_chart_score": 0.16,
+                "exit_risk_score": 0.42,
+                "vwap_breakdown_persistence": "strong",
+                "vwap_reclaim_persistence": "absent",
+                "late_entry_risk": "low",
+                "swing_low_break": False,
+                "lower_high_failure": False,
+            },
+            "notes": [],
+        },
+    )
+    out = evaluate_intraday_entry_signal(_rows_breakout())
+
+    assert baseline["legacy_entry_decision"] == "BUY"
+    assert out["legacy_entry_decision"] == "BUY"
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "human_chart_sanity_guard_blocked"
+    assert out["primary_failure_axis"] == "human_chart_sanity"
+    assert "human_chart_buy_guard" in list(out.get("signal_chain") or [])
+    assert out["hard_filter_passed"] is False
+    guard = out.get("human_chart_buy_guard") or {}
+    assert guard.get("applied") is True
+    blockers = list(guard.get("blocking_features") or [])
+    assert "entry_chart_score<0.25" in blockers
+    assert "exit_risk_score>=0.40" in blockers
+    assert "vwap_breakdown_persistence=strong" in blockers
+    trace = out.get("grouped_logic_trace") or {}
+    assert trace.get("human_chart_buy_guard_applied") is True
+
+
+def test_intraday_entry_human_chart_guard_blocks_late_no_room_upper_zone() -> None:
+    guard = _build_human_chart_buy_guard(
+        chart_human_context={
+            "available": True,
+            "entry_chart_score": 0.46,
+            "exit_risk_score": 0.18,
+            "vwap_breakdown_persistence": "absent",
+            "vwap_reclaim_persistence": "strong",
+            "late_entry_risk": "high",
+        },
+        chart_detail_context={
+            "available": True,
+            "reward_room_score": 0.0,
+            "observed": {"reward_room_pct": 0.0},
+        },
+        prev_close_distance_pct=0.299,
+        candidate_triggered=True,
+    )
+
+    assert guard["applied"] is True
+    assert guard["mode"] == "block"
+    blockers = list(guard.get("blocking_features") or [])
+    assert "near_upper_limit_zone_with_late_entry_no_reward_room" in blockers
+    assert "entry_chart_score<0.50_with_late_entry_no_reward_room" in blockers
+
+
+def test_intraday_entry_human_chart_guard_blocks_reward_room_below_cost_floor() -> None:
+    guard = _build_human_chart_buy_guard(
+        chart_human_context={
+            "available": True,
+            "entry_chart_score": 0.78,
+            "exit_risk_score": 0.08,
+            "vwap_breakdown_persistence": "absent",
+            "vwap_reclaim_persistence": "strong",
+            "late_entry_risk": "high",
+        },
+        chart_detail_context={
+            "available": True,
+            "reward_room_score": 0.45,
+            "observed": {"reward_room_pct": 0.008},
+        },
+        candidate_triggered=True,
+    )
+
+    assert guard["applied"] is True
+    assert guard["mode"] == "block"
+    blockers = list(guard.get("blocking_features") or [])
+    assert "reward_room_pct<0.012_cost_floor" in blockers
+
+
+def test_intraday_entry_human_chart_setup_can_promote_clean_near_ready_breakout(monkeypatch) -> None:
+    baseline = evaluate_intraday_entry_signal(_rows_breakout_reclaim_near_ready())
+    assert baseline["legacy_entry_decision"] == "WAIT"
+    assert baseline["triggered"] is False
+
+    monkeypatch.setattr(
+        "libs.runtime.intraday_monitor_signals.build_chart_structure_features",
+        lambda *args, **kwargs: {
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "human_chart_context": {
+                "schema_version": "human_chart_context.v1",
+                "available": True,
+                "entry_chart_score": 0.78,
+                "exit_risk_score": 0.08,
+                "vwap_reclaim_persistence": "strong",
+                "vwap_breakdown_persistence": "absent",
+                "volume_expansion_persistence": "strong",
+                "late_entry_risk": "none",
+                "swing_low_above_vwap": True,
+                "higher_low_continuation": True,
+                "box_breakout_retest_hold": True,
+                "swing_low_break": False,
+                "lower_high_failure": False,
+            },
+        },
+    )
+    out = evaluate_intraday_entry_signal(
+        _rows_breakout_reclaim_near_ready(),
+        policy={"entry_volume_ratio_min": 1.0, "require_vwap_reclaim": True},
+    )
+
+    assert out["legacy_entry_decision"] == "WAIT"
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["reason"] == "human_chart_entry_setup_confirmed"
+    assert out["entry_condition_path"] == "human_chart_setup_path"
+    assert "human_chart_entry_setup" in list(out.get("signal_chain") or [])
+
+    setup = out.get("human_chart_entry_setup") or {}
+    assert setup.get("available") is True
+    assert setup.get("applied") is True
+    assert setup.get("setup_quality") == "A"
+    assert setup.get("setup_label") == "breakout_retest_hold"
+    assert "box_breakout_retest_hold" in list(setup.get("matched_features") or [])
+
+    trace = out.get("grouped_logic_trace") or {}
+    assert trace.get("human_chart_entry_setup_applied") is True
+    assert trace.get("human_chart_setup_quality") == "A"
+    assert (out.get("entry_transition_trace") or {}).get("became_ready_this_cycle") is True
+
+
+def test_human_chart_setup_selectively_promotes_a_setup_with_minor_legacy_misses() -> None:
+    setup = _build_human_chart_entry_setup(
+        chart_human_context={
+            "available": True,
+            "entry_chart_score": 0.62,
+            "exit_risk_score": 0.08,
+            "vwap_reclaim_persistence": "strong",
+            "vwap_breakdown_persistence": "absent",
+            "volume_expansion_persistence": "strong",
+            "late_entry_risk": "none",
+            "swing_low_above_vwap": True,
+            "higher_low_continuation": True,
+            "box_breakout_retest_hold": True,
+            "swing_low_break": False,
+            "lower_high_failure": False,
+        },
+        chart_detail_context={
+            "available": True,
+            "candle_quality_score": 0.72,
+            "vwap_reference_quality_score": 0.84,
+            "reward_room_score": 0.58,
+            "multi_window_structure_score": 0.76,
+            "observed": {},
+        },
+        signal_evidence={
+            "scores": {
+                "entry_quality_score": 0.86,
+            },
+            "checks": {
+                "reclaim_gate_ok": True,
+                "volume_ok": True,
+                "breakout_path_ok": False,
+                "pullback_volume_path_ok": False,
+                "extension_ok": True,
+                "confidence_ok": False,
+            },
+            "derived": {
+                "too_extended": False,
+                "transition_readiness_score": 0.88,
+                "reclaim_distance_to_ready": -0.0004,
+                "volume_distance_to_ready": 0.0,
+                "breakout_distance_to_ready": -0.0008,
+            },
+        },
+        policy_alignment_summary={
+            "policy_available": True,
+            "top_failed_required_checks": ["rebound_ok"],
+        },
+        candidate_triggered=False,
+        legacy_reason="below_vwap_reclaim_not_ready",
+    )
+
+    assert setup["applied"] is True
+    assert setup["mode"] == "promote_wait_to_buy"
+    assert setup["setup_quality"] == "A"
+    assert "selective_human_chart_live_promotion" in list(setup.get("matched_features") or [])
+    assert setup.get("blocking_features") == []
+    observed = setup.get("observed") or {}
+    assert observed.get("selective_live_promotion_candidate") is True
+    assert "confidence_gate_not_confirmed" in list(observed.get("selective_live_promotion_overridden_blockers") or [])
+
+
+def test_human_chart_setup_promotes_strong_quality_even_with_moderate_chart_score() -> None:
+    setup = _build_human_chart_entry_setup(
+        chart_human_context={
+            "available": True,
+            "entry_chart_score": 0.49,
+            "exit_risk_score": 0.06,
+            "vwap_reclaim_persistence": "partial",
+            "vwap_breakdown_persistence": "absent",
+            "volume_expansion_persistence": "strong",
+            "late_entry_risk": "none",
+            "swing_low_above_vwap": True,
+            "higher_low_continuation": True,
+            "box_breakout_retest_hold": True,
+            "swing_low_break": False,
+            "lower_high_failure": False,
+        },
+        chart_detail_context={
+            "available": True,
+            "candle_quality_score": 0.74,
+            "vwap_reference_quality_score": 0.82,
+            "reward_room_score": 0.70,
+            "multi_window_structure_score": 0.78,
+            "observed": {"reward_room_pct": 0.018},
+        },
+        signal_evidence={
+            "scores": {
+                "entry_quality_score": 0.82,
+            },
+            "checks": {
+                "reclaim_gate_ok": False,
+                "volume_ok": True,
+                "breakout_path_ok": False,
+                "pullback_volume_path_ok": False,
+                "extension_ok": True,
+                "confidence_ok": False,
+            },
+            "derived": {
+                "too_extended": False,
+                "transition_readiness_score": 0.86,
+                "reclaim_distance_to_ready": -0.0020,
+                "volume_distance_to_ready": 0.12,
+                "breakout_distance_to_ready": -0.0010,
+            },
+        },
+        policy_alignment_summary={
+            "policy_available": True,
+            "top_failed_required_checks": ["reclaim_gate_ok", "rebound_ok"],
+        },
+        candidate_triggered=False,
+        legacy_reason="below_vwap_reclaim_not_ready",
+    )
+
+    assert setup["applied"] is True
+    assert setup["setup_quality"] == "A"
+    observed = setup.get("observed") or {}
+    assert observed.get("strong_quality_near_ready") is True
+    overridden = list(observed.get("selective_live_promotion_overridden_blockers") or [])
+    assert "required_check_failed:rebound_ok" in overridden
+    assert "confidence_gate_not_confirmed" in overridden
+
+
+def test_intraday_entry_human_chart_setup_requires_candle_quality(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "libs.runtime.intraday_monitor_signals.build_chart_structure_features",
+        lambda *args, **kwargs: {
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "human_chart_context": {
+                "schema_version": "human_chart_context.v1",
+                "available": True,
+                "entry_chart_score": 0.82,
+                "exit_risk_score": 0.08,
+                "vwap_reclaim_persistence": "strong",
+                "vwap_breakdown_persistence": "absent",
+                "volume_expansion_persistence": "strong",
+                "late_entry_risk": "none",
+                "swing_low_above_vwap": True,
+                "higher_low_continuation": True,
+                "box_breakout_retest_hold": True,
+                "swing_low_break": False,
+                "lower_high_failure": False,
+            },
+        },
+    )
+    rows = _rows_breakout_reclaim_near_ready()
+    rows[-1]["high"] = 104.0
+
+    out = evaluate_intraday_entry_signal(
+        rows,
+        policy={"entry_volume_ratio_min": 1.0, "require_vwap_reclaim": True},
+    )
+
+    assert out["triggered"] is False
+    setup = out.get("human_chart_entry_setup") or {}
+    assert setup.get("available") is True
+    assert setup.get("applied") is False
+    assert any("candle_quality_score<" in item for item in list(setup.get("blocking_features") or []))
+    assert float(((out.get("metrics") or {}).get("human_candle_quality_score") or 1.0)) < 0.45
+
+
+def test_intraday_entry_human_chart_setup_does_not_bypass_exit_risk(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "libs.runtime.intraday_monitor_signals.build_chart_structure_features",
+        lambda *args, **kwargs: {
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "human_chart_context": {
+                "schema_version": "human_chart_context.v1",
+                "available": True,
+                "entry_chart_score": 0.82,
+                "exit_risk_score": 0.36,
+                "vwap_reclaim_persistence": "strong",
+                "vwap_breakdown_persistence": "partial",
+                "volume_expansion_persistence": "strong",
+                "late_entry_risk": "none",
+                "swing_low_above_vwap": True,
+                "higher_low_continuation": True,
+                "box_breakout_retest_hold": True,
+                "swing_low_break": False,
+                "lower_high_failure": False,
+            },
+        },
+    )
+    out = evaluate_intraday_entry_signal(
+        _rows_breakout_reclaim_near_ready(),
+        policy={"entry_volume_ratio_min": 1.0, "require_vwap_reclaim": True},
+    )
+
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "below_vwap_reclaim_not_ready"
+    setup = out.get("human_chart_entry_setup") or {}
+    assert setup.get("available") is True
+    assert setup.get("applied") is False
+    assert "exit_risk_score>0.20" in list(setup.get("blocking_features") or [])
 
 
 def test_intraday_entry_pullback_structure_guard_does_not_block_when_support_and_trend_hold(monkeypatch) -> None:

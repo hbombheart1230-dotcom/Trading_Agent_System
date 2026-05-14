@@ -308,9 +308,9 @@ def test_write_strategist_artifact_refreshes_llm_summary_after_canonical_detail(
             "requested_playbook": "pullback",
             "requested_playbook_source": "llm",
             "final_playbook": "pullback",
-            "tactical_strategy": "leader_vwap_reclaim_pullback",
+            "tactical_strategy": "vwap_reclaim_pullback",
             "strategy_scores": {
-                "leader_vwap_reclaim_pullback": 0.85,
+                "vwap_reclaim_pullback": 0.85,
                 "defensive_observe": 0.15,
             },
             "rejected_strategy_reasons": {

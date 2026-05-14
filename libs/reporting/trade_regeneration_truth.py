@@ -21,6 +21,9 @@ def _minimal_rebuild_execution_details(details: Mapping[str, Any] | None) -> Dic
         "action",
         "side",
         "ts",
+        "broker_env",
+        "execution_mode",
+        "effective_mode",
         "broker_truth_source",
     ):
         if details_obj.get(key) not in (None, "", [], {}):
@@ -73,8 +76,8 @@ def rehydrate_lifecycle_bundle_execution_truth(
         rebuilt_entry = _rehydrate_side_execution_details(entry_ctx, trade_day=trade_day)
         if prefer_richer_execution_details(entry_ctx.get("execution_details"), rebuilt_entry):
             entry_ctx["execution_details"] = merge_preferred_execution_details(entry_ctx.get("execution_details"), rebuilt_entry)
-            bundle_obj["entry"] = entry_ctx
-            bundle_obj["entry_execution_details"] = dict(entry_ctx.get("execution_details") or {})
+        bundle_obj["entry"] = entry_ctx
+        bundle_obj["entry_execution_details"] = dict(entry_ctx.get("execution_details") or {})
 
     if exit_ctx:
         effective_entry_execution = (
@@ -89,8 +92,8 @@ def rehydrate_lifecycle_bundle_execution_truth(
         )
         if prefer_richer_execution_details(exit_ctx.get("execution_details"), rebuilt_exit):
             exit_ctx["execution_details"] = merge_preferred_execution_details(exit_ctx.get("execution_details"), rebuilt_exit)
-            bundle_obj["exit"] = exit_ctx
-            bundle_obj["exit_execution_details"] = dict(exit_ctx.get("execution_details") or {})
+        bundle_obj["exit"] = exit_ctx
+        bundle_obj["exit_execution_details"] = dict(exit_ctx.get("execution_details") or {})
 
     if status == "closed" and isinstance(bundle_obj.get("exit_execution_details"), dict):
         bundle_obj["execution_details"] = dict(bundle_obj.get("exit_execution_details") or {})

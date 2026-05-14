@@ -32,6 +32,18 @@ _DEFAULT_EXIT_GUIDANCE = {
 
 _LONG_HORIZONS = {"overnight_probe", "1_2day_swing"}
 
+_HORIZON_ALIASES = {
+    "scalp_intraday": "scalp",
+    "scalping": "scalp",
+    "daytrade": "intraday",
+    "day_trade": "intraday",
+    "day_trading": "intraday",
+    "swing_1_2day": "1_2day_swing",
+    "1-2day_swing": "1_2day_swing",
+    "1_2_day_swing": "1_2day_swing",
+    "two_day_swing": "1_2day_swing",
+}
+
 _HORIZON_BEHAVIOR_TRANSLATION = {
     "scalp": {
         "scanner_scope_bias": "narrow_fast_ready_candidates",
@@ -265,6 +277,19 @@ def _choose_default_horizon(*, playbook: str = "", monitor_guidance: str = "", t
     return "intraday"
 
 
+def _normalize_strategy_horizon_value(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    # A pipe/comma-delimited value is almost always the prompt placeholder, not
+    # a real single choice. Let caller fall back deterministically.
+    if "|" in raw or "," in raw:
+        return ""
+    normalized = raw.replace(" ", "_")
+    normalized = _HORIZON_ALIASES.get(normalized, normalized)
+    return normalized if normalized in _ALLOWED_HORIZONS else ""
+
+
 def build_strategy_horizon_feedback(
     raw: Mapping[str, Any] | None = None,
     *,
@@ -284,16 +309,11 @@ def build_strategy_horizon_feedback(
     raw_window = _as_dict(raw_obj.get("expected_hold_window"))
     raw_exit_guidance = _as_dict(raw_obj.get("exit_guidance"))
     raw_monitor_handoff = _as_dict(raw_obj.get("monitor_handoff"))
-    horizon = str(
+    horizon = _normalize_strategy_horizon_value(
         raw_obj.get("strategy_horizon")
         or raw_obj.get("horizon")
-        or _choose_default_horizon(
-            playbook=playbook,
-            monitor_guidance=monitor_guidance,
-            trade_aggressiveness=trade_aggressiveness,
-        )
-    ).strip()
-    if horizon not in _ALLOWED_HORIZONS:
+    )
+    if not horizon:
         horizon = _choose_default_horizon(
             playbook=playbook,
             monitor_guidance=monitor_guidance,

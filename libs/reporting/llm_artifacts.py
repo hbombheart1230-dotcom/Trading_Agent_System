@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from libs.runtime.llm_report_classifier import find_llm_run_dir
+
 
 def canonical_trade_day_root(reports_root: Path, day: str) -> Path:
     return Path(reports_root) / "trades" / str(day or "").strip()
@@ -16,13 +18,22 @@ def iter_trade_dirs(trade_day_root: Path) -> List[Path]:
     if not root.exists() or not root.is_dir():
         return []
     found: Dict[str, Path] = {}
-    for path in root.rglob("TRD_*"):
+    for path in root.rglob("*"):
         if not path.is_dir():
             continue
         name = str(path.name or "").strip()
-        if not name.startswith("TRD_"):
+        if name in {"reports", "brief", "ai_trade_report", "lifecycle", "strategist", "evidence"}:
+            trade_root = path.parent
+        else:
+            trade_root = path
+        trade_name = str(trade_root.name or "").strip()
+        if not trade_name.startswith("TRD_") and not (
+            (path / "lifecycle_bundle.json").exists()
+            or (path / "aggregated_execution_bundle.json").exists()
+            or (path / "trade_lifecycle.json").exists()
+        ):
             continue
-        found[str(path.resolve())] = path
+        found[str(trade_root.resolve())] = trade_root
     return sorted(found.values(), key=lambda item: (item.parent.name, item.name))
 
 
@@ -369,7 +380,8 @@ def build_llm_response_artifact(
 
 
 def llm_artifact_paths(reports_root: Path, day: str, run_id: str, component: str) -> Dict[str, Path]:
-    base = reports_root / "llm" / str(day or "").strip() / str(run_id or "").strip() / str(component or "").strip()
+    run_base = find_llm_run_dir(Path(reports_root), str(day or "").strip(), str(run_id or "").strip())
+    base = run_base / str(component or "").strip()
     return {
         "base_dir": base,
         "prompt_json": base / "prompt.json",
@@ -406,6 +418,11 @@ def persist_llm_artifact_refs(
         "run_id": str(run_id or ""),
         "day": str(day or ""),
         "saved_at": utc_now_iso(),
+        "stage": str(src.get("stage") or ""),
+        "stage_index": src.get("stage_index"),
+        "stage_name": str(src.get("stage_name") or ""),
+        "call_kind": str(src.get("call_kind") or ""),
+        "stage_component": str(src.get("stage_component") or ""),
         "system_prompt": str(src.get("system_prompt") or ""),
         "user_prompt": str(src.get("user_prompt") or ""),
         "attempts": [
@@ -424,6 +441,15 @@ def persist_llm_artifact_refs(
         "run_id": str(run_id or ""),
         "day": str(day or ""),
         "saved_at": utc_now_iso(),
+        "status": str(src.get("status") or ""),
+        "llm_status": str(src.get("llm_status") or src.get("status") or ""),
+        "model": str(src.get("model") or ""),
+        "provider": str((src.get("model_info") or {}).get("provider") or src.get("provider") or ""),
+        "stage": str(src.get("stage") or ""),
+        "stage_index": src.get("stage_index"),
+        "stage_name": str(src.get("stage_name") or ""),
+        "call_kind": str(src.get("call_kind") or ""),
+        "stage_component": str(src.get("stage_component") or ""),
         "raw_response_text": str(src.get("raw_response_text") or ""),
         "parsed_output": src.get("parsed_output") if isinstance(src.get("parsed_output"), (dict, list)) else {},
         "attempts": [
@@ -456,6 +482,11 @@ def persist_llm_artifact_refs(
         "response_truncated": bool(src.get("response_truncated")),
         "repair_used": bool(src.get("repair_used")),
         "llm_error_type": str(src.get("llm_error_type") or ""),
+        "stage": str(src.get("stage") or ""),
+        "stage_index": src.get("stage_index"),
+        "stage_name": str(src.get("stage_name") or ""),
+        "call_kind": str(src.get("call_kind") or ""),
+        "stage_component": str(src.get("stage_component") or ""),
         "prompt_ref": str(paths["prompt_json"]),
         "response_ref": str(paths["response_json"]),
         "prompt_hash": prompt_hash,
@@ -466,7 +497,8 @@ def persist_llm_artifact_refs(
     write_json(paths["response_json"], response_payload)
     write_json(paths["meta_json"], meta_payload)
     summary_refs: Dict[str, str] = {}
-    if str(component or "").strip() == "strategist":
+    component_key = str(component or "").strip()
+    if component_key == "strategist" or component_key.startswith("strategist_stage"):
         try:
             from libs.reporting.strategist_llm_summary import generate_strategist_llm_summary
 
@@ -614,6 +646,8 @@ def trade_artifact_paths(
         "exit_json": exit_json,
         # Compact trade-scoped LLM status artifacts (no raw body content).
         "strategist_llm_response_json": reports_dir / "strategist_llm_response.json",
+        "strategist_summary_md": reports_dir / "strategist_summary.md",
+        "strategist_summary_json": reports_dir / "strategist_summary.json",
         "ai_trade_report_llm_response_json": reports_dir / "ai_trade_report_llm_response.json",
         "brief_llm_response_json": reports_dir / "brief_llm_response.json",
         # Deprecated intermediate artifacts (no forward writes in Phase 3).

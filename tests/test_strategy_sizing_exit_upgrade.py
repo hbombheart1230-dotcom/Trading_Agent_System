@@ -122,6 +122,50 @@ def test_exit_policy_time_stop_alias_triggers():
     assert out["reason"] == "time_stop"
 
 
+def test_exit_policy_time_stop_reassesses_below_cost_floor():
+    out = evaluate_exit_policy(
+        price=100.8,
+        avg_price=100.0,
+        qty=1,
+        hold_sec=901,
+        policy={
+            "time_stop_sec": 900,
+            "take_profit_pct": 0.0,
+            "cost_aware_profit_floor_enabled": True,
+            "round_trip_cost_floor_pct": 0.009,
+            "min_net_profit_buffer_pct": 0.003,
+        },
+    )
+
+    assert out["triggered"] is False
+    assert out["reason"] == "hold"
+    assert out["time_limit_reached"] is True
+    assert out["time_limit_reassessment_blocked"] is True
+    assert out["cost_aware_profit_floor_blocked"] is True
+    assert out["hold_block_reason"] == "time_stop:cost_aware_profit_floor_not_met"
+
+
+def test_exit_policy_time_stop_allows_exit_after_cost_floor():
+    out = evaluate_exit_policy(
+        price=101.3,
+        avg_price=100.0,
+        qty=1,
+        hold_sec=901,
+        policy={
+            "time_stop_sec": 900,
+            "take_profit_pct": 0.0,
+            "cost_aware_profit_floor_enabled": True,
+            "round_trip_cost_floor_pct": 0.009,
+            "min_net_profit_buffer_pct": 0.003,
+        },
+    )
+
+    assert out["triggered"] is True
+    assert out["reason"] == "time_stop"
+    assert out["time_limit_reached"] is True
+    assert out["time_limit_reassessment_blocked"] is False
+
+
 def test_exit_policy_news_shock_triggers():
     out = evaluate_exit_policy(
         price=100.0,
@@ -493,6 +537,86 @@ def test_exit_policy_cost_aware_floor_allows_profit_after_cost_buffer():
     assert out["cost_aware_profit_floor_blocked"] is False
 
 
+def test_exit_policy_cost_floor_uses_gross_profit_not_account_cost_drag_twice():
+    policy = apply_account_pnl_crosscheck_context(
+        {
+            "take_profit_pct": 0.10,
+            "partial_take_profit_pct": 0.012,
+            "profit_ladder_levels_pct": [],
+            "risk_reward_take_profit_r": 0.0,
+            "risk_reward_take_profit_rungs": [],
+            "volume_exhaustion_take_profit_min_pct": 0.0,
+            "opening_gap_profit_take_min_pct": 0.0,
+            "cost_aware_profit_floor_enabled": True,
+            "round_trip_cost_floor_pct": 0.009,
+            "min_net_profit_buffer_pct": 0.003,
+        },
+        position={
+            "symbol": "034730",
+            "qty": 1,
+            "avg_price": 100.0,
+            "current_price": 101.976,
+            "account_pnl_ratio": 0.0106,
+            "account_pnl_ratio_source": "position.evlu_pfls_rt",
+        },
+    )
+    out = evaluate_exit_policy(price=101.976, avg_price=100.0, qty=1, policy=policy)
+
+    assert out["triggered"] is True
+    assert out["reason"] == "partial_take_profit"
+    assert out["gross_pnl_ratio"] == pytest.approx(0.01976)
+    assert out["effective_pnl_ratio"] == pytest.approx(0.0106)
+    assert out["cost_aware_profit_floor_met"] is True
+    assert out["gross_profit_floor_met"] is True
+    assert out["profit_exit_metric_name"] in {"expected_exit_pnl_ratio", "gross_pnl_ratio"}
+    assert out["cost_aware_profit_floor_blocked"] is False
+
+
+def test_exit_policy_etf_premium_take_profit_uses_deviation_signal():
+    out = evaluate_exit_policy(
+        price=101.3,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "stop_loss_pct": 0.03,
+            "take_profit_pct": 0.10,
+            "etf_deviation_pct": 0.55,
+            "etf_deviation_source": "raw.dstr_rt",
+            "cost_aware_profit_floor_enabled": True,
+            "round_trip_cost_floor_pct": 0.009,
+            "min_net_profit_buffer_pct": 0.003,
+        },
+    )
+
+    assert out["triggered"] is True
+    assert out["reason"] == "etf_premium_take_profit"
+    assert out["exit_trigger_metric_name"] == "etf_deviation_pct"
+    assert out["exit_trigger_metric_value"] == 0.55
+    assert out["cost_aware_profit_floor_blocked"] is False
+
+
+def test_exit_policy_etf_premium_take_profit_respects_cost_floor():
+    out = evaluate_exit_policy(
+        price=100.5,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "stop_loss_pct": 0.03,
+            "take_profit_pct": 0.10,
+            "etf_deviation_pct": 0.55,
+            "cost_aware_profit_floor_enabled": True,
+            "round_trip_cost_floor_pct": 0.009,
+            "min_net_profit_buffer_pct": 0.003,
+        },
+    )
+
+    assert out["triggered"] is False
+    assert out["reason"] == "hold"
+    assert out["etf_premium_take_profit_armed"] is True
+    assert out["cost_aware_profit_floor_blocked"] is True
+    assert out["hold_block_reason"] == "etf_premium_take_profit:cost_aware_profit_floor_not_met"
+
+
 def test_exit_policy_cost_aware_floor_does_not_block_loss_stops():
     out = evaluate_exit_policy(
         price=97.0,
@@ -553,6 +677,56 @@ def test_exit_policy_cost_aware_floor_blocks_vwap_breakdown_on_small_profit():
     assert out["protective_exit_floor_blocked"] is True
     assert out["protective_exit_floor_blocked_reason"] == "vwap_breakdown"
     assert out["hold_block_reason"] == "vwap_breakdown:cost_aware_profit_floor_not_met"
+
+
+def test_exit_policy_cost_aware_floor_blocks_metric_hard_vwap_breakdown_on_small_profit():
+    out = evaluate_exit_policy(
+        price=100.7,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "take_profit_pct": 0.0,
+            "peak_price": 101.5,
+            "vwap_distance": -0.03,
+            "vwap_breakdown_pct": 0.005,
+            "cost_aware_profit_floor_enabled": True,
+            "cost_aware_profit_floor_pct": 0.012,
+        },
+    )
+
+    assert out["triggered"] is False
+    assert out["reason"] == "hold"
+    assert out["protective_exit_hard_invalidation"] is True
+    assert out["protective_exit_hard_invalidation_suppressed_by_cost_floor"] is True
+    assert str(out["protective_exit_hard_invalidation_reason"]).startswith("vwap_breakdown_deep:")
+    assert out["cost_aware_profit_floor_blocked"] is True
+    assert out["protective_exit_floor_blocked"] is True
+    assert out["protective_exit_floor_blocked_reason"] == "vwap_breakdown"
+    assert out["hold_block_reason"] == "vwap_breakdown:cost_aware_profit_floor_not_met"
+
+
+def test_exit_policy_cost_aware_floor_allows_explicit_hard_vwap_invalidation():
+    out = evaluate_exit_policy(
+        price=100.7,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "take_profit_pct": 0.0,
+            "peak_price": 101.5,
+            "vwap_distance": -0.03,
+            "vwap_breakdown_pct": 0.005,
+            "hard_invalidation_confirmed": True,
+            "cost_aware_profit_floor_enabled": True,
+            "cost_aware_profit_floor_pct": 0.012,
+        },
+    )
+
+    assert out["triggered"] is True
+    assert out["reason"] == "vwap_breakdown"
+    assert out["protective_exit_hard_invalidation"] is True
+    assert out["protective_exit_hard_invalidation_reason"] == "explicit_policy_flag"
+    assert out["protective_exit_hard_invalidation_suppressed_by_cost_floor"] is False
+    assert out["protective_exit_floor_blocked"] is False
 
 
 def test_exit_policy_cost_aware_floor_blocks_vwap_breakdown_when_gross_profit_is_cost_loss():

@@ -19,6 +19,7 @@ def report_reason_human(code: str) -> str:
         "report_not_requested": "AI trade report generation was not requested for this run.",
         "still_open_lifecycle": "This trade lifecycle is still open, so the full AI report is pending.",
         "awaiting_exit_for_full_report": "This trade is still open. The full AI report is generated after exit/closure.",
+        "partial_exit_awaiting_full_close": "This trade has only a partial exit. The full AI report is generated after the position is fully closed.",
     }
     return mapping.get(str(code or "").strip().lower(), "AI report diagnostics are not fully classified.")
 
@@ -37,6 +38,7 @@ def report_next_step(code: str) -> str:
         "report_not_requested": "Enable AI report generation policy and rerun.",
         "still_open_lifecycle": "Generate the full AI report after lifecycle exit/closure.",
         "awaiting_exit_for_full_report": "Generate the final AI report after exit/closure.",
+        "partial_exit_awaiting_full_close": "Keep monitoring the remaining position and generate the final report after full liquidation.",
     }
     return mapping.get(str(code or "").strip().lower(), "Review diagnostics and continue with Operator Brief.")
 
@@ -162,6 +164,13 @@ def seed_diagnostics_for_policy(
         diagnostics["report_reason_code"] = "execution_failed"
         diagnostics["report_reason_human"] = report_reason_human("execution_failed")
         diagnostics["next_expected_step"] = report_next_step("execution_failed")
+        return {"diagnostics": diagnostics, "should_attempt_generation": False}
+
+    if status == "partial" and not bool(generate_on_open):
+        diagnostics["report_status"] = "pending"
+        diagnostics["report_reason_code"] = "partial_exit_awaiting_full_close"
+        diagnostics["report_reason_human"] = report_reason_human("partial_exit_awaiting_full_close")
+        diagnostics["next_expected_step"] = report_next_step("partial_exit_awaiting_full_close")
         return {"diagnostics": diagnostics, "should_attempt_generation": False}
 
     if status == "open" and not bool(generate_on_open):

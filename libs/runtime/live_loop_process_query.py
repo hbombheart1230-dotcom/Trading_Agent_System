@@ -60,15 +60,16 @@ def query_live_loop_processes(root: Path, lock_path: Path) -> List[Dict[str, Any
         cmd = str(row.get("CommandLine") or "")
         exe = str(row.get("ExecutablePath") or "")
         cmd_lower = cmd.lower()
+        cmd_norm = cmd_lower.replace("\\", "/")
         exe_lower = exe.lower()
         root_lower = root_text.lower()
         lock_lower = lock_text.lower()
         matches_session = (
             (
-                ("scripts/run_session.py" in cmd_lower or "-m scripts.run_session" in cmd_lower)
+                ("scripts/run_session.py" in cmd_norm or "-m scripts.run_session" in cmd_lower)
                 and "--phase intraday" in cmd_lower
             )
-            or "scripts/run_m13_live_loop.py" in cmd_lower
+            or "scripts/run_m13_live_loop.py" in cmd_norm
             or "-m scripts.run_m13_live_loop" in cmd_lower
         )
         matches_scope = lock_lower in cmd_lower or root_lower in cmd_lower or exe_lower.startswith(root_lower)

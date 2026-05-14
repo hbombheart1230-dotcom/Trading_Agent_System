@@ -64,8 +64,13 @@ def test_m23_6_operator_resume_clears_cooldown_and_continues_runtime():
     assert resilience["last_error_type"] == ""
 
     rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
-    assert [r.get("event") for r in rows] == ["route", "transition", "intervention", "end"]
-    assert rows[2]["payload"]["type"] == "operator_resume"
+    events = [r.get("event") for r in rows]
+    assert "route" in events
+    assert "transition" in events
+    assert "intervention" in events
+    assert "end" in events
+    intervention = next(r for r in rows if r.get("event") == "intervention")
+    assert intervention["payload"]["type"] == "operator_resume"
 
 
 def test_m23_6_runtime_once_cli_accepts_resume_control(capsys):

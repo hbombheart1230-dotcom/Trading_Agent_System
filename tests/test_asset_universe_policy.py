@@ -30,7 +30,7 @@ def _scanner_policy(source_type: str = "strategist") -> Dict[str, Any]:
     }
 
 
-def test_commander_injects_common_stock_only_universe_policy(monkeypatch) -> None:
+def test_commander_injects_all_tradable_universe_policy(monkeypatch) -> None:
     def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
         state["portfolio_snapshot"] = {"cash": 1_000_000.0, "positions": [], "_health": {"reader_ok": True}}
         return state
@@ -65,9 +65,46 @@ def test_commander_injects_common_stock_only_universe_policy(monkeypatch) -> Non
     applied = out.get("applied_policy") or {}
     commander_decision = out.get("commander_decision") or {}
 
-    assert ((applied.get("universe") or {}).get("asset_type")) == "common_stock_only"
+    assert ((applied.get("universe") or {}).get("asset_type")) == "all_tradable"
     assert "universe.asset_type" in list((commander_decision.get("policy_sources") or {}).get("commander_owned_universe_fields") or [])
-    assert (((commander_decision.get("commander_applied_policy_summary") or {}).get("universe_fields") or {}).get("asset_type")) == "common_stock_only"
+    assert (((commander_decision.get("commander_applied_policy_summary") or {}).get("universe_fields") or {}).get("asset_type")) == "all_tradable"
+
+
+def test_scanner_allows_etf_when_universe_is_all_tradable() -> None:
+    policy = _scanner_policy()
+    policy["universe"]["asset_type"] = "all_tradable"
+    state = {
+        "applied_policy": policy,
+        "candidates": [
+            {
+                "symbol": "069500",
+                "name": "KODEX 200 ETF",
+                "why": "strategist_manual",
+                "sources": ["strategist_manual"],
+            },
+            {
+                "symbol": "005930",
+                "name": "\uc0bc\uc131\uc804\uc790",
+                "why": "strategist_manual",
+                "sources": ["strategist_manual"],
+            },
+        ],
+        "mock_scan_results": {
+            "069500": {"score": 0.99, "risk_score": 0.2, "confidence": 0.8},
+            "005930": {"score": 0.61, "risk_score": 0.2, "confidence": 0.8},
+        },
+    }
+
+    out = scanner_node(state)
+    scanner_output = out.get("scanner_output") or {}
+
+    assert out.get("top_stock") == "069500"
+    assert int(scanner_output.get("excluded_candidate_count_by_asset_policy") or 0) == 0
+    assert [str(row.get("symbol") or "") for row in list(out.get("ranked_candidates") or [])] == [
+        "069500",
+        "005930",
+    ]
+    assert (out.get("selected") or {}).get("asset_class_detected") == "etf"
 
 
 def test_scanner_excludes_etf_candidates_and_records_observability() -> None:

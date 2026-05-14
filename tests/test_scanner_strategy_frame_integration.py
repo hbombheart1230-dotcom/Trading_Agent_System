@@ -3,7 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from graphs.nodes.scanner_node import _apply_scanner_guidance_weights, _candidate_quote_metrics, _extract_scanner_guidance, scanner_node
+from graphs.nodes.scanner_node import (
+    _apply_scanner_guidance_weights,
+    _candidate_quote_metrics,
+    _compute_symbol_prior_adjustment,
+    _extract_scanner_guidance,
+    scanner_node,
+)
 
 
 class _FakeSkillRunnerQuotes:
@@ -380,6 +386,12 @@ def test_scanner_uses_chart_features_when_available():
     assert float((rows["AAA"].get("score_breakdown") or {}).get("ma_alignment") or 0.0) > 0.0
     assert float((rows["AAA"].get("score_breakdown") or {}).get("vwap_alignment") or 0.0) > 0.0
     assert float((rows["AAA"].get("score_breakdown") or {}).get("cross_section_rank") or 0.0) > 0.0
+    assert float(rows["AAA"].get("scanner_macro_chart_fit_score") or 0.0) > 0.5
+    assert float((rows["AAA"].get("score_breakdown") or {}).get("scanner_macro_chart_fit_bias") or 0.0) > 0.0
+    assert rows["AAA"].get("scanner_macro_chart_fit_authority") == "soft_rank_bias_only"
+    assert (out.get("scanner_output") or {}).get("scanner_macro_chart_fit_score") == rows["AAA"].get(
+        "scanner_macro_chart_fit_score"
+    )
 
 
 def _seed_rows(*, start_price: float, drift: float, rows: int = 80) -> list[dict]:
@@ -567,3 +579,24 @@ def test_scanner_repeat_guard_penalizes_recently_blocked_symbol_with_same_reason
     rows = {str(r.get("symbol")): r for r in out.get("scan_results", []) if isinstance(r, dict)}
     assert float((rows["AAA"].get("score_breakdown") or {}).get("repeat_blocker_penalty") or 0.0) < 0.0
     assert str((rows["AAA"].get("components") or {}).get("recent_blocker_reason") or "") == "too_extended_from_vwap"
+
+
+def test_scanner_symbol_prior_strongly_penalizes_same_day_repeat_loser():
+    result = _compute_symbol_prior_adjustment(
+        symbol_model={
+            "last_trade_date": "2026-05-12",
+            "closed_trade_count": 5,
+            "loss_count": 3,
+            "win_rate": 0.4,
+            "avg_pnl_pct": -0.18,
+            "dominant_playbook": "pullback",
+            "dominant_monitor_blocker": "vwap_breakdown",
+        },
+        playbook="pullback",
+        current_day="2026-05-12",
+    )
+
+    assert result["adjustment"] <= -0.40
+    assert result["risk_delta"] >= 0.30
+    assert result["confidence_delta"] <= -0.20
+    assert "same_day_trade_lockout_bias" in result["reasons"]
