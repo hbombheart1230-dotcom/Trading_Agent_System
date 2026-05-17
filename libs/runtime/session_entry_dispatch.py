@@ -5,12 +5,12 @@ from typing import Dict, List
 
 
 _IMPLEMENTATION_TARGETS: Dict[str, str] = {
-    "m13_live_loop": "scripts.run_m13_live_loop:main",
-    "live_session_watch": "scripts.run_live_session_watch:main",
-    "mock_exam_day": "scripts.run_mock_exam_day:main",
-    "commander_runtime_once": "scripts.run_commander_runtime_once:main",
-    "m31_agent_chain_probe": "scripts.run_m31_agent_chain_probe:main",
-    "offhours_validation_loop": "scripts.run_offhours_validation_loop:main",
+    "m13_live_loop": "libs.runtime.entrypoints.m13_live_loop:main",
+    "live_session_watch": "libs.runtime.entrypoints.live_session_watch:main",
+    "mock_exam_day": "libs.runtime.entrypoints.mock_exam_day:main",
+    "commander_runtime_once": "libs.runtime.entrypoints.commander_runtime_once:main",
+    "m31_agent_chain_probe": "libs.runtime.entrypoints.m31_agent_chain_probe:main",
+    "offhours_validation_loop": "libs.runtime.entrypoints.offhours_validation_loop:main",
 }
 
 

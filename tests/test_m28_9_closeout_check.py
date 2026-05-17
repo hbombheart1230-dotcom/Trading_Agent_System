@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.run_m28_closeout_check import main as m28_closeout_main
+from libs.runtime.entrypoints.m28_closeout_check import main as m28_closeout_main
 
 
 def test_m28_9_closeout_check_passes_default(tmp_path: Path, capsys):

@@ -7,7 +7,7 @@ from pathlib import Path
 import libs.runtime.live_loop_lock as loop_lock
 from libs.runtime.entrypoint_common import resolve_env_path
 from libs.runtime.live_loop_config import build_live_loop_initial_state, session_hard_gate_enabled
-import scripts.run_m13_live_loop as live
+import libs.runtime.entrypoints.m13_live_loop as live
 
 
 def test_m13_lock_acquire_and_release(tmp_path: Path):

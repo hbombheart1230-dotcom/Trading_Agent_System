@@ -25,7 +25,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
@@ -52,294 +52,97 @@ from libs.runtime.canonical_artifacts import (
     write_commander_shadow_artifact,
     write_llm_stage_skip_entry,
 )
+from libs.runtime.commander.integrated_chain_support import (
+    emit_intraday_trade_report,
+    load_integrated_chain_nodes,
+    mark_strategist_executed,
+    run_closeout_guard_fast_path,
+    run_monitor_decision_path,
+    run_monitor_only_fast_path,
+    run_pre_entry_exit_sweep_if_needed,
+)
+from libs.runtime.commander.strategist_cycle import (
+    run_post_scanner_refresh_cycle,
+    resolve_strategist_cache_use,
+    run_pre_scanner_strategist_cycle,
+)
+from libs.runtime.commander.strategist_cache_decision import (
+    assess_cached_strategist_reuse_preference as _assess_cached_strategist_reuse_preference,
+    should_use_cached_strategist_from_commander_skip as _should_use_cached_strategist_from_commander_skip,
+    should_use_cached_strategist_when_flat as _should_use_cached_strategist_when_flat,
+    strategist_cache_payload as _strategist_cache_payload,
+)
+from libs.runtime.commander.strategist_cache_store import (
+    hydrate_strategist_output_cache as _hydrate_strategist_output_cache,
+    normalize_strategist_output_contract as _normalize_strategist_output_contract,
+    persist_strategist_output_cache as _persist_strategist_output_cache,
+)
+from libs.runtime.commander.strategist_fingerprint import (
+    assess_cached_strategist_input_drift as _assess_cached_strategist_input_drift,
+    assess_strategist_fingerprint_drift as _assess_strategist_fingerprint_drift,
+    build_strategist_input_fingerprint as _build_strategist_input_fingerprint,
+    compact_post_scanner_candidate_row as _compact_post_scanner_candidate_row,
+    post_scanner_candidate_snapshot as _post_scanner_candidate_snapshot,
+    post_scanner_selected_symbol as _post_scanner_selected_symbol,
+)
+from libs.runtime.commander.strategist_refresh_decision import (
+    assess_pre_buy_strategist_refresh_need as _assess_pre_buy_strategist_refresh_need,
+    force_selected_symbol_tactical_refresh_decision as _force_selected_symbol_tactical_refresh_decision,
+)
+from libs.runtime.commander.session_context import (
+    build_integrated_chain_session_context,
+    seed_shadow_prior_context,
+)
+from libs.runtime.commander.env_overrides import (
+    apply_commander_temporary_runtime_defaults as _apply_commander_temporary_runtime_defaults,
+    commander_default_bool as _commander_default_bool,
+    commander_memory_usage_disabled as _commander_memory_usage_disabled,
+    commander_post_scanner_refresh_enabled as _commander_post_scanner_refresh_enabled,
+    commander_pre_entry_exit_sweep_enabled as _commander_pre_entry_exit_sweep_enabled,
+    env_bool as _env_bool,
+    restore_commander_temporary_runtime_env as _restore_commander_temporary_runtime_env,
+)
+from libs.runtime.commander.runtime_modes import (
+    annotate_runtime_plan as _annotate_runtime_plan,
+    normalize_transition as _normalize_transition,
+    resolve_runtime_mode,
+    resolve_runtime_phase,
+)
+from libs.runtime.commander.route_surface import (
+    derive_commander_selected_route as _derive_commander_selected_route,
+    normalize_reporter_integration_config as _normalize_reporter_integration_config,
+    reporter_hook_requested as _reporter_hook_requested,
+    resolve_commander_reporter_feedback_policy as _resolve_commander_reporter_feedback_policy,
+)
+from libs.runtime.commander.policy_readers import (
+    commander_trade_report_enabled as _commander_trade_report_enabled,
+    merge_nested_policy_dict as _merge_nested_policy_dict,
+    resolve_commander_cooldown_policy as _resolve_commander_cooldown_policy,
+    resolve_commander_route_toggle as _resolve_commander_route_toggle,
+)
+from libs.runtime.commander.policy_surface import (
+    CANDIDATE_WATCH_DEFAULT_CASCADE_ALLOWED_REASONS as _CANDIDATE_WATCH_DEFAULT_CASCADE_ALLOWED_REASONS,
+    CANDIDATE_WATCH_DEFAULT_CASCADE_BLOCKED_REASONS as _CANDIDATE_WATCH_DEFAULT_CASCADE_BLOCKED_REASONS,
+    COMMANDER_OWNED_LLM_EXECUTION_POLICY_FIELDS as _COMMANDER_OWNED_LLM_EXECUTION_POLICY_FIELDS,
+    COMMANDER_OWNED_LLM_POLICY_FIELDS as _COMMANDER_OWNED_LLM_POLICY_FIELDS,
+    COMMANDER_OWNED_NUMERIC_POLICY_FIELDS as _COMMANDER_OWNED_NUMERIC_POLICY_FIELDS,
+    COMMANDER_OWNED_POLICY_FIELDS as _COMMANDER_OWNED_POLICY_FIELDS,
+    COMMANDER_OWNED_SCANNER_POLICY_FIELDS as _COMMANDER_OWNED_SCANNER_POLICY_FIELDS,
+    COMMANDER_OWNED_UNIVERSE_POLICY_FIELDS as _COMMANDER_OWNED_UNIVERSE_POLICY_FIELDS,
+    DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN as _DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN,
+    ENTRY_CONTROL_DYNAMIC_BAND_BLOCKERS as _ENTRY_CONTROL_DYNAMIC_BAND_BLOCKERS,
+    ENTRY_CONTROL_POOL_EXPAND_BLOCKERS as _ENTRY_CONTROL_POOL_EXPAND_BLOCKERS,
+    OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC as _OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC,
+    PRE_ENTRY_EXIT_SWEEP_TRANSIENT_KEYS as _PRE_ENTRY_EXIT_SWEEP_TRANSIENT_KEYS,
+    RuntimeMode,
+    RuntimePhase,
+)
 from libs.runtime.market_hours import MarketHours
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
 
-RuntimeMode = Literal["graph_spine", "decision_packet", "integrated_chain"]
-RuntimePhase = Literal["preopen", "session", "closeout"]
-
-
-_PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC = 120
-_PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD = 0.80
-_DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN = 15
-_PRE_BUY_STRATEGIST_REFRESH_FORCE_SIGNALS = frozenset(
-    {
-        "selected_symbol_outside_cached_frame",
-        "prior_cycle_buy_intent",
-        "became_ready_this_cycle",
-    }
-)
-_OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC = 900
-_COMMANDER_OWNED_POLICY_FIELDS = [
-    "universe.asset_type",
-    "reporter.ai_review.enabled",
-    "reporter.trade_report.enabled",
-    "reporter.trade_report.generate_on_open",
-    "strategist.runtime.strict_mode",
-    "strategist.runtime.allow_legacy_rule",
-    "strategist.runtime.allow_legacy_strategy_v1",
-    "strategist.memory_feedback.enabled",
-    "strategist.performance_memory.enabled",
-    "strategist.performance_memory.persist_enabled",
-    "strategist.memory_usage.disabled",
-    "strategist.reporter_feedback_mode",
-    "commander.route.monitor_only_when_holding",
-    "commander.route.cached_strategist_when_flat",
-    "commander.route.post_scanner_refresh_enabled",
-    "commander.route.pre_entry_exit_sweep_enabled",
-    "commander.memory_usage.disabled",
-    "monitor.exit.enabled",
-    "monitor.exit.eod_flat.enabled",
-    "monitor.entry.block_buy_when_open_position",
-    "monitor.entry.buy_closeout_cutoff_min",
-    "monitor.entry.position_sizing.enabled",
-    "monitor.memory_bias.observation_only",
-    "monitor.entry.scoring.enabled",
-    "monitor.entry.scoring.shadow_mode",
-    "scanner.memory_bias.observation_only",
-]
-_COMMANDER_OWNED_UNIVERSE_POLICY_FIELDS = [
-    "universe.asset_type",
-]
-_COMMANDER_OWNED_SCANNER_POLICY_FIELDS = [
-    "scanner.source.type",
-    "scanner.kiwoom.strict_only",
-    "scanner.fallback.block_static_when_empty",
-    "scanner.kiwoom.live_fetch",
-    "scanner.kiwoom.include_change_rate",
-    "scanner.policy.market_representative_guard",
-]
-_COMMANDER_OWNED_NUMERIC_POLICY_FIELDS = [
-    "execution.cooldowns.post_exit_sec",
-    "execution.cooldowns.sell_sec",
-    "monitor.hold.min_hold_seconds",
-    "monitor.exit.confirm_ticks",
-    "monitor.exit.eod_flat.cutoff_min",
-    "monitor.entry.buy_closeout_cutoff_min",
-    "scanner.candidate.top_pool",
-    "scanner.kiwoom.condition_limit",
-    "monitor.entry.scoring.threshold",
-    "monitor.entry.position_sizing.risk_per_trade_ratio",
-    "monitor.entry.position_sizing.position_notional_ratio",
-    "monitor.entry.position_sizing.max_position_qty",
-    "monitor.entry.position_sizing.max_position_notional",
-    "monitor.entry.position_sizing.min_position_qty",
-    "monitor.entry.position_sizing.lot_size",
-    "strategist.memory_feedback.recent_runs",
-]
-_COMMANDER_OWNED_LLM_POLICY_FIELDS = [
-    "llm.strategist.profile",
-    "llm.reporter.intraday.profile",
-    "llm.reporter.daily.profile",
-]
-_COMMANDER_OWNED_LLM_EXECUTION_POLICY_FIELDS = [
-    "llm.execution_profile.profile_name",
-    "llm.execution_profile.temperature",
-    "llm.execution_profile.max_tokens",
-    "llm.execution_profile.timeout_sec",
-    "llm.execution_profile.retry.max_attempts",
-    "llm.execution_profile.retry.backoff_sec",
-    "llm.strategist.execution_profile.name",
-    "llm.strategist.execution_profile.temperature",
-    "llm.strategist.execution_profile.max_tokens",
-    "llm.strategist.execution_profile.timeout_sec",
-    "llm.strategist.execution_profile.retry_max",
-    "llm.reporter.intraday.execution_profile.name",
-    "llm.reporter.intraday.execution_profile.temperature",
-    "llm.reporter.intraday.execution_profile.max_tokens",
-    "llm.reporter.daily.execution_profile.name",
-    "llm.reporter.daily.execution_profile.temperature",
-    "llm.reporter.daily.execution_profile.max_tokens",
-]
-_ENTRY_CONTROL_POOL_EXPAND_BLOCKERS = frozenset(
-    {
-        "too_extended_from_vwap",
-        "still_overextended_after_pullback",
-        "breakout_not_ready",
-        "below_vwap_reclaim_not_ready",
-        "pullback_below_vwap_reclaim_not_ready",
-        "reclaim_not_ready",
-        "volume_confirmation_missing",
-        "volume_insufficient",
-        "volume_missing",
-        "entry_wait",
-        "wait_for_confirmation",
-    }
-)
-_ENTRY_CONTROL_DYNAMIC_BAND_BLOCKERS = frozenset(
-    {
-        "too_extended_from_vwap",
-        "still_overextended_after_pullback",
-    }
-)
-_CANDIDATE_WATCH_DEFAULT_CASCADE_ALLOWED_REASONS = (
-    "too_extended_from_vwap",
-    "breakout_not_ready",
-    "volume_insufficient",
-    "volume_confirmation_missing",
-    "below_vwap_reclaim_not_ready",
-    "pullback_below_vwap_reclaim_not_ready",
-    "pullback_not_mature",
-)
-_CANDIDATE_WATCH_DEFAULT_CASCADE_BLOCKED_REASONS = (
-    "cost_filter_failed",
-    "risk_policy_block",
-    "closeout_window",
-    "open_position_present",
-    "daily_loss_limit",
-    "broker_truth_mismatch",
-    "data_quality_guard",
-    "buy_blocked_post_exit_cooldown",
-    "buy_blocked_closeout_window",
-)
-
-_COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS = {
-    "COMMANDER_POST_SCANNER_REFRESH_ENABLED": "true",
-    "MEMORY_BIAS_OBSERVATION_ONLY": "true",
-    "USE_STRATEGY_MEMORY_FEEDBACK": "false",
-    "USE_STRATEGY_PERFORMANCE_MEMORY": "false",
-    "COMMANDER_MEMORY_USAGE_DISABLED": "true",
-    "STRATEGIST_MEMORY_USAGE_DISABLED": "true",
-    "STRATEGY_MEMORY_PERSIST_ENABLED": "false",
-}
-_PRE_ENTRY_EXIT_SWEEP_TRANSIENT_KEYS = (
-    "selected",
-    "scanner_output",
-    "intents",
-    "monitor_output",
-    "monitor_entry",
-    "monitor_exit",
-    "monitor_entry_decision_detail",
-    "monitor_exit_decision_detail",
-    "monitor_action_decision",
-    "monitor_entry_blocker_surface",
-    "monitor_feature_hydration",
-    "decision",
-    "decision_reason",
-    "decision_packet",
-)
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = str(os.getenv(name, "") or "").strip().lower()
-    if not raw:
-        return bool(default)
-    return raw in {"1", "true", "yes", "y", "on"}
-
-
-def _commander_default_bool(name: str, default: bool) -> bool:
-    raw = str(_COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS.get(name, "") or "").strip()
-    if raw:
-        return _is_trueish(raw)
-    return bool(default)
-
-
-def _apply_commander_temporary_runtime_defaults(state: Dict[str, Any]) -> Dict[str, Optional[str]]:
-    previous = {key: os.environ.get(key) for key in _COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS}
-    for key, value in _COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS.items():
-        if os.environ.get(key) in (None, ""):
-            os.environ[key] = str(value)
-
-    policy = dict(state.get("policy") or {}) if isinstance(state.get("policy"), dict) else {}
-    policy.setdefault("use_strategy_memory_feedback", _env_bool("USE_STRATEGY_MEMORY_FEEDBACK", False))
-    policy.setdefault("use_strategy_performance_memory", _env_bool("USE_STRATEGY_PERFORMANCE_MEMORY", False))
-    state["policy"] = policy
-    state.setdefault("commander_post_scanner_refresh_enabled", _env_bool("COMMANDER_POST_SCANNER_REFRESH_ENABLED", True))
-    state.setdefault("memory_bias_observation_only", _env_bool("MEMORY_BIAS_OBSERVATION_ONLY", True))
-    state.setdefault("commander_memory_bias_observation_only", _env_bool("MEMORY_BIAS_OBSERVATION_ONLY", True))
-    state.setdefault("commander_memory_usage_disabled", _env_bool("COMMANDER_MEMORY_USAGE_DISABLED", True))
-    state.setdefault("strategist_memory_usage_disabled", _env_bool("STRATEGIST_MEMORY_USAGE_DISABLED", True))
-    state.setdefault("strategy_memory_persist_enabled", _env_bool("STRATEGY_MEMORY_PERSIST_ENABLED", False))
-    state["commander_temporary_runtime_defaults"] = {
-        "source": "commander_runtime_code_default",
-        "values": dict(_COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS),
-        "env_transport": True,
-    }
-    return previous
-
-
-def _restore_commander_temporary_runtime_env(previous: Dict[str, Optional[str]]) -> None:
-    for key, value in dict(previous or {}).items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
-
-
-def _commander_post_scanner_refresh_enabled(state: Dict[str, Any]) -> bool:
-    if isinstance(state, dict) and state.get("commander_post_scanner_refresh_enabled") not in (None, ""):
-        return _is_trueish(state.get("commander_post_scanner_refresh_enabled"))
-    return _env_bool(
-        "COMMANDER_POST_SCANNER_REFRESH_ENABLED",
-        _commander_default_bool("COMMANDER_POST_SCANNER_REFRESH_ENABLED", True),
-    )
-
-
-def _commander_pre_entry_exit_sweep_enabled(state: Dict[str, Any]) -> bool:
-    if isinstance(state, dict):
-        if state.get("commander_pre_entry_exit_sweep_enabled") not in (None, ""):
-            return _is_trueish(state.get("commander_pre_entry_exit_sweep_enabled"))
-        applied = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
-        commander = applied.get("commander") if isinstance(applied.get("commander"), dict) else {}
-        route = commander.get("route") if isinstance(commander.get("route"), dict) else {}
-        if route.get("pre_entry_exit_sweep_enabled") not in (None, ""):
-            return _is_trueish(route.get("pre_entry_exit_sweep_enabled"))
-    return _env_bool("COMMANDER_PRE_ENTRY_EXIT_SWEEP_ENABLED", True)
-
-
-def _commander_memory_usage_disabled(state: Dict[str, Any]) -> bool:
-    if isinstance(state, dict):
-        if state.get("commander_memory_usage_disabled") not in (None, ""):
-            return _is_trueish(state.get("commander_memory_usage_disabled"))
-        applied = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
-        commander = applied.get("commander") if isinstance(applied.get("commander"), dict) else {}
-        memory_usage = commander.get("memory_usage") if isinstance(commander.get("memory_usage"), dict) else {}
-        if memory_usage.get("disabled") not in (None, ""):
-            return _is_trueish(memory_usage.get("disabled"))
-    return _env_bool(
-        "COMMANDER_MEMORY_USAGE_DISABLED",
-        _commander_default_bool("COMMANDER_MEMORY_USAGE_DISABLED", True),
-    )
-
-
-def _merge_nested_policy_dict(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(base or {})
-    for key, value in dict(updates or {}).items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _merge_nested_policy_dict(dict(out.get(key) or {}), value)
-        else:
-            out[key] = value
-    return out
-
-
 def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
-
-
-def _normalize_mode(value: Any) -> RuntimeMode:
-    v = str(value or "").strip().lower()
-    if v == "decision_packet":
-        return "decision_packet"
-    if v in ("integrated_chain", "integrated", "chain"):
-        return "integrated_chain"
-    return "graph_spine"
-
-
-def _normalize_transition(value: Any) -> str:
-    v = str(value or "").strip().lower()
-    if v in ("retry", "pause", "cancel", "resume"):
-        return v
-    return ""
-
-
-def _normalize_phase(value: Any) -> RuntimePhase:
-    v = str(value or "").strip().lower()
-    if v == "preopen":
-        return "preopen"
-    if v == "closeout":
-        return "closeout"
-    return "session"
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -1075,41 +878,6 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         "override_reason": override_reason,
         "applied_policy_source_chain": source_chain,
         "monitor_entry_policy_summary": _summarize_monitor_entry_policy(applied_policy),
-    }
-
-
-def _resolve_commander_reporter_feedback_policy(
-    state: Dict[str, Any],
-    *,
-    selected_route: str = "",
-    phase: str = "",
-) -> Dict[str, Any]:
-    route = str(selected_route or _derive_commander_selected_route(state) or "").strip().lower()
-    phase_text = str(phase or state.get("runtime_phase") or "session").strip().lower() or "session"
-
-    if phase_text == "closeout":
-        mode = "enabled"
-        reason = "closeout_report_heavy"
-    elif route == "monitor_only":
-        mode = "disabled"
-        reason = "monitor_only_route"
-    elif route == "cached_strategist":
-        mode = "disabled"
-        reason = "cached_strategist_route"
-    elif route == "full_cycle":
-        mode = "auto"
-        reason = "full_cycle_route"
-    else:
-        mode = "auto"
-        reason = f"{phase_text}_default_auto"
-
-    return {
-        "reporter_feedback_mode": mode,
-        "reporter_feedback_mode_source": "commander_applied_policy",
-        "reporter_feedback_mode_reason": reason,
-        "reporter_feedback_semantics": "advisory_only",
-        "selected_route": route or "unknown",
-        "runtime_phase": phase_text,
     }
 
 
@@ -1855,16 +1623,6 @@ def _resolve_commander_behavior_policy(
     }
 
 
-def _commander_trade_report_enabled(state: Dict[str, Any]) -> bool:
-    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
-    reporter = applied_policy.get("reporter") if isinstance(applied_policy.get("reporter"), dict) else {}
-    trade_report = reporter.get("trade_report") if isinstance(reporter.get("trade_report"), dict) else {}
-    enabled = trade_report.get("enabled")
-    if enabled is None:
-        return False
-    return bool(enabled)
-
-
 def _attach_commander_behavior_policy(
     state: Dict[str, Any],
     *,
@@ -2307,27 +2065,6 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     state["scanner_memory_bias"] = dict(scanner_memory_bias)
     state["monitor_memory_bias"] = dict(monitor_memory_bias)
     return state
-
-
-def _resolve_commander_route_toggle(
-    state: Dict[str, Any],
-    *,
-    nested_path: tuple[str, ...],
-    state_key: str,
-    default: bool,
-) -> tuple[bool, str]:
-    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
-    cursor: Any = applied_policy
-    for key in nested_path:
-        if not isinstance(cursor, dict):
-            cursor = None
-            break
-        cursor = cursor.get(key)
-    if cursor is not None:
-        return _is_trueish(cursor), "commander_applied_policy"
-    if state.get(state_key) is not None:
-        return _is_trueish(state.get(state_key)), "state_fallback"
-    return bool(default), "default"
 
 
 def _extract_commander_policy_vwap_ceiling(applied_policy: Dict[str, Any]) -> float:
@@ -3634,15 +3371,6 @@ def _seed_commander_shadow_prior_context(state: Dict[str, Any], *, prior_cached_
     state["commander_shadow_runtime"] = shadow_runtime
 
 
-def _resolve_commander_cooldown_policy(state: Dict[str, Any]) -> Tuple[int, int]:
-    policy = state.get("resilience_policy") if isinstance(state.get("resilience_policy"), dict) else {}
-    threshold_default = _coerce_int(os.getenv("COMMANDER_INCIDENT_THRESHOLD", "0"), 0)
-    cooldown_default = _coerce_int(os.getenv("COMMANDER_COOLDOWN_SEC", "0"), 0)
-    threshold = _coerce_int(policy.get("incident_threshold"), threshold_default)
-    cooldown_sec = _coerce_int(policy.get("cooldown_sec"), cooldown_default)
-    return max(0, threshold), max(0, cooldown_sec)
-
-
 def _set_degrade_mode(state: Dict[str, Any], *, reason: str) -> None:
     resilience = state.get("resilience")
     if not isinstance(resilience, dict):
@@ -3796,27 +3524,6 @@ def _apply_runtime_transition(state: Dict[str, Any]) -> Tuple[bool, Dict[str, An
     return True, state
 
 
-def _runtime_agent_chain(mode: RuntimeMode, phase: RuntimePhase) -> Tuple[str, ...]:
-    if phase == "preopen":
-        return ("commander_router", "strategist")
-    if phase == "closeout":
-        return ("commander_router",)
-    if mode == "decision_packet":
-        return ("commander_router", "strategist", "supervisor", "executor", "reporter")
-    if mode == "integrated_chain":
-        return ("commander_router", "strategist", "scanner", "monitor", "decision", "supervisor", "executor", "reporter")
-    return ("commander_router", "strategist", "scanner", "monitor", "supervisor", "executor", "reporter")
-
-
-def _annotate_runtime_plan(state: Dict[str, Any], selected: RuntimeMode, phase: RuntimePhase) -> Dict[str, Any]:
-    state["runtime_plan"] = {
-        "mode": selected,
-        "phase": phase,
-        "agents": list(_runtime_agent_chain(selected, phase)),
-    }
-    return state
-
-
 def _import_event_logger():
     for mod in ("libs.event_logger", "libs.logging.event_logger", "libs.core.event_logger"):
         try:
@@ -3851,48 +3558,6 @@ def _log_commander_event(state: Dict[str, Any], event: str, payload: Dict[str, A
         logger.log(run_id=run_id, stage="commander_router", event=event, payload=payload)
     except Exception:
         return
-
-
-def _derive_commander_selected_route(state: Dict[str, Any]) -> str:
-    status_text = str(state.get("runtime_status") or "").strip()
-    path_text = str(state.get("path") or "").strip()
-    phase_text = str(state.get("runtime_phase") or "").strip()
-    if "monitor_only" in path_text:
-        return "monitor_only"
-    if "cached" in path_text:
-        return "cached_strategist"
-    if phase_text == "preopen" or "preopen" in path_text:
-        return "preopen"
-    if phase_text == "closeout" or "closeout" in path_text:
-        return "closeout"
-    if "blocked" in path_text or status_text in {"blocked", "preflight_blocked"}:
-        return "blocked"
-    if status_text in {"error", "cooldown_wait", "degraded"}:
-        return "degraded"
-    return "full_cycle"
-
-
-def _normalize_reporter_integration_config(state: Dict[str, Any]) -> Dict[str, Any]:
-    config = state.get("reporter_integration") if isinstance(state.get("reporter_integration"), dict) else {}
-    hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
-    return {
-        "enabled": _is_trueish(config.get("enabled")),
-        "emit_reports": _is_trueish(config.get("emit_reports")),
-        "hooks": dict(hooks),
-        "event_log_path": str(config.get("event_log_path") or state.get("event_log_path") or "data/logs/events.jsonl"),
-        "reports_root": str(config.get("reports_root") or state.get("reports_root") or "reports"),
-        "day": str(config.get("day") or state.get("day") or ""),
-    }
-
-
-def _reporter_hook_requested(config: Dict[str, Any], hook_name: str, *, default: bool = False) -> bool:
-    hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
-    if hook_name in hooks:
-        return _is_trueish(hooks.get(hook_name))
-    direct_key = f"{hook_name}_enabled"
-    if direct_key in config:
-        return _is_trueish(config.get(direct_key))
-    return bool(default)
 
 
 def _resolve_reporter_agent(state: Dict[str, Any]) -> Any:
@@ -4274,53 +3939,6 @@ def _build_packet_from_state(state: Dict[str, Any], *, intent: Dict[str, Any]) -
     return packet
 
 
-def _normalize_strategist_output_contract(output: Dict[str, Any]) -> Dict[str, Any]:
-    normalized = dict(output or {})
-    strategy_policy = normalized.get("strategy_policy") if isinstance(normalized.get("strategy_policy"), dict) else {}
-    if not strategy_policy:
-        return normalized
-
-    strategy_policy = dict(strategy_policy)
-    decision_policy = strategy_policy.get("decision_policy") if isinstance(strategy_policy.get("decision_policy"), dict) else {}
-    decision_policy = dict(decision_policy or {})
-    decision_policy["use_strategy_v1_engine"] = False
-    decision_policy["allow_score_override"] = False
-    decision_policy["score_override_scope"] = "disabled"
-    decision_policy["strategy_v1_name"] = ""
-    decision_policy["strategy_variant_hint"] = "unified_ai_strategist"
-    for key in (
-        "buy_threshold",
-        "sell_threshold",
-        "high_vol_abs_threshold",
-        "news_buy_threshold",
-        "news_sell_threshold",
-    ):
-        decision_policy.pop(key, None)
-    strategy_policy["decision_policy"] = decision_policy
-    normalized["strategy_policy"] = strategy_policy
-    return normalized
-
-
-def _persist_strategist_output_cache(state: Dict[str, Any]) -> Dict[str, Any]:
-    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
-    if not strategist_output:
-        return state
-    if bool(state.get("strategist_blocked")) or bool(strategist_output.get("llm_frame_blocked")):
-        return state
-    strategist_output = _normalize_strategist_output_contract(strategist_output)
-    state["strategist_output"] = dict(strategist_output)
-    persisted_state = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
-    input_fingerprint = _build_strategist_input_fingerprint(state)
-    persisted_state["strategist_output_cache"] = {
-        "output": dict(strategist_output),
-        "generated_epoch": int(_runtime_now_epoch(state)),
-        "source": "strategist_node",
-        "input_fingerprint": dict(input_fingerprint),
-    }
-    state["persisted_state"] = persisted_state
-    return state
-
-
 def _strategist_frame_blocked(state: Dict[str, Any]) -> bool:
     if bool(state.get("strategist_blocked")):
         return True
@@ -4342,38 +3960,6 @@ def _apply_strategist_block(state: Dict[str, Any], *, phase: str) -> Dict[str, A
     state["path"] = f"{phase}_strategist_blocked"
     state["decision"] = "noop"
     state["decision_reason"] = reason
-    return state
-
-
-def _hydrate_strategist_output_cache(state: Dict[str, Any]) -> Dict[str, Any]:
-    if isinstance(state.get("strategist_output"), dict) and state.get("strategist_output"):
-        return state
-    persisted_state = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
-    raw_cached = persisted_state.get("strategist_output_cache") if isinstance(persisted_state.get("strategist_output_cache"), dict) else {}
-    cached = raw_cached.get("output") if isinstance(raw_cached.get("output"), dict) else raw_cached
-    if isinstance(cached, dict) and cached:
-        state["strategist_output"] = _normalize_strategist_output_contract(cached)
-        if isinstance(raw_cached, dict) and raw_cached:
-            state["strategist_output_cache_meta"] = dict(raw_cached)
-        return state
-
-    held_symbols = _portfolio_open_position_symbols(state)
-    position_context = (
-        persisted_state.get("position_strategy_context")
-        if isinstance(persisted_state.get("position_strategy_context"), dict)
-        else {}
-    )
-    for symbol in held_symbols:
-        row = position_context.get(symbol) if isinstance(position_context.get(symbol), dict) else {}
-        output = row.get("output") if isinstance(row.get("output"), dict) else {}
-        if output:
-            state["strategist_output"] = _normalize_strategist_output_contract(output)
-            state["strategist_output_cache_meta"] = {
-                "output": dict(state["strategist_output"]),
-                "generated_epoch": _coerce_int(row.get("generated_epoch"), 0),
-                "source": str(row.get("source") or "position_strategy_context"),
-                "symbol": symbol,
-            }
     return state
 
 
@@ -5398,889 +4984,6 @@ def _should_use_session_closeout_fast_path(state: Dict[str, Any]) -> Tuple[bool,
     return bool(active), payload
 
 
-def _strategist_cache_payload(state: Dict[str, Any]) -> Dict[str, Any]:
-    persisted_state = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
-    raw_cached = persisted_state.get("strategist_output_cache") if isinstance(persisted_state.get("strategist_output_cache"), dict) else {}
-    if isinstance(raw_cached.get("output"), dict):
-        return dict(raw_cached)
-    if raw_cached:
-        return {"output": dict(raw_cached), "generated_epoch": 0, "source": "legacy_cache"}
-    return {}
-
-
-def _assess_cached_strategist_memory_context(state: Dict[str, Any], cached_output: Dict[str, Any]) -> Dict[str, Any]:
-    output = dict(cached_output or {}) if isinstance(cached_output, dict) else {}
-    cached_strategy_policy = (
-        dict(output.get("strategy_policy") or {})
-        if isinstance(output.get("strategy_policy"), dict)
-        else {}
-    )
-    cached_commander_context = (
-        dict(cached_strategy_policy.get("commander_context") or {})
-        if isinstance(cached_strategy_policy.get("commander_context"), dict)
-        else {}
-    )
-    cached_policy = (
-        dict(output.get("commander_memory_policy") or {})
-        if isinstance(output.get("commander_memory_policy"), dict)
-        else dict(cached_commander_context.get("commander_memory_policy") or {})
-        if isinstance(cached_commander_context.get("commander_memory_policy"), dict)
-        else {}
-    )
-    cached_scanner_summary = (
-        dict(output.get("scanner_memory_bias_summary") or {})
-        if isinstance(output.get("scanner_memory_bias_summary"), dict)
-        else dict(cached_commander_context.get("scanner_memory_bias_summary") or {})
-        if isinstance(cached_commander_context.get("scanner_memory_bias_summary"), dict)
-        else {}
-    )
-    cached_monitor_summary = (
-        dict(output.get("monitor_memory_bias_summary") or {})
-        if isinstance(output.get("monitor_memory_bias_summary"), dict)
-        else dict(cached_commander_context.get("monitor_memory_bias_summary") or {})
-        if isinstance(cached_commander_context.get("monitor_memory_bias_summary"), dict)
-        else {}
-    )
-    cached_context_available = bool(cached_policy or cached_scanner_summary or cached_monitor_summary)
-    current_layers: list[str] = []
-    current_scanner_enabled = False
-    current_monitor_enabled = False
-    try:
-        current_packets = load_commander_memory_packets(state=state)
-        current_policy = build_commander_memory_policy(
-            session_bias=str(
-                ((state.get("commander_decision") or {}).get("session_bias"))
-                or state.get("session_bias")
-                or state.get("runtime_phase")
-                or "session"
-            ),
-            memory_packets=current_packets,
-            usage_disabled=_commander_memory_usage_disabled(state),
-        )
-        current_layers = [str(x or "") for x in list(current_policy.get("active_layers") or []) if str(x or "").strip()][:4]
-        current_scanner_enabled = bool(current_policy.get("scanner_bias_enabled"))
-        current_monitor_enabled = bool(current_policy.get("monitor_bias_enabled"))
-    except Exception:
-        pass
-    cached_layers = [
-        str(x or "")
-        for x in list(
-            cached_policy.get("active_layers")
-            or cached_scanner_summary.get("active_layers")
-            or cached_monitor_summary.get("active_layers")
-            or []
-        )[:4]
-        if str(x or "").strip()
-    ]
-    cached_scanner_enabled = bool(
-        cached_scanner_summary.get("enabled")
-        if cached_scanner_summary.get("enabled") is not None
-        else cached_policy.get("scanner_bias_enabled")
-    )
-    cached_monitor_enabled = bool(
-        cached_monitor_summary.get("enabled")
-        if cached_monitor_summary.get("enabled") is not None
-        else cached_policy.get("monitor_bias_enabled")
-    )
-    if not cached_context_available:
-        return {
-            "mismatch": False,
-            "cached_memory_context_available": False,
-            "cached_active_layers": list(cached_layers),
-            "current_active_layers": list(current_layers),
-            "cached_scanner_bias_enabled": False,
-            "current_scanner_bias_enabled": bool(current_scanner_enabled),
-            "cached_monitor_bias_enabled": False,
-            "current_monitor_bias_enabled": bool(current_monitor_enabled),
-        }
-    mismatch = (
-        cached_layers != current_layers
-        or cached_scanner_enabled != current_scanner_enabled
-        or cached_monitor_enabled != current_monitor_enabled
-    )
-    return {
-        "mismatch": bool(mismatch),
-        "cached_memory_context_available": True,
-        "cached_active_layers": list(cached_layers),
-        "current_active_layers": list(current_layers),
-        "cached_scanner_bias_enabled": bool(cached_scanner_enabled),
-        "current_scanner_bias_enabled": bool(current_scanner_enabled),
-        "cached_monitor_bias_enabled": bool(cached_monitor_enabled),
-        "current_monitor_bias_enabled": bool(current_monitor_enabled),
-    }
-
-
-def _assess_cached_strategist_reuse_preference(state: Dict[str, Any]) -> Dict[str, Any]:
-    enabled, policy_source = _resolve_commander_route_toggle(
-        state,
-        nested_path=("commander", "route", "cached_strategist_when_flat"),
-        state_key="enable_cached_strategist_when_flat",
-        default=False,
-    )
-    open_position_count = _portfolio_open_position_count(state)
-    cache_payload = _strategist_cache_payload(state)
-    cached_output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
-    now_epoch = _runtime_now_epoch(state)
-    generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
-    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600"), 600))
-    age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
-    payload = {
-        "preferred": False,
-        "enabled": bool(enabled),
-        "policy_source": str(policy_source),
-        "open_position_count": int(open_position_count),
-        "reuse_sec": int(reuse_sec),
-        "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
-        "cache_source": str(cache_payload.get("source") or ""),
-        "cached_output_present": bool(cached_output),
-        "reason": "",
-    }
-    if not enabled:
-        payload["reason"] = "disabled"
-        return payload
-    if open_position_count > 0:
-        payload["reason"] = "open_positions_present"
-        return payload
-    if _is_trueish(state.get("force_refresh_strategist")):
-        payload["reason"] = "force_refresh_requested"
-        return payload
-    if not cached_output:
-        payload["reason"] = "no_cached_strategist_output"
-        return payload
-    if generated_epoch <= 0:
-        payload["reason"] = "cache_timestamp_missing"
-        return payload
-    if age_sec > reuse_sec:
-        payload["reason"] = "cache_stale"
-        return payload
-    memory_context = _assess_cached_strategist_memory_context(state, cached_output)
-    payload.update({k: v for k, v in memory_context.items() if k != "mismatch"})
-    if bool(memory_context.get("mismatch")):
-        payload["reason"] = "cached_memory_context_mismatch"
-        return payload
-    payload["preferred"] = True
-    payload["reason"] = "commander_preferred_cached_strategist"
-    return payload
-
-
-def _assess_pre_buy_strategist_refresh_need(
-    state: Dict[str, Any],
-    *,
-    commander_market_regime: str = "",
-) -> Dict[str, Any]:
-    min_cache_age_sec = int(_PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC)
-    readiness_threshold = float(_PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD)
-    open_position_count = _portfolio_open_position_count(state)
-    max_positions = _resolve_risk_max_positions(state)
-    entry_capacity_available = open_position_count < max_positions
-    cache_payload = _strategist_cache_payload(state)
-    cached_output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
-    now_epoch = _runtime_now_epoch(state)
-    generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
-    cache_age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
-    monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
-    monitor_state = state.get("monitor") if isinstance(state.get("monitor"), dict) else {}
-    entry_detail = state.get("monitor_entry_decision_detail") if isinstance(state.get("monitor_entry_decision_detail"), dict) else {}
-    transition_trace = entry_detail.get("transition_trace") if isinstance(entry_detail.get("transition_trace"), dict) else {}
-    selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
-    selected_symbol = str(
-        selected.get("symbol")
-        or monitor_output.get("selected_symbol")
-        or ""
-    ).strip()
-    explicit_news_query_targets: list[str] = []
-    for value in list(state.get("news_query_targets") or []):
-        text = str(value or "").strip()
-        if text and text not in explicit_news_query_targets:
-            explicit_news_query_targets.append(text)
-    cached_news_query_targets: list[str] = []
-    for value in list(cached_output.get("news_query_targets") or []):
-        text = str(value or "").strip()
-        if text and text not in cached_news_query_targets:
-            cached_news_query_targets.append(text)
-    cached_candidate_hints: list[str] = []
-    for value in list(cached_output.get("candidate_hints") or []):
-        symbol = str(value or "").strip().upper()
-        if symbol and symbol not in cached_candidate_hints:
-            cached_candidate_hints.append(symbol)
-    for value in list(cached_output.get("candidate_symbols_hint") or []):
-        symbol = str(value or "").strip().upper()
-        if symbol and symbol not in cached_candidate_hints:
-            cached_candidate_hints.append(symbol)
-    for row in list(cached_output.get("candidates") or []):
-        if not isinstance(row, dict):
-            continue
-        symbol = str(row.get("symbol") or "").strip().upper()
-        if symbol and symbol not in cached_candidate_hints:
-            cached_candidate_hints.append(symbol)
-    selected_symbol_upper = str(selected_symbol or "").strip().upper()
-    selected_symbol_in_cached_frame = bool(
-        not selected_symbol_upper
-        or not cached_candidate_hints
-        or selected_symbol_upper in cached_candidate_hints
-    )
-    cached_market_regime = str(cached_output.get("market_regime") or "").strip().lower()
-    current_market_regime = str(commander_market_regime or state.get("market_regime") or "").strip().lower()
-    readiness_score = _shadow_float(
-        monitor_output.get("entry_transition_readiness_score")
-        if monitor_output.get("entry_transition_readiness_score") not in (None, "")
-        else monitor_state.get("entry_transition_readiness_score")
-        if monitor_state.get("entry_transition_readiness_score") not in (None, "")
-        else transition_trace.get("transition_readiness_score")
-    )
-    became_ready = bool(
-        monitor_output.get("entry_became_ready_this_cycle")
-        or monitor_state.get("entry_became_ready_this_cycle")
-        or transition_trace.get("became_ready_this_cycle")
-    )
-    prior_intent = str(monitor_output.get("intent_side") or "").strip().upper()
-    prior_reason = str(
-        monitor_output.get("entry_exit_reason")
-        or entry_detail.get("primary_reason_code")
-        or entry_detail.get("reason")
-        or ""
-    ).strip()
-
-    signal = ""
-    if (
-        explicit_news_query_targets
-        and cached_news_query_targets
-        and explicit_news_query_targets != cached_news_query_targets
-    ):
-        signal = "news_query_target_drift"
-    elif current_market_regime and cached_market_regime and current_market_regime != cached_market_regime:
-        signal = "market_regime_shifted_since_cache"
-    elif selected_symbol_upper and cached_candidate_hints and selected_symbol_upper not in cached_candidate_hints:
-        signal = "selected_symbol_outside_cached_frame"
-    elif prior_intent == "BUY":
-        signal = "prior_cycle_buy_intent"
-    elif became_ready:
-        signal = "became_ready_this_cycle"
-    elif readiness_score is not None and readiness_score >= readiness_threshold:
-        signal = "transition_readiness_threshold"
-
-    payload = {
-        "requested": False,
-        "open_position_count": int(open_position_count),
-        "max_positions": int(max_positions),
-        "entry_capacity_available": bool(entry_capacity_available),
-        "selected_symbol": selected_symbol,
-        "selected_symbol_in_cached_frame": bool(selected_symbol_in_cached_frame),
-        "cached_candidate_hints": list(cached_candidate_hints[:8]),
-        "current_news_query_targets": list(explicit_news_query_targets[:8]),
-        "cached_news_query_targets": list(cached_news_query_targets[:8]),
-        "current_market_regime": current_market_regime,
-        "cached_market_regime": cached_market_regime,
-        "cache_age_sec": int(cache_age_sec) if cache_age_sec < 10**9 else None,
-        "min_cache_age_sec": int(min_cache_age_sec),
-        "readiness_threshold": float(readiness_threshold),
-        "transition_readiness_score": readiness_score,
-        "became_ready_this_cycle": bool(became_ready),
-        "prior_intent_side": prior_intent,
-        "prior_reason": prior_reason,
-        "cache_source": str(cache_payload.get("source") or ""),
-        "cached_output_present": bool(cached_output),
-        "refresh_signal": signal,
-        "fresh_cache_signal_override": bool(signal in _PRE_BUY_STRATEGIST_REFRESH_FORCE_SIGNALS),
-        "cache_freshness_gate_bypassed": False,
-        "reason": "",
-    }
-    if open_position_count > 0 and not entry_capacity_available:
-        payload["reason"] = "max_positions_reached"
-        return payload
-    if _is_trueish(state.get("force_refresh_strategist")):
-        payload["requested"] = True
-        payload["refresh_signal"] = "force_refresh_requested"
-        payload["reason"] = "commander_requested_refresh"
-        return payload
-    if not cached_output:
-        payload["reason"] = "no_cached_strategist_output"
-        return payload
-    if not selected_symbol:
-        payload["reason"] = "selected_symbol_missing"
-        return payload
-    if cache_age_sec < min_cache_age_sec:
-        if not signal or signal not in _PRE_BUY_STRATEGIST_REFRESH_FORCE_SIGNALS:
-            payload["reason"] = "cache_too_fresh_for_refresh"
-            return payload
-        payload["cache_freshness_gate_bypassed"] = True
-    if not signal:
-        payload["reason"] = "no_pre_buy_refresh_signal"
-        return payload
-    input_drift = _assess_cached_strategist_input_drift(state)
-    payload["strategist_input_drift"] = dict(input_drift)
-    if bool(input_drift.get("comparable")) and not bool(input_drift.get("material_change")):
-        payload["reason"] = "strategist_input_context_unchanged"
-        payload["refresh_signal_suppressed"] = str(signal)
-        return payload
-    payload["requested"] = True
-    payload["reason"] = "commander_requested_refresh"
-    return payload
-
-
-def _post_scanner_selected_symbol(state: Dict[str, Any]) -> str:
-    selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
-    if bool(selected.get("_monitor_synthetic_selected")) or bool(selected.get("_closeout_guard_selected")):
-        return ""
-    scanner_output = state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {}
-    return str(
-        selected.get("symbol")
-        or scanner_output.get("top_stock")
-        or scanner_output.get("selected_symbol")
-        or ""
-    ).strip().upper()
-
-
-def _score_bucket(value: Any, *, step: float = 0.10) -> str:
-    numeric = _shadow_float(value)
-    if numeric is None:
-        return "unknown"
-    if step <= 0.0:
-        step = 0.10
-    bucket = int(float(numeric) / float(step))
-    return f"{round(bucket * step, 4):.2f}-{round((bucket + 1) * step, 4):.2f}"
-
-
-def _rank_bucket(value: Any) -> str:
-    rank = _coerce_int(value, 0)
-    if rank <= 0:
-        return "unknown"
-    if rank == 1:
-        return "rank1"
-    if rank <= 3:
-        return "rank2_3"
-    if rank <= 10:
-        return "rank4_10"
-    return "rank11_plus"
-
-
-def _entry_gate_bucket(state: Dict[str, Any]) -> str:
-    monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
-    monitor = state.get("monitor") if isinstance(state.get("monitor"), dict) else {}
-    entry_detail = state.get("monitor_entry_decision_detail") if isinstance(state.get("monitor_entry_decision_detail"), dict) else {}
-    for key in ("entry_guard_reason", "entry_exit_reason", "primary_reason_code", "reason"):
-        value = (
-            monitor_output.get(key)
-            if monitor_output.get(key) not in (None, "")
-            else monitor.get(key)
-            if monitor.get(key) not in (None, "")
-            else entry_detail.get(key)
-        )
-        text = str(value or "").strip().lower()
-        if text:
-            return text[:80]
-    intent = str(monitor_output.get("intent_side") or monitor.get("intent_side") or "").strip().upper()
-    if intent == "BUY":
-        return "buy_ready"
-    return "unknown"
-
-
-def _candidate_theme_tokens(row: Dict[str, Any]) -> list[str]:
-    raw_values: list[Any] = []
-    for key in ("theme", "primary_theme", "sector", "industry"):
-        raw_values.append(row.get(key))
-    for key in ("themes", "theme_names", "theme_tags", "matched_themes"):
-        value = row.get(key)
-        if isinstance(value, (list, tuple, set)):
-            raw_values.extend(list(value))
-        else:
-            raw_values.append(value)
-    out: list[str] = []
-    for value in raw_values:
-        if value in (None, ""):
-            continue
-        for token in str(value).replace("|", ",").replace("/", ",").split(","):
-            text = token.strip().lower()
-            if text and text not in out:
-                out.append(text[:80])
-    return out[:5]
-
-
-def _candidate_chart_fit_value(row: Dict[str, Any]) -> Any:
-    for key in ("scanner_chart_fit_score", "scanner_macro_chart_fit_score", "entry_compatibility_score", "confidence"):
-        if row.get(key) not in (None, ""):
-            return row.get(key)
-    return None
-
-
-def _candidate_edge_bucket(row: Dict[str, Any], state: Dict[str, Any]) -> str:
-    for key in (
-        "cost_adjusted_edge_pct",
-        "estimated_gross_edge_pct",
-        "expected_edge_pct",
-        "expected_move_pct",
-        "expected_return_pct",
-    ):
-        if row.get(key) not in (None, ""):
-            value = _shadow_float(row.get(key))
-            if value is None:
-                continue
-            if value < 0.0:
-                return "negative"
-            if value < 0.003:
-                return "tiny"
-            if value < 0.012:
-                return "below_cost_floor"
-            if value < 0.025:
-                return "tradable"
-            return "strong"
-    gate = _entry_gate_bucket(state)
-    if "cost" in gate and ("fail" in gate or "not" in gate or "below" in gate):
-        return "below_cost_floor"
-    if "ready" in gate or "buy" in gate:
-        return "tradable"
-    return "unknown"
-
-
-def _build_strategist_input_fingerprint(state: Dict[str, Any]) -> Dict[str, Any]:
-    selected_symbol = _post_scanner_selected_symbol(state)
-    snapshot = _post_scanner_candidate_snapshot(state, selected_symbol) if selected_symbol else {}
-    rows = [dict(row) for row in list(snapshot.get("rows") or []) if isinstance(row, dict)]
-    if not rows:
-        scanner_output = state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {}
-        for key in ("candidates", "top_candidates", "ranked_candidates", "pool"):
-            raw_rows = scanner_output.get(key)
-            if isinstance(raw_rows, list):
-                rows = [
-                    _compact_post_scanner_candidate_row(row, fallback_rank=idx)
-                    for idx, row in enumerate(raw_rows[:10], start=1)
-                    if isinstance(row, dict)
-                ]
-                rows = [row for row in rows if row]
-                break
-    selected_candidate = dict(snapshot.get("selected_candidate") or snapshot.get("primary") or {})
-    if not selected_candidate and selected_symbol:
-        selected_candidate = next((dict(row) for row in rows if str(row.get("symbol") or "").upper() == selected_symbol), {})
-    if not selected_symbol:
-        selected_symbol = str(selected_candidate.get("symbol") or "").strip().upper()
-    market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
-    open_symbols = _portfolio_open_position_symbols(state)
-    themes: list[str] = []
-    for row in rows[:5]:
-        for token in _candidate_theme_tokens(row):
-            if token not in themes:
-                themes.append(token)
-    top_symbols = [str(row.get("symbol") or "").strip().upper() for row in rows[:5] if str(row.get("symbol") or "").strip()]
-    selected_score = selected_candidate.get("score_total") if selected_candidate.get("score_total") is not None else selected_candidate.get("score")
-    out = {
-        "schema_version": "strategist_input_fingerprint.v1",
-        "selected_symbol": selected_symbol,
-        "selected_rank_bucket": _rank_bucket(selected_candidate.get("rank")),
-        "selected_score_bucket": _score_bucket(selected_score),
-        "selected_chart_fit_bucket": _score_bucket(_candidate_chart_fit_value(selected_candidate)),
-        "selected_edge_bucket": _candidate_edge_bucket(selected_candidate, state),
-        "entry_gate_bucket": _entry_gate_bucket(state),
-        "top_symbols": top_symbols[:5],
-        "top3_symbols": top_symbols[:3],
-        "top_themes": themes[:5],
-        "market_regime": str(
-            state.get("market_regime")
-            or market_context.get("regime")
-            or market_context.get("market_regime")
-            or ""
-        ).strip().lower()[:80],
-        "open_position_count": int(_portfolio_open_position_count(state)),
-        "open_symbols": sorted(open_symbols),
-    }
-    return out
-
-
-def _jaccard_distance(left: list[str], right: list[str]) -> float:
-    left_set = {str(x or "").strip() for x in left if str(x or "").strip()}
-    right_set = {str(x or "").strip() for x in right if str(x or "").strip()}
-    if not left_set and not right_set:
-        return 0.0
-    if not left_set or not right_set:
-        return 1.0
-    return float(1.0 - (len(left_set & right_set) / len(left_set | right_set)))
-
-
-def _assess_strategist_fingerprint_drift(
-    previous: Dict[str, Any],
-    current: Dict[str, Any],
-    *,
-    threshold: float | None = None,
-) -> Dict[str, Any]:
-    prev = dict(previous or {}) if isinstance(previous, dict) else {}
-    cur = dict(current or {}) if isinstance(current, dict) else {}
-    effective_threshold = (
-        float(threshold)
-        if threshold is not None
-        else float(_runtime_float(os.getenv("COMMANDER_STRATEGIST_INPUT_DRIFT_THRESHOLD", "0.45"), 0.45))
-    )
-    reasons: list[str] = []
-    if not prev or not cur:
-        return {
-            "comparable": False,
-            "material_change": True,
-            "change_score": 1.0,
-            "threshold": float(effective_threshold),
-            "reasons": ["fingerprint_missing"],
-            "previous": prev,
-            "current": cur,
-        }
-    score = 0.0
-    if str(prev.get("selected_symbol") or "") != str(cur.get("selected_symbol") or ""):
-        score += 0.30
-        reasons.append("selected_symbol_changed")
-    top_distance = _jaccard_distance(list(prev.get("top_symbols") or []), list(cur.get("top_symbols") or []))
-    if top_distance > 0.0:
-        score += 0.25 * top_distance
-        reasons.append("top_symbols_changed")
-    theme_distance = _jaccard_distance(list(prev.get("top_themes") or []), list(cur.get("top_themes") or []))
-    if theme_distance > 0.0:
-        score += 0.10 * theme_distance
-        reasons.append("top_themes_changed")
-    for key, weight, reason in (
-        ("selected_rank_bucket", 0.08, "selected_rank_bucket_changed"),
-        ("selected_chart_fit_bucket", 0.12, "selected_chart_fit_bucket_changed"),
-        ("selected_edge_bucket", 0.12, "selected_edge_bucket_changed"),
-        ("entry_gate_bucket", 0.10, "entry_gate_changed"),
-        ("market_regime", 0.10, "market_regime_changed"),
-    ):
-        if str(prev.get(key) or "") != str(cur.get(key) or ""):
-            score += weight
-            reasons.append(reason)
-    if int(prev.get("open_position_count") or 0) != int(cur.get("open_position_count") or 0):
-        score += 0.15
-        reasons.append("open_position_count_changed")
-    if sorted(list(prev.get("open_symbols") or [])) != sorted(list(cur.get("open_symbols") or [])):
-        score += 0.12
-        reasons.append("open_symbols_changed")
-    score = min(1.0, float(score))
-    return {
-        "comparable": True,
-        "material_change": bool(score >= effective_threshold),
-        "change_score": round(score, 6),
-        "threshold": float(effective_threshold),
-        "reasons": reasons,
-        "previous": prev,
-        "current": cur,
-    }
-
-
-def _assess_cached_strategist_input_drift(state: Dict[str, Any]) -> Dict[str, Any]:
-    cache_payload = _strategist_cache_payload(state)
-    previous = cache_payload.get("input_fingerprint") if isinstance(cache_payload.get("input_fingerprint"), dict) else {}
-    current = _build_strategist_input_fingerprint(state)
-    out = _assess_strategist_fingerprint_drift(previous, current)
-    out["cache_source"] = str(cache_payload.get("source") or "")
-    out["cache_age_sec"] = (
-        max(0, _runtime_now_epoch(state) - _coerce_int(cache_payload.get("generated_epoch"), 0))
-        if _coerce_int(cache_payload.get("generated_epoch"), 0) > 0
-        else None
-    )
-    return out
-
-
-def _compact_post_scanner_candidate_row(row: Dict[str, Any], *, fallback_rank: int = 0) -> Dict[str, Any]:
-    if not isinstance(row, dict):
-        return {}
-    symbol = str(row.get("symbol") or row.get("code") or row.get("ticker") or "").strip().upper()
-    if not symbol:
-        return {}
-    score = None
-    score_source = ""
-    for key in (
-        "score_total",
-        "post_adjust_score_total",
-        "selected_score_total",
-        "scanner_score_total",
-        "score",
-        "final_score",
-        "rank_score",
-        "pre_adjust_score_total",
-    ):
-        score = _shadow_float(row.get(key))
-        if score is not None:
-            score_source = key
-            break
-    reason = str(
-        row.get("selection_reason")
-        or row.get("selection_reason_with_bias")
-        or row.get("why")
-        or row.get("reason")
-        or row.get("reason_text")
-        or row.get("source_reason")
-        or ""
-    ).strip()
-    rank = _coerce_int(row.get("rank"), fallback_rank)
-    score_breakdown: Dict[str, Any] = {}
-    if isinstance(row.get("score_breakdown"), dict):
-        for key, value in list(dict(row.get("score_breakdown") or {}).items())[:10]:
-            numeric = _shadow_float(value)
-            score_breakdown[str(key)[:50]] = (
-                round(float(numeric), 6)
-                if numeric is not None
-                else _shadow_text(value, max_len=80)
-            )
-    compact = {
-        "symbol": symbol,
-        "rank": int(rank if rank > 0 else fallback_rank),
-        "score": round(float(score), 6) if score is not None else None,
-        "score_total": round(float(score), 6) if score is not None else None,
-        "score_source": score_source,
-        "reason": reason[:180],
-        "source": str(row.get("source") or row.get("source_name") or "").strip()[:80],
-    }
-    if score_breakdown:
-        compact["score_breakdown"] = score_breakdown
-    for key in (
-        "risk_score",
-        "confidence",
-        "entry_compatibility_score",
-        "compatibility_bias",
-        "scanner_chart_fit_score",
-        "scanner_chart_fit_penalty",
-        "scanner_macro_chart_fit_score",
-        "scanner_macro_chart_fit_bias",
-        "bias_adjustment",
-        "pre_adjust_score_total",
-        "post_adjust_score_total",
-        "raw_entry_compatibility_bias",
-        "effective_entry_compatibility_bias",
-    ):
-        value = _shadow_float(row.get(key))
-        if value is not None:
-            compact[key] = round(float(value), 6)
-    chart_fit_components: Dict[str, Any] = {}
-    if isinstance(row.get("scanner_chart_fit_components"), dict):
-        for key, value in list(dict(row.get("scanner_chart_fit_components") or {}).items())[:10]:
-            numeric = _shadow_float(value)
-            chart_fit_components[str(key)[:50]] = (
-                round(float(numeric), 6)
-                if numeric is not None
-                else _shadow_text(value, max_len=80)
-            )
-    if chart_fit_components:
-        compact["scanner_chart_fit_components"] = chart_fit_components
-    macro_chart_fit_components: Dict[str, Any] = {}
-    if isinstance(row.get("scanner_macro_chart_fit_components"), dict):
-        for key, value in list(dict(row.get("scanner_macro_chart_fit_components") or {}).items())[:10]:
-            numeric = _shadow_float(value)
-            macro_chart_fit_components[str(key)[:50]] = (
-                round(float(numeric), 6)
-                if numeric is not None
-                else _shadow_text(value, max_len=80)
-            )
-    if macro_chart_fit_components:
-        compact["scanner_macro_chart_fit_components"] = macro_chart_fit_components
-    for key in (
-        "expected_monitor_block_reason",
-        "dominant_block_reason",
-        "scanner_chart_fit_authority",
-        "scanner_macro_chart_fit_authority",
-        "market_representative_guard_reason",
-        "selection_reason_with_bias",
-        "status",
-    ):
-        text = _shadow_text(row.get(key), max_len=160)
-        if text:
-            compact[key] = text
-    return compact
-
-
-def _post_scanner_context_quality(
-    *,
-    selected_candidate: Dict[str, Any],
-    scanner_rank1_candidate: Dict[str, Any],
-    runner_ups: list[Dict[str, Any]],
-) -> Dict[str, Any]:
-    reasons: list[str] = []
-    if not str(selected_candidate.get("symbol") or "").strip():
-        reasons.append("selected_candidate_missing")
-    if _coerce_int(selected_candidate.get("rank"), 0) <= 0:
-        reasons.append("selected_rank_missing")
-    if selected_candidate.get("score") is None and selected_candidate.get("score_total") is None:
-        reasons.append("selected_score_missing")
-    if not str(scanner_rank1_candidate.get("symbol") or "").strip():
-        reasons.append("scanner_rank1_missing")
-    if not runner_ups:
-        reasons.append("runner_ups_missing")
-    quality = "complete"
-    if reasons:
-        quality = "partial"
-    if "selected_candidate_missing" in reasons or "scanner_rank1_missing" in reasons:
-        quality = "weak"
-    return {"quality": quality, "reasons": reasons}
-
-
-def _post_scanner_candidate_snapshot(state: Dict[str, Any], selected_symbol: str) -> Dict[str, Any]:
-    scanner_output = state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {}
-    raw_rows: list[Any] = []
-    for source in (
-        state.get("ranked_candidates"),
-        scanner_output.get("ranked_candidates"),
-        scanner_output.get("candidate_ranking_table", {}).get("rows")
-        if isinstance(scanner_output.get("candidate_ranking_table"), dict)
-        else [],
-        scanner_output.get("runner_ups"),
-    ):
-        if isinstance(source, list):
-            raw_rows.extend(source)
-    rows: list[Dict[str, Any]] = []
-    seen: set[str] = set()
-    for idx, raw in enumerate(raw_rows, start=1):
-        if not isinstance(raw, dict):
-            continue
-        row = _compact_post_scanner_candidate_row(raw, fallback_rank=idx)
-        symbol = str(row.get("symbol") or "")
-        if not symbol or symbol in seen:
-            continue
-        rows.append(row)
-        seen.add(symbol)
-        if len(rows) >= 8:
-            break
-    scanner_rank1_candidate = {}
-    for row in rows:
-        if _coerce_int(row.get("rank"), 0) == 1:
-            scanner_rank1_candidate = dict(row)
-            break
-    if not scanner_rank1_candidate and rows:
-        scanner_rank1_candidate = dict(rows[0])
-    selected_candidate = {}
-    for row in rows:
-        if str(row.get("symbol") or "").strip().upper() == selected_symbol:
-            selected_candidate = dict(row)
-            break
-    if selected_symbol and not selected_candidate:
-        selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
-        fallback_raw = dict(selected)
-        fallback_raw["symbol"] = selected_symbol
-        fallback_raw.setdefault("source", "selected")
-        selected_candidate = _compact_post_scanner_candidate_row(
-            fallback_raw,
-            fallback_rank=_coerce_int(fallback_raw.get("rank") or fallback_raw.get("selected_rank"), 0),
-        )
-        if not selected_candidate:
-            selected_candidate = {
-                "symbol": selected_symbol,
-                "rank": 0,
-                "score": None,
-                "score_total": None,
-                "reason": "",
-                "source": "selected_missing_from_scanner_rows",
-            }
-        if selected_symbol not in seen:
-            rows.append(dict(selected_candidate))
-            seen.add(selected_symbol)
-    primary = dict(selected_candidate or scanner_rank1_candidate)
-    runner_ups = [
-        dict(row)
-        for row in rows
-        if str(row.get("symbol") or "").strip().upper() != selected_symbol
-    ][:4]
-    quality = _post_scanner_context_quality(
-        selected_candidate=selected_candidate,
-        scanner_rank1_candidate=scanner_rank1_candidate,
-        runner_ups=runner_ups,
-    )
-    return {
-        "primary": primary,
-        "selected_candidate": dict(selected_candidate),
-        "scanner_rank1_candidate": dict(scanner_rank1_candidate),
-        "runner_ups": runner_ups,
-        "rows": rows[:5],
-        "selected_symbol_was_rank1": bool(
-            selected_symbol
-            and str((scanner_rank1_candidate or {}).get("symbol") or "").strip().upper() == selected_symbol
-        ),
-        "stage2_context_quality": quality["quality"],
-        "stage2_context_quality_reasons": list(quality["reasons"]),
-    }
-
-
-def _force_selected_symbol_tactical_refresh_decision(
-    state: Dict[str, Any],
-    commander_decision: Dict[str, Any],
-) -> Dict[str, Any]:
-    if bool(commander_decision.get("strategist_refresh_requested")):
-        return commander_decision
-    open_position_count = _portfolio_open_position_count(state)
-    max_positions = _resolve_risk_max_positions(state)
-    if open_position_count >= max_positions:
-        return commander_decision
-    selected_symbol = _post_scanner_selected_symbol(state)
-    if not selected_symbol:
-        return commander_decision
-    if selected_symbol in set(_portfolio_open_position_symbols(state)):
-        return commander_decision
-    snapshot = _post_scanner_candidate_snapshot(state, selected_symbol)
-    primary = dict(snapshot.get("primary") or {})
-    input_drift = _assess_cached_strategist_input_drift(state)
-    if bool(input_drift.get("comparable")) and not bool(input_drift.get("material_change")):
-        out = dict(commander_decision)
-        refresh_context = (
-            dict(out.get("strategist_refresh_context") or {})
-            if isinstance(out.get("strategist_refresh_context"), dict)
-            else {}
-        )
-        refresh_context.update(
-            {
-                "refresh_scope": "selected_symbol_tactical_refresh",
-                "refresh_signal": "selected_symbol_tactical_refresh",
-                "selected_symbol": selected_symbol,
-                "selected_rank": int(primary.get("rank") or 0),
-                "selected_score": primary.get("score"),
-                "post_scanner_refresh_required": False,
-                "post_scanner_refresh_suppressed": True,
-                "post_scanner_refresh_suppressed_reason": "strategist_input_context_unchanged",
-                "strategist_input_drift": dict(input_drift),
-            }
-        )
-        out["strategist_refresh_context"] = dict(refresh_context)
-        observations = out.get("observations") if isinstance(out.get("observations"), dict) else {}
-        out["observations"] = {
-            **dict(observations),
-            "post_scanner_refresh_requested": False,
-            "post_scanner_refresh_suppressed": True,
-            "post_scanner_refresh_suppressed_reason": "strategist_input_context_unchanged",
-            "strategist_input_change_score": input_drift.get("change_score"),
-        }
-        return out
-    refresh_context = (
-        dict(commander_decision.get("strategist_refresh_context") or {})
-        if isinstance(commander_decision.get("strategist_refresh_context"), dict)
-        else {}
-    )
-    refresh_context.update(
-        {
-            "refresh_scope": "selected_symbol_tactical_refresh",
-            "refresh_signal": "selected_symbol_tactical_refresh",
-            "selected_symbol": selected_symbol,
-            "selected_rank": int(primary.get("rank") or 0),
-            "selected_score": primary.get("score"),
-            "scanner_primary_candidate": dict(primary),
-            "actual_selected_candidate": dict(snapshot.get("selected_candidate") or primary),
-            "scanner_rank1_candidate": dict(snapshot.get("scanner_rank1_candidate") or {}),
-            "scanner_runner_ups": list(snapshot.get("runner_ups") or []),
-            "scanner_top_candidates": list(snapshot.get("rows") or []),
-            "selected_symbol_was_rank1": bool(snapshot.get("selected_symbol_was_rank1")),
-            "stage2_context_quality": str(snapshot.get("stage2_context_quality") or ""),
-            "stage2_context_quality_reasons": list(snapshot.get("stage2_context_quality_reasons") or []),
-            "strategist_input_drift": dict(input_drift),
-            "post_scanner_refresh_required": True,
-            "refresh_summary": f"Selected-symbol tactical refresh after scanner ranking for {selected_symbol}.",
-        }
-    )
-    out = dict(commander_decision)
-    out["strategist_refresh_requested"] = True
-    out["strategist_refresh_reason"] = "selected_symbol_tactical_refresh"
-    out["strategist_refresh_context"] = dict(refresh_context)
-    out["strategist_invocation"] = "RUN_REFRESH"
-    out["strategist_invocation_mode"] = "selected_symbol_tactical_refresh"
-    out["llm_policy"] = "allow_context_refresh"
-    out["flow_instruction"] = "REFRESH_SELECTED_SYMBOL_TACTICAL_FRAME"
-    observations = out.get("observations") if isinstance(out.get("observations"), dict) else {}
-    out["observations"] = {
-        **dict(observations),
-        "post_scanner_refresh_requested": True,
-        "post_scanner_refresh_reason": "selected_symbol_tactical_refresh",
-        "post_scanner_refresh_selected_symbol": selected_symbol,
-    }
-    return out
-
-
 def _build_stage4_carry_review_context(
     state: Dict[str, Any],
     override_assessment: Dict[str, Any],
@@ -6455,135 +5158,6 @@ def _record_absent_later_stage_llm_reviews(state: Dict[str, Any]) -> None:
         return
 
 
-def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-    enabled, policy_source = _resolve_commander_route_toggle(
-        state,
-        nested_path=("commander", "route", "cached_strategist_when_flat"),
-        state_key="enable_cached_strategist_when_flat",
-        default=False,
-    )
-    open_position_count = _portfolio_open_position_count(state)
-    cache_payload = _strategist_cache_payload(state)
-    output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
-    now_epoch = _runtime_now_epoch(state)
-    generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
-    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600"), 600))
-    age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
-    payload = {
-        "enabled": bool(enabled),
-        "policy_source": str(policy_source),
-        "open_position_count": int(open_position_count),
-        "reuse_sec": int(reuse_sec),
-        "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
-        "reason": "",
-    }
-    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
-    strategist_refresh_requested = bool(commander_decision.get("strategist_refresh_requested"))
-    strategist_refresh_context = (
-        dict(commander_decision.get("strategist_refresh_context") or {})
-        if isinstance(commander_decision.get("strategist_refresh_context"), dict)
-        else {}
-    )
-    if not enabled:
-        payload["reason"] = "disabled"
-        return False, payload
-    if open_position_count > 0:
-        payload["reason"] = "open_positions_present"
-        return False, payload
-    if strategist_refresh_requested:
-        payload.update({k: v for k, v in strategist_refresh_context.items() if k != "reason"})
-        payload["source"] = "commander_decision"
-        payload["refresh_signal"] = str(
-            commander_decision.get("strategist_refresh_reason")
-            or strategist_refresh_context.get("refresh_signal")
-            or ""
-        )
-        payload["reason"] = "commander_requested_refresh"
-        return False, payload
-    if _is_trueish(state.get("force_refresh_strategist")):
-        payload["reason"] = "force_refresh_requested"
-        return False, payload
-    if not output:
-        payload["reason"] = "no_cached_strategist_output"
-        return False, payload
-    if generated_epoch <= 0:
-        payload["reason"] = "cache_timestamp_missing"
-        return False, payload
-    if age_sec > reuse_sec:
-        payload["reason"] = "cache_stale"
-        return False, payload
-    memory_context = _assess_cached_strategist_memory_context(state, output)
-    payload.update({k: v for k, v in memory_context.items() if k != "mismatch"})
-    if bool(memory_context.get("mismatch")):
-        payload["reason"] = "cached_memory_context_mismatch"
-        return False, payload
-    payload["reason"] = "flat_position_cached_strategist"
-    return True, payload
-
-
-def _should_use_cached_strategist_from_commander_skip(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
-    strategist_invocation = str(commander_decision.get("strategist_invocation") or "").strip().upper()
-    llm_policy = str(commander_decision.get("llm_policy") or "").strip().upper()
-    open_position_count = _portfolio_open_position_count(state)
-    cache_payload = _strategist_cache_payload(state)
-    output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
-    now_epoch = _runtime_now_epoch(state)
-    generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
-    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600"), 600))
-    age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
-    payload = {
-        "enabled": True,
-        "source": "commander_decision",
-        "strategist_invocation": strategist_invocation,
-        "llm_policy": llm_policy,
-        "open_position_count": int(open_position_count),
-        "reuse_sec": int(reuse_sec),
-        "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
-        "reason": "",
-    }
-    strategist_refresh_requested = bool(commander_decision.get("strategist_refresh_requested"))
-    strategist_refresh_context = (
-        dict(commander_decision.get("strategist_refresh_context") or {})
-        if isinstance(commander_decision.get("strategist_refresh_context"), dict)
-        else {}
-    )
-    if open_position_count > 0:
-        payload["reason"] = "open_positions_present"
-        return False, payload
-    if strategist_refresh_requested:
-        payload.update({k: v for k, v in strategist_refresh_context.items() if k != "reason"})
-        payload["refresh_signal"] = str(
-            commander_decision.get("strategist_refresh_reason")
-            or strategist_refresh_context.get("refresh_signal")
-            or ""
-        )
-        payload["reason"] = "commander_requested_refresh"
-        return False, payload
-    if strategist_invocation != "SKIP":
-        payload["reason"] = "commander_hint_not_skip"
-        return False, payload
-    if _is_trueish(state.get("force_refresh_strategist")):
-        payload["reason"] = "force_refresh_requested"
-        return False, payload
-    if not output:
-        payload["reason"] = "no_cached_strategist_output"
-        return False, payload
-    if generated_epoch <= 0:
-        payload["reason"] = "cache_timestamp_missing"
-        return False, payload
-    if age_sec > reuse_sec:
-        payload["reason"] = "cache_stale"
-        return False, payload
-    memory_context = _assess_cached_strategist_memory_context(state, output)
-    payload.update({k: v for k, v in memory_context.items() if k != "mismatch"})
-    if bool(memory_context.get("mismatch")):
-        payload["reason"] = "cached_memory_context_mismatch"
-        return False, payload
-    payload["reason"] = "commander_skip_cached_strategist"
-    return True, payload
-
-
 def _run_integrated_chain(
     state: Dict[str, Any],
     *,
@@ -6602,219 +5176,91 @@ def _run_integrated_chain_impl(
     execute_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Run a visible end-to-end chain inside canonical runtime."""
-    from graphs.nodes.build_portfolio_snapshot import build_portfolio_snapshot
-    from graphs.nodes.build_risk_context import build_risk_context
-    from graphs.nodes.strategist_node import strategist_node
-    from graphs.nodes.scanner_node import scanner_node
-    from graphs.nodes.monitor_node import monitor_node
-    from graphs.nodes.decision_node import decision_node
-    from graphs.nodes.reporter_node import reporter_node
-    from graphs.nodes.update_state_after_execution import update_state_after_execution
-    from libs.reporting.intraday_trade_reports import generate_intraday_trade_artifacts
+    nodes = load_integrated_chain_nodes()
+    build_portfolio_snapshot = nodes.build_portfolio_snapshot
+    build_risk_context = nodes.build_risk_context
+    strategist_node = nodes.strategist_node
+    scanner_node = nodes.scanner_node
+    monitor_node = nodes.monitor_node
+    decision_node = nodes.decision_node
+    update_state_after_execution = nodes.update_state_after_execution
 
     def _emit_intraday_trade_report(local_state: Dict[str, Any]) -> Dict[str, Any]:
-        if _commander_trade_report_enabled(local_state):
-            try:
-                local_state["intraday_trade_report"] = reporter_node(local_state)
-            except Exception as exc:
-                local_state["intraday_trade_report"] = {
-                    "ok": False,
-                    "status": "failed",
-                    "reason": f"intraday_trade_artifact_exception:{type(exc).__name__}",
-                }
-        else:
-            local_state["intraday_trade_report"] = {
-                "ok": False,
-                "status": "disabled",
-                "reason": "reporter.trade_report.enabled is false",
-                "policy_source": "commander_applied_policy",
-            }
-        return local_state
+        return emit_intraday_trade_report(
+            local_state,
+            reporter_node=nodes.reporter_node,
+            trade_report_enabled_fn=_commander_trade_report_enabled,
+        )
 
-    shadow_runtime = _ensure_commander_shadow_runtime(state)
-    prior_cache_payload = _strategist_cache_payload(state)
-    prior_cached_output = prior_cache_payload.get("output") if isinstance(prior_cache_payload.get("output"), dict) else {}
-    _seed_commander_shadow_prior_context(
+    shadow_runtime, prior_cache_payload, prior_cached_output = seed_shadow_prior_context(
         state,
-        prior_cached_output=prior_cached_output if isinstance(prior_cached_output, dict) else {},
+        ensure_shadow_runtime_fn=_ensure_commander_shadow_runtime,
+        strategist_cache_payload_fn=_strategist_cache_payload,
+        seed_prior_context_fn=_seed_commander_shadow_prior_context,
     )
-    shadow_runtime = _ensure_commander_shadow_runtime(state)
 
-    # Keep integrated chain position/risk context aligned with live state.
-    state = build_portfolio_snapshot(state)
-    snaps = state.get("snapshots") if isinstance(state.get("snapshots"), dict) else {}
-    state["snapshots"] = {**dict(snaps or {}), "portfolio": state.get("portfolio_snapshot")}
-    should_continue, state = _apply_portfolio_preflight_guard(state, phase="session")
+    state, should_continue = build_integrated_chain_session_context(
+        state,
+        build_portfolio_snapshot_fn=build_portfolio_snapshot,
+        build_risk_context_fn=build_risk_context,
+        apply_portfolio_preflight_guard_fn=_apply_portfolio_preflight_guard,
+        build_commander_decision_fn=_build_commander_decision,
+    )
     if not should_continue:
         return state
-    state = build_risk_context(state)
-    state["commander_decision"] = _build_commander_decision(
-        state,
-        mode_value="integrated_chain",
-        phase_value=str(state.get("runtime_phase") or "session"),
-        status_value=str(state.get("runtime_status") or "planning"),
-        path_value=str(state.get("path") or "integrated_chain_pending"),
-        reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
-    )
 
     use_closeout_guard, closeout_payload = _should_use_session_closeout_fast_path(state)
     if use_closeout_guard:
-        shadow_runtime["strategist_executed"] = False
-        shadow_runtime["strategist_called"] = False
-        shadow_runtime["llm_called_by_strategist"] = False
-        shadow_runtime["used_cached_strategist"] = False
-        state = _hydrate_strategist_output_cache(state)
-        state = _attach_commander_reporter_feedback_policy(state, selected_route="closeout", phase="session")
-        state = _attach_commander_applied_policy(state)
-        state["runtime_fast_path"] = dict(closeout_payload)
-        state["session_closeout_guard"] = dict(closeout_payload)
-        state["commander_decision"] = _build_commander_decision(
+        return run_closeout_guard_fast_path(
             state,
-            mode_value="integrated_chain",
-            phase_value=str(state.get("runtime_phase") or "session"),
-            status_value=str(state.get("runtime_status") or "planning"),
-            path_value="integrated_chain_closeout_guard",
-            reason_text=str(closeout_payload.get("reason") or ""),
+            shadow_runtime=shadow_runtime,
+            closeout_payload=closeout_payload,
+            strategist_node_fn=strategist_node,
+            monitor_node_fn=monitor_node,
+            decision_node_fn=decision_node,
+            execute_fn=execute_fn,
+            emit_trade_report_fn=_emit_intraday_trade_report,
+            update_state_after_execution_fn=update_state_after_execution,
+            hydrate_strategist_output_cache_fn=_hydrate_strategist_output_cache,
+            attach_reporter_feedback_policy_fn=_attach_commander_reporter_feedback_policy,
+            attach_applied_policy_fn=_attach_commander_applied_policy,
+            build_commander_decision_fn=_build_commander_decision,
+            hydrate_closeout_account_orders_fn=_hydrate_closeout_account_orders,
+            pending_buy_cancel_intents_from_account_orders_fn=_pending_buy_cancel_intents_from_account_orders,
+            build_packet_from_state_fn=_build_packet_from_state,
+            log_commander_event_fn=_log_commander_event,
+            record_absent_later_stage_llm_reviews_fn=_record_absent_later_stage_llm_reviews,
+            portfolio_open_position_symbols_fn=_portfolio_open_position_symbols,
+            select_open_position_focus_symbol_fn=_select_open_position_focus_symbol,
+            run_stage4_carry_review_fn=_run_stage4_carry_review,
+            strategist_frame_blocked_fn=_strategist_frame_blocked,
+            apply_strategist_block_fn=_apply_strategist_block,
+            hydrate_monitor_symbol_features_fn=_hydrate_monitor_symbol_features,
+            intent_from_monitor_state_fn=_intent_from_monitor_state,
         )
-        state = _hydrate_closeout_account_orders(state)
-        pending_buy_cancel_intents = _pending_buy_cancel_intents_from_account_orders(state)
-        if pending_buy_cancel_intents:
-            cancel_intent = dict(pending_buy_cancel_intents[0])
-            state["selected"] = {
-                "symbol": cancel_intent.get("symbol"),
-                "_monitor_synthetic_selected": True,
-                "_closeout_guard_selected": True,
-                "_pending_buy_cancel_selected": True,
-            }
-            state["commander_pending_buy_cancel"] = {
-                "detected": True,
-                "intent": dict(cancel_intent),
-                "candidate_count": len(pending_buy_cancel_intents),
-                "reason": "session_closeout_pending_buy_cancel",
-            }
-            state["decision"] = "approve"
-            state["decision_reason"] = "session_closeout_pending_buy_cancel"
-            state["decision_packet"] = _build_packet_from_state(state, intent=cancel_intent)
-            _log_commander_event(
-                state,
-                "pending_buy_cancel",
-                {
-                    "path": "integrated_chain_closeout_guard",
-                    "symbol": cancel_intent.get("symbol"),
-                    "orig_ord_no": cancel_intent.get("orig_ord_no"),
-                    "candidate_count": len(pending_buy_cancel_intents),
-                },
-            )
-            state = execute_fn(state)
-            shadow_runtime["monitor_decision"] = "CANCEL"
-            shadow_runtime["executor_action"] = str(
-                (((state.get("execution") or {}).get("order") or {}).get("action") or "CANCEL")
-            )
-            shadow_runtime["executor_status"] = str(
-                ((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or ""))
-            )
-            state["path"] = "integrated_chain_closeout_guard"
-            _record_absent_later_stage_llm_reviews(state)
-            return state
-        held_symbols = _portfolio_open_position_symbols(state)
-        focus_symbol = _select_open_position_focus_symbol(state, fallback_symbols=held_symbols)
-        if focus_symbol:
-            state["selected"] = {
-                "symbol": focus_symbol,
-                "_monitor_synthetic_selected": True,
-                "_closeout_guard_selected": True,
-            }
-        else:
-            state.pop("selected", None)
-        state.pop("scanner_output", None)
-        if held_symbols:
-            state, stage4_ran = _run_stage4_carry_review(
-                state,
-                strategist_node,
-                review_reason="session_closeout_carry_review",
-                phase="closeout",
-            )
-            if stage4_ran:
-                shadow_runtime["strategist_executed"] = True
-                shadow_runtime["strategist_called"] = True
-                shadow_runtime["used_cached_strategist"] = False
-                shadow_runtime["stage4_carry_review_requested"] = True
-                shadow_runtime["stage4_carry_review_reason"] = "session_closeout_carry_review"
-                strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
-                llm_status = str(strategist_llm.get("status") or strategist_llm.get("llm_status") or "").strip().lower()
-                shadow_runtime["llm_called_by_strategist"] = bool(
-                    llm_status not in {"", "disabled"}
-                    or str(strategist_llm.get("prompt_ref") or "").strip()
-                    or str(strategist_llm.get("response_ref") or "").strip()
-                )
-                shadow_runtime["retry_count_estimate"] = max(0, _coerce_int(strategist_llm.get("attempts"), 1) - 1)
-                state["commander_shadow_runtime"] = dict(shadow_runtime)
-                if _strategist_frame_blocked(state):
-                    return _apply_strategist_block(state, phase="closeout")
-        _log_commander_event(state, "fast_path", {"path": "integrated_chain_closeout_guard", **closeout_payload})
-        state = _hydrate_monitor_symbol_features(state)
-        state = monitor_node(state)
-        shadow_runtime["monitor_decision"] = str(((state.get("monitor_output") or {}).get("intent_side") or "NOOP"))
-        state = decision_node(state)
-        decision = str(state.get("decision") or "").strip().lower()
-        if decision == "approve":
-            intent = _intent_from_monitor_state(state)
-            state["decision_packet"] = _build_packet_from_state(state, intent=intent)
-            state = execute_fn(state)
-            shadow_runtime["executor_action"] = str(
-                (((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or "")
-            )
-            shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
-            state = _emit_intraday_trade_report(state)
-            state = update_state_after_execution(state)
-        state["path"] = "integrated_chain_closeout_guard"
-        _record_absent_later_stage_llm_reviews(state)
-        return state
 
     use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
     if use_monitor_only:
-        shadow_runtime["strategist_executed"] = False
-        shadow_runtime["strategist_called"] = False
-        shadow_runtime["llm_called_by_strategist"] = False
-        shadow_runtime["used_cached_strategist"] = False
-        state = _hydrate_strategist_output_cache(state)
-        state = _attach_commander_reporter_feedback_policy(state, selected_route="monitor_only", phase="session")
-        state = _attach_commander_applied_policy(state)
-        state["commander_decision"] = _build_commander_decision(
+        return run_monitor_only_fast_path(
             state,
-            mode_value="integrated_chain",
-            phase_value=str(state.get("runtime_phase") or "session"),
-            status_value=str(state.get("runtime_status") or "planning"),
-            path_value="integrated_chain_monitor_only",
-            reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
+            shadow_runtime=shadow_runtime,
+            fast_path_payload=fast_path_payload,
+            monitor_node_fn=monitor_node,
+            decision_node_fn=decision_node,
+            execute_fn=execute_fn,
+            emit_trade_report_fn=_emit_intraday_trade_report,
+            update_state_after_execution_fn=update_state_after_execution,
+            hydrate_strategist_output_cache_fn=_hydrate_strategist_output_cache,
+            attach_reporter_feedback_policy_fn=_attach_commander_reporter_feedback_policy,
+            attach_applied_policy_fn=_attach_commander_applied_policy,
+            build_commander_decision_fn=_build_commander_decision,
+            portfolio_open_position_symbols_fn=_portfolio_open_position_symbols,
+            select_open_position_focus_symbol_fn=_select_open_position_focus_symbol,
+            log_commander_event_fn=_log_commander_event,
+            hydrate_monitor_symbol_features_fn=_hydrate_monitor_symbol_features,
+            intent_from_monitor_state_fn=_intent_from_monitor_state,
+            build_packet_from_state_fn=_build_packet_from_state,
         )
-        held_symbols = _portfolio_open_position_symbols(state)
-        focus_symbol = _select_open_position_focus_symbol(state, fallback_symbols=held_symbols)
-        if focus_symbol:
-            state["selected"] = {
-                "symbol": focus_symbol,
-                "_monitor_synthetic_selected": True,
-            }
-        else:
-            state.pop("selected", None)
-        state.pop("scanner_output", None)
-        state["runtime_fast_path"] = dict(fast_path_payload)
-        _log_commander_event(state, "fast_path", {"path": "integrated_chain_monitor_only", **fast_path_payload})
-        state = _hydrate_monitor_symbol_features(state)
-        state = monitor_node(state)
-        shadow_runtime["monitor_decision"] = str(((state.get("monitor_output") or {}).get("intent_side") or "NOOP"))
-        state = decision_node(state)
-        decision = str(state.get("decision") or "").strip().lower()
-        if decision == "approve":
-            intent = _intent_from_monitor_state(state)
-            state["decision_packet"] = _build_packet_from_state(state, intent=intent)
-            state = execute_fn(state)
-            shadow_runtime["executor_action"] = str((((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or ""))
-            shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
-            state = _emit_intraday_trade_report(state)
-            state = update_state_after_execution(state)
-        state["path"] = "integrated_chain_monitor_only"
-        return state
 
     state["commander_decision"] = _build_commander_decision(
         state,
@@ -6824,80 +5270,46 @@ def _run_integrated_chain_impl(
         path_value="integrated_chain_pre_strategist",
         reason_text=str(fast_path_payload.get("reason") or ""),
     )
-    if _portfolio_open_position_count(state) > 0:
-        state = _attach_commander_reporter_feedback_policy(state, selected_route="monitor_only", phase="session")
-        state = _attach_commander_applied_policy(state)
-        state, pre_entry_exit_executed = _run_pre_entry_exit_sweep(
-            state,
-            monitor_node_fn=monitor_node,
-            decision_node_fn=decision_node,
-            execute_fn=execute_fn,
-            emit_trade_report_fn=_emit_intraday_trade_report,
-            update_state_after_execution_fn=update_state_after_execution,
-            shadow_runtime=shadow_runtime,
-        )
-        state["commander_shadow_runtime"] = dict(shadow_runtime)
-        if pre_entry_exit_executed:
-            _record_absent_later_stage_llm_reviews(state)
-            return state
+    state, pre_entry_exit_executed = run_pre_entry_exit_sweep_if_needed(
+        state,
+        shadow_runtime=shadow_runtime,
+        monitor_node_fn=monitor_node,
+        decision_node_fn=decision_node,
+        execute_fn=execute_fn,
+        emit_trade_report_fn=_emit_intraday_trade_report,
+        update_state_after_execution_fn=update_state_after_execution,
+        portfolio_open_position_count_fn=_portfolio_open_position_count,
+        attach_reporter_feedback_policy_fn=_attach_commander_reporter_feedback_policy,
+        attach_applied_policy_fn=_attach_commander_applied_policy,
+        run_pre_entry_exit_sweep_fn=_run_pre_entry_exit_sweep,
+        record_absent_later_stage_llm_reviews_fn=_record_absent_later_stage_llm_reviews,
+    )
+    if pre_entry_exit_executed:
+        return state
 
-    reused_strategist_cache, cache_payload = _should_use_cached_strategist_from_commander_skip(state)
-    if not reused_strategist_cache and str(cache_payload.get("reason") or "").strip() != "commander_requested_refresh":
-        reused_strategist_cache, cache_payload = _should_use_cached_strategist_when_flat(state)
-    if reused_strategist_cache:
-        shadow_runtime["strategist_executed"] = False
-        shadow_runtime["strategist_called"] = False
-        shadow_runtime["llm_called_by_strategist"] = False
-        shadow_runtime["used_cached_strategist"] = True
-        shadow_runtime["pre_buy_refresh_requested"] = False
-        shadow_runtime["pre_buy_refresh_reason"] = ""
-        shadow_runtime["pre_buy_refresh_context"] = {}
-        shadow_runtime["post_scanner_refresh_requested"] = False
-        shadow_runtime["post_scanner_refresh_reason"] = ""
-        shadow_runtime["post_scanner_refresh_context"] = {}
-        shadow_runtime["market_changed"] = False
-        shadow_runtime["repeated_same_context"] = True
-        state = _hydrate_strategist_output_cache(state)
-        state["runtime_fast_path"] = dict(cache_payload)
-        _log_commander_event(state, "fast_path", {"path": "integrated_chain_cached_frame", **cache_payload})
-    else:
-        if str(cache_payload.get("reason") or "").strip() == "commander_requested_refresh":
-            shadow_runtime["pre_buy_refresh_requested"] = True
-            shadow_runtime["pre_buy_refresh_reason"] = str(
-                cache_payload.get("refresh_signal")
-                or cache_payload.get("strategist_refresh_reason")
-                or cache_payload.get("reason")
-                or ""
-            )
-            shadow_runtime["pre_buy_refresh_context"] = dict(cache_payload)
-            _log_commander_event(state, "pre_buy_refresh", {"path": "integrated_chain", **cache_payload})
-        else:
-            shadow_runtime["pre_buy_refresh_requested"] = False
-            shadow_runtime["pre_buy_refresh_reason"] = ""
-            shadow_runtime["pre_buy_refresh_context"] = {}
-        shadow_runtime["post_scanner_refresh_requested"] = False
-        shadow_runtime["post_scanner_refresh_reason"] = ""
-        shadow_runtime["post_scanner_refresh_context"] = {}
-        state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="session")
-        state = _attach_commander_applied_policy(state)
-        state = strategist_node(state)
-        shadow_runtime["strategist_executed"] = True
-        shadow_runtime["strategist_called"] = True
-        shadow_runtime["used_cached_strategist"] = False
-        strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
-        llm_status = str(strategist_llm.get("status") or strategist_llm.get("llm_status") or "").strip().lower()
-        shadow_runtime["llm_called_by_strategist"] = bool(
-            llm_status not in {"", "disabled"}
-            or str(strategist_llm.get("prompt_ref") or "").strip()
-            or str(strategist_llm.get("response_ref") or "").strip()
-        )
-        shadow_runtime["retry_count_estimate"] = max(0, _coerce_int(strategist_llm.get("attempts"), 1) - 1)
-        market_changed = _shadow_market_changed(prior_cached_output if isinstance(prior_cached_output, dict) else {}, state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {})
-        shadow_runtime["market_changed"] = market_changed
-        shadow_runtime["repeated_same_context"] = (market_changed is False)
-        if _strategist_frame_blocked(state):
-            return _apply_strategist_block(state, phase="integrated_chain")
-        state = _persist_strategist_output_cache(state)
+    reused_strategist_cache, cache_payload = resolve_strategist_cache_use(
+        state,
+        should_use_cached_from_commander_skip_fn=_should_use_cached_strategist_from_commander_skip,
+        should_use_cached_when_flat_fn=_should_use_cached_strategist_when_flat,
+    )
+    state, reused_strategist_cache, strategist_blocked = run_pre_scanner_strategist_cycle(
+        state,
+        shadow_runtime=shadow_runtime,
+        reused_strategist_cache=reused_strategist_cache,
+        cache_payload=cache_payload,
+        prior_cached_output=prior_cached_output if isinstance(prior_cached_output, dict) else {},
+        hydrate_strategist_output_cache_fn=_hydrate_strategist_output_cache,
+        log_commander_event_fn=_log_commander_event,
+        attach_reporter_feedback_policy_fn=_attach_commander_reporter_feedback_policy,
+        attach_applied_policy_fn=_attach_commander_applied_policy,
+        strategist_node_fn=strategist_node,
+        shadow_market_changed_fn=_shadow_market_changed,
+        strategist_frame_blocked_fn=_strategist_frame_blocked,
+        apply_strategist_block_fn=_apply_strategist_block,
+        persist_strategist_output_cache_fn=_persist_strategist_output_cache,
+    )
+    if strategist_blocked:
+        return state
     if reused_strategist_cache:
         state = _attach_commander_reporter_feedback_policy(state, selected_route="cached_strategist", phase="session")
     state = _attach_commander_applied_policy(state)
@@ -6911,141 +5323,39 @@ def _run_integrated_chain_impl(
     )
     state = scanner_node(state)
     post_scanner_selected_symbol = _post_scanner_selected_symbol(state)
-    if (
-        _portfolio_open_position_count(state) < _resolve_risk_max_positions(state)
-        and (
-            reused_strategist_cache
-            or (bool(post_scanner_selected_symbol) and bool(str(state.get("run_id") or "").strip()))
-        )
-    ):
-        post_scanner_path = (
-            "integrated_chain_cached_frame_post_scanner"
-            if reused_strategist_cache
-            else "integrated_chain_post_scanner"
-        )
-        post_scanner_decision = _build_commander_decision(
-            state,
-            mode_value="integrated_chain",
-            phase_value=str(state.get("runtime_phase") or "session"),
-            status_value=str(state.get("runtime_status") or "planning"),
-            path_value=post_scanner_path,
-            reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
-        )
-        post_scanner_decision = _force_selected_symbol_tactical_refresh_decision(state, post_scanner_decision)
-        post_scanner_refresh_requested = bool(post_scanner_decision.get("strategist_refresh_requested"))
-        if post_scanner_refresh_requested:
-            if not _commander_post_scanner_refresh_enabled(state):
-                refresh_context = (
-                    dict(post_scanner_decision.get("strategist_refresh_context") or {})
-                    if isinstance(post_scanner_decision.get("strategist_refresh_context"), dict)
-                    else {}
-                )
-                shadow_runtime["post_scanner_refresh_requested"] = True
-                shadow_runtime["post_scanner_refresh_reason"] = str(
-                    post_scanner_decision.get("strategist_refresh_reason")
-                    or refresh_context.get("refresh_signal")
-                    or ""
-                )
-                shadow_runtime["post_scanner_refresh_context"] = {
-                    **dict(refresh_context),
-                    "skipped": True,
-                    "skip_reason": "post_scanner_refresh_disabled",
-                }
-                state["commander_shadow_runtime"] = dict(shadow_runtime)
-                _log_commander_event(
-                    state,
-                    "post_scanner_refresh_skipped",
-                    {
-                        "path": post_scanner_path,
-                        **dict(refresh_context),
-                        "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
-                        "skip_reason": "post_scanner_refresh_disabled",
-                    },
-                )
-                post_scanner_refresh_requested = False
-            else:
-                state["commander_decision"] = dict(post_scanner_decision)
-                refresh_context = (
-                    dict(post_scanner_decision.get("strategist_refresh_context") or {})
-                    if isinstance(post_scanner_decision.get("strategist_refresh_context"), dict)
-                    else {}
-                )
-                shadow_runtime["post_scanner_refresh_requested"] = True
-                shadow_runtime["post_scanner_refresh_reason"] = str(
-                    post_scanner_decision.get("strategist_refresh_reason")
-                    or refresh_context.get("refresh_signal")
-                    or ""
-                )
-                shadow_runtime["post_scanner_refresh_context"] = dict(refresh_context)
-                state["commander_shadow_runtime"] = dict(shadow_runtime)
-                _log_commander_event(
-                    state,
-                    "post_scanner_refresh",
-                    {
-                        "path": post_scanner_path,
-                        **dict(refresh_context),
-                        "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
-                    },
-                )
-                state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="session")
-                state = _attach_commander_applied_policy(state)
-                state = strategist_node(state)
-                shadow_runtime["strategist_executed"] = True
-                shadow_runtime["strategist_called"] = True
-                shadow_runtime["used_cached_strategist"] = False
-                strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
-                llm_status = str(strategist_llm.get("status") or strategist_llm.get("llm_status") or "").strip().lower()
-                shadow_runtime["llm_called_by_strategist"] = bool(
-                    llm_status not in {"", "disabled"}
-                    or str(strategist_llm.get("prompt_ref") or "").strip()
-                    or str(strategist_llm.get("response_ref") or "").strip()
-                )
-                shadow_runtime["retry_count_estimate"] = max(0, _coerce_int(strategist_llm.get("attempts"), 1) - 1)
-                if _strategist_frame_blocked(state):
-                    return _apply_strategist_block(state, phase="integrated_chain")
-                state = _persist_strategist_output_cache(state)
-                state["runtime_fast_path"] = {
-                    "reason": "post_scanner_selected_symbol_refresh",
-                    "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
-                    "selected_symbol": str(refresh_context.get("selected_symbol") or ""),
-                }
-                reused_strategist_cache = False
-                state = scanner_node(state)
-        else:
-            refresh_context = (
-                dict(post_scanner_decision.get("strategist_refresh_context") or {})
-                if isinstance(post_scanner_decision.get("strategist_refresh_context"), dict)
-                else {}
-            )
-            if bool(refresh_context.get("post_scanner_refresh_suppressed")):
-                shadow_runtime["post_scanner_refresh_requested"] = False
-                shadow_runtime["post_scanner_refresh_reason"] = ""
-                shadow_runtime["post_scanner_refresh_context"] = dict(refresh_context)
-                state["commander_decision"] = dict(post_scanner_decision)
-                state["commander_shadow_runtime"] = dict(shadow_runtime)
-                _log_commander_event(
-                    state,
-                    "post_scanner_refresh_suppressed",
-                    {
-                        "path": post_scanner_path,
-                        **dict(refresh_context),
-                        "skip_reason": str(refresh_context.get("post_scanner_refresh_suppressed_reason") or ""),
-                    },
-                )
-    state = _hydrate_monitor_symbol_features(state)
-    state = monitor_node(state)
-    shadow_runtime["monitor_decision"] = str(((state.get("monitor_output") or {}).get("intent_side") or "NOOP"))
-    state = decision_node(state)
-
-    decision = str(state.get("decision") or "").strip().lower()
-    if decision == "approve":
-        intent = _intent_from_monitor_state(state)
-        state["decision_packet"] = _build_packet_from_state(state, intent=intent)
-        state = execute_fn(state)
-        shadow_runtime["executor_action"] = str((((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or ""))
-        shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
-        state = _emit_intraday_trade_report(state)
-        state = update_state_after_execution(state)
+    state, reused_strategist_cache, post_scanner_blocked = run_post_scanner_refresh_cycle(
+        state,
+        shadow_runtime=shadow_runtime,
+        reused_strategist_cache=reused_strategist_cache,
+        post_scanner_selected_symbol=post_scanner_selected_symbol,
+        scanner_node_fn=scanner_node,
+        strategist_node_fn=strategist_node,
+        build_commander_decision_fn=_build_commander_decision,
+        force_selected_symbol_tactical_refresh_decision_fn=_force_selected_symbol_tactical_refresh_decision,
+        commander_post_scanner_refresh_enabled_fn=_commander_post_scanner_refresh_enabled,
+        log_commander_event_fn=_log_commander_event,
+        attach_reporter_feedback_policy_fn=_attach_commander_reporter_feedback_policy,
+        attach_applied_policy_fn=_attach_commander_applied_policy,
+        strategist_frame_blocked_fn=_strategist_frame_blocked,
+        apply_strategist_block_fn=_apply_strategist_block,
+        persist_strategist_output_cache_fn=_persist_strategist_output_cache,
+        portfolio_open_position_count_fn=_portfolio_open_position_count,
+        resolve_risk_max_positions_fn=_resolve_risk_max_positions,
+    )
+    if post_scanner_blocked:
+        return state
+    state = run_monitor_decision_path(
+        state,
+        shadow_runtime=shadow_runtime,
+        hydrate_monitor_symbol_features_fn=_hydrate_monitor_symbol_features,
+        monitor_node_fn=monitor_node,
+        decision_node_fn=decision_node,
+        execute_fn=execute_fn,
+        emit_trade_report_fn=_emit_intraday_trade_report,
+        update_state_after_execution_fn=update_state_after_execution,
+        intent_from_monitor_state_fn=_intent_from_monitor_state,
+        build_packet_from_state_fn=_build_packet_from_state,
+    )
 
     _record_absent_later_stage_llm_reviews(state)
     state["path"] = "integrated_chain_cached_frame" if reused_strategist_cache else "integrated_chain"
@@ -7139,49 +5449,6 @@ def _run_closeout_phase(state: Dict[str, Any]) -> Dict[str, Any]:
     state["path"] = "closeout_idle"
     state["runtime_status"] = str(state.get("runtime_status") or "closeout_ready")
     return state
-
-
-def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] = None) -> RuntimeMode:
-    """Resolve runtime mode with explicit precedence.
-
-    Priority:
-      1) explicit argument `mode`
-      2) `state["runtime_mode"]`
-      3) env `COMMANDER_RUNTIME_MODE`
-      4) default `graph_spine`
-
-    Safety guard:
-      - decision_packet via state/env requires activation:
-        state["allow_decision_packet_runtime"]=true OR
-        env COMMANDER_RUNTIME_ALLOW_DECISION_PACKET=true
-      - explicit `mode` bypasses this guard (caller-controlled override).
-    """
-    if mode is not None:
-        return _normalize_mode(mode)
-
-    allow_decision_packet = _is_trueish(state.get("allow_decision_packet_runtime")) or _is_trueish(
-        os.getenv("COMMANDER_RUNTIME_ALLOW_DECISION_PACKET", "")
-    )
-
-    if "runtime_mode" in state:
-        selected = _normalize_mode(state.get("runtime_mode"))
-        if selected == "decision_packet" and not allow_decision_packet:
-            return "graph_spine"
-        return selected
-    env_mode = os.getenv("COMMANDER_RUNTIME_MODE", "")
-    selected = _normalize_mode(env_mode or "graph_spine")
-    if selected == "decision_packet" and not allow_decision_packet:
-        return "graph_spine"
-    return selected
-
-
-def resolve_runtime_phase(state: Dict[str, Any], *, phase: Optional[RuntimePhase] = None) -> RuntimePhase:
-    """Resolve runtime phase with explicit precedence."""
-    if phase is not None:
-        return _normalize_phase(phase)
-    if "runtime_phase" in state:
-        return _normalize_phase(state.get("runtime_phase"))
-    return _normalize_phase(os.getenv("COMMANDER_RUNTIME_PHASE", "session"))
 
 
 def _run_commander_runtime_impl(

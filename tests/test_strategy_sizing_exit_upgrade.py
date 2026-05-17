@@ -263,6 +263,7 @@ def test_exit_policy_vwap_breakdown_triggers_with_profit_protection():
             "peak_price": 102.0,
             "vwap_distance": -0.01,
             "vwap_breakdown_pct": 0.005,
+            "vwap_breakdown_confirmation_required": False,
             "take_profit_pct": 0.0,
         },
     )
@@ -666,6 +667,7 @@ def test_exit_policy_cost_aware_floor_blocks_vwap_breakdown_on_small_profit():
             "peak_price": 101.5,
             "vwap_distance": -0.006,
             "vwap_breakdown_pct": 0.005,
+            "vwap_breakdown_confirmation_required": False,
             "cost_aware_profit_floor_enabled": True,
             "cost_aware_profit_floor_pct": 0.012,
         },
@@ -679,6 +681,79 @@ def test_exit_policy_cost_aware_floor_blocks_vwap_breakdown_on_small_profit():
     assert out["hold_block_reason"] == "vwap_breakdown:cost_aware_profit_floor_not_met"
 
 
+def test_exit_policy_vwap_breakdown_waits_for_confirmation_when_not_stop_loss():
+    out = evaluate_exit_policy(
+        price=100.8,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "take_profit_pct": 0.0,
+            "peak_price": 101.5,
+            "vwap_distance": -0.006,
+            "vwap_breakdown_pct": 0.005,
+            "vwap_breakdown_consecutive_bars": 1,
+        },
+    )
+
+    assert out["triggered"] is False
+    assert out["reason"] == "hold"
+    assert out["vwap_breakdown_confirmation_pending"] is True
+    assert out["hold_block_reason"] == "vwap_breakdown_confirmation_pending"
+
+
+def test_exit_policy_vwap_breakdown_exits_after_two_bars():
+    out = evaluate_exit_policy(
+        price=100.8,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "take_profit_pct": 0.0,
+            "peak_price": 101.5,
+            "vwap_distance": -0.006,
+            "vwap_breakdown_pct": 0.005,
+            "vwap_breakdown_consecutive_bars": 2,
+        },
+    )
+
+    assert out["triggered"] is True
+    assert out["reason"] == "vwap_breakdown"
+    assert out["vwap_breakdown_confirmed"] is True
+
+
+def test_exit_policy_vwap_breakdown_exits_on_volume_or_low_break_confirmation():
+    low_break = evaluate_exit_policy(
+        price=100.8,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "take_profit_pct": 0.0,
+            "peak_price": 101.5,
+            "vwap_distance": -0.006,
+            "vwap_breakdown_pct": 0.005,
+            "vwap_breakdown_consecutive_bars": 1,
+            "vwap_breakdown_low_break_confirmed": True,
+        },
+    )
+    volume = evaluate_exit_policy(
+        price=100.8,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "take_profit_pct": 0.0,
+            "peak_price": 101.5,
+            "vwap_distance": -0.006,
+            "vwap_breakdown_pct": 0.005,
+            "vwap_breakdown_consecutive_bars": 1,
+            "vwap_breakdown_volume_confirmed": True,
+        },
+    )
+
+    assert low_break["triggered"] is True
+    assert low_break["reason"] == "vwap_breakdown"
+    assert volume["triggered"] is True
+    assert volume["reason"] == "vwap_breakdown"
+
+
 def test_exit_policy_cost_aware_floor_blocks_metric_hard_vwap_breakdown_on_small_profit():
     out = evaluate_exit_policy(
         price=100.7,
@@ -689,6 +764,7 @@ def test_exit_policy_cost_aware_floor_blocks_metric_hard_vwap_breakdown_on_small
             "peak_price": 101.5,
             "vwap_distance": -0.03,
             "vwap_breakdown_pct": 0.005,
+            "vwap_breakdown_confirmation_required": False,
             "cost_aware_profit_floor_enabled": True,
             "cost_aware_profit_floor_pct": 0.012,
         },
@@ -736,6 +812,7 @@ def test_exit_policy_cost_aware_floor_blocks_vwap_breakdown_when_gross_profit_is
             "peak_price": 101.5,
             "vwap_distance": -0.006,
             "vwap_breakdown_pct": 0.005,
+            "vwap_breakdown_confirmation_required": False,
             "cost_aware_profit_floor_enabled": True,
             "cost_aware_profit_floor_pct": 0.012,
         },

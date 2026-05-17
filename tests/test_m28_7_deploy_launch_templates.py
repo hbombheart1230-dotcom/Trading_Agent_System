@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.run_m28_deploy_launch_template_check import main as template_check_main
+from libs.runtime.entrypoints.m28_deploy_launch_template_check import main as template_check_main
 
 
 def test_m28_7_deploy_launch_template_check_passes_default(tmp_path: Path, capsys):

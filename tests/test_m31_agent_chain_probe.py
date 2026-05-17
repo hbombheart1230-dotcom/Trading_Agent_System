@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.run_m31_agent_chain_probe import main as probe_main
+from libs.runtime.entrypoints.m31_agent_chain_probe import main as probe_main
 
 
 def test_m31_agent_chain_probe_passes_default(capsys):

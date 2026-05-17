@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import scripts.run_live_session_watch as mod
-from scripts.run_live_session_watch import evaluate_watch_health
+import libs.runtime.entrypoints.live_session_watch as mod
+from libs.runtime.entrypoints.live_session_watch import evaluate_watch_health
 
 
 def _summary(
@@ -87,4 +87,5 @@ def test_run_live_summary_uses_hidden_runner(monkeypatch) -> None:
 
     assert out["ok"] is True
     assert called["cmd"][0].endswith("python.exe") or called["cmd"][0].endswith("python")
+    assert called["cmd"][1:3] == ["-m", "libs.runtime.entrypoints.live_session_summary"]
     assert "--json" in called["cmd"]

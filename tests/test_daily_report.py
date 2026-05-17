@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-import scripts.generate_daily_report as daily_script
+import libs.reporting.daily_report_generator as daily_generator
 from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.daily_report import generate_daily_report as compat_generate_daily_report
 from scripts.generate_daily_report import generate_daily_report
@@ -226,8 +226,8 @@ def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path
             "source": {"run_count": 8, "source": "daily_monitor_artifacts"},
         }
 
-    monkeypatch.setattr(daily_script, "build_operator_daily_summary_payload", fake_operator_payload)
-    monkeypatch.setattr(daily_script, "build_policy_surface_quality_snapshot", fake_policy_snapshot)
+    monkeypatch.setattr(daily_generator, "build_operator_daily_summary_payload", fake_operator_payload)
+    monkeypatch.setattr(daily_generator, "build_policy_surface_quality_snapshot", fake_policy_snapshot)
 
     md, js = generate_daily_report(events, out_dir, day="2026-04-02")
 
@@ -269,7 +269,7 @@ def test_generate_daily_report_keeps_working_when_policy_surface_summary_unavail
     )
     out_dir = tmp_path / "reports"
 
-    monkeypatch.setattr(daily_script, "build_policy_surface_quality_snapshot", lambda *args, **kwargs: {
+    monkeypatch.setattr(daily_generator, "build_policy_surface_quality_snapshot", lambda *args, **kwargs: {
         "summary": {"schema_version": "policy_surface_quality_summary.v1", "run_count": 0},
         "executive_summary": {"schema_version": "policy_surface_quality_executive_summary.v1", "status": "unknown"},
         "chart_structure_summary": {"schema_version": "chart_structure_decision_hint_summary.v1", "run_count": 0},
@@ -372,7 +372,7 @@ def test_generate_daily_report_renders_chart_structure_applied_examples(tmp_path
             "source": {"run_count": 3, "source": "daily_monitor_artifacts"},
         }
 
-    monkeypatch.setattr(daily_script, "build_policy_surface_quality_snapshot", fake_policy_snapshot)
+    monkeypatch.setattr(daily_generator, "build_policy_surface_quality_snapshot", fake_policy_snapshot)
 
     md, js = generate_daily_report(events, out_dir, day="2026-04-03")
 
@@ -398,7 +398,7 @@ def test_generate_daily_report_does_not_read_operator_summary_file(tmp_path: Pat
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(daily_script, "build_operator_daily_summary_payload", lambda *args, **kwargs: {
+    monkeypatch.setattr(daily_generator, "build_operator_daily_summary_payload", lambda *args, **kwargs: {
         "generated_at": "2026-04-08T01:00:00+00:00",
         "source_run_count": 1,
         "latest_run_id": "r1",
@@ -410,7 +410,7 @@ def test_generate_daily_report_does_not_read_operator_summary_file(tmp_path: Pat
         "top_issues": [],
         "recommended_operator_actions": [],
     })
-    monkeypatch.setattr(daily_script, "build_policy_surface_quality_snapshot", lambda *args, **kwargs: {
+    monkeypatch.setattr(daily_generator, "build_policy_surface_quality_snapshot", lambda *args, **kwargs: {
         "summary": {"schema_version": "policy_surface_quality_summary.v1", "run_count": 0},
         "executive_summary": {"schema_version": "policy_surface_quality_executive_summary.v1", "status": "unknown"},
         "chart_structure_summary": {"schema_version": "chart_structure_decision_hint_summary.v1", "run_count": 0},

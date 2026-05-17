@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import scripts.run_mock_exam_day as mod
+import libs.runtime.entrypoints.mock_exam_day as mod
 
 
 def _write_env(path: Path, pairs: dict[str, str]) -> None:
@@ -960,7 +960,7 @@ def test_session_reuses_existing_live_loop_when_present(tmp_path: Path, capsys, 
             "rc": 0,
             "ok": True,
             "pid": 45678,
-            "command_line": "python -m scripts.run_m13_live_loop --tick-pipeline integrated_chain",
+                "command_line": "python -m libs.runtime.entrypoints.m13_live_loop --tick-pipeline integrated_chain",
             "duration_sec": 0.0,
         },
     )

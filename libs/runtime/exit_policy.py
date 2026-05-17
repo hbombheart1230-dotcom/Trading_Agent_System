@@ -421,6 +421,13 @@ def evaluate_exit_policy(
         "exit_trigger_metric_name": "",
         "exit_trigger_metric_value": None,
         "exit_trigger_metric_source": "",
+        "vwap_breakdown_confirmation_required": False,
+        "vwap_breakdown_confirmed": False,
+        "vwap_breakdown_confirmation_pending": False,
+        "vwap_breakdown_confirmation_reason": "",
+        "vwap_breakdown_consecutive_bars": 0,
+        "vwap_breakdown_low_break_confirmed": False,
+        "vwap_breakdown_volume_confirmed": False,
         "protective_exit_floor_blocked": False,
         "protective_exit_floor_blocked_reason": "",
         "protective_exit_hard_invalidation": False,
@@ -598,6 +605,10 @@ def evaluate_exit_policy(
                 ),
             ),
             "vwap_breakdown_pct": _clamp_non_negative(_to_float(p.get("vwap_breakdown_pct"), 0.0)),
+            "vwap_breakdown_confirm_bars": max(
+                1,
+                int(_to_float(p.get("vwap_breakdown_confirm_bars"), 2.0)),
+            ),
             "intraday_low_break_pct": _clamp_non_negative(_to_float(p.get("intraday_low_break_pct"), 0.0)),
             "trend_strength_floor": _to_float(p.get("trend_strength_floor"), 0.0),
             "eod_flat_cutoff_min": max(0, int(_to_float(p.get("eod_flat_cutoff_min"), 10))),
@@ -1184,7 +1195,33 @@ def evaluate_exit_policy(
         vwap_distance_source = str(p.get("vwap_distance_source") or "selected.features.engine_vwap_distance")
         require_profit = _to_bool(p.get("vwap_break_requires_profit"), True)
         if vwap_distance <= -vwap_breakdown_th and (not require_profit or peak_price > apx or gross_pnl_ratio > 0.0):
-            if _block_protective_exit_below_floor("vwap_breakdown"):
+            confirmation_required = _to_bool(p.get("vwap_breakdown_confirmation_required"), True)
+            confirm_bars_required = int(out["thresholds"].get("vwap_breakdown_confirm_bars") or 2)
+            consecutive_bars = max(0, int(_to_float(p.get("vwap_breakdown_consecutive_bars"), 0.0)))
+            low_break_confirmed = _to_bool(p.get("vwap_breakdown_low_break_confirmed"), False)
+            volume_confirmed = _to_bool(p.get("vwap_breakdown_volume_confirmed"), False)
+            confirmed = bool(
+                not confirmation_required
+                or consecutive_bars >= confirm_bars_required
+                or low_break_confirmed
+                or volume_confirmed
+                or _to_bool(p.get("hard_invalidation_confirmed"), False)
+                or _to_bool(p.get("vwap_breakdown_hard_invalidation"), False)
+            )
+            out["vwap_breakdown_confirmation_required"] = bool(confirmation_required)
+            out["vwap_breakdown_consecutive_bars"] = int(consecutive_bars)
+            out["vwap_breakdown_confirm_bars_required"] = int(confirm_bars_required)
+            out["vwap_breakdown_low_break_confirmed"] = bool(low_break_confirmed)
+            out["vwap_breakdown_volume_confirmed"] = bool(volume_confirmed)
+            out["vwap_breakdown_confirmed"] = bool(confirmed)
+            if not confirmed:
+                out["vwap_breakdown_confirmation_pending"] = True
+                out["vwap_breakdown_confirmation_reason"] = (
+                    f"need_{confirm_bars_required}_bars_or_volume_or_low_break"
+                )
+                if not str(out.get("hold_block_reason") or "").strip():
+                    out["hold_block_reason"] = "vwap_breakdown_confirmation_pending"
+            elif _block_protective_exit_below_floor("vwap_breakdown"):
                 pass
             else:
                 return _finalize(

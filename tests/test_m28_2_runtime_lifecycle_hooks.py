@@ -7,7 +7,7 @@ from pathlib import Path
 
 from libs.runtime.runtime_lifecycle import shutdown_hook
 from libs.runtime.runtime_lifecycle import startup_hook
-from scripts.run_m28_runtime_lifecycle_hooks_check import main as lifecycle_check_main
+from libs.runtime.entrypoints.m28_runtime_lifecycle_hooks_check import main as lifecycle_check_main
 
 
 def test_m28_2_lifecycle_startup_shutdown_cycle(tmp_path: Path):

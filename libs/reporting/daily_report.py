@@ -5,19 +5,18 @@ from pathlib import Path
 from typing import Tuple
 
 from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
+from libs.reporting.daily_report_generator import generate_daily_report as generate_canonical_daily_report
 
 
 def generate_daily_report(events_path: Path, out_dir: Path, day: str) -> Tuple[Path, Path]:
-    """Delegate to the canonical daily-report generator used by current scripts.
+    """Delegate to the canonical daily-report generator.
 
     This keeps older runtime call sites compatible while ensuring that the live
     EOD pipeline writes the richer canonical reports/operator_summary/daily
     payload instead of the older minimal summary format.
     """
 
-    from scripts.generate_daily_report import generate_daily_report as canonical_generate_daily_report
-
-    return canonical_generate_daily_report(events_path, out_dir, day=day)
+    return generate_canonical_daily_report(events_path, out_dir, day=day)
 
 
 def build_separated_daily_report(daily_model: dict, *, model: str = None) -> dict:

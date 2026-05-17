@@ -282,7 +282,7 @@ class Reporter:
         reports_root: str | Path = "reports",
         day: Optional[str] = None,
     ) -> ReporterOutput:
-        from scripts.generate_daily_report import generate_daily_report as generate
+        from libs.reporting.daily_report_generator import generate_daily_report as generate
 
         events_path = self._path(event_log_path)
         root = self._path(reports_root)
@@ -390,7 +390,7 @@ class Reporter:
         report_dir: str | Path = "reports/metrics",
         day: Optional[str] = None,
     ) -> ReporterOutput:
-        from scripts.generate_metrics_report import generate_metrics_report as generate
+        from libs.reporting.metrics_report_generator import generate_metrics_report as generate
 
         events_path = self._path(event_log_path)
         out_dir = self._path(report_dir)

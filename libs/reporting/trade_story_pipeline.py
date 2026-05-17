@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import html
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
@@ -19,6 +18,18 @@ from libs.reporting.strategy_read_model import (
 )
 from libs.reporting.trade_read_model import normalize_trade_report_section
 from libs.reporting.trade_report_ai import resolve_shared_trade_facts
+from libs.reporting.trade_report_common import (
+    clip_text as clip,
+    format_exit_label,
+    format_pct,
+    format_ratio_pct,
+    is_empty_placeholder as _is_empty_placeholder,
+    list_text as _list_text,
+    merge_missing_values as _merge_missing_values,
+    safe_float,
+    safe_int,
+    utc_now_iso,
+)
 from libs.reporting.trade_scanner_fallback_anchor import (
     reanchor_scanner_selection_for_monitor_fallback,
 )
@@ -34,162 +45,24 @@ from libs.reporting.trade_execution_outcome_text import (
     execution_outcome_summary_is_placeholder,
 )
 from libs.reporting.trade_reporter_status_text import normalize_reporter_status_human
+from libs.reporting.trade_story_evidence import (
+    derive_evidence_provenance as _derive_evidence_provenance_impl,
+    has_substantive_exit_evidence as _has_substantive_exit_evidence_impl,
+    set_or_replace_placeholder as _set_or_replace_placeholder_impl,
+)
 from libs.core.symbols import normalize_symbol
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(float(value))
-    except Exception:
-        return int(default)
-
-
-def safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return float(default)
-
-
-def clip(value: Any, *, max_len: int = 220) -> str:
-    text = str(value or "").strip()
-    if len(text) <= max_len:
-        return text
-    return text[: max(0, max_len - 3)] + "..."
-
-
-def format_pct(value: Any) -> str:
-    if value in (None, ""):
-        return "not_captured"
-    return f"{safe_float(value, 0.0):.2f}"
-
-
-def format_ratio_pct(value: Any) -> str:
-    if value in (None, ""):
-        return "not_captured"
-    return f"{safe_float(value, 0.0) * 100.0:.2f}"
-
-
-def format_exit_label(value: Any) -> str:
-    text = str(value or "").strip().replace("_", " ")
-    if not text:
-        return "not_captured"
-    return " ".join(part.capitalize() for part in text.split())
-
-
-def _list_text(values: Any, *, limit: int = 6, max_len: int = 220) -> List[str]:
-    if not isinstance(values, list):
-        return []
-    out: List[str] = []
-    for value in values:
-        text = clip(value, max_len=max_len)
-        if not text:
-            continue
-        out.append(text)
-        if len(out) >= max(1, int(limit)):
-            break
-    return out
-
-
-def _merge_missing_values(base: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(base or {})
-    for key, value in dict(fallback or {}).items():
-        if key not in out or out.get(key) in (None, "", [], {}):
-            out[key] = value
-    return out
-
-
-def _is_empty_placeholder(value: Any) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, bool):
-        return value is False
-    if isinstance(value, (int, float)):
-        return value == 0
-    if isinstance(value, str):
-        return not value.strip()
-    if isinstance(value, list):
-        return len(value) == 0
-    if isinstance(value, dict):
-        if not value:
-            return True
-        return all(_is_empty_placeholder(item) for item in value.values())
-    return False
-
-
 def _has_substantive_exit_evidence(exit_payload: Any) -> bool:
-    exit_ctx = exit_payload if isinstance(exit_payload, dict) else {}
-    if not exit_ctx:
-        return False
-    if str(exit_ctx.get("run_id") or "").strip():
-        return True
-    if str(exit_ctx.get("ts") or "").strip():
-        return True
-    if str(exit_ctx.get("reason_human") or "").strip():
-        return True
-    for key in ("price", "avg_price", "qty"):
-        if exit_ctx.get(key) not in (None, "", 0, 0.0):
-            return True
-    execution_details = exit_ctx.get("execution_details") if isinstance(exit_ctx.get("execution_details"), dict) else {}
-    if str(execution_details.get("order_status") or "").strip():
-        return True
-    if str(execution_details.get("order_id") or "").strip():
-        return True
-    monitor_context = exit_ctx.get("monitor_context") if isinstance(exit_ctx.get("monitor_context"), dict) else {}
-    if str(monitor_context.get("trigger_type") or "").strip():
-        return True
-    return False
+    return _has_substantive_exit_evidence_impl(exit_payload)
 
 
 def _set_or_replace_placeholder(target: Dict[str, Any], key: str, value: Any) -> None:
-    if not isinstance(target, dict):
-        return
-    if key not in target or _is_empty_placeholder(target.get(key)):
-        target[key] = value
+    _set_or_replace_placeholder_impl(target, key, value)
 
 
 def _derive_evidence_provenance(bundle_out: Dict[str, Any]) -> Dict[str, Any]:
-    evidence = dict(bundle_out.get("evidence_provenance") or {})
-    artifacts = bundle_out.get("artifacts") if isinstance(bundle_out.get("artifacts"), dict) else {}
-    canonical_agent_artifacts = (
-        bundle_out.get("canonical_agent_artifacts")
-        if isinstance(bundle_out.get("canonical_agent_artifacts"), dict)
-        else {}
-    )
-
-    for agent in ("commander", "strategist", "scanner", "monitor", "supervisor", "executor"):
-        if not _is_empty_placeholder(evidence.get(agent)):
-            continue
-        canonical_key = f"canonical_{agent}_json"
-        canonical_path = str(artifacts.get(canonical_key) or "").strip()
-        canonical_payload = canonical_agent_artifacts.get(agent)
-        if canonical_path or (
-            isinstance(canonical_payload, dict) and bool(canonical_payload)
-        ) or (
-            isinstance(canonical_payload, str) and canonical_payload.strip()
-        ):
-            evidence[agent] = "canonical"
-            continue
-        direct_payload = bundle_out.get(agent)
-        if isinstance(direct_payload, dict) and bool(direct_payload):
-            evidence[agent] = "direct_artifact"
-
-    if _is_empty_placeholder(evidence.get("reporter")):
-        reporter_path = str(artifacts.get("reporter_analysis_json") or "").strip()
-        same_day_linkage = (
-            bundle_out.get("same_day_reporter_linkage")
-            if isinstance(bundle_out.get("same_day_reporter_linkage"), dict)
-            else {}
-        )
-        reporter_status = str((same_day_linkage or {}).get("status") or "").strip().lower()
-        if reporter_path or reporter_status in {"linked_run", "linked_day_fallback"}:
-            evidence["reporter"] = "direct_artifact"
-
-    return evidence
+    return _derive_evidence_provenance_impl(bundle_out)
 
 
 def _safe_read_json_file(path_value: Any) -> Dict[str, Any]:

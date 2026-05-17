@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict, List, Mapping, Optional
 
 from libs.core.symbols import normalize_symbol
+from libs.reporting.trade_fill_aggregator import build_split_fill_match_payload
 from libs.reporting.kiwoom_day_trade_match_estimate import (
     extract_buy_price_anchor_candidates,
     infer_buy_price_from_monitor_context,
@@ -160,45 +161,6 @@ def _build_match_payload(
     }
 
 
-def _build_split_match_payload(
-    rows: List[Mapping[str, Any]],
-    *,
-    symbol: str,
-    row_count: int,
-    match_mode: str,
-    filled_qty: int,
-    filled_price: float | None,
-    buy_price: float | None,
-) -> Dict[str, Any]:
-    realized_values = [_safe_float(row.get("realized_pnl")) for row in rows]
-    fee_values = [_safe_int(row.get("fee")) for row in rows]
-    tax_values = [_safe_int(row.get("tax")) for row in rows]
-    realized_pnl = sum(float(value) for value in realized_values if value is not None)
-    fee = sum(int(value) for value in fee_values if value is not None)
-    tax = sum(int(value) for value in tax_values if value is not None)
-    pnl_ratio = None
-    if buy_price not in (None, 0) and filled_qty not in (None, 0):
-        try:
-            pnl_ratio = float(realized_pnl) / (float(buy_price) * float(filled_qty))
-        except Exception:
-            pnl_ratio = None
-    return {
-        "symbol": normalize_symbol(symbol, allow_test_symbols=True),
-        "filled_qty": int(filled_qty),
-        "filled_price": filled_price,
-        "buy_price": buy_price,
-        "realized_pnl": float(realized_pnl),
-        "pnl_ratio": pnl_ratio,
-        "fee": int(fee),
-        "tax": int(tax),
-        "source": "kiwoom.ka10077",
-        "match_mode": match_mode,
-        "row_count": int(row_count),
-        "source_row_count": int(len(rows)),
-        "authoritative": True,
-    }
-
-
 def _match_detail_row(
     rows: List[Dict[str, Any]],
     *,
@@ -268,7 +230,7 @@ def _match_detail_row(
                 ) / float(target_qty)
                 if not _price_matches(weighted_sell, price_value):
                     continue
-                return _build_split_match_payload(
+                return build_split_fill_match_payload(
                     list(subset),
                     symbol=normalized_symbol,
                     row_count=row_count,
@@ -288,7 +250,7 @@ def _match_detail_row(
         ]
         split_qty = sum(int(_safe_int(row.get("filled_qty")) or 0) for row in split_matches)
         if len(split_matches) > 1 and split_qty == int(qty_value):
-            return _build_split_match_payload(
+            return build_split_fill_match_payload(
                 split_matches,
                 symbol=normalized_symbol,
                 row_count=row_count,

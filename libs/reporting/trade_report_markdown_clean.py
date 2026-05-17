@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html
 import re
@@ -6,6 +6,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 from libs.reporting.report_truth_surface import build_trade_report_truth_surface
+from libs.reporting.trade_report_symbol_metadata import (
+    append_theme_values as _append_theme_values_impl,
+    append_unique_text as _append_unique_text_impl,
+    component_themes_for_symbol as _component_themes_for_symbol_impl,
+    infer_symbol_name_from_report_text as _infer_symbol_name_from_report_text_impl,
+    iter_nested_dicts as _iter_nested_dicts_impl,
+    iter_trade_symbol_metadata_sources as _iter_trade_symbol_metadata_sources_impl,
+    resolve_trade_symbol_metadata as _resolve_trade_symbol_metadata_impl,
+    symbol_in_theme_components as _symbol_in_theme_components_impl,
+)
+from libs.reporting.trade_report_post_exit_shadow import (
+    build_post_exit_shadow_summary_lines as _build_post_exit_shadow_summary_lines_impl,
+    checkpoint_label as _checkpoint_label_impl,
+    compact_post_exit_shadow as _compact_post_exit_shadow_impl,
+    post_exit_shadow_surface as _post_exit_shadow_surface_impl,
+)
 
 
 def _same_day_current_result(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,7 +133,10 @@ def _same_day_summary_from_texts(
             avg_text = ""
         current = dict(current_result or {})
         current_classification = current.get("classification")
-        if unknown == closed and current_classification in (-1, 0, 1):
+        if (
+            (unknown == closed or closed == 1)
+            and current_classification in (-1, 0, 1)
+        ):
             wins = 1 if current_classification > 0 else 0
             losses = 1 if current_classification < 0 else 0
             flat = 1 if current_classification == 0 else 0
@@ -1378,7 +1397,7 @@ def _build_summary_deterministic_diagnostics_section(
         label = f"{symbol} ({symbol_name})" if symbol_name not in {"", "-"} else symbol
         facts.append(f"대상 종목: {label}")
     if theme not in {"", "-"}:
-        facts.append(f"종목 포함 테마: {theme}")
+        facts.append(f"종목 해당 테마: {theme}")
     if truth.get("pnl") not in (None, "") or truth.get("pnl_pct_text") not in (None, ""):
         pnl_text = _summary_money(truth.get("pnl")) if truth.get("pnl") not in (None, "") else "-"
         facts.append(f"실현손익: {pnl_text} ({truth.get('pnl_pct_text') or '-'})")
@@ -2226,198 +2245,50 @@ def _listify(value: Any) -> List[Any]:
 
 
 def _append_unique_text(out: List[str], value: Any, *, max_len: int = 80) -> None:
-    text = _metadata_value(_translate_text(value)).strip()
-    if not text:
-        return
-    if text == "not_captured" or text.lower() in {"none", "null", "unknown", "unavailable"}:
-        return
-    if re.fullmatch(r"\d{6}", text):
-        return
-    if text not in out:
-        out.append(_clip(text, max_len))
+    _append_unique_text_impl(out, value, max_len=max_len, metadata_value=_metadata_value, translate_text=_translate_text)
+
+
+def _append_theme_values(out: List[str], raw_theme: Any) -> None:
+    _append_theme_values_impl(out, raw_theme, metadata_value=_metadata_value, translate_text=_translate_text)
 
 
 def _iter_trade_symbol_metadata_sources(report: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
-    shared = _as_dict(report.get("shared_facts"))
-    yield report
-    yield shared
-    yield _as_dict(shared.get("resolved_trade_facts"))
-    for key in (
-        "executive_summary",
-        "market_context_at_entry",
-        "strategist_summary",
-        "why_this_symbol_was_chosen",
-        "scanner_filters",
-        "entry_decision",
-        "monitor_snapshot",
-        "fact_payload",
-    ):
-        section = _as_dict(report.get(key))
-        if section:
-            yield section
-        for nested_key in (
-            "selected_candidate",
-            "selected_row",
-            "candidate",
-            "scanner_selection_trace",
-            "selection_trace",
-            "theme_alignment_trace",
-            "theme_strength_packet",
-            "selected_symbol_detail",
-            "trade",
-        ):
-            nested = _as_dict(section.get(nested_key))
-            if nested:
-                yield nested
+    return _iter_trade_symbol_metadata_sources_impl(report)
 
 
 def _symbol_in_theme_components(symbol: str, components: Any) -> bool:
-    target = str(symbol or "").strip()
-    if not target:
-        return False
-    for item in _listify(components):
-        if isinstance(item, dict):
-            candidate = str(
-                item.get("symbol")
-                or item.get("code")
-                or item.get("stk_cd")
-                or item.get("ticker")
-                or ""
-            ).strip()
-        else:
-            candidate = str(item or "").strip()
-        if candidate == target:
-            return True
-    return False
+    return _symbol_in_theme_components_impl(symbol, components)
 
 
 def _iter_nested_dicts(value: Any, *, max_depth: int = 8) -> Iterable[Dict[str, Any]]:
-    if max_depth < 0:
-        return
-    if isinstance(value, dict):
-        yield value
-        for child in value.values():
-            yield from _iter_nested_dicts(child, max_depth=max_depth - 1)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _iter_nested_dicts(child, max_depth=max_depth - 1)
+    return _iter_nested_dicts_impl(value, max_depth=max_depth)
 
 
 def _component_themes_for_symbol(report: Dict[str, Any], symbol: str) -> List[str]:
-    themes: List[str] = []
-    for source in _iter_nested_dicts(report):
-        for map_key in ("component_symbols_by_theme", "theme_map", "symbol_theme_map"):
-            component_map = _as_dict(source.get(map_key))
-            if not component_map:
-                continue
-            for raw_theme, components in component_map.items():
-                if _symbol_in_theme_components(symbol, components):
-                    _append_unique_text(themes, raw_theme)
-    return themes
+    return _component_themes_for_symbol_impl(
+        report,
+        symbol,
+        metadata_value=_metadata_value,
+        translate_text=_translate_text,
+    )
 
 
 def _infer_symbol_name_from_report_text(report: Dict[str, Any], symbol: str) -> str:
-    target = str(symbol or "").strip()
-    if not target:
-        return ""
-    text_candidates: List[Any] = []
-    for source in _iter_trade_symbol_metadata_sources(report):
-        text_candidates.extend(_listify(source.get("symbol_news_titles")))
-        text_candidates.extend(_listify(source.get("strategist_symbol_headlines")))
-        text_candidates.extend(_listify(source.get("candidate_headlines_used")))
-        text_candidates.extend(_listify(source.get("bullets")))
-        text_candidates.append(source.get("summary"))
-    for raw in text_candidates:
-        text = _metadata_value(_translate_text(raw))
-        if not text or target not in text:
-            continue
-        paren_match = re.search(rf"([A-Za-z가-힣0-9&._\-\s]+)\(\s*{re.escape(target)}\s*\)", text)
-        if paren_match:
-            name = re.sub(r"\s+", " ", paren_match.group(1)).strip(" ,;:-")
-            if name and name != target:
-                return _clip(name.split()[-1], 80)
-        prefix = re.search(rf"{re.escape(target)}\s*:\s*(.+)", text)
-        if not prefix:
-            continue
-        headline = str(prefix.group(1) or "").strip()
-        if "…" in headline:
-            headline = headline.rsplit("…", 1)[-1]
-        elif "..." in headline:
-            headline = headline.rsplit("...", 1)[-1]
-        headline = re.sub(r"\[[^\]]+\]", " ", headline)
-        headline = re.split(r"[·,/]|[↑↓▲▼]", headline)[0]
-        name = re.sub(r"\s+", " ", headline).strip(" ,;:-")
-        if name and not any(token in name for token in ("뉴스", "상승", "하락", "강세", "약세")):
-            return _clip(name, 80)
-    return ""
+    return _infer_symbol_name_from_report_text_impl(
+        report,
+        symbol,
+        metadata_value=_metadata_value,
+        translate_text=_translate_text,
+    )
 
 
 def _resolve_trade_symbol_metadata(report: Dict[str, Any], symbol: str) -> Dict[str, Any]:
-    name_keys = (
-        "symbol_name",
-        "stock_name",
-        "stock_nm",
-        "stk_nm",
-        "isu_nm",
-        "corp_name",
-        "company_name",
-        "name_kr",
-        "name",
+    return _resolve_trade_symbol_metadata_impl(
+        report,
+        symbol,
+        metadata_value=_metadata_value,
+        translate_text=_translate_text,
     )
-    theme_keys = (
-        "symbol_theme",
-        "symbol_themes",
-        "matched_themes",
-        "selected_themes",
-        "strategist_themes",
-        "preferred_themes",
-        "themes",
-        "theme",
-        "theme_name",
-    )
-    symbol_text = str(symbol or "").strip()
-    symbol_name = ""
-    component_themes = _component_themes_for_symbol(report, symbol_text)
-    themes: List[str] = list(component_themes)
-    for source in _iter_trade_symbol_metadata_sources(report):
-        source_symbol = str(
-            source.get("symbol")
-            or source.get("selected_symbol")
-            or source.get("entry_final_symbol")
-            or source.get("monitor_output_symbol")
-            or ""
-        ).strip()
-        source_matches_symbol = not source_symbol or not symbol_text or source_symbol == symbol_text
-        if source_matches_symbol and not symbol_name:
-            for key in name_keys:
-                candidate = _metadata_value(_translate_text(source.get(key))).strip()
-                if candidate and candidate != symbol_text and not re.fullmatch(r"\d{6}", candidate):
-                    symbol_name = _clip(candidate, 80)
-                    break
-        if not component_themes:
-            for key in theme_keys:
-                raw_theme = source.get(key)
-                if isinstance(raw_theme, dict):
-                    _append_unique_text(themes, raw_theme.get("theme") or raw_theme.get("theme_name") or raw_theme.get("name"))
-                else:
-                    for item in _listify(raw_theme):
-                        if isinstance(item, dict):
-                            _append_unique_text(themes, item.get("theme") or item.get("theme_name") or item.get("name"))
-                        else:
-                            _append_unique_text(themes, item)
-                if len(themes) >= 4:
-                    break
-        if symbol_name and len(themes) >= 4:
-            break
-    if not symbol_name:
-        symbol_name = _infer_symbol_name_from_report_text(report, symbol_text)
-    return {
-        "symbol": symbol_text,
-        "symbol_name": symbol_name,
-        "themes": themes[:4],
-        "theme": ", ".join(themes[:4]),
-    }
-
 
 def _resolve_entry_execution_visibility(report: Dict[str, Any]) -> Dict[str, Any]:
     visibility = _as_dict(report.get("entry_execution_visibility"))
@@ -3040,148 +2911,25 @@ def _trade_cost_analysis_lines(report: Dict[str, Any], *, bullet: str = "*") -> 
 
 
 def _post_exit_shadow_surface(report: Dict[str, Any]) -> Dict[str, Any]:
-    fact_payload = _as_dict(report.get("fact_payload"))
-    fact_trade = _as_dict(fact_payload.get("trade"))
-    lifecycle = _as_dict(report.get("lifecycle"))
-    lifecycle_exit = _as_dict(lifecycle.get("exit"))
-    lifecycle_bundle = _as_dict(report.get("lifecycle_bundle"))
-    for candidate in (
-        report.get("post_exit_shadow"),
-        fact_trade.get("post_exit_shadow"),
-        lifecycle.get("post_exit_shadow"),
-        lifecycle_exit.get("post_exit_shadow"),
-        lifecycle_bundle.get("post_exit_shadow"),
-    ):
-        obj = _as_dict(candidate)
-        if obj:
-            return obj
-    return {}
+    return _post_exit_shadow_surface_impl(report)
 
 
 def _checkpoint_label(value: str) -> str:
-    mapping = {
-        "+5m": "+5분",
-        "+15m": "+15분",
-        "+30m": "+30분",
-        "+60m": "+60분",
-        "EOD": "EOD",
-        "T+1": "T+1",
-        "T+2": "T+2",
-    }
-    return mapping.get(str(value or ""), str(value or ""))
+    return _checkpoint_label_impl(value)
 
 
 def _compact_post_exit_shadow(shadow: Dict[str, Any]) -> Dict[str, Any]:
-    obj = _as_dict(shadow)
-    if not obj:
-        return {}
-    checkpoints: Dict[str, Any] = {}
-    for key in ("+5m", "+15m", "+30m", "+60m", "EOD", "T+1", "T+2"):
-        row = _as_dict(_as_dict(obj.get("checkpoints")).get(key))
-        if not row:
-            continue
-        checkpoints[key] = {
-            "status": row.get("status"),
-            "price": row.get("price", row.get("observed_price")),
-            "observed_price": row.get("observed_price", row.get("price")),
-            "close": row.get("close"),
-            "high_since_exit": row.get("high_since_exit"),
-            "low_since_exit": row.get("low_since_exit"),
-            "return_pct": row.get("return_pct"),
-            "max_upside_pct": row.get("max_upside_pct"),
-            "max_drawdown_pct": row.get("max_drawdown_pct"),
-            "target_ts": row.get("target_ts"),
-            "observed_ts": row.get("observed_ts"),
-            "latest_observed_ts": row.get("latest_observed_ts"),
-        }
-    return {
-        "observability_only": bool(obj.get("observability_only", True)),
-        "status": obj.get("status"),
-        "symbol": obj.get("symbol"),
-        "exit_ts": obj.get("exit_ts"),
-        "exit_price": obj.get("exit_price"),
-        "horizon_owner": obj.get("horizon_owner"),
-        "strategy_horizon": obj.get("strategy_horizon"),
-        "price_observation_status": obj.get("price_observation_status"),
-        "price_observation_reason": obj.get("price_observation_reason"),
-        "latest_observed_ts": obj.get("latest_observed_ts"),
-        "best_exit_offset": obj.get("best_exit_offset"),
-        "best_exit_price": obj.get("best_exit_price"),
-        "max_post_exit_upside_pct": obj.get("max_post_exit_upside_pct"),
-        "max_post_exit_drawdown_pct": obj.get("max_post_exit_drawdown_pct"),
-        "checkpoints": checkpoints,
-    }
+    return _compact_post_exit_shadow_impl(shadow)
 
 
 def _build_post_exit_shadow_summary_lines(report: Dict[str, Any]) -> List[str]:
-    shadow = _compact_post_exit_shadow(_post_exit_shadow_surface(report))
-    if not shadow:
-        return []
-    lines: List[str] = ["### 매도 후 가격 추적 (관측-only)", ""]
-    exit_price = shadow.get("exit_price")
-    status = str(shadow.get("price_observation_status") or "").strip().lower()
-    reason = str(shadow.get("price_observation_reason") or "").strip()
-    latest_observed_ts = str(shadow.get("latest_observed_ts") or "").strip()
-    lines.append("* 기준: 실제 매도 후 같은 종목을 가상 보유했다고 가정한 가격 추적입니다. 실제 매매 판단에는 아직 반영하지 않습니다.")
-    lines.append(f"* 매도 기준가: {_summary_money(exit_price)}")
-
-    observed_any = False
-    checkpoints = _as_dict(shadow.get("checkpoints"))
-    for key in ("+5m", "+15m", "+30m", "+60m", "EOD"):
-        row = _as_dict(checkpoints.get(key))
-        if not row:
-            continue
-        label = _checkpoint_label(key)
-        row_status = str(row.get("status") or "").strip().lower()
-        price = row.get("price", row.get("observed_price", row.get("close")))
-        if row_status == "observed" and price not in (None, ""):
-            observed_any = True
-            parts = [
-                f"* {label}: {_summary_money(price)} ({_fmt_pct(row.get('return_pct'))})",
-            ]
-            if row.get("high_since_exit") not in (None, ""):
-                parts.append(f"구간 고가 {_summary_money(row.get('high_since_exit'))}")
-            if row.get("low_since_exit") not in (None, ""):
-                parts.append(f"구간 저가 {_summary_money(row.get('low_since_exit'))}")
-            lines.append(" / ".join(parts))
-        elif key in {"+5m", "+15m", "+30m", "+60m"}:
-            lines.append(f"* {label}: 아직 관측 대기")
-
-    if not observed_any:
-        lines.append(f"* 가격 관측 상태: {'대기' if status == 'pending' else _metadata_value(status or '-')}")
-        if reason:
-            reason_label = {
-                "no_minute_rows": "가격 추적용 minute 데이터가 아직 없습니다.",
-                "no_rows_after_exit": "매도 시각 이후 minute 가격 데이터가 아직 없습니다.",
-                "missing_exit_time_or_price": "매도 시각 또는 매도 기준가가 부족합니다.",
-                "checkpoint_targets_not_reached": "아직 checkpoint 도달 전입니다.",
-            }.get(reason, reason)
-            lines.append(f"* 사유: {reason_label}")
-        if latest_observed_ts:
-            lines.append(f"* 마지막 보유 가격 데이터 시각: {latest_observed_ts}")
-        lines.append("")
-        lines.append("판단: 아직 매도 후 가격 경로를 평가할 수 없습니다. 다음 리포트 재생성 또는 다음 runtime 가격 수집 후 +5분/+15분 checkpoint부터 채워야 합니다.")
-        return lines
-
-    best_offset = str(shadow.get("best_exit_offset") or "").strip()
-    best_price = shadow.get("best_exit_price")
-    if best_offset and best_price not in (None, ""):
-        lines.append(f"* 현재까지 최선 가상 청산 지점: {_checkpoint_label(best_offset)}, {_summary_money(best_price)}")
-    exit_num = _num_opt(exit_price)
-    best_num = _num_opt(best_price)
-    lines.append("")
-    if exit_num is not None and best_num is not None and best_num > exit_num:
-        lines.append(
-            f"판단: 이 거래는 매도 후 {_checkpoint_label(best_offset)} 구간에서 더 좋은 청산 가격이 관측됐습니다. "
-            "다만 표본이 부족하므로 보유 연장 규칙으로 바로 반영하지 않고, post-exit shadow 데이터로만 누적합니다."
-        )
-    else:
-        lines.append(
-            "판단: 현재까지는 매도 후 더 나은 가격 개선이 명확하지 않습니다. "
-            "다만 표본이 부족하므로 청산 규칙 변경 없이 post-exit shadow 데이터로만 누적합니다."
-        )
-    return lines
-
+    return _build_post_exit_shadow_summary_lines_impl(
+        report,
+        summary_money=_summary_money,
+        fmt_pct=_fmt_pct,
+        metadata_value=_metadata_value,
+        num_opt=_num_opt,
+    )
 
 def _summary_money(value: Any) -> str:
     num = _num_opt(value)

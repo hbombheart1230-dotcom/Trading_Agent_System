@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from graphs.pipelines.offhours_validation import run_offhours_validation_once
-from scripts.run_offhours_validation_loop import main as offhours_main
+from libs.runtime.entrypoints.offhours_validation_loop import main as offhours_main
 
 
 def test_offhours_validation_once_applies_local_mock_fill() -> None:
@@ -95,7 +95,7 @@ def test_offhours_validation_loop_forces_local_mock_mode(monkeypatch, capsys, tm
         state["persisted_state"] = {"mock_cash": 1000.0, "mock_positions": [{"symbol": "AAA", "qty": 1}]}
         return state
 
-    monkeypatch.setattr("scripts.run_offhours_validation_loop.run_offhours_validation_once", fake_run_once)
+    monkeypatch.setattr("libs.runtime.entrypoints.offhours_validation_loop.run_offhours_validation_once", fake_run_once)
 
     rc = offhours_main(
         [

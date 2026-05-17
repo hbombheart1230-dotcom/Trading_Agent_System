@@ -6,7 +6,25 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal
 
 from libs.runtime.monitor_policy import build_monitor_entry_policy_bundle, normalize_monitor_entry_policy
+from libs.runtime.policy_bundle import normalize_strategy_policy_bundle
 from libs.runtime.scanner_bias import normalize_scanner_bias_context
+from libs.strategies.playbook_contracts import (
+    MARKET_REGIME_DEFAULT,
+    MARKET_REGIMES,
+    MARKET_SENTIMENT_DEFAULT,
+    MARKET_SENTIMENTS,
+    MONITOR_GUIDANCE_DEFAULT,
+    MONITOR_GUIDANCE_VALUES,
+    PLAYBOOK_DEFAULT,
+    PLAYBOOKS,
+    RISK_TONE_DEFAULT,
+    RISK_TONES,
+    SCANNER_BIASES,
+    SCANNER_BIAS_DEFAULT,
+    TRADE_AGGRESSIVENESS_DEFAULT,
+    TRADE_AGGRESSIVENESS_LEVELS,
+    normalize_contract_value,
+)
 
 
 StrategyAction = Literal["BUY", "SELL", "NOOP"]
@@ -17,20 +35,6 @@ StrategistScannerBias = Literal["large_cap", "leader", "momentum", "value"]
 StrategistAggressiveness = Literal["low", "medium", "high"]
 StrategistRiskTone = Literal["conservative", "normal", "aggressive"]
 StrategistMonitorGuidance = Literal["hold_through_noise", "defensive_exit", "quick_take_profit"]
-
-
-def _coerce_strategy_policy(raw: Any) -> Dict[str, Any]:
-    if not isinstance(raw, dict):
-        raw = {}
-    out = dict(raw)
-    out["schema_version"] = str(raw.get("schema_version") or "strategy_policy.v1")
-    out["market_policy"] = dict(raw.get("market_policy") or {})
-    out["scanner_policy"] = dict(raw.get("scanner_policy") or {})
-    out["entry_policy"] = dict(raw.get("entry_policy") or {})
-    out["monitor_policy"] = dict(raw.get("monitor_policy") or {})
-    out["decision_policy"] = dict(raw.get("decision_policy") or {})
-    out["operator_explain"] = dict(raw.get("operator_explain") or {})
-    return out
 
 
 @dataclass(frozen=True)
@@ -155,10 +159,6 @@ class StrategistOutput:
     source: str = "strategist_node"
 
     def to_dict(self) -> Dict[str, Any]:
-        def _norm_enum(value: Any, allowed: List[str], default: str) -> str:
-            s = str(value or "").strip().lower()
-            return s if s in allowed else default
-
         normalized_monitor_entry_policy = {}
         if self.monitor_entry_policy:
             normalized_monitor_entry_policy = build_monitor_entry_policy_bundle(
@@ -176,13 +176,25 @@ class StrategistOutput:
             )
 
         return {
-            "market_regime": _norm_enum(self.market_regime, ["risk_on", "neutral", "risk_off"], "neutral"),
-            "market_sentiment": _norm_enum(self.market_sentiment, ["bullish", "neutral", "bearish"], "neutral"),
+            "market_regime": normalize_contract_value(
+                self.market_regime,
+                allowed=MARKET_REGIMES,
+                default=MARKET_REGIME_DEFAULT,
+            ),
+            "market_sentiment": normalize_contract_value(
+                self.market_sentiment,
+                allowed=MARKET_SENTIMENTS,
+                default=MARKET_SENTIMENT_DEFAULT,
+            ),
             "key_events": [str(x) for x in list(self.key_events or [])][:8],
             "themes": [str(x) for x in list(self.themes or [])][:8],
             "avoid_themes": [str(x) for x in list(self.avoid_themes or [])][:8],
-            "playbook": _norm_enum(self.playbook, ["breakout", "pullback", "reversal", "defensive"], "defensive"),
-            "scanner_bias": _norm_enum(self.scanner_bias, ["large_cap", "leader", "momentum", "value"], "leader"),
+            "playbook": normalize_contract_value(self.playbook, allowed=PLAYBOOKS, default=PLAYBOOK_DEFAULT),
+            "scanner_bias": normalize_contract_value(
+                self.scanner_bias,
+                allowed=SCANNER_BIASES,
+                default=SCANNER_BIAS_DEFAULT,
+            ),
             "scanner_bias_context": (
                 normalize_scanner_bias_context(self.scanner_bias_context)[0].to_dict()
                 if self.scanner_bias_context
@@ -190,14 +202,18 @@ class StrategistOutput:
             ),
             "scanner_priority": [str(x) for x in list(self.scanner_priority or [])][:8],
             "scanner_source_policy": dict(self.scanner_source_policy or {}),
-            "trade_aggressiveness": _norm_enum(self.trade_aggressiveness, ["low", "medium", "high"], "medium"),
-            "risk_tone": _norm_enum(self.risk_tone, ["conservative", "normal", "aggressive"], "normal"),
-            "monitor_guidance": _norm_enum(
-                self.monitor_guidance,
-                ["hold_through_noise", "defensive_exit", "quick_take_profit"],
-                "defensive_exit",
+            "trade_aggressiveness": normalize_contract_value(
+                self.trade_aggressiveness,
+                allowed=TRADE_AGGRESSIVENESS_LEVELS,
+                default=TRADE_AGGRESSIVENESS_DEFAULT,
             ),
-            "strategy_policy": _coerce_strategy_policy(self.strategy_policy),
+            "risk_tone": normalize_contract_value(self.risk_tone, allowed=RISK_TONES, default=RISK_TONE_DEFAULT),
+            "monitor_guidance": normalize_contract_value(
+                self.monitor_guidance,
+                allowed=MONITOR_GUIDANCE_VALUES,
+                default=MONITOR_GUIDANCE_DEFAULT,
+            ),
+            "strategy_policy": normalize_strategy_policy_bundle(self.strategy_policy),
             "market_regime_summary": str(self.market_regime_summary or ""),
             "monitor_entry_policy": normalized_monitor_entry_policy,
             "policy_rationale": str(self.policy_rationale or ""),
@@ -325,7 +341,7 @@ def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
         return StrategistOutput().to_dict()
     raw = _coerce_nested_output(raw)
 
-    strategy_policy = _coerce_strategy_policy(raw.get("strategy_policy"))
+    strategy_policy = normalize_strategy_policy_bundle(raw.get("strategy_policy"))
     strategy_monitor_policy = dict(strategy_policy.get("monitor_policy") or {}) if isinstance(strategy_policy.get("monitor_policy"), dict) else {}
     raw_monitor_entry_policy = raw.get("monitor_entry_policy")
     if raw_monitor_entry_policy in (None, "") and isinstance(strategy_monitor_policy.get("entry_policy"), dict):

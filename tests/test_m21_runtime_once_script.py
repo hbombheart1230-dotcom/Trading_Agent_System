@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from scripts.run_commander_runtime_once import main
+from libs.runtime.entrypoints.commander_runtime_once import main
 
 
 def test_m21_runtime_once_script_default_smoke_json(capsys):

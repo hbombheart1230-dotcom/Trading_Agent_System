@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.run_m28_startup_preflight_check import main as preflight_main
+from libs.runtime.entrypoints.m28_startup_preflight_check import main as preflight_main
 
 
 def _write_env(path: Path, rows: dict[str, str]) -> None:

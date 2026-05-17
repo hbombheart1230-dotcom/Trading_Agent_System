@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import ast
 import html
@@ -8,7 +8,6 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from libs.llm.json_response import parse_llm_json_response, required_key_metadata
@@ -17,13 +16,44 @@ from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_llm_exception, make_attempt
 from libs.reporting.trade_price_truth import resolve_trade_price_truth
-from libs.reporting.trade_pnl_estimate import infer_exit_fill_pnl_pct_from_account_snapshot
 from libs.reporting.execution_truth_surface import build_execution_truth_bullets
 from libs.reporting.trade_memory_application_surface import build_trade_memory_application_surface
 from libs.reporting.trade_memory_surface import build_trade_report_memory_surface
 from libs.reporting.report_truth_surface import build_trade_report_truth_surface
 from libs.reporting.trade_execution_outcome_text import execution_outcome_summary_is_placeholder
 from libs.reporting.trade_reporter_status_text import normalize_reporter_text
+from libs.reporting.trade_report_common import (
+    compact_named_rows as _compact_named_rows,
+    compact_scalar_dict as _compact_scalar_dict,
+    dedupe_list as _dedupe_list,
+    fmt_pct as _fmt_pct,
+    fmt_price as _fmt_price,
+    listify as _listify,
+    report_clip as _clip,
+    utc_now_iso as _utc_now_iso,
+)
+from libs.reporting.trade_report_ai_shared_facts import (
+    resolve_trade_facts_with_precedence as _resolve_trade_facts_with_precedence_impl,
+)
+from libs.reporting.trade_report_ai_compact_input import (
+    compact_section_seed_for_llm as _compact_section_seed_for_llm_impl,
+    sparse_story_input_for_llm as _sparse_story_input_for_llm_impl,
+)
+from libs.reporting.trade_report_ai_compact_helpers import (
+    compact_event_row as _compact_event_row_impl,
+    compact_monitor_snapshot as _compact_monitor_snapshot_impl,
+    compact_timeline_rows as _compact_timeline_rows_impl,
+    tail_list as _tail_list_impl,
+)
+from libs.reporting.trade_report_ai_merge_policy import (
+    is_scanner_execution_mismatch_text as _is_scanner_execution_mismatch_text_impl,
+    is_scanner_selection_label_line as _is_scanner_selection_label_line_impl,
+    merge_bullets_with_fallback as _merge_bullets_with_fallback_impl,
+    merge_section_with_fallback as _merge_section_with_fallback_impl,
+    prefer_fallback_summary as _prefer_fallback_summary_impl,
+    prefer_fallback_text as _prefer_fallback_text_impl,
+    trade_report_priority_bullet_prefixes as _trade_report_priority_bullet_prefixes_impl,
+)
 from libs.reporting.truth_source_labels import (
     monitor_price_source_label,
     pnl_truth_source_label,
@@ -100,99 +130,6 @@ def _router_chat_with_hard_timeout(
     if "exc" in failure:
         raise failure["exc"]
     return str(result.get("value") or "")
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _clip(value: Any, *, max_len: int = 400) -> str:
-    text = str(value or "").strip()
-    if len(text) <= max_len:
-        return text
-    return text[: max(0, max_len - 3)] + "..."
-
-
-def _listify(values: Any, *, max_items: int = 6, max_len: int = 240) -> List[str]:
-    out: List[str] = []
-    if not isinstance(values, list):
-        return out
-    for value in values:
-        text = _clip(value, max_len=max_len)
-        if text:
-            out.append(text)
-        if len(out) >= max_items:
-            break
-    return out
-
-
-def _dedupe_list(values: List[str], *, max_items: int = 12, max_len: int = 260) -> List[str]:
-    out: List[str] = []
-    seen: set[str] = set()
-    for value in values:
-        text = _clip(value, max_len=max_len)
-        if not text or text in seen:
-            continue
-        out.append(text)
-        seen.add(text)
-        if len(out) >= max_items:
-            break
-    return out
-
-
-def _compact_named_rows(values: Any, *, max_items: int = 3) -> List[Dict[str, Any]]:
-    if not isinstance(values, list):
-        return []
-    out: List[Dict[str, Any]] = []
-    for value in values:
-        if len(out) >= max(1, int(max_items)):
-            break
-        if not isinstance(value, dict):
-            continue
-        row = {
-            "rank": value.get("rank"),
-            "symbol": _clip(value.get("symbol"), max_len=24),
-            "score_total": value.get("score_total"),
-            "risk_score": value.get("risk_score"),
-            "confidence": value.get("confidence"),
-            "why": _clip(value.get("why"), max_len=180),
-        }
-        row = {key: item for key, item in row.items() if item not in ("", None, [])}
-        if row.get("symbol"):
-            out.append(row)
-    return out
-
-
-def _compact_scalar_dict(values: Any, *, max_items: int = 8, max_len: int = 160) -> Dict[str, Any]:
-    if not isinstance(values, dict):
-        return {}
-    out: Dict[str, Any] = {}
-    for key, value in values.items():
-        if len(out) >= max(1, int(max_items)):
-            break
-        if isinstance(value, (int, float, bool)) or value is None:
-            out[str(key)] = value
-            continue
-        text = _clip(value, max_len=max_len)
-        if text:
-            out[str(key)] = text
-    return out
-
-
-def _fmt_pct(value: Any) -> str:
-    try:
-        number = float(value)
-    except Exception:
-        return "-"
-    return f"{number * 100.0:.2f}%"
-
-
-def _fmt_price(value: Any) -> str:
-    try:
-        number = float(value)
-    except Exception:
-        return "-"
-    return f"{number:.2f}"
 
 
 def _is_low_information_bullet(value: Any) -> bool:
@@ -452,391 +389,13 @@ def _reporter_summary_is_placeholder(value: Any) -> bool:
     return any(lowered.startswith(marker) for marker in prefix_markers)
 
 
-def _present_fact(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        text = value.strip()
-        return bool(text) and text.lower() != "unavailable"
-    if isinstance(value, (list, dict)):
-        return bool(value)
-    return True
-
-
-def _set_fact_if_missing(
-    *,
-    resolved: Dict[str, Any],
-    data_source: Dict[str, str],
-    field: str,
-    value: Any,
-    source: str,
-) -> None:
-    if not _present_fact(value):
-        return
-    if field == "exit_reason" and (
-        _is_open_position_placeholder_reason(value) or _is_hold_placeholder_exit_reason(value)
-    ):
-        return
-    if _present_fact(resolved.get(field)):
-        if str(resolved.get(field)) != str(value):
-            logger.debug(
-                "trade_fact_conflict field=%s kept_source=%s kept_value=%r ignored_source=%s ignored_value=%r",
-                field,
-                data_source.get(field),
-                resolved.get(field),
-                source,
-                value,
-            )
-        return
-    resolved[field] = value
-    data_source[field] = source
-
-
 def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[str, Any]:
-    lifecycle = _as_dict(story_input.get("trade_lifecycle"))
-    lifecycle_summary = _as_dict(story_input.get("lifecycle_summary"))
-    lifecycle_bundle = _as_dict(story_input.get("lifecycle_bundle"))
-    lifecycle_bundle_outcome = _as_dict(lifecycle_bundle.get("trade_outcome"))
-    lifecycle_summary_obj = _as_dict(lifecycle.get("summary"))
-    lifecycle_entry = _as_dict(lifecycle.get("entry"))
-    lifecycle_exit = _as_dict(lifecycle.get("exit"))
-
-    canonical = _as_dict(story_input.get("canonical_agent_artifacts"))
-    canonical_monitor = _as_dict(canonical.get("monitor"))
-    entry_summary = _as_dict(story_input.get("entry_summary"))
-    hold_summary = _as_dict(story_input.get("holding_summary"))
-    exit_summary = _as_dict(story_input.get("exit_summary"))
-    exit_monitor_context = _as_dict(exit_summary.get("monitor_context"))
-    execution_outcome = _as_dict(story_input.get("execution_outcome_human"))
-    execution_details = _as_dict(story_input.get("exit_execution_details")) or _as_dict(story_input.get("execution_details"))
-    monitor_reason = _as_dict(story_input.get("monitor_reason_human"))
-    trade_read_model = _load_trade_read_model_hint(story_input)
-    trade_read_model_context = trade_read_model.get("context") if isinstance(trade_read_model.get("context"), dict) else {}
-
-    def _monitor_mark_pnl_pct() -> Optional[float]:
-        position_snapshot = _as_dict(canonical_monitor.get("position_snapshot"))
-        for candidate in (
-            monitor_reason.get("pnl_pct"),
-            monitor_reason.get("gross_pnl_ratio"),
-            monitor_reason.get("technical_pnl_ratio"),
-            monitor_reason.get("raw_pnl_ratio"),
-            monitor_reason.get("stop_pnl_ratio"),
-        ):
-            value = _num_opt(candidate)
-            if value is not None:
-                return value
-        current = _num_opt(
-            monitor_reason.get("current_price")
-            or canonical_monitor.get("current_price")
-            or position_snapshot.get("current_price")
-        )
-        average = _num_opt(
-            monitor_reason.get("average_price")
-            or monitor_reason.get("avg_price")
-            or canonical_monitor.get("average_price")
-            or canonical_monitor.get("avg_price")
-            or position_snapshot.get("avg_price")
-        )
-        if current is None or average is None or average <= 0:
-            return None
-        return (current - average) / average
-
-    fields = ["action", "status", "holding_duration", "exit_reason", "pnl", "pnl_pct"]
-    resolved: Dict[str, Any] = {key: "unavailable" for key in fields}
-    data_source: Dict[str, str] = {key: "unavailable" for key in fields}
-
-    broker_pnl_source = _first_nonempty_text(
-        execution_details.get("pnl_truth_source"),
-        execution_details.get("broker_day_truth_source"),
-        max_len=80,
+    return _resolve_trade_facts_with_precedence_impl(
+        story_input,
+        load_trade_read_model_hint=_load_trade_read_model_hint,
+        humanize_duration_text=_humanize_duration_text,
+        actual_lifecycle_action=_actual_lifecycle_action,
     )
-    if execution_details.get("broker_realized_pnl") not in (None, ""):
-        resolved["pnl"] = execution_details.get("broker_realized_pnl")
-        data_source["pnl"] = broker_pnl_source or "kiwoom_day_trade"
-    if execution_details.get("broker_realized_pnl_pct") not in (None, ""):
-        resolved["pnl_pct"] = execution_details.get("broker_realized_pnl_pct")
-        data_source["pnl_pct"] = broker_pnl_source or "kiwoom_day_trade"
-    inferred_pnl = infer_exit_fill_pnl_pct_from_account_snapshot(story_input)
-    if resolved.get("pnl_pct") in (None, "", "unavailable") and inferred_pnl.get("pnl_pct") not in (None, ""):
-        resolved["pnl_pct"] = inferred_pnl.get("pnl_pct")
-        resolved["pnl_truth_source"] = inferred_pnl.get("pnl_truth_source")
-        data_source["pnl_pct"] = inferred_pnl.get("pnl_truth_source") or "estimate"
-
-    # 1) lifecycle / trade_lifecycle.json
-    for candidate in (
-        _as_action(lifecycle.get("action")),
-        _as_action(lifecycle.get("final_action")),
-        _as_action(lifecycle_summary_obj.get("action")),
-        _as_action(lifecycle_summary_obj.get("final_action")),
-        _as_action(lifecycle_entry.get("action")),
-        _as_action(lifecycle_exit.get("action")),
-        _as_action(lifecycle_summary.get("action")),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="action", value=candidate, source="lifecycle")
-    for candidate in (
-        _as_status(lifecycle.get("status")),
-        _as_status(lifecycle.get("trade_status")),
-        _as_status(lifecycle.get("lifecycle_status")),
-        _as_status(lifecycle_summary_obj.get("status")),
-        _as_status(lifecycle_bundle.get("status")),
-        _as_status(story_input.get("trade_lifecycle_status")),
-        _as_status(lifecycle_summary.get("status")),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="status", value=candidate, source="lifecycle")
-    for candidate in (
-        _clip(lifecycle.get("holding_duration"), max_len=80),
-        _clip(lifecycle_summary_obj.get("holding_duration"), max_len=80),
-        _clip(lifecycle_bundle_outcome.get("holding_time"), max_len=80),
-        _clip(lifecycle_summary.get("holding_duration"), max_len=80),
-    ):
-        _set_fact_if_missing(
-            resolved=resolved,
-            data_source=data_source,
-            field="holding_duration",
-            value=candidate,
-            source="lifecycle",
-        )
-    for candidate in (
-        _clip(lifecycle.get("exit_reason"), max_len=280),
-        _clip(lifecycle_summary_obj.get("exit_reason_human"), max_len=280),
-        _clip(lifecycle_summary_obj.get("exit_reason"), max_len=280),
-        _clip(lifecycle_bundle_outcome.get("exit_reason"), max_len=280),
-        _clip(lifecycle_exit.get("reason_human"), max_len=280),
-        _clip(lifecycle_summary.get("exit_reason_human"), max_len=280),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="exit_reason", value=candidate, source="lifecycle")
-
-    for candidate in (
-        _clip(monitor_reason.get("trigger_type"), max_len=280),
-        _clip(monitor_reason.get("active_exit_axis"), max_len=280),
-        _clip(monitor_reason.get("exit_reason"), max_len=280),
-        _clip(monitor_reason.get("summary"), max_len=280),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="exit_reason", value=candidate, source="monitor")
-    for candidate in (
-        lifecycle.get("pnl"),
-        lifecycle_summary_obj.get("pnl"),
-        lifecycle_bundle_outcome.get("pnl"),
-        lifecycle_summary.get("pnl"),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl", value=candidate, source="lifecycle")
-    for candidate in (
-        lifecycle.get("pnl_pct"),
-        lifecycle.get("return_pct"),
-        lifecycle_summary_obj.get("pnl_pct"),
-        lifecycle_summary_obj.get("return_pct"),
-        lifecycle_bundle_outcome.get("return_pct"),
-        lifecycle_summary.get("pnl_pct"),
-        lifecycle_summary.get("return_pct"),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="lifecycle")
-
-    # 2) canonical monitor decision artifact
-    for candidate in (
-        _as_action(canonical_monitor.get("decision_action")),
-        _as_action(canonical_monitor.get("decision")),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="action", value=candidate, source="monitor")
-    for candidate in (
-        _clip(canonical_monitor.get("exit_reason"), max_len=280),
-        _clip(canonical_monitor.get("primary_reason_text"), max_len=280),
-        _clip(canonical_monitor.get("primary_reason_code"), max_len=280),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="exit_reason", value=candidate, source="monitor")
-    _set_fact_if_missing(
-        resolved=resolved,
-        data_source=data_source,
-        field="pnl",
-        value=canonical_monitor.get("pnl"),
-        source="monitor",
-    )
-    for candidate in (canonical_monitor.get("pnl_pct"), canonical_monitor.get("return_pct")):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="monitor")
-    _set_fact_if_missing(
-        resolved=resolved,
-        data_source=data_source,
-        field="holding_duration",
-        value=_clip(canonical_monitor.get("holding_duration"), max_len=80),
-        source="monitor",
-    )
-
-    # 3) entry.json / hold.json / exit.json
-    for candidate in (
-        _as_action(exit_summary.get("action")),
-        _as_action(entry_summary.get("action")),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="action", value=candidate, source="trade_artifact")
-    _set_fact_if_missing(
-        resolved=resolved,
-        data_source=data_source,
-        field="status",
-        value=_as_status(story_input.get("status")),
-        source="trade_artifact",
-    )
-    for candidate in (
-        _clip(hold_summary.get("holding_duration"), max_len=80),
-        _clip(hold_summary.get("holding_time"), max_len=80),
-        _clip(hold_summary.get("hold_duration"), max_len=80),
-        _humanize_duration_text("", fallback_seconds=hold_summary.get("hold_duration_sec")),
-    ):
-        _set_fact_if_missing(
-            resolved=resolved,
-            data_source=data_source,
-            field="holding_duration",
-            value=candidate,
-            source="trade_artifact",
-        )
-    for candidate in (
-        _clip(exit_summary.get("reason_human"), max_len=280),
-        _clip(exit_monitor_context.get("exit_reason"), max_len=280),
-        _clip(exit_monitor_context.get("reason"), max_len=280),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="exit_reason", value=candidate, source="trade_artifact")
-    for candidate in (
-        execution_outcome.get("pnl"),
-        _as_dict(exit_summary.get("execution_context")).get("pnl"),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl", value=candidate, source="trade_artifact")
-    for candidate in (
-        execution_outcome.get("pnl_pct"),
-        execution_outcome.get("return_pct"),
-        _as_dict(exit_summary.get("execution_context")).get("pnl_pct"),
-        _as_dict(exit_summary.get("execution_context")).get("return_pct"),
-    ):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="trade_artifact")
-
-    # 4) evidence (strategist / scanner)
-    _set_fact_if_missing(
-        resolved=resolved,
-        data_source=data_source,
-        field="exit_reason",
-        value=_clip(_as_dict(story_input.get("monitor_timeline")).get("summary"), max_len=280),
-        source="evidence",
-    )
-
-    # 5) fallback / inference (last resort only)
-    _set_fact_if_missing(
-        resolved=resolved,
-        data_source=data_source,
-        field="action",
-        value=_as_action(_actual_lifecycle_action(story_input)),
-        source="fallback",
-    )
-    _set_fact_if_missing(
-        resolved=resolved,
-        data_source=data_source,
-        field="status",
-        value=_as_status(story_input.get("status")),
-        source="fallback",
-    )
-    _set_fact_if_missing(
-        resolved=resolved,
-        data_source=data_source,
-        field="pnl",
-        value=monitor_reason.get("pnl"),
-        source="fallback",
-    )
-    for candidate in (monitor_reason.get("pnl_pct"), _monitor_mark_pnl_pct()):
-        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="fallback")
-
-    # Closed-lifecycle reconciliation:
-    # If monitor entry decision(BUY) was captured first but lifecycle is closed, prefer
-    # explicit exit-side action evidence to prevent BUY+closed inconsistencies.
-    resolved_status = _as_status(resolved.get("status"))
-    resolved_action = _as_action(resolved.get("action"))
-    if resolved_status == "closed" and resolved_action not in {"SELL", "EXIT"}:
-        reconciled_action = ""
-        for candidate in (
-            _as_action(exit_summary.get("action")),
-            _as_action(lifecycle_exit.get("action")),
-            _as_action(_as_dict(story_input.get("execution")).get("action")),
-            _as_action(story_input.get("action")),
-            _action_from_exit_reason(resolved.get("exit_reason")),
-            _action_from_exit_reason(exit_summary.get("reason_human")),
-            _action_from_exit_reason(lifecycle.get("exit_reason")),
-        ):
-            if candidate in {"SELL", "EXIT"}:
-                reconciled_action = candidate
-                break
-        if reconciled_action:
-            resolved["action"] = reconciled_action
-            data_source["action"] = "closed_lifecycle_reconcile"
-
-    existing_exit_reason_text = str(resolved.get("exit_reason") or "").strip().lower()
-    if (
-        resolved_status == "closed"
-        and _as_action(resolved.get("action")) in {"SELL", "EXIT"}
-        and (
-            "sell 실행 및 잔여수량" in existing_exit_reason_text
-            or "sell_execution_confirmed" in existing_exit_reason_text
-            or "full_sell_quantity_reconciled" in existing_exit_reason_text
-        )
-    ):
-        resolved["exit_reason"] = "exit_trigger_not_captured"
-        resolved["exit_execution_status"] = "sell_execution_full_close_confirmed"
-        data_source["exit_reason"] = "closed_lifecycle_reconcile"
-        data_source["exit_execution_status"] = "closed_lifecycle_reconcile"
-    if (
-        resolved_status == "closed"
-        and _as_action(resolved.get("action")) in {"SELL", "EXIT"}
-        and (
-            resolved.get("exit_reason") in (None, "", "unavailable")
-            or _is_hold_placeholder_exit_reason(resolved.get("exit_reason"))
-        )
-    ):
-        resolved["exit_reason"] = "exit_trigger_not_captured"
-        resolved["exit_execution_status"] = "sell_execution_full_close_confirmed"
-        data_source["exit_reason"] = "closed_lifecycle_reconcile"
-        data_source["exit_execution_status"] = "closed_lifecycle_reconcile"
-
-    monitor_decision = {
-        "phase": _clip(canonical_monitor.get("decision_phase"), max_len=32) or "unavailable",
-        "action": _clip(canonical_monitor.get("decision_action"), max_len=32) or "unavailable",
-        "status": _clip(canonical_monitor.get("decision_status"), max_len=32) or "unavailable",
-        "reason_code": _clip(
-            canonical_monitor.get("primary_reason_text") or canonical_monitor.get("primary_reason_code"),
-            max_len=220,
-        )
-        or "unavailable",
-        "thresholds": _as_dict(canonical_monitor.get("threshold_snapshot")),
-    }
-    trade_model_monitor = trade_read_model_context.get("monitor") if isinstance(trade_read_model_context.get("monitor"), dict) else {}
-    if monitor_decision.get("reason_code") in {"", "unavailable"}:
-        trade_monitor_reason = _clip(
-            trade_model_monitor.get("exit_trigger") or trade_model_monitor.get("primary_blocker"),
-            max_len=220,
-        )
-        if trade_monitor_reason:
-            monitor_decision["reason_code"] = trade_monitor_reason
-    if not monitor_decision.get("thresholds") and isinstance(trade_model_monitor.get("thresholds_snapshot"), dict):
-        monitor_decision["thresholds"] = _as_dict(trade_model_monitor.get("thresholds_snapshot"))
-    return {
-        **resolved,
-        "broker_fee": execution_details.get("broker_fee"),
-        "broker_tax": execution_details.get("broker_tax"),
-        "pnl_truth_source": resolved.get("pnl_truth_source") or broker_pnl_source or "unavailable",
-        "broker_day_truth_source": resolved.get("broker_day_truth_source")
-        if resolved.get("broker_day_truth_source") not in (None, "")
-        else execution_details.get("broker_day_truth_source"),
-        "broker_day_match_mode": resolved.get("broker_day_match_mode")
-        if resolved.get("broker_day_match_mode") not in (None, "")
-        else execution_details.get("broker_day_match_mode"),
-        "broker_day_authoritative": bool(
-            resolved.get("broker_day_authoritative")
-            if resolved.get("broker_day_authoritative") not in (None, "")
-            else execution_details.get("broker_day_authoritative")
-        ),
-        "broker_day_row_count": resolved.get("broker_day_row_count")
-        if resolved.get("broker_day_row_count") not in (None, "")
-        else execution_details.get("broker_day_row_count"),
-        "broker_truth_attempted": bool(execution_details.get("broker_truth_attempted")),
-        "broker_truth_error": execution_details.get("broker_truth_error"),
-        "broker_day_truth_attempted": bool(execution_details.get("broker_day_truth_attempted")),
-        "broker_day_truth_error": execution_details.get("broker_day_truth_error"),
-        "data_source": data_source,
-        "monitor_decision": monitor_decision,
-    }
-
 
 def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
     entry_summary = _as_dict(story_input.get("entry_summary"))
@@ -1798,171 +1357,22 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
 
 
 def _tail_list(values: Any, *, max_items: int = 6, max_len: int = 220) -> List[str]:
-    if not isinstance(values, list):
-        return []
-    return _listify(values[-max(1, max_items) :], max_items=max_items, max_len=max_len)
+    return _tail_list_impl(values, max_items=max_items, max_len=max_len)
 
 
 def _compact_event_row(row: Any) -> Dict[str, Any]:
-    item = row if isinstance(row, dict) else {}
-    description = (
-        item.get("description")
-        or item.get("summary")
-        or item.get("reason_human")
-        or item.get("reason")
-        or item.get("monitor_reason")
-        or item.get("event_name")
-        or item.get("event")
-        or ""
-    )
-    out: Dict[str, Any] = {
-        "ts": _clip(item.get("ts"), max_len=40),
-        "event": _clip(item.get("event") or item.get("event_name"), max_len=80),
-        "stage": _clip(item.get("stage") or item.get("agent"), max_len=48),
-        "action": _clip(item.get("action") or item.get("side"), max_len=32),
-        "description": _clip(description, max_len=220),
-    }
-    return {key: value for key, value in out.items() if value not in {"", None}}
+    return _compact_event_row_impl(row)
 
 
 def _compact_timeline_rows(values: Any, *, head: int = 3, tail: int = 9) -> List[Dict[str, Any]]:
-    if not isinstance(values, list):
-        return []
-    picked: List[Any] = []
-    picked.extend(values[: max(0, head)])
-    if len(values) > head:
-        picked.extend(values[-max(0, tail) :])
-    out: List[Dict[str, Any]] = []
-    seen = set()
-    for row in picked:
-        compact = _compact_event_row(row)
-        marker = (
-            str(compact.get("ts") or ""),
-            str(compact.get("event") or ""),
-            str(compact.get("description") or ""),
-        )
-        if not compact or marker in seen:
-            continue
-        seen.add(marker)
-        out.append(compact)
-    return out[:12]
+    return _compact_timeline_rows_impl(values, head=head, tail=tail)
 
 
 def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
-    data = section if isinstance(section, dict) else {}
-    policy_ref = data.get("policy_ref") if isinstance(data.get("policy_ref"), dict) else {}
-    stop_trace = data.get("monitor_stop_policy_trace") if isinstance(data.get("monitor_stop_policy_trace"), dict) else {}
-    out: Dict[str, Any] = {
-        "posture": _clip(data.get("posture"), max_len=32),
-        "trigger_type": _clip(data.get("trigger_type"), max_len=48),
-        "summary": _clip(data.get("summary"), max_len=320),
-        "bullets": _listify(data.get("bullets"), max_items=6, max_len=220),
-        "position_age_seconds": data.get("position_age_seconds"),
-        "hard_stop_pct": data.get("hard_stop_pct") or stop_trace.get("hard_stop_pct"),
-        "adaptive_stop_loss_pct": data.get("adaptive_stop_loss_pct") or stop_trace.get("adaptive_stop_loss_pct"),
-        "stop_loss_pct": data.get("stop_loss_pct") or stop_trace.get("stop_loss_pct"),
-        "effective_stop_loss_pct": data.get("effective_stop_loss_pct") or stop_trace.get("effective_stop_loss_pct"),
-        "effective_stop_reason": _clip(data.get("effective_stop_reason"), max_len=80),
-        "trailing_stop_pct": data.get("trailing_stop_pct") or stop_trace.get("trailing_stop_pct"),
-        "take_profit_pct": data.get("take_profit_pct") or stop_trace.get("take_profit_pct"),
-        "strategist_baseline_stop_loss_pct": data.get("strategist_baseline_stop_loss_pct")
-        or stop_trace.get("strategist_baseline_stop_loss_pct"),
-        "strategist_baseline_take_profit_pct": data.get("strategist_baseline_take_profit_pct")
-        or stop_trace.get("strategist_baseline_take_profit_pct"),
-        "strategist_baseline_trailing_stop_pct": data.get("strategist_baseline_trailing_stop_pct")
-        or stop_trace.get("strategist_baseline_trailing_stop_pct"),
-        "exit_triggered": data.get("exit_triggered"),
-        "current_price": data.get("current_price"),
-        "average_price": data.get("average_price"),
-        "peak_price": data.get("peak_price"),
-        "current_drawdown": data.get("current_drawdown"),
-        "peak_drawdown": data.get("peak_drawdown"),
-        "vwap_distance": data.get("vwap_distance"),
-        "active_exit_axis": _clip(data.get("active_exit_axis"), max_len=48),
-        "watch_axes": _listify(data.get("watch_axes"), max_items=5, max_len=80),
-        "confirm_required": data.get("confirm_required"),
-        "confirm_count": data.get("confirm_count"),
-        "guard_blocked": data.get("guard_blocked"),
-        "guard_reason": _clip(data.get("guard_reason"), max_len=120),
-        "decision_reason_chain": _listify(data.get("decision_reason_chain"), max_items=5, max_len=120),
-        "entry_check_summary": _clip(data.get("entry_check_summary"), max_len=240),
-        "entry_blockers": _listify(data.get("entry_blockers"), max_items=6, max_len=120),
-        "threshold_shortfalls": _listify(data.get("threshold_shortfalls"), max_items=4, max_len=160),
-        "entry_metrics": _compact_scalar_dict(data.get("entry_metrics"), max_items=10, max_len=120),
-        "entry_thresholds": _compact_scalar_dict(data.get("entry_thresholds"), max_items=8, max_len=120),
-        "policy_ref": _compact_scalar_dict(policy_ref, max_items=8, max_len=120),
-        "timing_assessment": _compact_scalar_dict(data.get("timing_assessment"), max_items=8, max_len=120),
-        "thresholds_guards_used": _compact_scalar_dict(data.get("thresholds_guards_used"), max_items=8, max_len=120),
-        "received_policy": _compact_scalar_dict(data.get("received_policy"), max_items=12, max_len=120),
-        "received_policy_source": _clip(data.get("received_policy_source"), max_len=80),
-        "effective_policy": _compact_scalar_dict(data.get("effective_policy"), max_items=12, max_len=120),
-        "effective_policy_source": _clip(data.get("effective_policy_source"), max_len=80),
-        "effective_policy_source_chain": _listify(
-            data.get("effective_policy_source_chain"), max_items=6, max_len=80
-        ),
-        "policy_adjustments": _compact_scalar_dict(data.get("policy_adjustments"), max_items=8, max_len=120),
-        "policy_adjustment_summary": _clip(data.get("policy_adjustment_summary"), max_len=220),
-        "policy_adjustment_reasoning": _clip(data.get("policy_adjustment_reasoning"), max_len=220),
-        "effective_policy_deltas": [
-            _clip(
-                f"{(row or {}).get('field')}: {(row or {}).get('from')} -> {(row or {}).get('to')}",
-                max_len=120,
-            )
-            for row in list(data.get("effective_policy_deltas") or [])[:8]
-            if isinstance(row, dict)
-        ],
-        "applied_policy": _compact_scalar_dict(
-            data.get("applied_policy") if isinstance(data.get("applied_policy"), dict) else policy_ref.get("applied_policy"),
-            max_items=12,
-            max_len=120,
-        ),
-        "policy_source": _clip(data.get("policy_source") or policy_ref.get("policy_source"), max_len=80),
-        "policy_validation_status": _clip(
-            data.get("policy_validation_status") or policy_ref.get("policy_validation_status"),
-            max_len=80,
-        ),
-        "policy_fallback_used": (
-            data.get("policy_fallback_used")
-            if data.get("policy_fallback_used") is not None
-            else policy_ref.get("policy_fallback_used")
-        ),
-        "policy_fallback_reason": _clip(
-            data.get("policy_fallback_reason") or policy_ref.get("policy_fallback_reason"),
-            max_len=220,
-        ),
-        "policy_partial_normalized": (
-            data.get("policy_partial_normalized")
-            if data.get("policy_partial_normalized") is not None
-            else policy_ref.get("policy_partial_normalized")
-        ),
-        "policy_default_filled_fields": _listify(
-            data.get("policy_default_filled_fields") or policy_ref.get("policy_default_filled_fields"),
-            max_items=12,
-            max_len=80,
-        ),
-        "policy_validation_missing_fields": _listify(
-            data.get("policy_validation_missing_fields") or policy_ref.get("policy_validation_missing_fields"),
-            max_items=12,
-            max_len=80,
-        ),
-        "policy_validation_invalid_fields": _listify(
-            data.get("policy_validation_invalid_fields") or policy_ref.get("policy_validation_invalid_fields"),
-            max_items=12,
-            max_len=80,
-        ),
-        "override_reason": _clip(data.get("override_reason") or policy_ref.get("override_reason"), max_len=160),
-        "applied_policy_source_chain": _listify(
-            data.get("applied_policy_source_chain") or policy_ref.get("applied_policy_source_chain"),
-            max_items=6,
-            max_len=80,
-        ),
-        "price_source": _clip(data.get("price_source"), max_len=80),
-        "feature_source": _clip(data.get("feature_source"), max_len=80),
-        "monitor_stop_policy_trace": _compact_scalar_dict(data.get("monitor_stop_policy_trace"), max_items=8, max_len=120),
-        "entry_candidate_cascade": _compact_entry_candidate_cascade(data.get("entry_candidate_cascade")),
-    }
-    return {key: value for key, value in out.items() if value not in ("", None, [])}
-
+    return _compact_monitor_snapshot_impl(
+        section,
+        compact_entry_candidate_cascade=_compact_entry_candidate_cascade,
+    )
 
 def _is_market_context_noise_bullet(value: Any) -> bool:
     text = _clip(value, max_len=260).strip()
@@ -5350,339 +4760,16 @@ def build_ai_trade_report_compact_input(story_input: Dict[str, Any]) -> Dict[str
 
 
 def _compact_section_seed_for_llm(value: Any) -> Dict[str, Any]:
-    row = value if isinstance(value, dict) else {}
-    out = {
-        "summary": _clip(row.get("summary"), max_len=220),
-        "bullets": _listify(row.get("bullets"), max_items=2, max_len=140),
-        "status": _clip(row.get("status"), max_len=24),
-        "grade": _clip(row.get("grade"), max_len=16),
-        "current_action": _clip(row.get("current_action"), max_len=24),
-        "watch_next": _listify(row.get("watch_next"), max_items=2, max_len=120),
-        "thesis_invalidation": _listify(row.get("thesis_invalidation"), max_items=2, max_len=120),
-    }
-    return {key: val for key, val in out.items() if val not in ("", None, [], {})}
+    return _compact_section_seed_for_llm_impl(value)
 
 
 def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
-    compact = _compact_story_input_for_llm(story_input)
-    commander = compact.get("commander") if isinstance(compact.get("commander"), dict) else {}
-    entry = compact.get("entry_summary") if isinstance(compact.get("entry_summary"), dict) else {}
-    exit_summary = compact.get("exit_summary") if isinstance(compact.get("exit_summary"), dict) else {}
-    market = compact.get("market_context_human") if isinstance(compact.get("market_context_human"), dict) else {}
-    scanner = compact.get("scanner_reason_human") if isinstance(compact.get("scanner_reason_human"), dict) else {}
-    monitor = compact.get("monitor_reason_human") if isinstance(compact.get("monitor_reason_human"), dict) else {}
-    filters_human = compact.get("filters_human") if isinstance(compact.get("filters_human"), dict) else {}
-    guard = compact.get("guard_reason_human") if isinstance(compact.get("guard_reason_human"), dict) else {}
-    execution = compact.get("execution_outcome_human") if isinstance(compact.get("execution_outcome_human"), dict) else {}
-    reporter = compact.get("reporter_status_human") if isinstance(compact.get("reporter_status_human"), dict) else {}
-    conclusion = compact.get("operator_conclusion_human") if isinstance(compact.get("operator_conclusion_human"), dict) else {}
-    entry_visibility = compact.get("entry_execution_visibility") if isinstance(compact.get("entry_execution_visibility"), dict) else {}
-    report_section_seeds = compact.get("report_section_seeds") if isinstance(compact.get("report_section_seeds"), dict) else {}
-    execution_seed = _as_dict(report_section_seeds.get("execution_quality"))
-    if execution.get("summary") and execution_outcome_summary_is_placeholder(execution_seed.get("summary")):
-        execution_seed = dict(execution_seed)
-        execution_seed["summary"] = execution.get("summary")
-        if execution.get("bullets"):
-            execution_seed["bullets"] = _listify(execution.get("bullets"), max_items=4, max_len=180)
-        if execution.get("status"):
-            execution_seed["status"] = execution.get("status")
-    guard_seed = _as_dict(report_section_seeds.get("guard_approval_result"))
-    reporter_seed = _as_dict(report_section_seeds.get("reporter_evaluation"))
-    if _reporter_summary_is_placeholder(reporter.get("summary")) and _clip(reporter_seed.get("summary"), max_len=220):
-        reporter = dict(reporter)
-        reporter["summary"] = _clip(reporter_seed.get("summary"), max_len=220)
-        if reporter_seed.get("bullets"):
-            reporter["bullets"] = _listify(reporter_seed.get("bullets"), max_items=4, max_len=180)
-        if reporter_seed.get("status"):
-            reporter["status"] = _clip(reporter_seed.get("status"), max_len=24)
-        if reporter_seed.get("grade"):
-            reporter["grade"] = _clip(reporter_seed.get("grade"), max_len=16)
-    conclusion_seed = _as_dict(report_section_seeds.get("final_operator_conclusion"))
-    holding = compact.get("holding_summary") if isinstance(compact.get("holding_summary"), dict) else {}
-    lifecycle = compact.get("lifecycle_summary") if isinstance(compact.get("lifecycle_summary"), dict) else {}
-    diagnostics = compact.get("ai_report_diagnostics") if isinstance(compact.get("ai_report_diagnostics"), dict) else {}
-    return {
-        "trade_id": compact.get("trade_id"),
-        "story_id": compact.get("story_id"),
-        "run_id": compact.get("run_id"),
-        "symbol": compact.get("symbol"),
-        "action": compact.get("action"),
-        "status": compact.get("status"),
-        "story_type": compact.get("story_type"),
-        "execution_mode_label": compact.get("execution_mode_label"),
-        "strategist_output": _as_dict(compact.get("strategist_output")),
-        "strategist_refresh_trace": _as_dict(compact.get("strategist_refresh_trace")),
-        "lifecycle_summary": {
-            "holding_duration": lifecycle.get("holding_duration"),
-            "entry_reason_human": lifecycle.get("entry_reason_human"),
-            "exit_reason_human": lifecycle.get("exit_reason_human"),
-            "lifecycle_summary_human": lifecycle.get("lifecycle_summary_human"),
-        },
-        "market_context": {
-            "regime": market.get("regime"),
-            "market_sentiment": market.get("market_sentiment"),
-            "playbook": market.get("playbook"),
-            "themes": _listify(market.get("themes"), max_items=3, max_len=60),
-            "theme_strength_packet": _compact_scalar_dict(
-                market.get("theme_strength_packet"),
-                max_items=8,
-                max_len=120,
-            ),
-            "theme_source": market.get("theme_source"),
-            "theme_source_status": market.get("theme_source_status"),
-            "theme_source_reason": market.get("theme_source_reason"),
-            "theme_strength_top_themes": _listify(market.get("theme_strength_top_themes"), max_items=6, max_len=60),
-            "risk_mode": market.get("risk_mode"),
-            "selected_playbook": market.get("selected_playbook"),
-            "preferred_themes": _listify(market.get("preferred_themes"), max_items=4, max_len=60),
-            "avoid_themes": _listify(market.get("avoid_themes"), max_items=4, max_len=60),
-            "scanner_bias_summary": {
-                "enabled": (market.get("scanner_bias_summary") or {}).get("enabled"),
-                "active_biases": _listify((market.get("scanner_bias_summary") or {}).get("active_biases"), max_items=6, max_len=80),
-                "bias_strength": _clip((market.get("scanner_bias_summary") or {}).get("bias_strength"), max_len=24),
-                "bias_source": _clip((market.get("scanner_bias_summary") or {}).get("bias_source"), max_len=80),
-                "summary": _clip((market.get("scanner_bias_summary") or {}).get("summary"), max_len=220),
-            },
-            "global_sentiment_score": market.get("global_sentiment_score"),
-            "vix_level": market.get("vix_level"),
-            "stress_flags": _listify(market.get("stress_flags"), max_items=3, max_len=60),
-            "candidate_hints": _listify(market.get("candidate_hints"), max_items=6, max_len=24),
-            "market_headlines": _listify(market.get("market_headlines"), max_items=3, max_len=160),
-            "symbol_headlines": _listify(market.get("symbol_headlines"), max_items=3, max_len=160),
-            "global_sentiment_signal": _compact_scalar_dict(
-                market.get("global_sentiment_signal"), max_items=8, max_len=120
-            ),
-            "fear_index": _compact_scalar_dict(market.get("fear_index"), max_items=8, max_len=120),
-            "key_events": _listify(market.get("key_events_hint"), max_items=4, max_len=160),
-            "news_input_summary": market.get("news_input_summary"),
-        },
-        "commander": {
-            "command_intent": commander.get("command_intent"),
-            "strategist_invocation": commander.get("strategist_invocation"),
-            "llm_policy": commander.get("llm_policy"),
-            "selected_route": commander.get("selected_route"),
-            "route_reason_text": commander.get("route_reason_text"),
-            "strategist_cache_used": commander.get("strategist_cache_used"),
-            "strategist_called": commander.get("strategist_called"),
-            "cooldown_applied": commander.get("cooldown_applied"),
-            "applied_policy": _compact_scalar_dict(commander.get("applied_policy"), max_items=12, max_len=120),
-            "policy_source": commander.get("policy_source"),
-            "policy_validation_status": commander.get("policy_validation_status"),
-            "policy_fallback_used": commander.get("policy_fallback_used"),
-            "policy_fallback_reason": commander.get("policy_fallback_reason"),
-            "policy_partial_normalized": commander.get("policy_partial_normalized"),
-            "policy_default_filled_fields": _listify(commander.get("policy_default_filled_fields"), max_items=12, max_len=80),
-            "policy_validation_missing_fields": _listify(commander.get("policy_validation_missing_fields"), max_items=12, max_len=80),
-            "policy_validation_invalid_fields": _listify(commander.get("policy_validation_invalid_fields"), max_items=12, max_len=80),
-            "override_reason": commander.get("override_reason"),
-            "applied_policy_source_chain": _listify(
-                commander.get("applied_policy_source_chain"), max_items=6, max_len=80
-            ),
-            "entry_control": _as_dict(commander.get("entry_control"))
-            or _as_dict(entry_visibility.get("commander_entry_control")),
-        },
-        "entry": {
-            "ts": entry.get("ts"),
-            "action": entry.get("action"),
-            "reason_human": entry.get("reason_human"),
-        },
-        "scanner": {
-            "selected_symbol": scanner.get("selected_symbol"),
-            "selected_rank": scanner.get("selected_rank"),
-            "universe_size": scanner.get("universe_size"),
-            "ranking_basis": scanner.get("ranking_basis"),
-            "playbook": scanner.get("playbook"),
-            "policy_source": scanner.get("policy_source"),
-            "applied_policy_present": scanner.get("applied_policy_present"),
-            "monitor_entry_policy_summary": _compact_scalar_dict(
-                scanner.get("monitor_entry_policy_summary"), max_items=8, max_len=120
-            ),
-            "confidence": scanner.get("confidence"),
-            "confidence_label": scanner.get("confidence_label"),
-            "top_reasons": _listify(scanner.get("top_reasons"), max_items=3, max_len=140),
-            "why_selected": _listify(scanner.get("why_selected"), max_items=4, max_len=140),
-            "selection_basis": scanner.get("selection_basis"),
-            "selection_reason_with_bias": scanner.get("selection_reason_with_bias"),
-            "tie_break_rule": scanner.get("tie_break_rule"),
-            "runner_ups": _listify(scanner.get("runner_ups"), max_items=2, max_len=140),
-            "runner_ups_lost": [
-                {
-                    "symbol": _clip((row or {}).get("symbol"), max_len=24),
-                    "summary": _clip((row or {}).get("summary"), max_len=180),
-                }
-                for row in list(scanner.get("runner_ups_lost") or [])[:3]
-                if isinstance(row, dict)
-            ],
-            "scanner_bias_applied": scanner.get("scanner_bias_applied"),
-            "scanner_bias_summary": _compact_scalar_dict(scanner.get("scanner_bias_summary"), max_items=8, max_len=120),
-            "candidate_bias_adjustments": [
-                {
-                    "symbol": _clip((row or {}).get("symbol"), max_len=24),
-                    "bias_adjustment": (row or {}).get("bias_adjustment"),
-                    "bias_adjustments": _listify(
-                        [
-                            (
-                                str((item or {}).get("reason") or "")
-                                if isinstance(item, dict)
-                                else str(item or "")
-                            )
-                            for item in list((row or {}).get("bias_adjustments") or [])
-                            if str((item or {}).get("reason") if isinstance(item, dict) else item or "").strip()
-                        ],
-                        max_items=4,
-                        max_len=120,
-                    ),
-                }
-                for row in list(scanner.get("candidate_bias_adjustments") or [])[:5]
-                if isinstance(row, dict)
-            ],
-            "selection_trace": {
-                "ranked_candidates": _compact_named_rows(
-                    (scanner.get("selection_trace") or {}).get("ranked_candidates"),
-                    max_items=5,
-                ),
-                "selected_symbol": _clip((scanner.get("selection_trace") or {}).get("selected_symbol"), max_len=24),
-                "selected_rank": (scanner.get("selection_trace") or {}).get("selected_rank"),
-                "selection_reason": _clip((scanner.get("selection_trace") or {}).get("selection_reason"), max_len=280),
-                "selected_symbol_score_drivers": _compact_scalar_dict(
-                    (scanner.get("selection_trace") or {}).get("selected_symbol_score_drivers"),
-                    max_items=6,
-                    max_len=120,
-                ),
-            },
-            "summary": scanner.get("summary"),
-        },
-        "filters": {
-            "summary": filters_human.get("summary"),
-            "bullets": _listify(filters_human.get("bullets"), max_items=4, max_len=180),
-        },
-        "holding": {
-            "run_count": holding.get("run_count"),
-            "holding_event_count": holding.get("holding_event_count"),
-            "recent_monitor_updates": _listify(holding.get("recent_monitor_updates"), max_items=4, max_len=140),
-        },
-        "monitor": {
-            "posture": monitor.get("posture"),
-            "trigger_type": monitor.get("trigger_type"),
-            "summary": monitor.get("summary"),
-            "entry_check_summary": monitor.get("entry_check_summary"),
-            "entry_blockers": _listify(monitor.get("entry_blockers"), max_items=6, max_len=120),
-            "threshold_shortfalls": _listify(monitor.get("threshold_shortfalls"), max_items=4, max_len=160),
-            "policy_ref": _compact_scalar_dict(monitor.get("policy_ref"), max_items=8, max_len=120),
-            "timing_assessment": _compact_scalar_dict(monitor.get("timing_assessment"), max_items=8, max_len=120),
-            "thresholds_guards_used": _compact_scalar_dict(monitor.get("thresholds_guards_used"), max_items=8, max_len=120),
-            "entry_metrics": _compact_scalar_dict(monitor.get("entry_metrics"), max_items=10, max_len=120),
-            "entry_thresholds": _compact_scalar_dict(monitor.get("entry_thresholds"), max_items=8, max_len=120),
-            "received_policy": _compact_scalar_dict(monitor.get("received_policy"), max_items=12, max_len=120),
-            "received_policy_source": monitor.get("received_policy_source"),
-            "effective_policy": _compact_scalar_dict(monitor.get("effective_policy"), max_items=12, max_len=120),
-            "effective_policy_source": monitor.get("effective_policy_source"),
-            "effective_policy_source_chain": _listify(
-                monitor.get("effective_policy_source_chain"), max_items=6, max_len=80
-            ),
-            "policy_adjustments": _compact_scalar_dict(monitor.get("policy_adjustments"), max_items=8, max_len=120),
-            "policy_adjustment_summary": monitor.get("policy_adjustment_summary"),
-            "policy_adjustment_reasoning": monitor.get("policy_adjustment_reasoning"),
-            "effective_policy_deltas": [
-                (
-                    _clip(
-                        f"{(row or {}).get('field')}: {(row or {}).get('from')} -> {(row or {}).get('to')}",
-                        max_len=120,
-                    )
-                    if isinstance(row, dict)
-                    else _clip(row, max_len=120)
-                )
-                for row in list(monitor.get("effective_policy_deltas") or [])[:8]
-                if (
-                    isinstance(row, dict)
-                    or str(row or "").strip()
-                )
-            ],
-            "applied_policy": _compact_scalar_dict(monitor.get("applied_policy"), max_items=12, max_len=120),
-            "policy_source": monitor.get("policy_source"),
-            "policy_validation_status": monitor.get("policy_validation_status"),
-            "policy_fallback_used": monitor.get("policy_fallback_used"),
-            "policy_fallback_reason": monitor.get("policy_fallback_reason"),
-            "policy_partial_normalized": monitor.get("policy_partial_normalized"),
-            "policy_default_filled_fields": _listify(monitor.get("policy_default_filled_fields"), max_items=12, max_len=80),
-            "policy_validation_missing_fields": _listify(monitor.get("policy_validation_missing_fields"), max_items=12, max_len=80),
-            "policy_validation_invalid_fields": _listify(monitor.get("policy_validation_invalid_fields"), max_items=12, max_len=80),
-            "override_reason": monitor.get("override_reason"),
-            "applied_policy_source_chain": _listify(
-                monitor.get("applied_policy_source_chain"), max_items=6, max_len=80
-            ),
-            "position_age_seconds": monitor.get("position_age_seconds"),
-            "hard_stop_pct": monitor.get("hard_stop_pct"),
-            "adaptive_stop_loss_pct": monitor.get("adaptive_stop_loss_pct"),
-            "stop_loss_pct": monitor.get("stop_loss_pct"),
-            "effective_stop_loss_pct": monitor.get("effective_stop_loss_pct"),
-            "trailing_stop_pct": monitor.get("trailing_stop_pct"),
-            "take_profit_pct": monitor.get("take_profit_pct"),
-            "monitor_stop_policy_trace": _compact_scalar_dict(
-                monitor.get("monitor_stop_policy_trace"), max_items=8, max_len=120
-            ),
-            "current_price": monitor.get("current_price"),
-            "average_price": monitor.get("average_price"),
-            "peak_price": monitor.get("peak_price"),
-            "current_drawdown": monitor.get("current_drawdown"),
-            "peak_drawdown": monitor.get("peak_drawdown"),
-            "active_exit_axis": monitor.get("active_exit_axis"),
-            "watch_axes": _listify(monitor.get("watch_axes"), max_items=4, max_len=80),
-            "price_source": monitor.get("price_source"),
-            "entry_candidate_cascade": _as_dict(monitor.get("entry_candidate_cascade"))
-            or _as_dict(entry_visibility.get("monitor_entry_candidate_cascade")),
-        },
-        "exit": {
-            "ts": exit_summary.get("ts"),
-            "action": exit_summary.get("action"),
-            "reason_human": exit_summary.get("reason_human"),
-        },
-        "guard": {
-            "summary": guard.get("summary") or guard_seed.get("summary"),
-            "status": guard.get("status") or guard_seed.get("status"),
-            "bullets": _listify(guard.get("bullets"), max_items=4, max_len=180) or _listify(guard_seed.get("bullets"), max_items=4, max_len=180),
-        },
-        "execution": {
-            "summary": execution.get("summary") or execution_seed.get("summary"),
-            "status": execution.get("status") or execution_seed.get("status"),
-            "bullets": _listify(execution.get("bullets"), max_items=4, max_len=180) or _listify(execution_seed.get("bullets"), max_items=4, max_len=180),
-        },
-        "reporter": {
-            "summary": reporter.get("summary") or reporter_seed.get("summary"),
-            "status": reporter.get("status") or reporter_seed.get("status"),
-            "grade": reporter.get("grade") or reporter_seed.get("grade"),
-            "bullets": _listify(reporter.get("bullets"), max_items=3, max_len=160) or _listify(reporter_seed.get("bullets"), max_items=3, max_len=160),
-        },
-        "operator_conclusion": {
-            "summary": conclusion.get("summary") or conclusion_seed.get("summary"),
-            "current_action": conclusion.get("current_action") or conclusion_seed.get("current_action"),
-            "watch_next": _listify(conclusion.get("watch_next"), max_items=3, max_len=140) or _listify(conclusion_seed.get("watch_next"), max_items=3, max_len=140),
-            "thesis_invalidation": _listify(conclusion.get("thesis_invalidation"), max_items=3, max_len=140) or _listify(conclusion_seed.get("thesis_invalidation"), max_items=3, max_len=140),
-        },
-        "report_section_seeds": {
-            "market_context_at_entry": _compact_section_seed_for_llm(report_section_seeds.get("market_context_at_entry")),
-            "strategist_summary": _compact_section_seed_for_llm(report_section_seeds.get("strategist_summary")),
-            "why_this_symbol_was_chosen": _compact_section_seed_for_llm(report_section_seeds.get("why_this_symbol_was_chosen")),
-            "entry_decision": _compact_section_seed_for_llm(report_section_seeds.get("entry_decision")),
-            "holding_monitoring_story": _compact_section_seed_for_llm(report_section_seeds.get("holding_monitoring_story")),
-            "exit_decision": _compact_section_seed_for_llm(report_section_seeds.get("exit_decision")),
-            "scanner_filters": _compact_section_seed_for_llm(report_section_seeds.get("scanner_filters")),
-            "execution_quality": _compact_section_seed_for_llm(execution_seed),
-            "guard_approval_result": _compact_section_seed_for_llm(guard_seed),
-            "reporter_evaluation": _compact_section_seed_for_llm(reporter_seed),
-            "final_operator_conclusion": _compact_section_seed_for_llm(conclusion_seed),
-        },
-        "timeline": _compact_timeline_rows(story_input.get("timeline"), head=1, tail=5),
-        "improvement_points": _listify(compact.get("improvement_points"), max_items=4, max_len=140),
-        "strategist_evidence": _as_dict(compact.get("strategist_evidence")),
-        "entry_execution_visibility": entry_visibility,
-        "ai_report_diagnostics": {
-            "report_status": diagnostics.get("report_status"),
-            "report_reason_code": diagnostics.get("report_reason_code"),
-            "report_reason_human": diagnostics.get("report_reason_human"),
-        },
-    }
-
+    return _sparse_story_input_for_llm_impl(
+        story_input,
+        compact_story_input_for_llm=_compact_story_input_for_llm,
+        reporter_summary_is_placeholder=_reporter_summary_is_placeholder,
+        compact_timeline_rows=_compact_timeline_rows,
+    )
 
 def _normalize_provenance_entry(entry: Any) -> Dict[str, Any]:
     row = entry if isinstance(entry, dict) else {}
@@ -6450,348 +5537,50 @@ def _operatorize_report_section(section: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _prefer_fallback_text(ai_text: Any, fallback_text: Any) -> str:
-    ai_clean = _clip(ai_text, max_len=2000)
-    fallback_clean = _clip(fallback_text, max_len=2000)
-    if not ai_clean:
-        return fallback_clean
-    if fallback_clean and not _contains_hangul(ai_clean) and _contains_hangul(fallback_clean):
-        return fallback_clean
-    return ai_clean
+    return _prefer_fallback_text_impl(ai_text, fallback_text)
 
 
 def _is_scanner_execution_mismatch_text(value: Any) -> bool:
-    text = _clip(value, max_len=2000)
-    if not text:
-        return False
-    lowered = text.lower()
-    has_mismatch = "불일치" in text or "mismatch" in lowered or "divergence" in lowered
-    has_scanner = "스캐너" in text or "scanner" in lowered
-    has_execution = any(token in text for token in ("실행", "체결", "진입", "선택")) or any(
-        token in lowered for token in ("execution", "executed", "entry", "selected")
-    )
-    return bool(has_mismatch and has_scanner and has_execution)
+    return _is_scanner_execution_mismatch_text_impl(value)
 
 
 def _is_scanner_selection_label_line(value: Any) -> bool:
-    text = _clip(value, max_len=300)
-    lowered = text.lower()
-    return text.startswith(("스캐너 선택 종목:", "실행 종목:")) or lowered.startswith(
-        ("scanner selected symbol:", "execution symbol:")
-    )
+    return _is_scanner_selection_label_line_impl(value)
 
 
 def _prefer_fallback_summary(section_key: str, ai_text: Any, fallback_text: Any) -> str:
-    ai_clean = _clip(ai_text, max_len=2000)
-    fallback_clean = _clip(fallback_text, max_len=2000)
-    preferred = _prefer_fallback_text(ai_clean, fallback_clean)
-    if preferred == fallback_clean:
-        return preferred
-    if not fallback_clean:
-        return preferred
-    token = str(section_key or "").strip().lower()
-    if token in {"entry_decision", "holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision", "execution_quality", "reporter_evaluation"}:
-        return fallback_clean
-    ai_lower = ai_clean.lower()
-    if token in {"market_context_at_entry", "strategist_summary"}:
-        if (
-            not _contains_hangul(ai_clean)
-            or _has_noisy_trade_report_text(ai_clean)
-            or "headlines were considered" in ai_lower
-            or "market regime" in ai_lower
-            or "neutral regime" in ai_lower
-        ):
-            return fallback_clean
-    if token in {"scanner_filters"}:
-        if "scanner and guard checks" in ai_lower or not _contains_hangul(ai_clean):
-            return fallback_clean
-    if token in {"why_this_symbol_was_chosen", "why_this_symbol"}:
-        if (
-            not _contains_hangul(ai_clean)
-            or _has_noisy_trade_report_text(ai_clean)
-            or _is_scanner_execution_mismatch_text(ai_clean)
-            or "trading value" in ai_lower
-            or "theme and sector alignment" in ai_lower
-            or "highest total score" in ai_lower
-            or "highest combined scanner score" in ai_lower
-        ):
-            return fallback_clean
-    if token in {"scanner_candidate_comparison"}:
-        if not _contains_hangul(ai_clean) or _has_noisy_trade_report_text(ai_clean):
-            return fallback_clean
-    if token in {"entry_decision"}:
-        if (
-            not _contains_hangul(ai_clean)
-            or "strategist-guided weighting" in ai_lower
-            or "breakout_above_recent_high_with_vwap_structure_confirmation" in ai_lower
-            or "entry timing" in ai_lower
-        ):
-            return fallback_clean
-    if token in {"holding_monitoring_story", "monitor_trigger_reasoning"}:
-        if (
-            "holding_duration:" in ai_lower
-            or "run_count:" in ai_lower
-            or "recent_monitor_updates:" in ai_lower
-            or "peak_price:" in ai_lower
-            or "current_price:" in ai_lower
-        ):
-            return fallback_clean
-    if token in {"exit_decision"}:
-        if (
-            "exit_reason_human" in ai_lower
-            or "trigger_type:" in ai_lower
-            or "hard_stop_pct" in ai_lower
-            or "effective_stop_loss_pct" in ai_lower
-            or "take_profit_pct" in ai_lower
-        ):
-            return fallback_clean
-    if token in {"execution_quality"}:
-        if (
-            "execution outcome:" in ai_lower
-            or "order status:" in ai_lower
-            or "broker environment:" in ai_lower
-        ):
-            return fallback_clean
-    if token in {"reporter_evaluation"}:
-        if (
-            not _contains_hangul(ai_clean)
-            or "overtrading" in ai_lower
-            or "rapid exit pressure" in ai_lower
-            or "reporter linkage" in ai_lower
-        ):
-            return fallback_clean
-    return preferred
+    return _prefer_fallback_summary_impl(
+        section_key,
+        ai_text,
+        fallback_text,
+        contains_hangul=_contains_hangul,
+        has_noisy_trade_report_text=_has_noisy_trade_report_text,
+    )
 
 
 def _trade_report_priority_bullet_prefixes(section_key: str) -> List[str]:
-    key = str(section_key or "").strip().lower()
-    if key in {"market_context_at_entry", "market_context"}:
-        return [
-            "Market regime:",
-            "시장 상태는",
-            "Global sentiment score:",
-            "글로벌 감성 점수는",
-            "VIX",
-            "Scanner linkage:",
-            "Key strategist inputs:",
-            "전략가 핵심 입력은",
-            "Market news titles:",
-            "주요 시장 뉴스는",
-            "Candidate news titles:",
-            "후보 종목 관련 뉴스는",
-        ]
-    if key in {"strategist_summary"}:
-        return [
-            "핵심 입력은",
-            "전략 해석은",
-            "뉴스 연결 해석은",
-            "스캐너 반영은",
-            "종목 연결은",
-            "Scanner linkage:",
-            "전략가 핵심 입력은",
-            "주요 시장 뉴스는",
-            "스캐너 연결 근거는",
-        ]
-    if key in {"why_this_symbol_was_chosen", "why_this_symbol", "scanner_candidate_comparison", "entry_decision"}:
-        return [
-            "Top candidates:",
-            "상위 후보는",
-            "Why not others:",
-            "다른 후보가 밀린 이유는",
-            "Selection decision:",
-            "최종 선정 판단은",
-            "Final decision basis:",
-            "최종 결정 기준은",
-            "Tie-break rule:",
-            "동점 해소 기준은",
-            "Runner-ups lost because:",
-            "차순위 후보가 밀린 이유는",
-            "Selection sources:",
-            "선정에 반영된 핵심 소스는",
-            "Ranking basis:",
-            "순위 산정 기준은",
-        ]
-    if key in {"holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision"}:
-        return [
-            "Monitor runs:",
-            "모니터는 총",
-            "Posture:",
-            "현재 포지션 판단은",
-            "Trigger type:",
-            "감지된 핵심 신호는",
-            "Position age:",
-            "포지션 보유 시간은",
-            "Effective stop:",
-            "유효 손절 기준은",
-            "Take profit:",
-            "목표 수익 실현 기준은",
-            "Active exit axis:",
-            "현재 우선 감시 중인 청산 축은",
-            "Exit confirmation:",
-            "청산 확인 조건은",
-            "Watch axes:",
-            "주요 감시 축은",
-            "Decision chain:",
-            "판단 흐름은",
-            "Current price / avg / peak:",
-            "현재가, 평균가, 고점 기준 값은",
-            "Current drawdown / peak drawdown:",
-            "현재 손익 변동과 고점 대비 하락폭은",
-            "Price source:",
-            "가격 기준 소스는",
-            "Feature source:",
-            "지표 기준 소스는",
-        ]
-    return []
+    return _trade_report_priority_bullet_prefixes_impl(section_key)
 
 
 def _merge_bullets_with_fallback(section_key: str, ai_bullets: List[str], fallback_bullets: List[str]) -> List[str]:
-    section_token = str(section_key or "").strip().lower()
-    if section_token in {"market_context_at_entry", "market_context"}:
-        ai_bullets = [row for row in ai_bullets if not _is_market_context_noise_bullet(row)]
-        fallback_bullets = [row for row in fallback_bullets if not _is_market_context_noise_bullet(row)]
-    if not ai_bullets:
-        return fallback_bullets[:12]
-    if not fallback_bullets:
-        return ai_bullets[:12]
-
-    merged: List[str] = []
-    seen: set[str] = set()
-
-    def _append(values: List[str]) -> None:
-        for value in values:
-            bullet = _clip(value, max_len=260)
-            if not bullet or bullet in seen:
-                continue
-            merged.append(bullet)
-            seen.add(bullet)
-            if len(merged) >= 12:
-                break
-
-    _append(ai_bullets)
-    if len(merged) >= 12:
-        return merged[:12]
-
-    priority_prefixes = _trade_report_priority_bullet_prefixes(section_key)
-    for prefix in priority_prefixes:
-        if len(merged) >= 12:
-            break
-        if any(str(row).startswith(prefix) for row in merged):
-            continue
-        for row in fallback_bullets:
-            if str(row).startswith(prefix):
-                _append([row])
-                break
-
-    if len(merged) < 8:
-        _append(fallback_bullets)
-    prefixes = _trade_report_priority_bullet_prefixes(section_key)
-    if not prefixes:
-        return merged[:12]
-    deduped: List[str] = []
-    seen: set[str] = set()
-    seen_prefixes: set[str] = set()
-    for bullet in merged:
-        if bullet in seen:
-            continue
-        matched_prefix = next((prefix for prefix in prefixes if str(bullet).startswith(prefix)), "")
-        if matched_prefix:
-            if matched_prefix in seen_prefixes:
-                continue
-            seen_prefixes.add(matched_prefix)
-        deduped.append(bullet)
-        seen.add(bullet)
-        if len(deduped) >= 12:
-            break
-    return deduped[:12]
+    return _merge_bullets_with_fallback_impl(
+        section_key,
+        ai_bullets,
+        fallback_bullets,
+        is_market_context_noise_bullet=_is_market_context_noise_bullet,
+    )
 
 
 def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, Any], *, section_key: str = "") -> Dict[str, Any]:
-    section = ai_section if isinstance(ai_section, dict) else {}
-    fallback = fallback_section if isinstance(fallback_section, dict) else {}
-    merged = dict(section)
-    merged["summary"] = _prefer_fallback_summary(section_key, section.get("summary"), fallback.get("summary"))
-    ai_bullets = _listify(section.get("bullets"), max_items=12, max_len=260)
-    fallback_bullets = _listify(fallback.get("bullets"), max_items=12, max_len=260)
-    if section_key in {"why_this_symbol_was_chosen", "why_this_symbol"} and fallback_bullets:
-        noisy_scanner_mismatch = _is_scanner_execution_mismatch_text(section.get("summary")) or any(
-            _is_scanner_execution_mismatch_text(item) or _is_scanner_selection_label_line(item)
-            for item in ai_bullets
-        )
-        if noisy_scanner_mismatch:
-            merged["summary"] = _clip(fallback.get("summary"), max_len=2000) or merged.get("summary") or ""
-            merged["bullets"] = fallback_bullets
-            return merged
-    if not ai_bullets:
-        merged["bullets"] = fallback_bullets
-    elif fallback_bullets and section_key in {"entry_decision", "holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision", "execution_quality", "reporter_evaluation"}:
-        merged["bullets"] = fallback_bullets
-    elif (
-        fallback_bullets
-        and section_key in {"entry_decision", "holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision", "execution_quality"}
-        and any(
-            any(token in str(item).lower() for token in (
-                "entry_reason_human:",
-                "risk_score:",
-                "score_drivers:",
-                "holding_duration:",
-                "run_count:",
-                "recent_monitor_updates:",
-                "peak_price:",
-                "current_price:",
-                "exit_reason_human:",
-                "trigger_type:",
-                "hard_stop_pct",
-                "effective_stop_loss_pct",
-                "take_profit_pct",
-                "execution outcome:",
-                "broker environment:",
-                "order status:",
-            ))
-            for item in ai_bullets
-        )
-    ):
-        merged["bullets"] = fallback_bullets
-    elif section_key in {"execution_quality", "guard_approval_result"} and any(_contains_hangul(item) for item in ai_bullets):
-        merged["bullets"] = ai_bullets[:12]
-    elif (
-        fallback_bullets
-        and section_key in {"holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision"}
-        and sum(1 for item in ai_bullets if _is_low_information_bullet(item)) >= max(3, len(ai_bullets) // 2)
-    ):
-        merged["bullets"] = fallback_bullets
-    elif (
-        fallback_bullets
-        and section_key in {"market_context_at_entry", "strategist_summary", "why_this_symbol_was_chosen", "scanner_candidate_comparison"}
-        and (
-            sum(
-                1
-                for item in ai_bullets
-                if _is_low_information_bullet(item) or _has_noisy_trade_report_text(item)
-            ) >= max(1, len(ai_bullets) // 2)
-            or (
-                not any(_contains_hangul(item) for item in ai_bullets)
-                and any(_contains_hangul(item) for item in fallback_bullets)
-            )
-        )
-    ):
-        if section_key in {"why_this_symbol_was_chosen", "scanner_candidate_comparison"}:
-            merged["bullets"] = _merge_bullets_with_fallback(section_key, ai_bullets, fallback_bullets)
-        else:
-            merged["bullets"] = fallback_bullets
-    elif fallback_bullets and not any(_contains_hangul(item) for item in ai_bullets) and any(_contains_hangul(item) for item in fallback_bullets):
-        merged["bullets"] = fallback_bullets
-    else:
-        merged["bullets"] = _merge_bullets_with_fallback(section_key, ai_bullets, fallback_bullets)
-    for key in ("headline", "action", "confidence", "status", "grade", "current_action", "symbol"):
-        if not str(merged.get(key) or "").strip() and str(fallback.get(key) or "").strip():
-            merged[key] = fallback.get(key)
-    for key, value in fallback.items():
-        if key in {"summary", "bullets"}:
-            continue
-        if key not in merged or merged.get(key) in (None, "", [], {}):
-            merged[key] = value
-    return merged
-
+    return _merge_section_with_fallback_impl(
+        ai_section,
+        fallback_section,
+        section_key=section_key,
+        contains_hangul=_contains_hangul,
+        has_noisy_trade_report_text=_has_noisy_trade_report_text,
+        is_low_information_bullet=_is_low_information_bullet,
+        is_market_context_noise_bullet=_is_market_context_noise_bullet,
+    )
 
 def _trade_report_parse_meta(raw: Any, parsed: Dict[str, Any] | None) -> Dict[str, Any]:
     result = parse_llm_json_response(raw)

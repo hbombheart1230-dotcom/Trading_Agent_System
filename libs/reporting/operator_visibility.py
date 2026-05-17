@@ -178,7 +178,7 @@ def _load_or_build_metrics(events_path: Path, metrics_report_dir: Path, day: str
         return obj
 
     try:
-        from scripts.generate_metrics_report import generate_metrics_report
+        from libs.reporting.metrics_report_generator import generate_metrics_report
 
         _, js = generate_metrics_report(events_path, metrics_report_dir, day=day)
         return _read_json(js)

@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.run_m28_scheduler_worker_launch_wrapper_check import main as wrapper_main
+from libs.runtime.entrypoints.m28_scheduler_worker_launch_wrapper_check import main as wrapper_main
 
 
 def _write_env(path: Path, rows: dict[str, str]) -> None:

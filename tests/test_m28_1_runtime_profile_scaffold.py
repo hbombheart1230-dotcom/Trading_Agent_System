@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 
 from libs.runtime.runtime_profile import validate_runtime_profile
-from scripts.check_runtime_profile import main as check_main
-from scripts.run_m28_runtime_profile_scaffold_check import main as scaffold_main
+from libs.runtime.entrypoints.check_runtime_profile import main as check_main
+from libs.runtime.entrypoints.m28_runtime_profile_scaffold_check import main as scaffold_main
 
 
 def _write_env(path: Path, rows: dict[str, str]) -> None:

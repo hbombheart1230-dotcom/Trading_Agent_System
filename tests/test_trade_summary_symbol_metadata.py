@@ -37,3 +37,49 @@ def test_trade_summary_renders_symbol_name_and_theme_metadata() -> None:
     assert "SI(시스템통합)" not in markdown
     assert summary_input["trade"]["symbol_name"] == "에이프로젠바이오로직스"
     assert summary_input["trade"]["themes"] == ["바이오_바이오시밀러/베터"]
+
+
+def test_trade_summary_does_not_relabel_market_themes_as_symbol_themes() -> None:
+    report = {
+        "trade_id": "TRD_TEST",
+        "symbol": "090710",
+        "status": "closed",
+        "shared_facts": {"symbol": "090710", "status": "closed"},
+        "strategist_summary": {
+            "themes": ["SI(시스템통합)", "AMOLED_소재", "셋톱박스"],
+            "preferred_themes": ["SI(시스템통합)"],
+        },
+        "why_this_symbol_was_chosen": {
+            "symbol": "090710",
+            "theme_alignment_trace": {
+                "strategist_themes": ["SI(시스템통합)", "AMOLED_소재"],
+            },
+        },
+    }
+
+    summary_input = build_trade_summary_input_clean(report)
+
+    assert summary_input["trade"]["theme"] == ""
+    assert summary_input["trade"]["themes"] == []
+
+
+def test_trade_summary_same_day_single_trade_prefers_current_truth_pct() -> None:
+    report = {
+        "trade_id": "TRD_TEST",
+        "symbol": "090710",
+        "status": "closed",
+        "shared_facts": {"symbol": "090710", "status": "closed"},
+        "truth_surface": {
+            "status": {"status": "closed"},
+            "pnl": {"value": -51756, "pct": -0.017018841866364147},
+        },
+        "reporter_evaluation": {
+            "summary": "closed trade 1 trades with 0 wins, 1 losses, avg pnl pct -0.059",
+        },
+    }
+
+    summary_input = build_trade_summary_input_clean(report)
+    summary = summary_input["same_day_context"]["summary"]
+
+    assert "-1.70%" in summary
+    assert "-0.059" not in summary

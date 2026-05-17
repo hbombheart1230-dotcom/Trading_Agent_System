@@ -14,7 +14,7 @@ from libs.reporting.policy_surface_summary import (
     build_policy_surface_quality_executive_summary,
     build_policy_surface_quality_summary,
 )
-from scripts.check_phase_5_2_5_3_runtime_health import build_phase_5_2_5_3_runtime_health
+from libs.reporting.phase_runtime_health import build_phase_5_2_5_3_runtime_health
 
 
 def read_json(path: Path) -> Dict[str, Any]:

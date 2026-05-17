@@ -38,6 +38,7 @@ from libs.reporting.trade_report_ai import (
     render_trade_report_markdown,
     render_trade_summary_markdown_with_evaluation,
 )
+from libs.runtime.strategy_horizon_feedback import update_post_exit_shadow_with_price_observations
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -172,6 +173,59 @@ def _mark_partial_trade_artifact(
     write_json(trade_paths["trade_health_json"], payload)
 
 
+def _read_runtime_state(path: Path) -> Dict[str, Any]:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return {}
+
+
+def _runtime_minute_rows_for_symbol(runtime_state: Dict[str, Any], symbol: str) -> List[Dict[str, Any]]:
+    symbol_text = str(symbol or "").strip()
+    if not symbol_text:
+        return []
+    container = runtime_state.get("recent_minute_ohlcv_by_symbol")
+    if not isinstance(container, dict):
+        return []
+    symbol_rows = container.get(symbol_text)
+    if not isinstance(symbol_rows, dict):
+        return []
+    rows = symbol_rows.get("rows")
+    return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _refresh_report_post_exit_shadow_from_state(
+    report: Dict[str, Any],
+    *,
+    runtime_state: Dict[str, Any],
+    symbol: str,
+) -> Dict[str, Any]:
+    shadow = report.get("post_exit_shadow") if isinstance(report.get("post_exit_shadow"), dict) else {}
+    rows = _runtime_minute_rows_for_symbol(runtime_state, symbol)
+    if not shadow or not rows:
+        return report
+
+    refreshed = update_post_exit_shadow_with_price_observations(dict(shadow), minute_rows=rows)
+    if not refreshed:
+        return report
+
+    out = dict(report)
+    out["post_exit_shadow"] = dict(refreshed)
+    fact_payload = out.get("fact_payload") if isinstance(out.get("fact_payload"), dict) else {}
+    fact_trade = fact_payload.get("trade") if isinstance(fact_payload.get("trade"), dict) else {}
+    if fact_payload:
+        fact_payload = dict(fact_payload)
+        fact_payload["post_exit_shadow"] = dict(refreshed)
+        if fact_trade:
+            fact_trade = dict(fact_trade)
+            fact_trade["post_exit_shadow"] = dict(refreshed)
+            fact_payload["trade"] = fact_trade
+        out["fact_payload"] = fact_payload
+    return out
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -195,6 +249,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if trade_id_filters:
         allowed = set(trade_id_filters)
         trade_dirs = [path for path in trade_dirs if path.name in allowed]
+
+    runtime_state = _read_runtime_state(Path("data/state.json"))
 
     for trade_dir in trade_dirs:
         trade_id = trade_dir.name
@@ -292,6 +348,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 model_info={"provider": "OpenRouter", "model": ""},
                 meta={"reason": "deterministic_no_llm"},
             )
+        report = _refresh_report_post_exit_shadow_from_state(
+            dict(report),
+            runtime_state=runtime_state,
+            symbol=symbol_hint or str(report.get("symbol") or ""),
+        )
         llm_artifact = report.get("llm_response_artifact") if isinstance(report.get("llm_response_artifact"), dict) else {}
         generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
         diagnostics = {} if bool(args.local_debug) else _sync_report_diagnostics(trade_paths, report, llm_artifact)

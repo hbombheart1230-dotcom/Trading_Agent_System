@@ -133,7 +133,7 @@ def _load_or_generate_metrics_payload(reports_root: Path, day: str) -> Dict[str,
         if not events_path.exists():
             continue
         try:
-            from scripts.generate_metrics_report import generate_metrics_report
+            from libs.reporting.metrics_report_generator import generate_metrics_report
 
             _, js_path = generate_metrics_report(events_path, reports_root / "metrics", day=day)
         except Exception:

@@ -9,6 +9,17 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from libs.core.symbols import is_valid_symbol, normalize_symbol
+from libs.execution.order_lifecycle_policy import (
+    evaluate_unfilled_order_recovery_after_cancel,
+    evaluate_unfilled_order_recovery_start,
+    extract_fill_quantity_snapshot,
+)
+from libs.execution.recent_order_guard import (
+    evaluate_recent_buy_duplicate_guard,
+    evaluate_recent_buy_settle_sell_guard as evaluate_recent_buy_settle_sell_guard_policy,
+    evaluate_recent_sell_duplicate_guard,
+    prune_expired_orders,
+)
 from libs.runtime.canonical_artifacts import write_executor_artifact, write_supervisor_artifact
 from libs.runtime.asset_universe_policy import inspect_asset_universe_candidate
 from libs.runtime.decision_trace import append_decision_trace
@@ -643,51 +654,6 @@ def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor
         return result
 
 
-def _execution_fill_quantity_snapshot(execution: Dict[str, Any], order: Dict[str, Any]) -> Dict[str, Any]:
-    payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
-    response_payload = payload.get("response_payload") if isinstance(payload.get("response_payload"), dict) else {}
-    broker_result = payload.get("broker_result") if isinstance(payload.get("broker_result"), dict) else {}
-    containers = [
-        execution,
-        payload,
-        response_payload,
-        execution.get("order_status") if isinstance(execution.get("order_status"), dict) else {},
-        payload.get("order_status") if isinstance(payload.get("order_status"), dict) else {},
-        execution.get("broker_result") if isinstance(execution.get("broker_result"), dict) else {},
-        broker_result,
-    ]
-
-    def first_value(*keys: str) -> Tuple[Any, str]:
-        for container in containers:
-            if not isinstance(container, dict):
-                continue
-            for key in keys:
-                if container.get(key) not in (None, ""):
-                    return container.get(key), key
-        return None, ""
-
-    filled_raw, filled_key = first_value("filled_qty", "cntr_qty", "exec_qty", "cnfm_qty")
-    remaining_raw, remaining_key = first_value("remaining_qty", "ord_remnq", "rmnd_qty", "unfilled_qty", "unfilled")
-    order_raw, order_key = first_value("order_qty", "ord_qty", "qty")
-    order_qty = max(0, _coerce_int(order_raw, 0)) if order_raw not in (None, "") else max(0, _coerce_int(order.get("qty"), 0))
-    filled_qty = max(0, _coerce_int(filled_raw, 0)) if filled_raw not in (None, "") else None
-    remaining_qty = max(0, _coerce_int(remaining_raw, 0)) if remaining_raw not in (None, "") else None
-    has_fill_truth = bool(filled_raw not in (None, "") or remaining_raw not in (None, ""))
-    pending_unfilled = bool(remaining_qty is not None and remaining_qty > 0)
-    fully_filled = bool(has_fill_truth and (remaining_qty == 0 or (order_qty > 0 and (filled_qty or 0) >= order_qty)))
-    return {
-        "has_fill_truth": bool(has_fill_truth),
-        "filled_qty": filled_qty,
-        "remaining_qty": remaining_qty,
-        "order_qty": int(order_qty),
-        "filled_qty_source": filled_key,
-        "remaining_qty_source": remaining_key,
-        "order_qty_source": order_key,
-        "pending_unfilled": bool(pending_unfilled),
-        "fully_filled": bool(fully_filled),
-    }
-
-
 def _execution_market_open_for_recovery(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
     details: Dict[str, Any] = {"clock_evaluable": False}
     epoch = _coerce_int(state.get("tick_ts"), 0) or _coerce_int(state.get("now_epoch"), 0)
@@ -754,37 +720,29 @@ def _build_market_replacement_sell_order(order: Dict[str, Any], qty: int, *, rea
 def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, executor: Any, order: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
     action = str(order.get("action") or "").strip().upper()
     result: Dict[str, Any] = {"attempted": False, "action": action, "guard_applied": True}
-    if action not in ("BUY", "SELL"):
-        result["reason"] = "unsupported_action"
-        return result
-    if str(order.get("api_id") or order.get("order_api_id") or "").strip().lower() == "kt10003":
-        result["reason"] = "cancel_order_not_recovered"
-        return result
-    if not bool(execution.get("allowed")) or not bool(execution.get("ok")):
-        result["reason"] = "execution_not_accepted"
-        return result
-
-    snapshot = _execution_fill_quantity_snapshot(execution, order)
+    snapshot = extract_fill_quantity_snapshot(execution, order)
     result["fill_snapshot"] = snapshot
-    if not bool(snapshot.get("has_fill_truth")):
-        result["reason"] = "fill_truth_missing"
-        return result
-    if not bool(snapshot.get("pending_unfilled")):
-        result["reason"] = "not_pending_unfilled"
-        return result
 
     order_id = str(execution.get("order_id") or execution.get("ord_no") or ((execution.get("payload") or {}) if isinstance(execution.get("payload"), dict) else {}).get("order_id") or "").strip()
-    if not order_id:
-        result["reason"] = "missing_order_id"
+    start_policy = evaluate_unfilled_order_recovery_start(
+        action=action,
+        order_api_id=order.get("api_id") or order.get("order_api_id"),
+        execution_allowed=bool(execution.get("allowed")),
+        execution_ok=bool(execution.get("ok")),
+        fill_snapshot=snapshot,
+        order_id=order_id,
+    )
+    if not bool(start_policy.get("attempted")):
+        result["reason"] = str(start_policy.get("reason") or "")
         return result
 
     symbol = _extract_order_symbol(order)
-    remaining_qty = _coerce_int(snapshot.get("remaining_qty"), 0)
+    remaining_qty = _coerce_int(start_policy.get("remaining_qty"), 0)
     result.update({"attempted": True, "symbol": symbol, "order_id": order_id, "remaining_qty": int(remaining_qty)})
     cancel_order = _build_cancel_order_for_unfilled(
         order,
         order_id,
-        reason="buy_unfilled_auto_cancel" if action == "BUY" else "sell_unfilled_cancel_before_market_replacement",
+        reason=str(start_policy.get("cancel_reason") or ""),
     )
     try:
         cancel_req = _prepare_request(cancel_order, catalog)
@@ -804,27 +762,34 @@ def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, exe
         result["cancel_error"] = str(exc)
         return result
 
-    if action == "BUY":
-        result["reason"] = "buy_unfilled_cancelled"
-        return result
-    if not bool(result.get("cancel_ok")):
-        result["reason"] = "sell_cancel_failed_no_replacement"
-        return result
-    if remaining_qty <= 0:
-        result["reason"] = "sell_remaining_qty_missing"
+    if action == "BUY" or not bool(result.get("cancel_ok")) or remaining_qty <= 0:
+        after_cancel_policy = evaluate_unfilled_order_recovery_after_cancel(
+            action=action,
+            cancel_ok=bool(result.get("cancel_ok")),
+            remaining_qty=int(remaining_qty),
+            regular_session_open=True,
+        )
+        result["reason"] = str(after_cancel_policy.get("reason") or "")
         return result
 
     regular_open, clock_details = _execution_market_open_for_recovery(state)
     result["market_clock"] = clock_details
-    if not regular_open:
-        result["reason"] = "regular_session_closed_after_hours_policy_required"
-        result["after_hours_policy_required"] = True
+    after_cancel_policy = evaluate_unfilled_order_recovery_after_cancel(
+        action=action,
+        cancel_ok=bool(result.get("cancel_ok")),
+        remaining_qty=int(remaining_qty),
+        regular_session_open=bool(regular_open),
+    )
+    if not bool(after_cancel_policy.get("requires_market_replacement")):
+        result["reason"] = str(after_cancel_policy.get("reason") or "")
+        if bool(after_cancel_policy.get("after_hours_policy_required")):
+            result["after_hours_policy_required"] = True
         return result
 
     market_order = _build_market_replacement_sell_order(
         order,
         remaining_qty,
-        reason="sell_unfilled_market_replacement",
+        reason=str(after_cancel_policy.get("market_replacement_reason") or "sell_unfilled_market_replacement"),
     )
     try:
         market_req = _prepare_request(market_order, catalog)
@@ -1066,49 +1031,25 @@ def _exit_reason_from_order(order: Dict[str, Any]) -> str:
 
 def _evaluate_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
     action = str(order.get("action") or "").strip().upper()
-    details: Dict[str, Any] = {
-        "enabled": bool(_recent_buy_guard_enabled(state)),
-        "action": action,
-        "guard_applied": False,
-    }
-    if action != "BUY" or not details["enabled"]:
-        return True, "", details
-
+    enabled = bool(_recent_buy_guard_enabled(state))
     symbol = _extract_order_symbol(order)
-    details["symbol"] = symbol
-    details["guard_applied"] = True
-    if not symbol:
-        details["symbol_evaluable"] = False
-        return True, "", details
-
     path = _recent_buy_guard_path(state)
     now_epoch = _recent_buy_guard_now_epoch(state)
     ttl_sec = _recent_buy_guard_ttl_sec(state)
-    data = _read_recent_buy_guard(path)
-    orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
-    record = orders.get(symbol) if isinstance(orders.get(symbol), dict) else {}
-    expires_epoch = _coerce_int(record.get("expires_epoch"), 0)
-    last_buy_epoch = _coerce_int(record.get("last_buy_epoch"), 0)
-
-    details.update(
-        {
-            "path": str(path),
-            "now_epoch": int(now_epoch),
-            "ttl_sec": int(ttl_sec),
-            "last_buy_epoch": int(last_buy_epoch),
-            "expires_epoch": int(expires_epoch),
-            "recent_order_found": bool(record),
-        }
+    record: Dict[str, Any] = {}
+    if action == "BUY" and enabled and symbol:
+        data = _read_recent_buy_guard(path)
+        orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
+        record = orders.get(symbol) if isinstance(orders.get(symbol), dict) else {}
+    return evaluate_recent_buy_duplicate_guard(
+        enabled=enabled,
+        action=action,
+        symbol=symbol,
+        record=record,
+        now_epoch=now_epoch,
+        ttl_sec=ttl_sec,
+        path=str(path),
     )
-    if record and expires_epoch > 0 and now_epoch <= expires_epoch:
-        details["remaining_sec"] = int(max(0, expires_epoch - now_epoch))
-        details["order_id"] = str(record.get("order_id") or "")
-        details["run_id"] = str(record.get("run_id") or "")
-        details["pending_management_status"] = str(record.get("pending_management_status") or "recent_buy_pending")
-        details["filled_qty"] = _coerce_int(record.get("filled_qty"), -1)
-        details["remaining_qty"] = _coerce_int(record.get("remaining_qty"), -1)
-        return False, "duplicate_buy_recent_order_exists", details
-    return True, "", details
 
 
 def _evaluate_recent_buy_settle_sell_guard(
@@ -1116,114 +1057,56 @@ def _evaluate_recent_buy_settle_sell_guard(
     order: Dict[str, Any],
 ) -> Tuple[bool, str, Dict[str, Any]]:
     action = str(order.get("action") or "").strip().upper()
-    details: Dict[str, Any] = {
-        "enabled": bool(_recent_buy_guard_enabled(state)),
-        "action": action,
-        "guard_applied": False,
-    }
-    if action != "SELL" or not details["enabled"]:
-        return True, "", details
-
+    enabled = bool(_recent_buy_guard_enabled(state))
     symbol = _extract_order_symbol(order)
-    details["symbol"] = symbol
-    details["guard_applied"] = True
-    if not symbol:
-        details["symbol_evaluable"] = False
-        return True, "", details
-
     path = _recent_buy_guard_path(state)
     now_epoch = _recent_buy_guard_now_epoch(state)
     ttl_sec = _recent_buy_guard_ttl_sec(state)
-    data = _read_recent_buy_guard(path)
-    orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
-    record = orders.get(symbol) if isinstance(orders.get(symbol), dict) else {}
-    expires_epoch = _coerce_int(record.get("expires_epoch"), 0)
-    buy_qty = _coerce_int(record.get("qty"), 0)
+    record: Dict[str, Any] = {}
+    if action == "SELL" and enabled and symbol:
+        data = _read_recent_buy_guard(path)
+        orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
+        record = orders.get(symbol) if isinstance(orders.get(symbol), dict) else {}
     order_qty = _coerce_int(order.get("qty"), 0)
     position_qty_hint = _position_qty_hint_from_order(order)
     exit_reason = _exit_reason_from_order(order)
-    emergency_reasons = {"emergency_halt", "news_shock", "hard_stop", "stop_loss", "eod_flat"}
-
-    partial_position_after_recent_buy = bool(
-        record
-        and expires_epoch > 0
-        and now_epoch <= expires_epoch
-        and buy_qty > 0
-        and (
-            (position_qty_hint > 0 and position_qty_hint < buy_qty)
-            or (position_qty_hint <= 0 and order_qty > 0 and order_qty < buy_qty)
-        )
+    return evaluate_recent_buy_settle_sell_guard_policy(
+        enabled=enabled,
+        action=action,
+        symbol=symbol,
+        record=record,
+        order_qty=order_qty,
+        position_qty_hint=position_qty_hint,
+        exit_reason=exit_reason,
+        now_epoch=now_epoch,
+        ttl_sec=ttl_sec,
+        path=str(path),
     )
-    details.update(
-        {
-            "path": str(path),
-            "now_epoch": int(now_epoch),
-            "ttl_sec": int(ttl_sec),
-            "last_buy_epoch": _coerce_int(record.get("last_buy_epoch"), 0),
-            "expires_epoch": int(expires_epoch),
-            "remaining_sec": int(max(0, expires_epoch - now_epoch)) if expires_epoch > 0 else 0,
-            "recent_order_found": bool(record),
-            "recent_buy_qty": int(buy_qty),
-            "order_qty": int(order_qty),
-            "position_qty_hint": int(position_qty_hint),
-            "exit_reason": str(exit_reason),
-            "partial_position_after_recent_buy": bool(partial_position_after_recent_buy),
-        }
-    )
-    if partial_position_after_recent_buy and exit_reason not in emergency_reasons:
-        return False, "sell_guard_recent_buy_fill_settle_partial_position", details
-    return True, "", details
 
 
 def _evaluate_recent_sell_order_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
     action = str(order.get("action") or "").strip().upper()
-    details: Dict[str, Any] = {
-        "enabled": bool(_recent_sell_guard_enabled(state)),
-        "action": action,
-        "guard_applied": False,
-    }
-    if action != "SELL" or not details["enabled"]:
-        return True, "", details
-
+    enabled = bool(_recent_sell_guard_enabled(state))
     symbol = _extract_order_symbol(order)
-    details["symbol"] = symbol
-    details["guard_applied"] = True
-    if not symbol:
-        details["symbol_evaluable"] = False
-        return True, "", details
-
     path = _recent_sell_guard_path(state)
     now_epoch = _recent_buy_guard_now_epoch(state)
     ttl_sec = _recent_sell_guard_ttl_sec(state)
-    data = _read_recent_sell_guard(path)
-    orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
-    record = orders.get(symbol) if isinstance(orders.get(symbol), dict) else {}
-    expires_epoch = _coerce_int(record.get("expires_epoch"), 0)
+    record: Dict[str, Any] = {}
+    if action == "SELL" and enabled and symbol:
+        data = _read_recent_sell_guard(path)
+        orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
+        record = orders.get(symbol) if isinstance(orders.get(symbol), dict) else {}
     order_qty = _coerce_int(order.get("qty"), 0)
-    remaining_qty_hint = _coerce_int(record.get("remaining_qty_hint"), -1)
-
-    details.update(
-        {
-            "path": str(path),
-            "now_epoch": int(now_epoch),
-            "ttl_sec": int(ttl_sec),
-            "order_qty": int(order_qty),
-            "remaining_qty_hint": int(remaining_qty_hint),
-            "expires_epoch": int(expires_epoch),
-            "recent_order_found": bool(record),
-        }
+    return evaluate_recent_sell_duplicate_guard(
+        enabled=enabled,
+        action=action,
+        symbol=symbol,
+        record=record,
+        order_qty=order_qty,
+        now_epoch=now_epoch,
+        ttl_sec=ttl_sec,
+        path=str(path),
     )
-    if not record or expires_epoch <= 0 or now_epoch > expires_epoch:
-        return True, "", details
-    details["remaining_sec"] = int(max(0, expires_epoch - now_epoch))
-    details["last_sell_epoch"] = _coerce_int(record.get("last_sell_epoch"), 0)
-    details["last_sell_qty"] = _coerce_int(record.get("last_sell_qty"), 0)
-    details["last_position_qty"] = _coerce_int(record.get("position_qty_hint"), 0)
-    if remaining_qty_hint <= 0:
-        return False, "duplicate_sell_recent_full_exit_exists", details
-    if order_qty > 0 and order_qty > remaining_qty_hint:
-        return False, "sell_qty_exceeds_recent_remaining_position", details
-    return True, "", details
 
 
 def _update_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
@@ -1245,9 +1128,8 @@ def _update_recent_buy_order_guard(state: Dict[str, Any], order: Dict[str, Any],
     orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
     data["orders"] = orders
 
-    for sym, record in list(orders.items()):
-        if not isinstance(record, dict) or _coerce_int(record.get("expires_epoch"), 0) <= now_epoch:
-            orders.pop(sym, None)
+    orders = prune_expired_orders(orders, now_epoch=now_epoch)
+    data["orders"] = orders
 
     if action == "SELL":
         removed = bool(orders.pop(symbol, None))
@@ -1315,9 +1197,8 @@ def _update_recent_sell_order_guard(state: Dict[str, Any], order: Dict[str, Any]
     orders = data.get("orders") if isinstance(data.get("orders"), dict) else {}
     data["orders"] = orders
 
-    for sym, record in list(orders.items()):
-        if not isinstance(record, dict) or _coerce_int(record.get("expires_epoch"), 0) <= now_epoch:
-            orders.pop(sym, None)
+    orders = prune_expired_orders(orders, now_epoch=now_epoch)
+    data["orders"] = orders
 
     if action == "BUY":
         removed = bool(orders.pop(symbol, None))

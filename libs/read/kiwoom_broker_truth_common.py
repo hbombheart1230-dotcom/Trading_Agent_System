@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from libs.catalog.api_catalog import ApiCatalog, ApiNotFoundError
+from libs.catalog.api_catalog_builder import build_api_catalog
 from libs.catalog.api_request_builder import PreparedRequest
 from libs.core.settings import Settings
 from libs.execution.executors.factory import get_executor
@@ -13,10 +14,9 @@ def ensure_catalog_path() -> Path:
     catalog_path = Path("data/specs/api_catalog.jsonl")
     if catalog_path.exists():
         return catalog_path
-    import scripts.build_api_catalog as bac
 
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    bac.main()
+    build_api_catalog()
     return catalog_path
 
 

@@ -4345,13 +4345,75 @@ def test_monitor_vwap_breakdown_exit_uses_feature_signal(monkeypatch):
         "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
     }
     state["persisted_state"] = {
-        "position_peak_price": {"005930": 102.0},
+        "position_peak_price": {"005930": 101.3},
     }
     state["policy"] = {
         "use_exit_policy": True,
         "vwap_breakdown_pct": 0.005,
         "take_profit_pct": 0.0,
+        "peak_drawdown_exit_pct": 0.0,
+        "partial_take_profit_pct": 0.0,
+        "profit_ladder_levels_pct": [],
+        "risk_reward_take_profit_r": 0.0,
+        "vwap_extension_take_profit_pct": 0.0,
+        "resistance_take_profit_near_pct": 0.0,
+        "profit_time_stop_sec": 0,
+        "volume_exhaustion_take_profit_min_pct": 0.0,
+        "opening_gap_profit_take_min_pct": 0.0,
+        "exit_confirm_ticks": 1,
     }
+    state["applied_policy"] = {"monitor": {"exit": {"confirm_ticks": 1}}}
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert intents == []
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") == "hold"
+    assert str(exit_info.get("hold_block_reason") or "") == "vwap_breakdown_confirmation_pending"
+    assert bool(exit_info.get("vwap_breakdown_confirmation_pending")) is True
+    assert float(exit_info.get("vwap_distance") or 0.0) == -0.01
+
+
+def test_monitor_vwap_breakdown_exit_after_two_minute_confirmations(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = _base_state()
+    state["selected"] = {
+        "symbol": "005930",
+        "price": 99.2,
+        "features": {"engine_vwap_distance": -0.01},
+    }
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "current_price": 99.2, "hold_sec": 900}],
+    }
+    state["persisted_state"] = {
+        "position_peak_price": {"005930": 101.5},
+    }
+    state["minute_ohlcv_by_symbol"] = {
+        "005930": [
+            {"ts": 1778548740, "open": 100.0, "high": 100.1, "low": 99.2, "close": 99.3, "vwap": 100.0, "volume": 1000},
+            {"ts": 1778548800, "open": 99.3, "high": 99.4, "low": 99.0, "close": 99.2, "vwap": 100.0, "volume": 900},
+        ]
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "vwap_breakdown_pct": 0.005,
+        "take_profit_pct": 0.0,
+        "peak_drawdown_exit_pct": 0.0,
+        "partial_take_profit_pct": 0.0,
+        "profit_ladder_levels_pct": [],
+        "risk_reward_take_profit_r": 0.0,
+        "vwap_extension_take_profit_pct": 0.0,
+        "resistance_take_profit_near_pct": 0.0,
+        "profit_time_stop_sec": 0,
+        "volume_exhaustion_take_profit_min_pct": 0.0,
+        "opening_gap_profit_take_min_pct": 0.0,
+        "exit_confirm_ticks": 1,
+    }
+    state["applied_policy"] = {"monitor": {"exit": {"confirm_ticks": 1}}}
 
     out = monitor_node(state)
     intents = out.get("intents") or []
@@ -4359,7 +4421,8 @@ def test_monitor_vwap_breakdown_exit_uses_feature_signal(monkeypatch):
     assert intents[0]["side"] == "SELL"
     exit_info = out.get("monitor_exit") or {}
     assert str(exit_info.get("reason") or "") == "vwap_breakdown"
-    assert float(exit_info.get("vwap_distance") or 0.0) == -0.01
+    assert int(exit_info.get("vwap_breakdown_consecutive_bars") or 0) == 2
+    assert bool(exit_info.get("vwap_breakdown_confirmed")) is True
 
 
 def test_monitor_vwap_breakdown_exit_prefers_fresh_minute_vwap_over_stale_feature(monkeypatch):

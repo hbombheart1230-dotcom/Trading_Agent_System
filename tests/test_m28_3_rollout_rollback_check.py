@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.run_m28_rollout_rollback_check import main as rollout_main
+from libs.runtime.entrypoints.m28_rollout_rollback_check import main as rollout_main
 
 
 def test_m28_3_rollout_rollback_check_passes_default(tmp_path: Path, capsys):

@@ -107,7 +107,7 @@ def build_execution_plan(args: argparse.Namespace) -> Dict[str, Any]:
             {
                 "route_selected": f"commander_{mode}_watch",
                 "implementation_id": "live_session_watch",
-                "implementation": "scripts.run_live_session_watch.main",
+                "implementation": "libs.runtime.entrypoints.live_session_watch.main",
                 "argv": [
                     "--event-log-path",
                     str(args.event_log_path),
@@ -144,7 +144,7 @@ def build_execution_plan(args: argparse.Namespace) -> Dict[str, Any]:
                 "route_selected": f"commander_live_{phase}_once",
                 "commander_phase": commander_phase,
                 "implementation_id": "commander_runtime_once",
-                "implementation": "scripts.run_commander_runtime_once.main",
+                "implementation": "libs.runtime.entrypoints.commander_runtime_once.main",
                 "argv": [
                     "--live",
                     "--mode",
@@ -168,7 +168,7 @@ def build_execution_plan(args: argparse.Namespace) -> Dict[str, Any]:
                 "route_selected": f"commander_mock_{phase}_orchestration",
                 "commander_phase": mock_phase,
                 "implementation_id": "mock_exam_day",
-                "implementation": "scripts.run_mock_exam_day.main",
+                "implementation": "libs.runtime.entrypoints.mock_exam_day.main",
                 "argv": [
                     "--phase",
                     mock_phase,
@@ -204,7 +204,7 @@ def build_execution_plan(args: argparse.Namespace) -> Dict[str, Any]:
                 "route_selected": "commander_mock_intraday_probe",
                 "commander_phase": "session",
                 "implementation_id": "m31_agent_chain_probe",
-                "implementation": "scripts.run_m31_agent_chain_probe.main",
+                "implementation": "libs.runtime.entrypoints.m31_agent_chain_probe.main",
                 "argv": [
                     "--symbol",
                     str(args.probe_symbol),
@@ -226,7 +226,7 @@ def build_execution_plan(args: argparse.Namespace) -> Dict[str, Any]:
                 "route_selected": "commander_mock_intraday_simulated",
                 "commander_phase": "session",
                 "implementation_id": "offhours_validation_loop",
-                "implementation": "scripts.run_offhours_validation_loop.main",
+                "implementation": "libs.runtime.entrypoints.offhours_validation_loop.main",
                 "argv": [
                     "--env-path",
                     str(args.env_path),
@@ -257,7 +257,7 @@ def build_execution_plan(args: argparse.Namespace) -> Dict[str, Any]:
             "route_selected": f"commander_{mode}_{phase}_loop",
             "commander_phase": "session",
             "implementation_id": "m13_live_loop",
-            "implementation": "scripts.run_m13_live_loop.main",
+            "implementation": "libs.runtime.entrypoints.m13_live_loop.main",
             "argv": [
                 "--env-path",
                 str(args.env_path),

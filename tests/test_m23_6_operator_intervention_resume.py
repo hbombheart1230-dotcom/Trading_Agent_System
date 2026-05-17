@@ -4,7 +4,7 @@ import json
 from typing import Any, Dict
 
 from graphs.commander_runtime import run_commander_runtime
-from scripts.run_commander_runtime_once import main as runtime_once_main
+from libs.runtime.entrypoints.commander_runtime_once import main as runtime_once_main
 
 
 class _FakeEventLogger:

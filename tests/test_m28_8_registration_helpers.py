@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.run_m28_registration_helper_check import main as registration_main
+from libs.runtime.entrypoints.m28_registration_helper_check import main as registration_main
 
 
 def test_m28_8_registration_helper_check_passes_default(tmp_path: Path, capsys):
