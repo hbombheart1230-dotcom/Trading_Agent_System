@@ -186,6 +186,46 @@ def _load_or_build_metrics(events_path: Path, metrics_report_dir: Path, day: str
         return {}
 
 
+def _build_trading_health_status(reports_root: Path, day: str) -> Dict[str, Any]:
+    summary_path = Path(reports_root) / "performance" / str(day or "").strip() / "summary.json"
+    summary = _read_json(summary_path)
+    sample_count = _safe_int(summary.get("return_sample_count"), 0)
+    total_trades = _safe_int(summary.get("total_trades"), 0)
+    win_rate = _safe_float(summary.get("win_rate"), 0.0)
+    avg_return = _safe_float(summary.get("avg_return"), 0.0)
+    profit_factor = _safe_float(summary.get("profit_factor"), 0.0)
+    level = "GREEN"
+    reasons: List[str] = []
+    if not summary:
+        level = "UNKNOWN"
+        reasons.append("performance summary artifact is missing")
+    elif sample_count >= 3 and (win_rate < 0.25 or avg_return <= -0.008):
+        level = "RED"
+        reasons.append(
+            f"trade performance weak: sample={sample_count}, win_rate={win_rate:.2%}, avg_return={avg_return:.2%}"
+        )
+    elif sample_count >= 2 and (win_rate < 0.40 or avg_return < 0.0):
+        level = "YELLOW"
+        reasons.append(
+            f"trade performance watch: sample={sample_count}, win_rate={win_rate:.2%}, avg_return={avg_return:.2%}"
+        )
+    else:
+        reasons.append(
+            f"trade performance acceptable: sample={sample_count}, win_rate={win_rate:.2%}, avg_return={avg_return:.2%}"
+        )
+    return {
+        "schema_version": "trading_health_status.v1",
+        "trading_health_level": level,
+        "sample_count": int(sample_count),
+        "total_trades": int(total_trades),
+        "win_rate": float(win_rate),
+        "avg_return": float(avg_return),
+        "profit_factor": float(profit_factor),
+        "reasoning": reasons,
+        "source_path": str(summary_path),
+    }
+
+
 def _compact_kv_text(raw: Any, *, topn: int = 4) -> str:
     if isinstance(raw, dict):
         pairs = []
@@ -891,6 +931,7 @@ def build_operator_daily_summary_payload(
 
     metrics_dir = metrics_report_dir or (Path("reports") / "metrics")
     metrics = _load_or_build_metrics(events_path, metrics_dir, target_day)
+    trading_health_status = _build_trading_health_status(canonical_report_root, target_day)
     m30_post_dir = m30_post_golive_dir or (Path("reports") / "milestones" / "m30_post_golive")
     m30_go_dir = m30_golive_dir or (Path("reports") / "milestones" / "m30_golive")
     m31_dir = m31_slo_incident_dir or (Path("reports") / "m31_slo_incident")
@@ -1015,6 +1056,16 @@ def build_operator_daily_summary_payload(
         else:
             _raise_health("RED")
             issues.append({"code": "slo_incident_gate_failed", "severity": "RED", "detail": f"m31_slo_incident failure_total={_safe_int(m31_slo.get('failure_total'), 0)}"})
+    trading_health_level = str(trading_health_status.get("trading_health_level") or "").strip().upper()
+    trading_health_detail = "; ".join(
+        str(x) for x in list(trading_health_status.get("reasoning") or [])[:2] if str(x).strip()
+    )
+    if trading_health_level == "RED":
+        _raise_health("RED")
+        issues.append({"code": "trading_health_red", "severity": "RED", "detail": trading_health_detail})
+    elif trading_health_level == "YELLOW":
+        _raise_health("YELLOW")
+        issues.append({"code": "trading_health_yellow", "severity": "YELLOW", "detail": trading_health_detail})
     if not issues:
         issues.append({"code": "none", "severity": "GREEN", "detail": "no critical or warning issues detected"})
 
@@ -1030,6 +1081,10 @@ def build_operator_daily_summary_payload(
         recommended_actions.append("Switch to manual approval only and complete incident review with clear owner/action items.")
     if "slo_incident_artifact_unmeasurable" in issue_codes:
         recommended_actions.append("Refresh the SLO incident artifact from the current event log before treating it as a runtime failure.")
+    if "trading_health_red" in issue_codes:
+        recommended_actions.append("Reduce or pause new entries until weak intraday playbook/exit combinations recover.")
+    if "trading_health_yellow" in issue_codes:
+        recommended_actions.append("Keep candidate scope narrow until win-rate and average return recover.")
     if "none" in issue_codes:
         recommended_actions.append("Continue current configuration and monitor next session for regression signals.")
     if not recommended_actions:
@@ -1100,6 +1155,7 @@ def build_operator_daily_summary_payload(
         },
         "executive_summary": {"system_status": health, "summary_lines": summary_lines},
         "system_health_status": system_health_status,
+        "trading_health_status": trading_health_status,
         "trading_activity_summary": {
             "run_total": int(run_total),
             "decision_action_counts": dict(action_counts),
@@ -1195,6 +1251,7 @@ def generate_operator_daily_summary(
     out["report_md_path"] = str(md_path)
     health = str((out.get("executive_summary") if isinstance(out.get("executive_summary"), dict) else {}).get("system_status") or "UNKNOWN")
     system_health_status = out.get("system_health_status") if isinstance(out.get("system_health_status"), dict) else {}
+    trading_health_status = out.get("trading_health_status") if isinstance(out.get("trading_health_status"), dict) else {}
     reasoning_lines = list(system_health_status.get("reasoning") or [])
 
     md_lines = [
@@ -1235,6 +1292,19 @@ def generate_operator_daily_summary(
         md_lines.append("  - (none)")
     md_lines.append("- recommended_action:")
     for line in list(system_health_status.get("recommended_action") or []):
+        md_lines.append(f"  - {line}")
+
+    md_lines += [
+        "",
+        "## Trading Health Status",
+        "",
+        f"- trading_health_level: **{_health_badge(trading_health_status.get('trading_health_level') or 'UNKNOWN')}**",
+        f"- sample_count: **{int(trading_health_status.get('sample_count') or 0)}**",
+        f"- win_rate: **{_safe_float(trading_health_status.get('win_rate'), 0.0):.2%}**",
+        f"- avg_return: **{_safe_float(trading_health_status.get('avg_return'), 0.0):.2%}**",
+        "- reasoning:",
+    ]
+    for line in list(trading_health_status.get("reasoning") or [])[:5]:
         md_lines.append(f"  - {line}")
 
     tas = out.get("trading_activity_summary") if isinstance(out.get("trading_activity_summary"), dict) else {}

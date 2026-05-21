@@ -3105,6 +3105,57 @@ def test_build_run_snapshots_prefers_canonical_agent_artifacts(tmp_path: Path) -
     assert row["evidence_provenance"]["monitor"] == "canonical"
 
 
+def test_build_run_snapshots_uses_monitor_entry_final_symbol_for_buy(tmp_path: Path) -> None:
+    day = "2026-05-19"
+    event_log = tmp_path / "events.jsonl"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {
+                "run_id": "run-buy",
+                "ts": f"{day}T06:16:30+00:00",
+                "stage": "commander_router",
+                "event": "route",
+                "payload": {"mode": "integrated_chain", "phase": "session"},
+            },
+            {
+                "run_id": "run-buy",
+                "ts": f"{day}T06:16:31+00:00",
+                "stage": "scanner",
+                "event": "summary",
+                "payload": {"selected_symbol": "005930"},
+            },
+            {
+                "run_id": "run-buy",
+                "ts": f"{day}T06:16:32+00:00",
+                "stage": "monitor",
+                "event": "summary",
+                "payload": {
+                    "selected_symbol": "005930",
+                    "entry_final_symbol": "102120",
+                    "entry_triggered": True,
+                    "monitor_reason": "hold",
+                },
+            },
+            {
+                "run_id": "run-buy",
+                "ts": f"{day}T06:16:33+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"action": "BUY", "qty": 244, "price": 12275},
+            },
+        ],
+    )
+
+    rows = mod._build_run_snapshots(event_log, day, reports_root=reports_root)
+
+    assert len(rows) == 1
+    assert rows[0]["execution_action"] == "BUY"
+    assert rows[0]["symbol"] == "102120"
+
+
 def test_trade_evidence_links_cached_strategist_frame_run() -> None:
     day = "2026-03-19"
     lifecycle = {

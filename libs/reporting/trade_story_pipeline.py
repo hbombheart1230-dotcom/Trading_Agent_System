@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import html
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
 from libs.reporting.reasoning_trace import (
@@ -41,7 +39,6 @@ from libs.reporting.trade_fallback_text import (
 )
 from libs.reporting.trade_execution_outcome_text import (
     build_execution_outcome_fallback_from_lifecycle,
-    build_execution_outcome_human_payload,
     execution_outcome_summary_is_placeholder,
 )
 from libs.reporting.trade_reporter_status_text import normalize_reporter_status_human
@@ -49,6 +46,25 @@ from libs.reporting.trade_story_evidence import (
     derive_evidence_provenance as _derive_evidence_provenance_impl,
     has_substantive_exit_evidence as _has_substantive_exit_evidence_impl,
     set_or_replace_placeholder as _set_or_replace_placeholder_impl,
+)
+from libs.reporting.trade_story_pipeline_evidence_hydration import (
+    hydrate_canonical_agent_artifacts as _hydrate_canonical_agent_artifacts_impl,
+    resolve_selection_monitor_artifact as _resolve_selection_monitor_artifact_impl,
+    safe_read_json_file as _safe_read_json_file_impl,
+)
+from libs.reporting.trade_story_pipeline_human_payloads import (
+    build_execution_outcome_human as _build_execution_outcome_human_impl,
+    build_monitor_blocker_trace as _build_monitor_blocker_trace_impl,
+    build_monitor_stop_policy_trace as _build_monitor_stop_policy_trace_impl,
+    normalize_stop_thresholds as _normalize_stop_thresholds_impl,
+    resolve_adaptive_stop_loss_pct as _resolve_adaptive_stop_loss_pct_impl,
+    resolve_strategist_adaptive_exit as _resolve_strategist_adaptive_exit_impl,
+)
+from libs.reporting.trade_story_pipeline_story_assembly import (
+    build_timeline as _build_timeline_impl,
+    collect_story_warnings as _collect_story_warnings_impl,
+    compact_canonical_monitor as _compact_canonical_monitor_impl,
+    normalize_trade_lifecycle_for_story_input as _normalize_trade_lifecycle_for_story_input_impl,
 )
 from libs.core.symbols import normalize_symbol
 
@@ -66,76 +82,29 @@ def _derive_evidence_provenance(bundle_out: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _safe_read_json_file(path_value: Any) -> Dict[str, Any]:
-    path_text = str(path_value or "").strip()
-    if not path_text:
-        return {}
-    try:
-        path = Path(path_text)
-        if not path.exists() or not path.is_file():
-            return {}
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
-    except Exception:
-        return {}
+    return _safe_read_json_file_impl(path_value)
 
 
 def _hydrate_canonical_agent_artifacts(
     bundle_out: Dict[str, Any],
     canonical_agent_artifacts: Dict[str, Any] | None,
 ) -> Dict[str, Any]:
-    hydrated = dict(canonical_agent_artifacts or {})
-    artifacts = bundle_out.get("artifacts") if isinstance(bundle_out.get("artifacts"), dict) else {}
-    for agent in ("commander", "strategist", "scanner", "monitor", "supervisor", "executor"):
-        if isinstance(hydrated.get(agent), dict) and hydrated.get(agent):
-            continue
-        path_key = f"canonical_{agent}_json"
-        payload = _safe_read_json_file(artifacts.get(path_key))
-        if payload:
-            hydrated[agent] = payload
-            hydrated[path_key] = str(artifacts.get(path_key) or "")
-    return hydrated
+    return _hydrate_canonical_agent_artifacts_impl(
+        bundle_out,
+        canonical_agent_artifacts,
+        read_json_file=_safe_read_json_file,
+    )
 
 
 def _resolve_selection_monitor_artifact(
     bundle_out: Dict[str, Any],
     canonical_agent_artifacts: Dict[str, Any] | None,
 ) -> Dict[str, Any]:
-    hydrated = dict(canonical_agent_artifacts or {})
-    monitor_payload = (
-        hydrated.get("monitor")
-        if isinstance(hydrated.get("monitor"), dict)
-        else bundle_out.get("monitor")
-        if isinstance(bundle_out.get("monitor"), dict)
-        else {}
+    return _resolve_selection_monitor_artifact_impl(
+        bundle_out,
+        canonical_agent_artifacts,
+        read_json_file=_safe_read_json_file,
     )
-    scanner_path = str(
-        hydrated.get("canonical_scanner_json")
-        or ((bundle_out.get("artifacts") or {}).get("canonical_scanner_json"))
-        or ""
-    ).strip()
-    if scanner_path:
-        sibling_monitor = _safe_read_json_file(Path(scanner_path).with_name("monitor.json"))
-        sibling_handoff = sibling_monitor.get("scanner_monitor_handoff") if isinstance(sibling_monitor.get("scanner_monitor_handoff"), dict) else {}
-        sibling_cascade = sibling_handoff.get("entry_candidate_cascade") if isinstance(sibling_handoff.get("entry_candidate_cascade"), dict) else {}
-        if (
-            sibling_handoff.get("scanner_selected_symbol")
-            or sibling_handoff.get("monitor_selected_symbol")
-            or sibling_cascade.get("attempted")
-            or sibling_cascade.get("fallback_used")
-        ):
-            return sibling_monitor
-
-    handoff = monitor_payload.get("scanner_monitor_handoff") if isinstance(monitor_payload.get("scanner_monitor_handoff"), dict) else {}
-    cascade = handoff.get("entry_candidate_cascade") if isinstance(handoff.get("entry_candidate_cascade"), dict) else {}
-    if (
-        handoff.get("scanner_selected_symbol")
-        or handoff.get("monitor_selected_symbol")
-        or cascade.get("attempted")
-        or cascade.get("fallback_used")
-    ):
-        return dict(monitor_payload)
-
-    return dict(monitor_payload)
 
 
 def _headline_text(row: Any) -> str:
@@ -839,126 +808,23 @@ def _attach_news_scanner_contribution(
 
 
 def _normalize_stop_thresholds(thresholds: Dict[str, Any]) -> Dict[str, Any]:
-    data = thresholds if isinstance(thresholds, dict) else {}
-    nested = data.get("thresholds") if isinstance(data.get("thresholds"), dict) else {}
-    return nested or data
+    return _normalize_stop_thresholds_impl(thresholds)
 
 
 def _resolve_strategist_adaptive_exit(monitor: Dict[str, Any]) -> Dict[str, Any]:
-    data = monitor if isinstance(monitor, dict) else {}
-    for candidate in (
-        ((data.get("policy_ref") or {}).get("exit_plan") or {}).get("adaptive_exit"),
-        (((data.get("decision_trace") or {}).get("policy_ref") or {}).get("exit_plan") or {}).get("adaptive_exit"),
-        (((data.get("timing_assessment") or {}).get("entry_plan") or {}).get("adaptive_exit")),
-    ):
-        if isinstance(candidate, dict) and candidate:
-            return candidate
-    return {}
+    return _resolve_strategist_adaptive_exit_impl(monitor)
 
 
 def _resolve_adaptive_stop_loss_pct(monitor: Dict[str, Any], thresholds: Dict[str, Any]) -> Any:
-    thresholds = _normalize_stop_thresholds(thresholds)
-    adaptive_exit = monitor.get("adaptive_exit") if isinstance(monitor.get("adaptive_exit"), dict) else {}
-    if adaptive_exit.get("stop_loss_pct") not in (None, ""):
-        return adaptive_exit.get("stop_loss_pct")
-    if thresholds.get("adaptive_stop_loss_pct") not in (None, ""):
-        return thresholds.get("adaptive_stop_loss_pct")
-    threshold_snapshot = monitor.get("threshold_snapshot") if isinstance(monitor.get("threshold_snapshot"), dict) else {}
-    if threshold_snapshot.get("adaptive_stop_loss_pct") not in (None, ""):
-        return threshold_snapshot.get("adaptive_stop_loss_pct")
-    return None
+    return _resolve_adaptive_stop_loss_pct_impl(monitor, thresholds)
 
 
 def _build_monitor_stop_policy_trace(monitor: Dict[str, Any], thresholds: Dict[str, Any]) -> Dict[str, Any]:
-    thresholds = _normalize_stop_thresholds(thresholds)
-    strategist_adaptive_exit = _resolve_strategist_adaptive_exit(monitor)
-    adaptive_stop_loss_pct = _resolve_adaptive_stop_loss_pct(monitor, thresholds)
-    hard_stop_pct = (
-        thresholds.get("hard_stop_pct")
-        if thresholds.get("hard_stop_pct") not in (None, "")
-        else monitor.get("hard_stop_pct")
-    )
-    effective_stop_loss_pct = (
-        thresholds.get("effective_stop_loss_pct")
-        if thresholds.get("effective_stop_loss_pct") not in (None, "")
-        else adaptive_stop_loss_pct
-        if adaptive_stop_loss_pct not in (None, "")
-        else hard_stop_pct
-    )
-    return {
-        "hard_stop_pct": hard_stop_pct,
-        "adaptive_stop_loss_pct": adaptive_stop_loss_pct,
-        "effective_stop_loss_pct": effective_stop_loss_pct,
-        "trailing_stop_pct": thresholds.get("trailing_stop_pct"),
-        "take_profit_pct": thresholds.get("take_profit_pct"),
-        "partial_take_profit_pct": thresholds.get("partial_take_profit_pct"),
-        "partial_take_profit_fraction": thresholds.get("partial_take_profit_fraction"),
-        "profit_ladder_levels_pct": thresholds.get("profit_ladder_levels_pct"),
-        "profit_ladder_fraction": thresholds.get("profit_ladder_fraction"),
-        "risk_reward_take_profit_r": thresholds.get("risk_reward_take_profit_r"),
-        "risk_reward_take_profit_rungs": thresholds.get("risk_reward_take_profit_rungs"),
-        "risk_reward_take_profit_fraction": thresholds.get("risk_reward_take_profit_fraction"),
-        "risk_reward_take_profit_min_pct": thresholds.get("risk_reward_take_profit_min_pct"),
-        "vwap_extension_take_profit_pct": thresholds.get("vwap_extension_take_profit_pct"),
-        "vwap_extension_take_profit_min_pct": thresholds.get("vwap_extension_take_profit_min_pct"),
-        "resistance_take_profit_near_pct": thresholds.get("resistance_take_profit_near_pct"),
-        "resistance_take_profit_min_pct": thresholds.get("resistance_take_profit_min_pct"),
-        "profit_time_stop_sec": thresholds.get("profit_time_stop_sec"),
-        "profit_time_stop_min_pct": thresholds.get("profit_time_stop_min_pct"),
-        "profit_time_stop_peak_giveback_pct": thresholds.get("profit_time_stop_peak_giveback_pct"),
-        "volume_exhaustion_take_profit_min_pct": thresholds.get("volume_exhaustion_take_profit_min_pct"),
-        "volume_exhaustion_volume_ratio_max": thresholds.get("volume_exhaustion_volume_ratio_max"),
-        "volume_exhaustion_strength_max": thresholds.get("volume_exhaustion_strength_max"),
-        "opening_gap_profit_take_min_pct": thresholds.get("opening_gap_profit_take_min_pct"),
-        "opening_gap_profit_take_window_sec": thresholds.get("opening_gap_profit_take_window_sec"),
-        "opening_gap_profit_take_fraction": thresholds.get("opening_gap_profit_take_fraction"),
-        "cost_aware_profit_floor_enabled": thresholds.get("cost_aware_profit_floor_enabled"),
-        "round_trip_cost_floor_pct": thresholds.get("round_trip_cost_floor_pct"),
-        "min_net_profit_buffer_pct": thresholds.get("min_net_profit_buffer_pct"),
-        "cost_aware_profit_floor_pct": thresholds.get("cost_aware_profit_floor_pct"),
-        "strategist_baseline_stop_loss_pct": strategist_adaptive_exit.get("stop_loss_pct"),
-        "strategist_baseline_take_profit_pct": strategist_adaptive_exit.get("take_profit_pct"),
-        "strategist_baseline_trailing_stop_pct": strategist_adaptive_exit.get("trailing_stop_pct"),
-    }
+    return _build_monitor_stop_policy_trace_impl(monitor, thresholds)
 
 
 def _build_monitor_blocker_trace(monitor: Dict[str, Any]) -> Dict[str, Any]:
-    data = monitor if isinstance(monitor, dict) else {}
-    entry_metrics = data.get("entry_metrics") if isinstance(data.get("entry_metrics"), dict) else {}
-    entry_thresholds = data.get("entry_thresholds") if isinstance(data.get("entry_thresholds"), dict) else {}
-    timing_assessment = data.get("timing_assessment") if isinstance(data.get("timing_assessment"), dict) else {}
-    policy_ref = data.get("policy_ref") if isinstance(data.get("policy_ref"), dict) else {}
-    threshold_shortfalls: List[str] = []
-    if entry_metrics.get("volume_ratio") not in (None, "") and entry_thresholds.get("volume_ratio_min") not in (None, ""):
-        volume_ratio = safe_float(entry_metrics.get("volume_ratio"), 0.0)
-        volume_ratio_min = safe_float(entry_thresholds.get("volume_ratio_min"), 0.0)
-        if volume_ratio < volume_ratio_min:
-            threshold_shortfalls.append(f"volume ratio {volume_ratio:.2f} below min {volume_ratio_min:.2f}")
-    if entry_metrics.get("extended_from_vwap_pct") not in (None, "") and entry_thresholds.get("max_extended_from_vwap_pct") not in (None, ""):
-        extended = safe_float(entry_metrics.get("extended_from_vwap_pct"), 0.0)
-        extended_max = safe_float(entry_thresholds.get("max_extended_from_vwap_pct"), 0.0)
-        if extended > extended_max:
-            threshold_shortfalls.append(
-                f"VWAP extension {format_ratio_pct(extended)}% above max {format_ratio_pct(extended_max)}%"
-            )
-    if entry_metrics.get("pullback_depth_pct") not in (None, "") and entry_thresholds.get("pullback_min_pct") not in (None, ""):
-        pullback_depth = safe_float(entry_metrics.get("pullback_depth_pct"), 0.0)
-        pullback_min = safe_float(entry_thresholds.get("pullback_min_pct"), 0.0)
-        if pullback_depth < pullback_min:
-            threshold_shortfalls.append(
-                f"pullback depth {format_ratio_pct(pullback_depth)}% below min {format_ratio_pct(pullback_min)}%"
-            )
-    return {
-        "entry_check_summary": clip(data.get("entry_check_summary"), max_len=260),
-        "entry_blockers": _list_text(data.get("entry_blockers"), limit=8, max_len=120),
-        "threshold_shortfalls": threshold_shortfalls[:4],
-        "timing_assessment": dict(timing_assessment or {}),
-        "policy_ref": dict(policy_ref or {}),
-        "entry_condition_path": clip(data.get("entry_condition_path"), max_len=80),
-        "entry_condition_paths_passed": _list_text(data.get("entry_condition_paths_passed"), limit=4, max_len=80),
-        "condition_scores": dict(data.get("condition_scores") or {}),
-        "grouped_logic_trace": dict(data.get("grouped_logic_trace") or {}),
-    }
+    return _build_monitor_blocker_trace_impl(monitor)
 
 
 def _source_confidence_label(source: Any) -> str:
@@ -3483,6 +3349,25 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         bullets.append("Watch axes: " + ", ".join(watch_axes[:8]))
     if decision_reason_chain:
         bullets.append("Decision chain: " + " -> ".join(decision_reason_chain[:5]))
+    entry_quant_decision = monitor.get("entry_quant_decision") if isinstance(monitor.get("entry_quant_decision"), dict) else {}
+    exit_quant_decision = monitor.get("exit_quant_decision") if isinstance(monitor.get("exit_quant_decision"), dict) else {}
+    quant_factor_snapshot = monitor.get("quant_factor_snapshot") if isinstance(monitor.get("quant_factor_snapshot"), dict) else {}
+    if entry_quant_decision:
+        blockers = [str(x or "") for x in list(entry_quant_decision.get("blockers") or []) if str(x or "").strip()]
+        warnings = [str(x or "") for x in list(entry_quant_decision.get("warnings") or []) if str(x or "").strip()]
+        bullets.append(
+            "Entry quant decision: "
+            f"{entry_quant_decision.get('decision') or 'not_captured'} "
+            f"(blockers: {', '.join(blockers[:4]) or 'none'}; warnings: {', '.join(warnings[:4]) or 'none'})"
+        )
+    if exit_quant_decision:
+        blockers = [str(x or "") for x in list(exit_quant_decision.get("blockers") or []) if str(x or "").strip()]
+        warnings = [str(x or "") for x in list(exit_quant_decision.get("warnings") or []) if str(x or "").strip()]
+        bullets.append(
+            "Exit quant decision: "
+            f"{exit_quant_decision.get('decision') or 'not_captured'} "
+            f"(blockers: {', '.join(blockers[:4]) or 'none'}; warnings: {', '.join(warnings[:4]) or 'none'})"
+        )
     if guard_blocked or guard_reason:
         bullets.append(f"Guard blocked: {'yes' if guard_blocked else 'no'} ({guard_reason or 'no guard reason captured'})")
     if monitor_execution_mismatch:
@@ -3554,6 +3439,9 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "monitor_blocker_trace": monitor_blocker_trace,
         "timing_assessment": dict(timing_assessment),
         "thresholds_guards_used": dict(thresholds_guards_used),
+        "quant_factor_snapshot": dict(quant_factor_snapshot),
+        "entry_quant_decision": dict(entry_quant_decision),
+        "exit_quant_decision": dict(exit_quant_decision),
         "entry_guard_blocked": entry_guard_blocked,
         "entry_guard_reason": entry_guard_reason,
         "current_price": current_price,
@@ -3612,7 +3500,7 @@ def build_execution_outcome_human(
     story_type: str,
     mode_label: str,
 ) -> Dict[str, Any]:
-    return build_execution_outcome_human_payload(
+    return _build_execution_outcome_human_impl(
         execution,
         executor,
         story_type=story_type,
@@ -3718,16 +3606,16 @@ def build_timeline(
     reporter_status_human: Dict[str, Any],
     execution: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    route_ts = str(commander.get("route_ts") or "")
-    execution_ts = str(execution.get("ts") or "")
-    return [
-        {"step": "strategist_frame", "status": "ok", "ts": route_ts, "summary": market_context_human.get("summary") or ""},
-        {"step": "scanner_ranking", "status": "ok", "ts": route_ts, "summary": scanner_reason_human.get("summary") or ""},
-        {"step": "monitor_signal", "status": "ok", "ts": execution_ts, "summary": monitor_reason_human.get("summary") or ""},
-        {"step": "supervisor_approval", "status": "ok", "ts": execution_ts, "summary": guard_reason_human.get("summary") or ""},
-        {"step": "broker_result", "status": "ok", "ts": execution_ts, "summary": execution_outcome_human.get("summary") or ""},
-        {"step": "reporter_output", "status": "ok", "ts": utc_now_iso(), "summary": reporter_status_human.get("summary") or ""},
-    ]
+    return _build_timeline_impl(
+        commander=commander,
+        market_context_human=market_context_human,
+        scanner_reason_human=scanner_reason_human,
+        monitor_reason_human=monitor_reason_human,
+        guard_reason_human=guard_reason_human,
+        execution_outcome_human=execution_outcome_human,
+        reporter_status_human=reporter_status_human,
+        execution=execution,
+    )
 
 
 def collect_story_warnings(
@@ -3738,27 +3626,13 @@ def collect_story_warnings(
     reporter_status_human: Dict[str, Any],
     execution_outcome_human: Dict[str, Any],
 ) -> List[str]:
-    warnings = [str(x or "") for x in list(story_contract.get("warnings") or []) if str(x or "").strip()]
-    if market_context_human.get("defensive_mode"):
-        warnings.append("Macro or volatility context was defensive for this run.")
-    if reporter_status_human.get("status") == "pending":
-        warnings.append("Reporter evaluation is pending because same-day run linkage was not available yet.")
-    elif reporter_status_human.get("status") == "missing":
-        warnings.append("Reporter evaluation is missing because the same-day analysis file was not generated yet.")
-    for row in list(filters_human.get("checks") or []):
-        if not isinstance(row, dict):
-            continue
-        status = str(row.get("status") or "").upper()
-        if status in {"FAIL", "PARTIAL", "NOT_AVAILABLE"}:
-            warnings.append(f"{row.get('name')}: {status} ({row.get('detail') or ''})")
-    if execution_outcome_human.get("outcome") == "failed":
-        warnings.append("Execution did not complete successfully and needs operator review.")
-    deduped: List[str] = []
-    for item in warnings:
-        text = clip(item, max_len=260)
-        if text and text not in deduped:
-            deduped.append(text)
-    return deduped[:10]
+    return _collect_story_warnings_impl(
+        story_contract=story_contract,
+        market_context_human=market_context_human,
+        filters_human=filters_human,
+        reporter_status_human=reporter_status_human,
+        execution_outcome_human=execution_outcome_human,
+    )
 
 
 def _normalize_trade_lifecycle_for_story_input(
@@ -3767,108 +3641,11 @@ def _normalize_trade_lifecycle_for_story_input(
     trade_lifecycle: Dict[str, Any] | None = None,
     existing_story_input: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    lifecycle_src = (
-        trade_lifecycle
-        if isinstance(trade_lifecycle, dict)
-        else bundle_out.get("lifecycle")
-        if isinstance(bundle_out.get("lifecycle"), dict)
-        else {}
+    return _normalize_trade_lifecycle_for_story_input_impl(
+        bundle_out,
+        trade_lifecycle=trade_lifecycle,
+        existing_story_input=existing_story_input,
     )
-    if not lifecycle_src:
-        return {}
-
-    out = dict(lifecycle_src)
-    entry_ctx = (
-        lifecycle_src.get("entry")
-        if isinstance(lifecycle_src.get("entry"), dict)
-        else bundle_out.get("entry")
-        if isinstance(bundle_out.get("entry"), dict)
-        else {}
-    )
-    holding_ctx = (
-        lifecycle_src.get("holding")
-        if isinstance(lifecycle_src.get("holding"), dict)
-        else lifecycle_src.get("hold")
-        if isinstance(lifecycle_src.get("hold"), dict)
-        else bundle_out.get("holding")
-        if isinstance(bundle_out.get("holding"), dict)
-        else bundle_out.get("hold")
-        if isinstance(bundle_out.get("hold"), dict)
-        else {}
-    )
-    exit_ctx = (
-        lifecycle_src.get("exit")
-        if isinstance(lifecycle_src.get("exit"), dict)
-        else bundle_out.get("exit")
-        if isinstance(bundle_out.get("exit"), dict)
-        else {}
-    )
-    summary_ctx = (
-        lifecycle_src.get("summary")
-        if isinstance(lifecycle_src.get("summary"), dict)
-        else bundle_out.get("trade_outcome")
-        if isinstance(bundle_out.get("trade_outcome"), dict)
-        else bundle_out.get("summary")
-        if isinstance(bundle_out.get("summary"), dict)
-        else {}
-    )
-    reporter_ctx = (
-        lifecycle_src.get("reporter")
-        if isinstance(lifecycle_src.get("reporter"), dict)
-        else {}
-    )
-    if not reporter_ctx:
-        reporter_status_human = normalize_reporter_status_human(
-            bundle_out.get("reporter_status_human")
-            if isinstance(bundle_out.get("reporter_status_human"), dict)
-            else {}
-        )
-        if reporter_status_human:
-            reporter_ctx = {
-                "status_human": str(reporter_status_human.get("status") or ""),
-                "summary": str(reporter_status_human.get("summary") or ""),
-                "grade": str(reporter_status_human.get("grade") or ""),
-                "improvement_points": list(reporter_status_human.get("bullets") or []),
-            }
-
-    out["entry"] = dict(entry_ctx)
-    out["holding"] = dict(holding_ctx)
-    out["exit"] = dict(exit_ctx)
-    out["summary"] = dict(summary_ctx)
-    out["reporter"] = dict(reporter_ctx)
-    out["trade_id"] = str(
-        out.get("trade_id")
-        or bundle_out.get("trade_id")
-        or (existing_story_input or {}).get("trade_id")
-        or ""
-    ).strip()
-    out["symbol"] = str(
-        out.get("symbol")
-        or bundle_out.get("symbol")
-        or (entry_ctx.get("symbol") if isinstance(entry_ctx, dict) else "")
-        or (exit_ctx.get("symbol") if isinstance(exit_ctx, dict) else "")
-        or (existing_story_input or {}).get("symbol")
-        or ""
-    ).strip()
-    out["status"] = str(
-        out.get("status")
-        or bundle_out.get("trade_lifecycle_status")
-        or (existing_story_input or {}).get("status")
-        or ""
-    ).strip()
-    if not out.get("execution_details") and isinstance(bundle_out.get("execution_details"), dict):
-        out["execution_details"] = dict(bundle_out.get("execution_details") or {})
-    if (
-        not out.get("same_day_reporter_linkage")
-        and isinstance(bundle_out.get("same_day_reporter_linkage"), dict)
-    ):
-        out["same_day_reporter_linkage"] = dict(bundle_out.get("same_day_reporter_linkage") or {})
-    if (
-        not out.get("failure_classification")
-        and isinstance(bundle_out.get("failure_classification"), dict)
-    ):
-        out["failure_classification"] = dict(bundle_out.get("failure_classification") or {})
-    return out
 
 
 def build_trade_story_input_from_bundle(
@@ -3902,19 +3679,7 @@ def build_trade_story_input_from_bundle(
 
 
 def _compact_canonical_monitor(canonical_monitor: Dict[str, Any] | None) -> Dict[str, Any]:
-    monitor = canonical_monitor if isinstance(canonical_monitor, dict) else {}
-    compact = {
-        "decision_action": monitor.get("decision_action"),
-        "exit_reason": monitor.get("exit_reason"),
-        "current_price": monitor.get("current_price"),
-        "avg_price": monitor.get("avg_price"),
-        "account_pnl_ratio": monitor.get("account_pnl_ratio"),
-        "effective_pnl_ratio": monitor.get("effective_pnl_ratio"),
-        "price_source": monitor.get("price_source"),
-    }
-    if any(value not in (None, "", [], {}) for value in compact.values()):
-        return compact
-    return {}
+    return _compact_canonical_monitor_impl(canonical_monitor)
 
 
 def build_trade_story_input(
@@ -4297,6 +4062,15 @@ def build_trade_story_input(
             for key, value in dict(lifecycle.get("artifacts") or {}).items():
                 if key not in story_artifacts or _is_empty_placeholder(story_artifacts.get(key)):
                     story_artifacts[key] = value
+        entry_monitor_context = dict(entry.get("monitor_context") or {})
+        if isinstance(selection_monitor, dict) and (
+            selection_monitor.get("entry_triggered")
+            or (isinstance(selection_monitor.get("monitor_focus_context"), dict)
+                and selection_monitor.get("monitor_focus_context", {}).get("entry_triggered"))
+        ):
+            entry_monitor_context = dict(selection_monitor)
+            if isinstance(entry.get("monitor_context"), dict) and entry.get("monitor_context"):
+                entry_monitor_context.setdefault("entry_artifact_context", dict(entry.get("monitor_context") or {}))
         story_out = {
             "schema_version": "trade_story_input.v2",
             "day": str(bundle_out.get("day") or ""),
@@ -4315,7 +4089,7 @@ def build_trade_story_input(
                 "reason_human": str(entry.get("reason_human") or ""),
                 "strategist_context": dict(entry.get("strategist_context") or {}),
                 "scanner_context": dict(entry.get("scanner_context") or {}),
-                "monitor_context": dict(entry.get("monitor_context") or {}),
+                "monitor_context": entry_monitor_context,
                 "guard_context": dict(entry.get("guard_context") or {}),
                 "execution_context": dict(entry.get("execution_context") or {}),
             },

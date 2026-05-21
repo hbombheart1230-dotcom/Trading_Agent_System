@@ -31,6 +31,9 @@ _MARKET_OPEN_MINUTE = 9 * 60
 _OPENING_GAP_CHASE_WINDOW_MINUTES = 10.0
 _OPENING_GAP_CHASE_MIN_PCT = 0.01
 _BREAKOUT_CHASE_VOLUME_GATE_MIN_EXTENDED_PCT = 0.02
+_LOWER_VWAP_REBOUND_MIN_DISTANCE_PCT = -0.008
+_LOWER_VWAP_REBOUND_MAX_DISTANCE_PCT = -0.0015
+_LOWER_VWAP_REBOUND_MIN_CONFIDENCE = 0.50
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -617,6 +620,7 @@ def _build_human_chart_buy_guard(
     prev_close_distance_pct: Any = None,
     open_gap_pct: Any = None,
     candidate_triggered: bool = False,
+    entry_condition_path: str | None = None,
 ) -> Dict[str, Any]:
     """Final sanity guard for human-like chart context before emitting BUY.
 
@@ -723,13 +727,29 @@ def _build_human_chart_buy_guard(
     if insufficient_reward_room:
         blockers.append(f"reward_room_pct<{no_reward_room_pct_threshold:.3f}_cost_floor")
 
+    lower_probe_path = str(entry_condition_path or "").strip() == "lower_vwap_rebound_probe_path"
+    if lower_probe_path and blockers:
+        soft_lower_probe_blockers = {
+            "vwap_breakdown_persistence=strong",
+            f"entry_chart_score<{min_entry_score:.2f}",
+        }
+        remaining_blockers = [item for item in blockers if item not in soft_lower_probe_blockers]
+        if len(remaining_blockers) < len(blockers):
+            out["notes"] = [
+                "lower_vwap_rebound_probe_allows_vwap_breakdown_observation",
+            ]
+            blockers = remaining_blockers
+
     if not blockers:
-        out["notes"] = ["human_chart_context_not_blocking"]
+        if not out.get("notes"):
+            out["notes"] = ["human_chart_context_not_blocking"]
+        out["observed"]["entry_condition_path"] = str(entry_condition_path or "")
         return out
 
     out["applied"] = True
     out["mode"] = "block"
     out["blocking_features"] = blockers
+    out["observed"]["entry_condition_path"] = str(entry_condition_path or "")
     out["notes"] = ["human_chart_sanity_guard_blocked_buy"]
     return out
 
@@ -2673,6 +2693,45 @@ def evaluate_intraday_entry_signal(
     etf_deviation_discount_entry_ok = bool(etf_deviation_tradeable and etf_deviation_entry_score > 0.0)
     etf_deviation_chart_ok = bool(reclaim_gate_ok and extension_ok and confirmation_ok)
     etf_deviation_entry_path_ok = bool(etf_deviation_discount_entry_ok and etf_deviation_chart_ok)
+    market_regime = str((frame or {}).get("market_regime") or "").strip().lower()
+    inverse_hedge_asset = asset_class_detected in {"inverse_etf", "leveraged_etf", "futures_etf"}
+    inverse_hedge_volume_ok = volume_ratio >= min(0.75, max(0.65, _to_float(resolved_policy.volume_ratio_min) * 0.85))
+    inverse_hedge_confidence_ok = confidence_score + 0.025 >= confidence_threshold
+    inverse_hedge_reclaim_path_ok = bool(
+        inverse_hedge_asset
+        and market_regime == "risk_off"
+        and reclaim_gate_ok
+        and extension_ok
+        and inverse_hedge_confidence_ok
+        and (inverse_hedge_volume_ok or rebound_ok or vwap_reclaim_ok)
+    )
+    lower_probe_lows = [
+        max(0.0, _to_float(row.get("low")))
+        for row in candles[-3:]
+        if max(0.0, _to_float(row.get("low"))) > 0.0
+    ]
+    lower_rebound_higher_lows = bool(
+        len(lower_probe_lows) >= 3
+        and lower_probe_lows[-1] >= lower_probe_lows[-2] >= lower_probe_lows[-3]
+    )
+    lower_rebound_volume_ok = volume_ratio >= min(
+        0.85,
+        max(0.65, _to_float(resolved_policy.volume_ratio_min) * 0.85),
+    )
+    lower_rebound_vwap_band_ok = bool(
+        current_vwap > 0.0
+        and _LOWER_VWAP_REBOUND_MIN_DISTANCE_PCT <= extended_from_vwap_pct < _LOWER_VWAP_REBOUND_MAX_DISTANCE_PCT
+    )
+    lower_vwap_rebound_probe_path_ok = bool(
+        not reclaim_gate_ok
+        and not breakout_path_ok
+        and lower_rebound_vwap_band_ok
+        and extension_ok
+        and rebound_ok
+        and lower_rebound_higher_lows
+        and lower_rebound_volume_ok
+        and confidence_score >= _LOWER_VWAP_REBOUND_MIN_CONFIDENCE
+    )
 
     if current_close <= 0.0 or recent_high <= 0.0 or current_vwap <= 0.0:
         out["reason"] = "data_incomplete"
@@ -2736,6 +2795,10 @@ def evaluate_intraday_entry_signal(
         signal_chain.append("etf_discount_observed")
     if etf_deviation_entry_path_ok:
         signal_chain.append("etf_discount_reversion_path_ready")
+    if inverse_hedge_reclaim_path_ok:
+        signal_chain.append("inverse_hedge_reclaim_path_ready")
+    if lower_vwap_rebound_probe_path_ok:
+        signal_chain.append("lower_vwap_rebound_probe_path_ready")
 
     playbook = str((frame or {}).get("playbook") or "").strip().lower()
     if playbook in ("pullback", "reversal"):
@@ -2763,6 +2826,11 @@ def evaluate_intraday_entry_signal(
         "etf_deviation_discount_entry_ok": bool(etf_deviation_discount_entry_ok),
         "etf_deviation_chart_ok": bool(etf_deviation_chart_ok),
         "etf_deviation_entry_path_ok": bool(etf_deviation_entry_path_ok),
+        "inverse_hedge_reclaim_path_ok": bool(inverse_hedge_reclaim_path_ok),
+        "lower_vwap_rebound_probe_path_ok": bool(lower_vwap_rebound_probe_path_ok),
+        "lower_rebound_higher_lows": bool(lower_rebound_higher_lows),
+        "lower_rebound_volume_ok": bool(lower_rebound_volume_ok),
+        "lower_rebound_vwap_band_ok": bool(lower_rebound_vwap_band_ok),
     }
     if playbook in ("pullback", "reversal"):
         relevant_checks = [
@@ -2800,6 +2868,8 @@ def evaluate_intraday_entry_signal(
                 "etf_deviation_discount_entry_ok",
                 "etf_deviation_chart_ok",
                 "etf_deviation_entry_path_ok",
+                "inverse_hedge_reclaim_path_ok",
+                "lower_vwap_rebound_probe_path_ok",
             ]
         )
     passed_checks = [name for name in relevant_checks if checks.get(name)]
@@ -2856,6 +2926,23 @@ def evaluate_intraday_entry_signal(
             "asset_class_detected": asset_class_detected,
             "path_ok": bool(etf_deviation_entry_path_ok),
         },
+        "inverse_hedge_reclaim": {
+            "asset_class_detected": asset_class_detected,
+            "market_regime": market_regime,
+            "volume_ok": bool(inverse_hedge_volume_ok),
+            "confidence_ok": bool(inverse_hedge_confidence_ok),
+            "path_ok": bool(inverse_hedge_reclaim_path_ok),
+        },
+        "lower_vwap_rebound_probe": {
+            "vwap_distance": extended_from_vwap_pct,
+            "min_distance_pct": _LOWER_VWAP_REBOUND_MIN_DISTANCE_PCT,
+            "max_distance_pct": _LOWER_VWAP_REBOUND_MAX_DISTANCE_PCT,
+            "higher_lows": bool(lower_rebound_higher_lows),
+            "volume_ok": bool(lower_rebound_volume_ok),
+            "rebound_ok": bool(rebound_ok),
+            "confidence_ok": bool(confidence_score >= _LOWER_VWAP_REBOUND_MIN_CONFIDENCE),
+            "path_ok": bool(lower_vwap_rebound_probe_path_ok),
+        },
     }
 
     pattern = ""
@@ -2870,6 +2957,10 @@ def evaluate_intraday_entry_signal(
         entry_condition_paths_passed.append("pullback_volume_path")
     if etf_deviation_entry_path_ok:
         entry_condition_paths_passed.append("etf_discount_reversion_path")
+    if inverse_hedge_reclaim_path_ok:
+        entry_condition_paths_passed.append("inverse_hedge_reclaim_path")
+    if lower_vwap_rebound_probe_path_ok:
+        entry_condition_paths_passed.append("lower_vwap_rebound_probe_path")
     grouped_logic_trace = {
         "logic_mode": "reclaim_and_grouped_paths_v1",
         "reclaim_gate_required": bool(resolved_policy.require_vwap_reclaim),
@@ -2892,6 +2983,9 @@ def evaluate_intraday_entry_signal(
         "etf_deviation_discount_entry_ok": bool(etf_deviation_discount_entry_ok),
         "etf_deviation_chart_ok": bool(etf_deviation_chart_ok),
         "etf_deviation_entry_path_ok": bool(etf_deviation_entry_path_ok),
+        "inverse_hedge_reclaim_path_ok": bool(inverse_hedge_reclaim_path_ok),
+        "lower_vwap_rebound_probe_path_ok": bool(lower_vwap_rebound_probe_path_ok),
+        "lower_vwap_rebound_probe": dict(threshold_margins.get("lower_vwap_rebound_probe") or {}),
         "paths_passed": list(entry_condition_paths_passed),
         "confidence_gate_ok": bool(confidence_gate_ok),
         "triggered_path": "",
@@ -3009,6 +3103,18 @@ def evaluate_intraday_entry_signal(
         entry_condition_path = "etf_discount_reversion_path"
         pattern = "etf_discount_reversion"
         reason = "etf_discount_reversion_entry"
+        primary_failure_axis = "confirmed_entry"
+    if not triggered and inverse_hedge_reclaim_path_ok:
+        triggered = True
+        entry_condition_path = "inverse_hedge_reclaim_path"
+        pattern = "inverse_hedge_reclaim"
+        reason = "inverse_hedge_reclaim_entry"
+        primary_failure_axis = "confirmed_entry"
+    if not triggered and lower_vwap_rebound_probe_path_ok:
+        triggered = True
+        entry_condition_path = "lower_vwap_rebound_probe_path"
+        pattern = "lower_vwap_rebound_probe"
+        reason = "lower_vwap_rebound_probe_entry"
         primary_failure_axis = "confirmed_entry"
 
     if triggered and not primary_failure_axis:
@@ -3183,6 +3289,7 @@ def evaluate_intraday_entry_signal(
         prev_close_distance_pct=prev_close_distance_pct,
         open_gap_pct=open_gap_pct,
         candidate_triggered=bool(triggered),
+        entry_condition_path=entry_condition_path,
     )
     if bool(human_chart_buy_guard.get("applied")):
         triggered = False
@@ -3293,6 +3400,14 @@ def evaluate_intraday_entry_signal(
         "etf_deviation_discount_entry_ok": bool(etf_deviation_discount_entry_ok),
         "etf_deviation_entry_score": round(float(etf_deviation_entry_score), 4),
         "etf_deviation_entry_path_ok": bool(etf_deviation_entry_path_ok),
+        "inverse_hedge_reclaim_path_ok": bool(inverse_hedge_reclaim_path_ok),
+        "inverse_hedge_volume_ok": bool(inverse_hedge_volume_ok),
+        "inverse_hedge_confidence_ok": bool(inverse_hedge_confidence_ok),
+        "lower_vwap_rebound_probe_path_ok": bool(lower_vwap_rebound_probe_path_ok),
+        "lower_rebound_higher_lows": bool(lower_rebound_higher_lows),
+        "lower_rebound_volume_ok": bool(lower_rebound_volume_ok),
+        "lower_rebound_vwap_band_ok": bool(lower_rebound_vwap_band_ok),
+        "lower_vwap_rebound_probe": dict(threshold_margins.get("lower_vwap_rebound_probe") or {}),
     }
     transition_trace = _empty_entry_transition_trace()
     transition_trace.update(

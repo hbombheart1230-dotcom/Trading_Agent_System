@@ -7,12 +7,13 @@ RuntimeMode = Literal["graph_spine", "decision_packet", "integrated_chain"]
 RuntimePhase = Literal["preopen", "session", "closeout"]
 
 
-PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC = 120
+PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC = 300
 PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD = 0.80
+SELECTED_SYMBOL_TACTICAL_REFRESH_MIN_CACHE_AGE_SEC = 300
+SELECTED_SYMBOL_TACTICAL_REFRESH_MIN_SCORE = 0.88
 DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN = 15
 PRE_BUY_STRATEGIST_REFRESH_FORCE_SIGNALS = frozenset(
     {
-        "selected_symbol_outside_cached_frame",
         "prior_cycle_buy_intent",
         "became_ready_this_cycle",
     }
@@ -109,9 +110,6 @@ ENTRY_CONTROL_POOL_EXPAND_BLOCKERS = frozenset(
         "below_vwap_reclaim_not_ready",
         "pullback_below_vwap_reclaim_not_ready",
         "reclaim_not_ready",
-        "volume_confirmation_missing",
-        "volume_insufficient",
-        "volume_missing",
         "entry_wait",
         "wait_for_confirmation",
     }
@@ -125,14 +123,18 @@ ENTRY_CONTROL_DYNAMIC_BAND_BLOCKERS = frozenset(
 CANDIDATE_WATCH_DEFAULT_CASCADE_ALLOWED_REASONS = (
     "too_extended_from_vwap",
     "breakout_not_ready",
-    "volume_insufficient",
-    "volume_confirmation_missing",
     "below_vwap_reclaim_not_ready",
     "pullback_below_vwap_reclaim_not_ready",
-    "pullback_not_mature",
 )
 CANDIDATE_WATCH_DEFAULT_CASCADE_BLOCKED_REASONS = (
     "cost_filter_failed",
+    "cost_adjusted_edge_not_ready",
+    "directional_edge_evidence_missing",
+    "estimated_gross_edge_missing",
+    "volume_confirmation_missing",
+    "volume_insufficient",
+    "volume_missing",
+    "pullback_not_mature",
     "risk_policy_block",
     "closeout_window",
     "open_position_present",

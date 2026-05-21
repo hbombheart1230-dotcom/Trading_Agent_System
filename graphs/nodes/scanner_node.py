@@ -80,6 +80,11 @@ from libs.runtime.scanner.output_snapshots import (
     feature_coverage_summary as _feature_coverage_summary,
     ranking_table_rows as _ranking_table_rows,
 )
+from libs.runtime.scanner.output_payloads import (
+    build_candidate_ranking_table_payload as _build_candidate_ranking_table_payload,
+    build_candidate_selection_reason_payload as _build_candidate_selection_reason_payload,
+)
+from libs.runtime.quant.suitability import score_candidate_tactic_suitability
 from libs.runtime.intraday_monitor_signals import evaluate_intraday_entry_signal, resolve_intraday_entry_policy
 from libs.runtime.feature_engine import build_feature_map
 from libs.runtime.scanner_feature_hydration import hydrate_scanner_feature_map
@@ -1028,6 +1033,8 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             or strategist_plan.get("selected_playbook")
             or ""
         ),
+        "tactical_strategy": str(strategist_output.get("tactical_strategy") or ""),
+        "tactical_subtype": str(strategist_output.get("tactical_subtype") or ""),
         "scanner_priority": list(
             scanner_policy.get("priority_tilts")
             or strategist_output.get("scanner_priority")
@@ -1073,6 +1080,8 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             "selected_themes",
             "avoid_themes",
             "playbook",
+            "tactical_strategy",
+            "tactical_subtype",
             "scanner_priority",
             "scanner_source_policy",
             "scanner_bias",
@@ -3047,6 +3056,16 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 }
             )
 
+        tactic_id = str(scanner_guidance.get("tactical_strategy") or "")
+        row["tactical_strategy"] = tactic_id
+        row["tactical_subtype"] = str(scanner_guidance.get("tactical_subtype") or "")
+        row["playbook"] = playbook
+        row["tactic_suitability"] = score_candidate_tactic_suitability(
+            row,
+            tactic_id=tactic_id,
+            playbook=playbook,
+        )
+
         scan_results.append(row)
 
     # Sort by score desc, then confidence desc, then risk asc
@@ -3364,6 +3383,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_chart_fit_score": float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0,
         "scanner_chart_fit_authority": str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else "",
         "scanner_chart_fit_components": dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {},
+        "tactic_suitability": dict((selected or {}).get("tactic_suitability") or {}) if isinstance(selected, dict) else {},
         "scanner_macro_chart_fit_score": float(_to_float((selected or {}).get("scanner_macro_chart_fit_score"), 0.5)) if isinstance(selected, dict) else 0.5,
         "scanner_macro_chart_fit_bias": float(_to_float((selected or {}).get("scanner_macro_chart_fit_bias"))) if isinstance(selected, dict) else 0.0,
         "scanner_macro_chart_fit_authority": str((selected or {}).get("scanner_macro_chart_fit_authority") or "") if isinstance(selected, dict) else "",
@@ -3806,10 +3826,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
         },
     )
-    candidate_ranking_table_payload = {
-        "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
-        "rows": ranking_table,
-    }
+    candidate_ranking_table_payload = _build_candidate_ranking_table_payload(ranking_table)
     state["scanner_candidate_ranking_table"] = dict(candidate_ranking_table_payload)
     _emit_scanner_event(
         state,
@@ -3817,99 +3834,31 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         payload=candidate_ranking_table_payload,
         symbol=str((selected or {}).get("symbol") or ""),
     )
-    candidate_selection_reason_payload = {
-        "selected_symbol": selected_symbol,
-        "selected_rank": int(selected_rank),
-        "selected_score_total": float(selected_score_total),
-        "margin_vs_second": float(margin_vs_second),
-        "critical_positive_factors": list(critical_positive_factors),
-        "critical_negative_factors": list(critical_negative_factors),
-        "selection_summary": selection_summary,
-        "commander_context_consumed": bool(scanner_policy_trace.get("commander_context_consumed")),
-        "consumed_fields": list(scanner_policy_trace.get("consumed_fields") or []),
-        "commander_priority_ref": dict(scanner_policy_trace.get("commander_priority_ref") or {}),
-        "strategist_constraints_ref": dict(scanner_policy_trace.get("strategist_constraints_ref") or {}),
-        "selection_basis": dict(scanner_policy_trace.get("selection_basis") or {}),
-        "ranking_factors": list(scanner_policy_trace.get("ranking_factors") or []),
-        "playbook": str(scanner_policy_trace.get("playbook") or playbook or ""),
-        "policy_source": str(scanner_policy_trace.get("policy_source") or ""),
-        "applied_policy_present": bool(scanner_policy_trace.get("applied_policy_present")),
-        "monitor_entry_policy_summary": dict(scanner_policy_trace.get("monitor_entry_policy_summary") or {}),
-        "scanner_bias_context": dict(scanner_policy_trace.get("scanner_bias_context") or {}),
-        "entry_compatibility_score": float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0,
-        "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
-        "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
-        "scanner_chart_fit_score": float(_to_float((selected or {}).get("scanner_chart_fit_score"))) if isinstance(selected, dict) else 0.0,
-        "scanner_chart_fit_authority": str((selected or {}).get("scanner_chart_fit_authority") or "") if isinstance(selected, dict) else "",
-        "scanner_chart_fit_components": dict((selected or {}).get("scanner_chart_fit_components") or {}) if isinstance(selected, dict) else {},
-        "scanner_macro_chart_fit_score": float(_to_float((selected or {}).get("scanner_macro_chart_fit_score"), 0.5)) if isinstance(selected, dict) else 0.5,
-        "scanner_macro_chart_fit_bias": float(_to_float((selected or {}).get("scanner_macro_chart_fit_bias"))) if isinstance(selected, dict) else 0.0,
-        "scanner_macro_chart_fit_authority": str((selected or {}).get("scanner_macro_chart_fit_authority") or "") if isinstance(selected, dict) else "",
-        "scanner_macro_chart_fit_components": dict((selected or {}).get("scanner_macro_chart_fit_components") or {}) if isinstance(selected, dict) else {},
-        "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
-        "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
-        "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
-        "market_representative_guard_enabled": bool(market_representative_guard_meta.get("enabled")),
-        "market_representative_guard_applied": bool(market_representative_guard_meta.get("applied")),
-        "market_representative_guard_symbol": str(market_representative_guard_meta.get("symbol") or ""),
-        "market_representative_guard_penalty": float(_to_float(market_representative_guard_meta.get("penalty"))),
-        "market_representative_guard_reason": str(
-            market_representative_guard_meta.get("reason")
-            or market_representative_guard_meta.get("skipped_reason")
-            or ""
-        ),
-        "market_representative_guard_confirmation_sources": list(market_representative_guard_meta.get("confirmation_sources") or []),
-        "blocker_family_concentration_applied": bool(blocker_family_overlay_meta.get("applied")),
-        "blocker_family_concentration_family": str(blocker_family_overlay_meta.get("family") or ""),
-        "blocker_family_concentration_penalty": float(_to_float(blocker_family_overlay_meta.get("penalty"))),
-        "blocker_family_concentration_top3_before": list(blocker_family_overlay_meta.get("top3_symbols_before") or []),
-        "blocker_family_concentration_top3_after": list(blocker_family_overlay_meta.get("top3_symbols_after") or []),
-        "blocker_family_concentration_alternative_symbols": list(blocker_family_overlay_meta.get("alternative_symbols") or []),
-        "selection_vetoed": bool(blocker_family_overlay_meta.get("selection_vetoed")),
-        "selection_veto_enforced": bool(selection_veto_enforced),
-        "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
-        "bias_scale": float(_to_float((selected or {}).get("bias_scale") or compatibility_bias_context.get("bias_scale"))),
-        "soft_penalty": float(_to_float((selected or {}).get("soft_penalty"))) if isinstance(selected, dict) else 0.0,
-        "compatibility_score_pre_penalty": float(_to_float((selected or {}).get("compatibility_score_pre_penalty"))) if isinstance(selected, dict) else 0.0,
-        "compatibility_score_post_penalty": float(_to_float((selected or {}).get("compatibility_score_post_penalty"))) if isinstance(selected, dict) else 0.0,
-        "compatibility_trace": dict((selected or {}).get("compatibility_trace") or {}) if isinstance(selected, dict) else {},
-        "pre_adjust_score_total": float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0,
-        "post_adjust_score_total": float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0,
-        "scanner_bias_applied": bool(scanner_bias_applied),
-        "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
-        "scanner_memory_bias_applied": bool(scanner_memory_bias_applied),
-        "scanner_memory_bias": dict(scanner_memory_bias),
-        "scanner_memory_bias_summary": dict(scanner_policy_trace.get("scanner_memory_bias_summary") or {}),
-        "commander_memory_application_trace": dict(commander_memory_application_trace),
-        "scanner_memory_application_trace": dict(commander_memory_application_trace),
-        "candidate_bias_adjustments": list(candidate_bias_adjustments),
-        "candidate_memory_bias_adjustments": list(candidate_memory_bias_adjustments),
-        "candidate_symbol_prior_adjustments": list(candidate_symbol_prior_adjustments),
-        "selection_reason_with_bias": selection_reason_with_bias,
-        "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
-        "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
-        "why_selected": [
-            f"highest total score ({float(_to_float((selected or {}).get('score_total') or (selected or {}).get('score'))):.3f})"
-            if isinstance(selected, dict)
-            else "no candidate selected",
-            f"confidence {float(_to_float((selected or {}).get('confidence'))):.2f} and risk {float(_to_float((selected or {}).get('risk_score'))):.2f}"
-            if isinstance(selected, dict)
-            else "",
-            f"source mix: {', '.join(list(((selected or {}).get('candidate') or {}).get('sources') or [])[:4])}"
-            if isinstance(selected, dict)
-            else "",
-            f"playbook alignment: {playbook or 'not_captured'}",
-        ],
-        "runner_ups_lost": runner_up_reasons,
-        "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
-        "final_decision_basis": (
-            "Scanner selected the highest-ranked candidate after strategist-guided weighting, "
-            "source scoring, risk penalties, and capped scanner/memory bias adjustments."
-            if scanner_bias_applied or scanner_memory_bias_applied
-            else "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties."
-        ),
-        "policy_provenance_ref": dict(scanner_policy_trace.get("policy_provenance_ref") or {}),
-    }
+    candidate_selection_reason_payload = _build_candidate_selection_reason_payload(
+        selected=selected if isinstance(selected, dict) else None,
+        selected_symbol=selected_symbol,
+        selected_rank=selected_rank,
+        selected_score_total=selected_score_total,
+        margin_vs_second=margin_vs_second,
+        critical_positive_factors=critical_positive_factors,
+        critical_negative_factors=critical_negative_factors,
+        selection_summary=selection_summary,
+        scanner_policy_trace=scanner_policy_trace,
+        playbook=playbook,
+        compatibility_bias_context=compatibility_bias_context,
+        market_representative_guard_meta=market_representative_guard_meta,
+        blocker_family_overlay_meta=blocker_family_overlay_meta,
+        selection_veto_enforced=selection_veto_enforced,
+        scanner_bias_applied=scanner_bias_applied,
+        scanner_memory_bias_applied=scanner_memory_bias_applied,
+        scanner_memory_bias=scanner_memory_bias,
+        commander_memory_application_trace=commander_memory_application_trace,
+        candidate_bias_adjustments=candidate_bias_adjustments,
+        candidate_memory_bias_adjustments=candidate_memory_bias_adjustments,
+        candidate_symbol_prior_adjustments=candidate_symbol_prior_adjustments,
+        selection_reason_with_bias=selection_reason_with_bias,
+        runner_up_reasons=runner_up_reasons,
+    )
     state["scanner_candidate_selection_reason"] = dict(candidate_selection_reason_payload)
     _emit_scanner_event(
         state,

@@ -443,6 +443,20 @@ def _execution_fill_quantity_snapshot(ex: dict) -> dict:
     }
 
 
+def _is_zero_fill_truth_pending(snapshot: dict, side: str) -> bool:
+    if str(side or "").strip().upper() not in ("BUY", "SELL"):
+        return False
+    if not bool(snapshot.get("has_fill_truth")):
+        return False
+    filled_qty = _as_int(snapshot.get("filled_qty"), 0)
+    if filled_qty > 0:
+        return False
+    remaining_qty = snapshot.get("remaining_qty")
+    if remaining_qty is None:
+        return True
+    return _as_int(remaining_qty, 0) > 0
+
+
 def _remember_pending_unfilled_order(ps: dict, ex: dict, order: dict, snapshot: dict, *, now_epoch: int | None = None) -> None:
     symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd"))
     action = str(order.get("action") or "").strip().upper()
@@ -516,7 +530,7 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
         qty = _as_int(fill_snapshot.get("filled_qty"), 0)
     if action not in ("BUY", "SELL") or not symbol or qty <= 0:
         return
-    if bool(fill_snapshot.get("pending_unfilled")):
+    if bool(fill_snapshot.get("pending_unfilled")) or _is_zero_fill_truth_pending(fill_snapshot, action):
         _remember_pending_unfilled_order(ps, ex, order, fill_snapshot)
         return
     filled_qty = _as_int(fill_snapshot.get("filled_qty"), 0)
@@ -1282,13 +1296,13 @@ def update_state_after_execution(state: dict) -> dict:
 
     # Keep recent side/epoch for runtime cooldown and replay guards.
     fill_snapshot = _execution_fill_quantity_snapshot(ex)
-    pending_unfilled = bool(fill_snapshot.get("pending_unfilled"))
+    side = _extract_trade_side(ex)
+    pending_unfilled = bool(fill_snapshot.get("pending_unfilled")) or _is_zero_fill_truth_pending(fill_snapshot, side)
     if ok and pending_unfilled:
         order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
         _remember_pending_unfilled_order(ps, ex, order, fill_snapshot, now_epoch=now_epoch)
 
     if ok and not pending_unfilled:
-        side = _extract_trade_side(ex)
         if side:
             ps["last_trade_side"] = side
             ps["last_trade_epoch"] = now_epoch

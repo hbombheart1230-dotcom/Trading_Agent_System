@@ -258,8 +258,9 @@ def test_scanner_output_records_commander_context_consumption():
     out = scanner_node(state)
     scanner_output = out.get("scanner_output") or {}
     selection_reason = out.get("scanner_candidate_selection_reason") or {}
+    selected = out.get("selected") or {}
 
-    assert (out.get("selected") or {}).get("symbol") == "005930"
+    assert selected.get("symbol") == "005930"
     assert scanner_output.get("commander_context_consumed") is True
     assert "scanner_mission" in list(scanner_output.get("consumed_fields") or [])
     assert scanner_output.get("commander_priority_ref", {}).get("risk_mode") == "balanced"
@@ -269,6 +270,10 @@ def test_scanner_output_records_commander_context_consumption():
     assert scanner_output.get("strategist_fallback_used") is False
     assert selection_reason.get("selection_basis", {}).get("strategist_plan_consumed") is True
     assert selection_reason.get("strategist_constraints_ref", {}).get("selected_playbook") == "breakout"
+    assert (selected.get("tactic_suitability") or {}).get("behavior_effect") == "observation_only"
+    assert (scanner_output.get("tactic_suitability") or {}).get("schema_version") == "tactic_suitability.v1"
+    assert (out.get("scanner_ranking_table") or [{}])[0].get("tactic_suitability", {}).get("schema_version") == "tactic_suitability.v1"
+    assert (selection_reason.get("tactic_suitability") or {}).get("schema_version") == "tactic_suitability.v1"
 
 
 def test_scanner_applies_symbol_prior_deterministically():

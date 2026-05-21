@@ -89,7 +89,7 @@ def resolve_entry_candidate_cascade_config(entry_control: Dict[str, Any]) -> Dic
     elif raw_runner_ups not in (None, ""):
         max_priority_rank = int(_clamp(_to_float(raw_runner_ups) + 1, 1, 10))
     else:
-        max_priority_rank = 10
+        max_priority_rank = 3
     max_runner_ups = int(max(0, max_priority_rank - 1))
     if raw_runner_ups not in (None, ""):
         max_runner_ups = int(_clamp(_to_float(raw_runner_ups), 0, max_runner_ups))
@@ -113,6 +113,8 @@ def resolve_entry_candidate_cascade_config(entry_control: Dict[str, Any]) -> Dic
         "cascade_enabled": bool(cascade_enabled and max_runner_ups > 0),
         "cascade_allowed_reasons": list((entry_control or {}).get("cascade_allowed_reasons") or []),
         "cascade_blocked_reasons": list((entry_control or {}).get("cascade_blocked_reasons") or []),
+        "hard_block_override_enabled": bool((entry_control or {}).get("hard_block_override_enabled")),
+        "hard_block_override_reason": str((entry_control or {}).get("hard_block_override_reason") or ""),
         "source": str((entry_control or {}).get("source") or "default"),
         "mode": str((entry_control or {}).get("mode") or "default"),
     }

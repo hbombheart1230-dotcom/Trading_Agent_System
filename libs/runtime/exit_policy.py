@@ -428,6 +428,14 @@ def evaluate_exit_policy(
         "vwap_breakdown_consecutive_bars": 0,
         "vwap_breakdown_low_break_confirmed": False,
         "vwap_breakdown_volume_confirmed": False,
+        "intraday_low_break_confirmation_required": False,
+        "intraday_low_break_confirmed": False,
+        "intraday_low_break_confirmation_pending": False,
+        "intraday_low_break_confirmation_reason": "",
+        "intraday_low_break_consecutive_bars": 0,
+        "intraday_low_break_low_break_confirmed": False,
+        "intraday_low_break_volume_confirmed": False,
+        "intraday_low_break_min_hold_blocked": False,
         "protective_exit_floor_blocked": False,
         "protective_exit_floor_blocked_reason": "",
         "protective_exit_hard_invalidation": False,
@@ -609,7 +617,19 @@ def evaluate_exit_policy(
                 1,
                 int(_to_float(p.get("vwap_breakdown_confirm_bars"), 2.0)),
             ),
+            "vwap_breakdown_min_hold_sec": max(
+                0,
+                int(_to_float(p.get("vwap_breakdown_min_hold_sec"), 120.0)),
+            ),
             "intraday_low_break_pct": _clamp_non_negative(_to_float(p.get("intraday_low_break_pct"), 0.0)),
+            "intraday_low_break_min_hold_sec": max(
+                0,
+                int(_to_float(p.get("intraday_low_break_min_hold_sec"), 60.0)),
+            ),
+            "intraday_low_break_confirm_bars": max(
+                1,
+                int(_to_float(p.get("intraday_low_break_confirm_bars"), 2.0)),
+            ),
             "trend_strength_floor": _to_float(p.get("trend_strength_floor"), 0.0),
             "eod_flat_cutoff_min": max(0, int(_to_float(p.get("eod_flat_cutoff_min"), 10))),
         },
@@ -1197,27 +1217,42 @@ def evaluate_exit_policy(
         if vwap_distance <= -vwap_breakdown_th and (not require_profit or peak_price > apx or gross_pnl_ratio > 0.0):
             confirmation_required = _to_bool(p.get("vwap_breakdown_confirmation_required"), True)
             confirm_bars_required = int(out["thresholds"].get("vwap_breakdown_confirm_bars") or 2)
+            min_hold_required = int(out["thresholds"].get("vwap_breakdown_min_hold_sec") or 120)
             consecutive_bars = max(0, int(_to_float(p.get("vwap_breakdown_consecutive_bars"), 0.0)))
             low_break_confirmed = _to_bool(p.get("vwap_breakdown_low_break_confirmed"), False)
             volume_confirmed = _to_bool(p.get("vwap_breakdown_volume_confirmed"), False)
             confirmed = bool(
                 not confirmation_required
                 or consecutive_bars >= confirm_bars_required
-                or low_break_confirmed
-                or volume_confirmed
+                or (low_break_confirmed and volume_confirmed)
                 or _to_bool(p.get("hard_invalidation_confirmed"), False)
                 or _to_bool(p.get("vwap_breakdown_hard_invalidation"), False)
+            )
+            early_hold_blocked = bool(
+                min_hold_required > 0
+                and hs is not None
+                and int(hs) < int(min_hold_required)
+                and not _to_bool(p.get("hard_invalidation_confirmed"), False)
+                and not _to_bool(p.get("vwap_breakdown_hard_invalidation"), False)
             )
             out["vwap_breakdown_confirmation_required"] = bool(confirmation_required)
             out["vwap_breakdown_consecutive_bars"] = int(consecutive_bars)
             out["vwap_breakdown_confirm_bars_required"] = int(confirm_bars_required)
+            out["vwap_breakdown_min_hold_sec"] = int(min_hold_required)
             out["vwap_breakdown_low_break_confirmed"] = bool(low_break_confirmed)
             out["vwap_breakdown_volume_confirmed"] = bool(volume_confirmed)
             out["vwap_breakdown_confirmed"] = bool(confirmed)
-            if not confirmed:
+            if early_hold_blocked:
                 out["vwap_breakdown_confirmation_pending"] = True
                 out["vwap_breakdown_confirmation_reason"] = (
-                    f"need_{confirm_bars_required}_bars_or_volume_or_low_break"
+                    f"need_min_hold_{min_hold_required}s_or_hard_invalidation"
+                )
+                if not str(out.get("hold_block_reason") or "").strip():
+                    out["hold_block_reason"] = "vwap_breakdown_min_hold_pending"
+            elif not confirmed:
+                out["vwap_breakdown_confirmation_pending"] = True
+                out["vwap_breakdown_confirmation_reason"] = (
+                    f"need_{confirm_bars_required}_bars_or_low_break_plus_volume"
                 )
                 if not str(out.get("hold_block_reason") or "").strip():
                     out["hold_block_reason"] = "vwap_breakdown_confirmation_pending"
@@ -1237,7 +1272,50 @@ def evaluate_exit_policy(
         prior_bar_low = _to_float(p.get("prior_bar_low"), 0.0)
         out["prior_bar_low"] = float(prior_bar_low)
         if prior_bar_low > 0.0 and technical_px <= float(prior_bar_low * (1.0 - intraday_low_break_pct)):
-            if _block_protective_exit_below_floor("intraday_low_break"):
+            hard_invalidation = _protective_exit_hard_invalidation("intraday_low_break")
+            min_hold_required = int(out["thresholds"].get("intraday_low_break_min_hold_sec") or 60)
+            confirm_bars_required = int(out["thresholds"].get("intraday_low_break_confirm_bars") or 2)
+            consecutive_bars = max(0, int(_to_float(p.get("intraday_low_break_consecutive_bars"), 0.0)))
+            low_break_confirmed = _to_bool(p.get("intraday_low_break_low_break_confirmed"), False)
+            volume_confirmed = _to_bool(p.get("intraday_low_break_volume_confirmed"), False)
+            confirmation_required = _to_bool(p.get("intraday_low_break_confirmation_required"), True)
+            confirmed = bool(
+                hard_invalidation
+                or not confirmation_required
+                or consecutive_bars >= confirm_bars_required
+                or (low_break_confirmed and volume_confirmed)
+                or _to_bool(p.get("hard_invalidation_confirmed"), False)
+                or _to_bool(p.get("intraday_low_break_hard_invalidation"), False)
+            )
+            early_hold_blocked = bool(
+                not hard_invalidation
+                and min_hold_required > 0
+                and hs is not None
+                and int(hs) < int(min_hold_required)
+            )
+            out["intraday_low_break_confirmation_required"] = bool(confirmation_required)
+            out["intraday_low_break_consecutive_bars"] = int(consecutive_bars)
+            out["intraday_low_break_confirm_bars_required"] = int(confirm_bars_required)
+            out["intraday_low_break_low_break_confirmed"] = bool(low_break_confirmed)
+            out["intraday_low_break_volume_confirmed"] = bool(volume_confirmed)
+            out["intraday_low_break_confirmed"] = bool(confirmed)
+            out["intraday_low_break_min_hold_sec"] = int(min_hold_required)
+            out["intraday_low_break_min_hold_blocked"] = bool(early_hold_blocked)
+            if early_hold_blocked:
+                out["intraday_low_break_confirmation_pending"] = True
+                out["intraday_low_break_confirmation_reason"] = (
+                    f"need_min_hold_{min_hold_required}s_or_hard_invalidation"
+                )
+                if not str(out.get("hold_block_reason") or "").strip():
+                    out["hold_block_reason"] = "intraday_low_break_min_hold_pending"
+            elif not confirmed:
+                out["intraday_low_break_confirmation_pending"] = True
+                out["intraday_low_break_confirmation_reason"] = (
+                    f"need_{confirm_bars_required}_bars_or_low_break_plus_volume"
+                )
+                if not str(out.get("hold_block_reason") or "").strip():
+                    out["hold_block_reason"] = "intraday_low_break_confirmation_pending"
+            elif _block_protective_exit_below_floor("intraday_low_break"):
                 pass
             else:
                 return _finalize(triggered=True, reason="intraday_low_break")

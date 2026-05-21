@@ -10,6 +10,7 @@ from graphs.nodes.strategist_node import (
     _build_commander_context_summary,
     _build_compact_strategist_llm_payload,
     _build_strategist_llm_messages,
+    _attach_quant_context_to_strategy_refresh_trace,
     strategist_node,
 )
 from libs.research.strategy_memory_store import save_strategy_feedback
@@ -1172,6 +1173,15 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
             "fear_index": {"level": 26.556, "change_pct": 3.4455, "level_pressure": 0.3277},
         },
         "news_context": {"signal_total": 13, "avg_score": 0.09234, "headline_count": 65, "candidate_signal_total": 5, "market_signal_total": 8},
+        "news_sentiment_signal": {
+            "005930": {"score": -0.41, "status": "ok"},
+            "000660": {"score": 0.46, "status": "ok"},
+            "069500": {"score": 0.05, "status": "ok"},
+        },
+        "market_news_sentiment_signal": {
+            "KOSPI": {"score": -0.35, "status": "ok"},
+            "US_MARKET": {"score": 0.14, "status": "ok"},
+        },
         "market_context_inputs": {"index_trend": 0.0, "realized_volatility": 0.012345, "market_breadth": 0.0, "macro_risk": 0.12555},
         "recent_strategy_feedback": {
             "feedback_window_size": 12,
@@ -1211,11 +1221,11 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
         },
         "macro_stress_overlay_hint": {"active": True, "stress_flags": ["elevated_vix", "dollar_strength", "yield_rise", "extra"], "reason": "macro stress"},
         "market_news_sample": {
-            "코스피": {"count": 5, "sample": [{"title": "a" * 140}, {"title": "b"}]},
-            "미국 증시": {"count": 5, "sample": [{"title": "c"}]},
-            "달러": {"count": 5, "sample": [{"title": "d"}]},
-            "방산": {"count": 5, "sample": [{"title": "e"}]},
-            "금": {"count": 5, "sample": [{"title": "f"}]},
+            "KOSPI": {"count": 5, "sample": [{"title": "a" * 140}, {"title": "b"}]},
+            "US_MARKET": {"count": 5, "sample": [{"title": "c"}]},
+            "DOLLAR": {"count": 5, "sample": [{"title": "d"}]},
+            "DEFENSE": {"count": 5, "sample": [{"title": "e"}]},
+            "ETC": {"count": 5, "sample": [{"title": "f"}]},
         },
         "candidate_news_sample": {
             "005930": {"count": 5, "sample": [{"title": "g" * 140}, {"title": "h"}]},
@@ -1224,7 +1234,7 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
             "122630": {"count": 5, "sample": [{"title": "k"}]},
             "032820": {"count": 5, "sample": [{"title": "l"}]},
         },
-        "candidate_symbols_hint": ["1", "2", "3", "4", "5", "6"],
+        "candidate_symbols_hint": ["000660", "005930", "069500", "122630", "032820", "6"],
         "key_events_hint": ["e1", "e2", "e3", "e4", "e5"],
         "themes_hint": ["t1", "t2", "t3", "t4", "t5"],
         "news_query_targets": ["n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "n9"],
@@ -1297,6 +1307,15 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
     assert len(compact["reporter_feedback_packet"]["recommendation"]) == 2
     assert compact["market_news_sample"] == {}
     assert compact["candidate_news_sample"] == {}
+    assert compact["selected_symbol_news_signal"]["symbol"] == "000660"
+    assert compact["selected_symbol_news_signal"]["label"] == "positive"
+    assert compact["selected_symbol_news_signal"]["score"] == 0.46
+    assert compact["candidate_news_signal_summary"][0]["symbol"] == "000660"
+    assert compact["candidate_news_signal_summary"][1]["symbol"] == "005930"
+    assert any(row["symbol"] == "000660" and row["label"] == "positive" for row in compact["candidate_news_signal_summary"])
+    assert compact["market_news_signal_summary"][0]["label"] == "negative"
+    assert "news_sentiment_signal" not in compact
+    assert "market_news_sentiment_signal" not in compact
     assert len(compact["candidate_symbols_hint"]) == 5
     assert len(compact["key_events_hint"]) == 4
     assert len(compact["themes_hint"]) == 4
@@ -1474,6 +1493,8 @@ def test_compact_payload_resolves_stage3_and_stage4_call_kinds() -> None:
     assert stage3["resolved_call_kind"] == "stale_intraday_hold_review"
     assert stage4["resolved_call_kind"] == "end_of_day_carry_review"
     assert preopen["resolved_call_kind"] == "stale_intraday_hold_review"
+    assert stage3["quant_context"]["hold_quant_context"]["schema_version"] == "quant_hold_context.v1"
+    assert stage4["quant_context"]["carry_quant_context"]["schema_version"] == "quant_carry_context.v1"
 
 
 def test_stage_specific_llm_messages_match_4stage_contracts() -> None:
@@ -1522,6 +1543,53 @@ def test_stage_specific_llm_messages_match_4stage_contracts() -> None:
     )[1]["content"]
     assert "carry_review" in stage4_user
     assert "portfolio_level_decision" in stage4_user
+
+
+def test_selected_symbol_compact_payload_synthesizes_quant_snapshot() -> None:
+    compact = _build_compact_strategist_llm_payload(
+        {
+            "commander_refresh_context": {
+                "requested": True,
+                "reason": "selected_symbol_tactical_refresh",
+                "refresh_scope": "selected_symbol_tactical_refresh",
+                "selected_symbol": "233740",
+                "actual_selected_candidate": {
+                    "symbol": "233740",
+                    "score": 1.010093,
+                    "risk_score": 0.244733,
+                    "confidence": 0.896988,
+                    "entry_compatibility_score": 0.175414,
+                    "scanner_chart_fit_score": 0.255414,
+                    "expected_monitor_block_reason": "below_vwap_reclaim_not_ready",
+                    "dominant_block_reason": "mixed",
+                    "tactical_strategy": "opening_gap_momentum",
+                    "playbook": "breakout",
+                },
+            }
+        }
+    )
+
+    snapshot = compact["quant_context"]["selected_symbol_quant_snapshot"]
+    assert compact["resolved_call_kind"] == "selected_symbol_tactical_refresh"
+    assert snapshot["source"] == "quant_candidate_factor_snapshot.v1"
+    assert snapshot["factors"]["symbol"] == "233740"
+    assert snapshot["factors"]["score_total"] == 1.010093
+
+
+def test_strategy_refresh_trace_preserves_llm_quant_context() -> None:
+    trace = _attach_quant_context_to_strategy_refresh_trace(
+        {"stages": [{"stage": "post_scanner_refresh", "summary": "selected refresh"}]},
+        {
+            "schema_version": "strategist_quant_context.v1",
+            "call_kind": "selected_symbol_tactical_refresh",
+            "selected_symbol_quant_snapshot": {"factors": {"symbol": "233740"}},
+            "behavior_effect": "observation_only",
+        },
+    )
+
+    stage = trace["stages"][0]
+    assert trace["quant_context_call_kind"] == "selected_symbol_tactical_refresh"
+    assert stage["quant_context"]["selected_symbol_quant_snapshot"]["factors"]["symbol"] == "233740"
 
 
 def test_strategist_llm_payload_includes_commander_refresh_context(monkeypatch):

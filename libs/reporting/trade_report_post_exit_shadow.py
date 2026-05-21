@@ -93,11 +93,13 @@ def build_post_exit_shadow_summary_lines(
         return []
     lines: List[str] = ["### 매도 후 가격 추적 (관측-only)", ""]
     exit_price = shadow.get("exit_price")
+    exit_num = num_opt(exit_price)
+    exit_price_missing = exit_num is None or exit_num <= 0
     status = str(shadow.get("price_observation_status") or "").strip().lower()
     reason = str(shadow.get("price_observation_reason") or "").strip()
     latest_observed_ts = str(shadow.get("latest_observed_ts") or "").strip()
     lines.append("* 기준: 실제 매도 후 같은 종목을 가상 보유했다고 가정한 가격 추적입니다. 실제 매매 판단에는 아직 반영하지 않습니다.")
-    lines.append(f"* 매도 기준가: {summary_money(exit_price)}")
+    lines.append(f"* 매도 기준가: {'-' if exit_price_missing else summary_money(exit_price)}")
 
     observed_any = False
     checkpoints = as_dict(shadow.get("checkpoints"))
@@ -134,14 +136,16 @@ def build_post_exit_shadow_summary_lines(
         if latest_observed_ts:
             lines.append(f"* 마지막 보유 가격 데이터 시각: {latest_observed_ts}")
         lines.append("")
-        lines.append("판단: 아직 매도 후 가격 경로를 평가할 수 없습니다. 다음 리포트 재생성 또는 다음 runtime 가격 수집 후 +5분/+15분 checkpoint부터 채워야 합니다.")
+        if reason == "missing_exit_time_or_price" or exit_price_missing:
+            lines.append("판단: 청산 체결 시각 또는 기준가가 확정되지 않아 매도 후 가격 경로를 평가하지 않습니다. 체결 기준점이 확정된 거래만 post-exit shadow 평가 대상으로 봅니다.")
+        else:
+            lines.append("판단: 아직 매도 후 가격 경로를 평가할 수 없습니다. 다음 리포트 재생성 또는 다음 runtime 가격 수집 후 +5분/+15분 checkpoint부터 채워야 합니다.")
         return lines
 
     best_offset = str(shadow.get("best_exit_offset") or "").strip()
     best_price = shadow.get("best_exit_price")
     if best_offset and best_price not in (None, ""):
         lines.append(f"* 현재까지 최선 가상 청산 지점: {checkpoint_label(best_offset)}, {summary_money(best_price)}")
-    exit_num = num_opt(exit_price)
     best_num = num_opt(best_price)
     lines.append("")
     if exit_num is not None and best_num is not None and best_num > exit_num:

@@ -1020,6 +1020,15 @@ def _position_qty_hint_from_order(order: Dict[str, Any]) -> int:
     return 0
 
 
+def _exit_qty_hint_from_order(order: Dict[str, Any]) -> int:
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    for key in ("exit_qty", "requested_exit_qty", "sell_qty"):
+        qty = _coerce_int(meta.get(key), 0)
+        if qty > 0:
+            return int(qty)
+    return _coerce_int(order.get("qty"), 0)
+
+
 def _exit_reason_from_order(order: Dict[str, Any]) -> str:
     meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
     for key in ("exit_reason", "reason", "monitor_reason", "signal_source"):
@@ -1212,10 +1221,30 @@ def _update_recent_sell_order_guard(state: Dict[str, Any], order: Dict[str, Any]
             "path": str(path),
         }
 
+    payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
     order_qty = _coerce_int(order.get("qty"), 0)
     position_qty_hint = _position_qty_hint_from_order(order)
-    remaining_qty_hint = max(0, position_qty_hint - order_qty) if position_qty_hint > 0 else 0
-    payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
+    exit_qty_hint = _exit_qty_hint_from_order(order)
+    filled_qty = _coerce_int(
+        execution.get("filled_qty") if execution.get("filled_qty") not in (None, "") else payload.get("filled_qty"),
+        -1,
+    )
+    remaining_qty = _coerce_int(
+        execution.get("remaining_qty") if execution.get("remaining_qty") not in (None, "") else payload.get("remaining_qty"),
+        -1,
+    )
+    if remaining_qty >= 0:
+        remaining_qty_hint = int(remaining_qty)
+    elif filled_qty > 0 and position_qty_hint > 0:
+        remaining_qty_hint = max(0, position_qty_hint - filled_qty)
+    elif filled_qty > 0 and order_qty > 0:
+        remaining_qty_hint = max(0, order_qty - filled_qty)
+    elif position_qty_hint > 0 and exit_qty_hint > 0 and filled_qty < 0:
+        remaining_qty_hint = max(0, position_qty_hint - exit_qty_hint)
+    elif position_qty_hint > 0:
+        remaining_qty_hint = int(position_qty_hint)
+    else:
+        remaining_qty_hint = int(order_qty)
     orders[symbol] = {
         "symbol": symbol,
         "last_sell_epoch": int(now_epoch),
@@ -1224,8 +1253,12 @@ def _update_recent_sell_order_guard(state: Dict[str, Any], order: Dict[str, Any]
         "order_id": str(execution.get("order_id") or execution.get("ord_no") or payload.get("order_id") or ""),
         "run_id": str(state.get("run_id") or ""),
         "last_sell_qty": int(order_qty),
+        "exit_qty_hint": int(exit_qty_hint),
         "position_qty_hint": int(position_qty_hint),
         "remaining_qty_hint": int(remaining_qty_hint),
+        "filled_qty": int(filled_qty),
+        "remaining_qty": int(remaining_qty),
+        "fill_truth_confirmed": bool(filled_qty > 0 or remaining_qty >= 0),
         "effective_mode": str(_execution_mode_details().get("effective_mode") or ""),
     }
     _write_recent_sell_guard(path, data)

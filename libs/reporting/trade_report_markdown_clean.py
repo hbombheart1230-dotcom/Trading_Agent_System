@@ -1,11 +1,50 @@
 ﻿from __future__ import annotations
 
 import html
+import json
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from libs.reporting.report_truth_surface import build_trade_report_truth_surface
+from libs.reporting.trade_report_markdown_truth import (
+    boolish as _boolish_impl,
+    build_trade_cost_analysis as _build_trade_cost_analysis_impl,
+    extract_trade_quantity as _extract_trade_quantity_impl,
+    first_present as _first_present_impl,
+    get_truth_surface as _get_truth_surface_impl,
+    infer_trade_quantity_from_costs as _infer_trade_quantity_from_costs_impl,
+    operator_pnl_pct as _operator_pnl_pct_impl,
+    pnl_basis_label as _pnl_basis_label_impl,
+    trade_cost_analysis_lines as _trade_cost_analysis_lines_impl,
+    truth_source_label as _truth_source_label_impl,
+)
+from libs.reporting.trade_report_markdown_scanner import (
+    build_scanner_comparison as _build_scanner_comparison_impl,
+    build_symbol_selection as _build_symbol_selection_impl,
+    is_redundant_symbol_selection_line as _is_redundant_symbol_selection_line_impl,
+    is_scanner_execution_mismatch_line as _is_scanner_execution_mismatch_line_impl,
+    is_scanner_selection_label_line as _is_scanner_selection_label_line_impl,
+)
+from libs.reporting.trade_report_markdown_monitor import (
+    build_exit_decision as _build_exit_decision_impl,
+    build_holding_story as _build_holding_story_impl,
+    build_monitor_snapshot as _build_monitor_snapshot_impl,
+    closed_trade_monitor_preface as _closed_trade_monitor_preface_impl,
+    normalize_monitor_story_line as _normalize_monitor_story_line_impl,
+    parse_monitor_bullet as _parse_monitor_bullet_impl,
+    price_source_label as _price_source_label_impl,
+    price_source_policy_label as _price_source_policy_label_impl,
+)
+from libs.reporting.trade_report_markdown_strategy_memory import (
+    build_strategy_horizon_lines as _build_strategy_horizon_lines_impl,
+    duration_label_compact as _duration_label_compact_impl,
+    hold_window_label as _hold_window_label_impl,
+    strategy_horizon_alignment_label as _strategy_horizon_alignment_label_impl,
+    strategy_horizon_label as _strategy_horizon_label_impl,
+    strategy_horizon_reason_label as _strategy_horizon_reason_label_impl,
+    strategy_horizon_report_surface as _strategy_horizon_report_surface_impl,
+)
 from libs.reporting.trade_report_symbol_metadata import (
     append_theme_values as _append_theme_values_impl,
     append_unique_text as _append_unique_text_impl,
@@ -13,6 +52,7 @@ from libs.reporting.trade_report_symbol_metadata import (
     infer_symbol_name_from_report_text as _infer_symbol_name_from_report_text_impl,
     iter_nested_dicts as _iter_nested_dicts_impl,
     iter_trade_symbol_metadata_sources as _iter_trade_symbol_metadata_sources_impl,
+    looks_like_symbol_name as _looks_like_symbol_name_impl,
     resolve_trade_symbol_metadata as _resolve_trade_symbol_metadata_impl,
     symbol_in_theme_components as _symbol_in_theme_components_impl,
 )
@@ -21,6 +61,13 @@ from libs.reporting.trade_report_post_exit_shadow import (
     checkpoint_label as _checkpoint_label_impl,
     compact_post_exit_shadow as _compact_post_exit_shadow_impl,
     post_exit_shadow_surface as _post_exit_shadow_surface_impl,
+)
+from libs.reporting.quant_tactic_report import (
+    quant_tactic_surface as _quant_tactic_surface_impl,
+    render_quant_tactic_report_lines as _render_quant_tactic_report_lines_impl,
+)
+from libs.reporting.strategist_quant_context_report import (
+    render_strategist_quant_context_usage_lines as _render_strategist_quant_context_usage_lines_impl,
 )
 
 
@@ -82,14 +129,18 @@ def _same_day_summary_from_texts(
             continue
 
         avg_match = re.search(
-            r"(확인분\s*)?평균(?:\s*손익률|\s*손익)?\s*([+-]?\d+(?:\.\d+)?)%?",
-            text,
-            flags=re.IGNORECASE,
-        ) or re.search(
-            r"avg pnl pct\s*([+-]?\d+(?:\.\d+)?)%?",
+            r"(확인분\s*)?평균(?:\s*손익률|\s*손익)?\s*([+-]?\d+(?:\.\d+)?)(%)?",
             text,
             flags=re.IGNORECASE,
         )
+        avg_source_is_ratio = False
+        if not avg_match:
+            avg_match = re.search(
+                r"(?:avg pnl pct|average same-day pnl pct)\s*([+-]?\d+(?:\.\d+)?)(%)?",
+                text,
+                flags=re.IGNORECASE,
+            )
+            avg_source_is_ratio = bool(avg_match and not avg_match.group(2))
         unknown_match = re.search(r"(?:손익\s*)?미확정\s*(\d+)\s*건", text) or re.search(
             r"(\d+)\s*unknown pnl",
             text,
@@ -109,7 +160,7 @@ def _same_day_summary_from_texts(
         avg_text = ""
         avg_confirmed = False
         if avg_match:
-            if len(avg_match.groups()) > 1:
+            if len(avg_match.groups()) > 2:
                 avg_confirmed = bool(avg_match.group(1))
                 avg_text = avg_match.group(2)
             else:
@@ -121,6 +172,10 @@ def _same_day_summary_from_texts(
                 avg_num = float(avg_text)
             except (TypeError, ValueError):
                 avg_num = None
+        if avg_source_is_ratio and avg_num is not None and abs(avg_num) <= 1.0:
+            avg_num *= 100.0
+            avg_text = f"{avg_num:.2f}"
+            avg_confirmed = True
         if (
             unknown <= 0
             and closed > 0
@@ -145,6 +200,12 @@ def _same_day_summary_from_texts(
             if current_pct_text:
                 avg_text = current_pct_text
                 avg_confirmed = True
+        accounted = wins + losses + flat
+        if accounted >= closed:
+            flat = max(0, closed - wins - losses)
+            unknown = 0
+        else:
+            unknown = max(0, min(unknown, closed - accounted))
 
         parts = [f"{closed}건 중 {wins}승 / {losses}패"]
         if flat > 0:
@@ -189,7 +250,9 @@ def render_trade_report_markdown_clean(report: Dict[str, Any]) -> str:
     lines.extend(_section("전략가 요약", _build_strategist_summary(report)))
     lines.extend(_section("전략 보유 기간", _build_strategy_horizon_lines(report)))
     lines.extend(_section("전략가 Refresh Trace", _build_strategist_refresh_trace(report)))
+    lines.extend(_section("전략가 Quant Context 사용", _render_strategist_quant_context_usage_lines_impl(report)))
     lines.extend(_section("전략가 출력 근거", _build_strategist_output_surface(report)))
+    lines.extend(_section("전술/퀀트 진단", _render_quant_tactic_report_lines_impl(report)))
     lines.extend(_section("선택된 종목 상세 분석", _build_symbol_selection(report)))
     lines.extend(_section("스캐너 후보 비교", _build_scanner_comparison(report)))
     lines.extend(_section("가드 승인 결과", _build_guard_approval(report)))
@@ -800,6 +863,9 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.append("## 🚪 진입 판단")
     lines.append("")
+    quant_compact_lines = _render_quant_tactic_report_lines_impl(report, compact=True)
+    if quant_compact_lines:
+        lines.extend(quant_compact_lines[:4])
     if entry_reason:
         lines.append(f"* 조건: {entry_reason}")
     if not selection_fallback.get("used") and not exit_only_report:
@@ -853,6 +919,9 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
             trigger_text = "고정 손절 기준"
         exit_trigger_lines[0] = f"트리거: 모니터 신호명은 {trigger_text}이었지만 Truth Surface 기준 실현 결과는 이익입니다."
     lines.extend(f"* {item}" for item in exit_trigger_lines)
+    if quant_compact_lines:
+        for item in quant_compact_lines[4:8]:
+            lines.append(item if item.startswith("* ") else f"* {item.lstrip('- ')}")
     lines.append("")
     lines.append("👉 수익 구간 진입 후 유지/청산 품질 점검 필요")
     shadow_lines = _build_post_exit_shadow_summary_lines(report)
@@ -1284,6 +1353,7 @@ def build_trade_summary_input_clean(report: Dict[str, Any]) -> Dict[str, Any]:
         },
         "strategy_horizon": strategy_horizon_summary,
         "post_exit_shadow": post_exit_shadow_summary,
+        "quant_tactic": _quant_tactic_surface_impl(report),
         "memory_and_policy": {
             "scanner_memory_applied": bool(scanner_memory.get("applied")),
             "monitor_memory_applied": bool(monitor_memory.get("applied")),
@@ -1391,7 +1461,10 @@ def _build_summary_deterministic_diagnostics_section(
 
     facts: List[str] = []
     symbol = _metadata_value(trade.get("symbol"))
-    symbol_name = _metadata_value(trade.get("symbol_name") or fallback_meta.get("symbol_name"))
+    raw_symbol_name = _metadata_value(trade.get("symbol_name"))
+    symbol_name = raw_symbol_name if _looks_like_symbol_name_impl(raw_symbol_name, symbol) else ""
+    if not symbol_name:
+        symbol_name = _metadata_value(fallback_meta.get("symbol_name"))
     theme = _metadata_value(trade.get("theme") or fallback_meta.get("theme"))
     if symbol != "-":
         label = f"{symbol} ({symbol_name})" if symbol_name not in {"", "-"} else symbol
@@ -1791,292 +1864,55 @@ def _carryover_context(report: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _strategy_horizon_label(value: Any) -> str:
-    raw = str(value or "").strip()
-    labels = {
-        "scalp": "초단타(scalp)",
-        "intraday": "단타/당일(intraday)",
-        "overnight_probe": "오버나이트 탐색(overnight_probe)",
-        "1_2day_swing": "1~2일 스윙(1_2day_swing)",
-    }
-    return labels.get(raw, _metadata_value(raw) or "-")
+    return _strategy_horizon_label_impl(value, metadata_value=_metadata_value)
 
 
 def _strategy_horizon_reason_label(value: Any) -> str:
-    raw = str(value or "").strip()
-    labels = {
-        "commander_accepts_strategist_horizon_proposal_observability_only": "전략가 제안을 관측-only로 수용",
-        "commander_caps_long_horizon_during_live_validation_observability_only": "장기 보유 제안은 live validation 중이라 단타/당일로 제한",
-        "commander_default_intraday_horizon_without_strategist_proposal": "전략가 보유 기간 제안 부재로 기본 단타/당일 적용",
-    }
-    return labels.get(raw, _metadata_value(raw) or "-")
+    return _strategy_horizon_reason_label_impl(value, metadata_value=_metadata_value)
 
 
 def _strategy_horizon_alignment_label(value: Any) -> str:
-    raw = str(value or "").strip()
-    labels = {
-        "aligned": "전략 보유 구간과 충돌 없음",
-        "early_but_justified": "전략 최소 보유 전 조기 청산이지만 하드 리스크로 정당화",
-        "early_unproven": "전략 최소 보유 전 조기 청산, 근거 검증 필요",
-        "held_beyond_expected_window": "기대 최대 보유시간 초과",
-        "unknown": "판단 불가",
-    }
-    return labels.get(raw, _metadata_value(raw) or "-")
+    return _strategy_horizon_alignment_label_impl(value, metadata_value=_metadata_value)
 
 
 def _duration_label_compact(value: Any) -> str:
-    seconds = _num_opt(value)
-    if seconds is None or seconds <= 0:
-        return ""
-    total = int(round(seconds))
-    days, rem = divmod(total, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, sec = divmod(rem, 60)
-    parts: List[str] = []
-    if days:
-        parts.append(f"{days}일")
-    if hours:
-        parts.append(f"{hours}시간")
-    if minutes:
-        parts.append(f"{minutes}분")
-    if sec and not days:
-        parts.append(f"{sec}초")
-    if not parts:
-        parts.append("0초")
-    return " ".join(parts)
+    return _duration_label_compact_impl(value, num_opt=_num_opt)
 
 
 def _hold_window_label(window: Dict[str, Any]) -> str:
-    obj = _as_dict(window)
-    if not obj:
-        return "-"
-    min_label = _duration_label_compact(obj.get("min_sec")) or "-"
-    target_label = _duration_label_compact(obj.get("target_sec")) or "-"
-    max_label = _duration_label_compact(obj.get("max_sec")) or "-"
-    return f"최소 {min_label} / 목표 {target_label} / 최대 {max_label}"
+    return _hold_window_label_impl(
+        window,
+        as_dict=_as_dict,
+        duration_label_compact_fn=_duration_label_compact,
+    )
 
 
 def _strategy_horizon_report_surface(report: Dict[str, Any]) -> Dict[str, Any]:
-    def _first_non_empty(*values: Any) -> Any:
-        for value in values:
-            if value not in (None, "", [], {}):
-                return value
-        return ""
-
-    def _first_dict(*values: Any) -> Dict[str, Any]:
-        for value in values:
-            obj = _as_dict(value)
-            if obj:
-                return obj
-        return {}
-
-    exit_vs_strategy = _first_dict(
-        report.get("exit_vs_strategy_intent"),
-        _first_report_path(
-            report,
-            [
-                "monitor_snapshot.exit_vs_strategy_intent",
-                "monitor_snapshot.decision_trace.exit_vs_strategy_intent",
-                "fact_payload.trade.exit_vs_strategy_intent",
-                "fact_payload.trade.monitor_snapshot.exit_vs_strategy_intent",
-                "fact_payload.trade.canonical_agent_artifacts.monitor.exit_vs_strategy_intent",
-                "fact_payload.trade.canonical_agent_artifacts.monitor.decision_trace.exit_vs_strategy_intent",
-                "lifecycle.exit.monitor_context.exit_vs_strategy_intent",
-                "lifecycle_bundle.exit_vs_strategy_intent",
-            ],
-        ),
+    return _strategy_horizon_report_surface_impl(
+        report,
+        as_dict=_as_dict,
+        first_report_path=_first_report_path,
+        compact_post_exit_shadow=_compact_post_exit_shadow,
+        post_exit_shadow_surface=_post_exit_shadow_surface,
+        carryover_context=_carryover_context,
+        num_opt=_num_opt,
+        duration_label_compact_fn=_duration_label_compact,
     )
-    commander_policy = _first_dict(
-        report.get("commander_horizon_policy"),
-        exit_vs_strategy.get("commander_horizon_policy"),
-        _first_report_path(
-            report,
-            [
-                "strategy_policy.commander_horizon_policy",
-                "strategy_policy.monitor_policy.commander_horizon_policy",
-                "strategist_output.commander_horizon_policy",
-                "fact_payload.trade.commander_horizon_policy",
-                "fact_payload.trade.canonical_agent_artifacts.strategist.commander_horizon_policy",
-                "fact_payload.trade.canonical_agent_artifacts.monitor.applied_policy.horizon",
-                "fact_payload.trade.shared_facts.commander_route.applied_policy.horizon",
-                "shared_facts.commander_route.applied_policy.horizon",
-                "monitor_snapshot.applied_policy.horizon",
-                "monitor_snapshot.decision_trace.applied_policy.horizon",
-            ],
-        ),
-    )
-    feedback = _first_dict(
-        report.get("strategy_horizon_feedback"),
-        report.get("strategist_horizon_proposal"),
-        _first_report_path(
-            report,
-            [
-                "strategist_output.strategy_horizon_feedback",
-                "strategy_policy.monitor_policy.strategy_horizon_feedback",
-                "fact_payload.trade.strategy_horizon_feedback",
-                "fact_payload.trade.canonical_agent_artifacts.strategist.strategy_horizon_feedback",
-                "entry_summary.strategist_context.strategy_horizon_feedback",
-            ],
-        ),
-    )
-    proposal = _first_dict(
-        commander_policy.get("strategist_horizon_proposal"),
-        commander_policy.get("proposal"),
-        exit_vs_strategy.get("strategist_horizon_proposal"),
-        feedback,
-    )
-    shadow = _compact_post_exit_shadow(_post_exit_shadow_surface(report))
-    carryover = _carryover_context(report)
-
-    strategist_horizon = _first_non_empty(
-        commander_policy.get("source_strategy_horizon"),
-        exit_vs_strategy.get("source_strategy_horizon"),
-        proposal.get("strategy_horizon"),
-        feedback.get("strategy_horizon"),
-        shadow.get("source_strategy_horizon"),
-        shadow.get("strategy_horizon"),
-    )
-    commander_horizon = _first_non_empty(
-        commander_policy.get("strategy_horizon"),
-        exit_vs_strategy.get("strategy_horizon"),
-        report.get("strategy_horizon"),
-        _first_report_path(report, ["fact_payload.trade.strategy_horizon"]),
-        shadow.get("strategy_horizon"),
-        strategist_horizon,
-    )
-    expected_window = _first_dict(
-        commander_policy.get("expected_hold_window"),
-        exit_vs_strategy.get("expected_hold_window"),
-        shadow.get("expected_hold_window"),
-        feedback.get("expected_hold_window"),
-        proposal.get("expected_hold_window"),
-    )
-    source_window = _first_dict(
-        commander_policy.get("source_expected_hold_window"),
-        exit_vs_strategy.get("source_expected_hold_window"),
-        proposal.get("expected_hold_window"),
-        feedback.get("expected_hold_window"),
-        expected_window,
-    )
-    actual_hold_sec = _num_opt(
-        _first_non_empty(
-            exit_vs_strategy.get("actual_hold_sec"),
-            _first_report_path(
-                report,
-                [
-                    "fact_payload.trade.exit_vs_strategy_intent.actual_hold_sec",
-                    "fact_payload.trade.canonical_agent_artifacts.monitor.exit_vs_strategy_intent.actual_hold_sec",
-                    "fact_payload.trade.monitor_snapshot.exit_vs_strategy_intent.actual_hold_sec",
-                    "monitor_snapshot.exit_vs_strategy_intent.actual_hold_sec",
-                    "shared_facts.exit_vs_strategy_intent.actual_hold_sec",
-                ],
-            ),
-            carryover.get("actual_hold_sec"),
-        )
-    )
-
-    alignment = str(exit_vs_strategy.get("exit_alignment") or "").strip()
-    if not alignment and actual_hold_sec is not None and expected_window:
-        min_sec = _num_opt(expected_window.get("min_sec")) or 0.0
-        max_sec = _num_opt(expected_window.get("max_sec")) or 0.0
-        if min_sec > 0 and actual_hold_sec < min_sec:
-            alignment = "early_unproven"
-        elif max_sec > 0 and actual_hold_sec > max_sec:
-            alignment = "held_beyond_expected_window"
-        else:
-            alignment = "aligned"
-
-    if not any([strategist_horizon, commander_horizon, expected_window, exit_vs_strategy]):
-        return {}
-    allow_behavior_change = bool(commander_policy.get("allow_behavior_change", False))
-    observability_only = bool(
-        _first_non_empty(
-            commander_policy.get("observability_only"),
-            exit_vs_strategy.get("observability_only"),
-            feedback.get("observability_only"),
-            True,
-        )
-    )
-    do_not_force_hold = bool(
-        _first_non_empty(
-            commander_policy.get("do_not_force_hold"),
-            _as_dict(commander_policy.get("monitor_handoff")).get("do_not_force_hold"),
-            True,
-        )
-    )
-    behavior_translation = _first_dict(
-        commander_policy.get("behavior_translation"),
-        exit_vs_strategy.get("behavior_translation"),
-        feedback.get("behavior_translation"),
-    )
-    return {
-        "strategist_horizon": strategist_horizon,
-        "commander_horizon": commander_horizon,
-        "expected_hold_window": expected_window,
-        "source_expected_hold_window": source_window,
-        "actual_hold_sec": actual_hold_sec,
-        "actual_hold_label": _duration_label_compact(actual_hold_sec),
-        "exit_alignment": alignment,
-        "alignment_reason": str(exit_vs_strategy.get("alignment_reason") or "").strip(),
-        "early_exit_flag": bool(exit_vs_strategy.get("early_exit_flag")) if exit_vs_strategy else bool(alignment == "early_unproven"),
-        "hard_exit": bool(exit_vs_strategy.get("hard_exit")) if exit_vs_strategy else False,
-        "hard_exit_reason": str(exit_vs_strategy.get("hard_exit_reason") or "").strip(),
-        "exit_reason": str(exit_vs_strategy.get("exit_reason") or "").strip(),
-        "horizon_owner": str(exit_vs_strategy.get("horizon_owner") or ("commander" if commander_policy else "strategist")),
-        "observability_only": observability_only,
-        "allow_behavior_change": allow_behavior_change,
-        "allow_behavior_translation": bool(commander_policy.get("allow_behavior_translation") or behavior_translation),
-        "behavior_translation": behavior_translation,
-        "do_not_force_hold": do_not_force_hold,
-        "decision_reason": str(commander_policy.get("decision_reason") or exit_vs_strategy.get("commander_decision_reason") or "").strip(),
-    }
 
 
 def _build_strategy_horizon_lines(report: Dict[str, Any], *, compact: bool = False) -> List[str]:
-    surface = _strategy_horizon_report_surface(report)
-    if not surface:
-        return []
-    lines: List[str] = []
-    strategist = surface.get("strategist_horizon")
-    commander = surface.get("commander_horizon")
-    if strategist:
-        lines.append(f"* 전략가 제안: {_strategy_horizon_label(strategist)}")
-    if commander:
-        lines.append(f"* 지휘관 적용: {_strategy_horizon_label(commander)}")
-    authority = "행동 반영 허용" if surface.get("allow_behavior_change") else "관측-only"
-    if surface.get("allow_behavior_translation"):
-        authority += ", 보유기간 번역 반영"
-    if surface.get("do_not_force_hold"):
-        authority += ", 보유 강제 없음"
-    lines.append(f"* 권한: {authority}")
-    translation = _as_dict(surface.get("behavior_translation"))
-    if translation:
-        pieces = [
-            str(translation.get("scanner_scope_bias") or ""),
-            str(translation.get("hold_control_bias") or ""),
-            str(translation.get("exit_policy_bias") or ""),
-        ]
-        pieces = [item for item in pieces if item]
-        if pieces:
-            lines.append(f"* 실제 반영: {' / '.join(pieces[:3])}")
-        if translation.get("monitor_review_cadence_sec") not in (None, ""):
-            lines.append(f"* 모니터 리뷰 주기: {_duration_label_compact(translation.get('monitor_review_cadence_sec'))}")
-    if surface.get("expected_hold_window"):
-        lines.append(f"* 적용 예상 보유 구간: {_hold_window_label(_as_dict(surface.get('expected_hold_window')))}")
-    if not compact and surface.get("source_expected_hold_window") and surface.get("source_expected_hold_window") != surface.get("expected_hold_window"):
-        lines.append(f"* 전략가 원 제안 구간: {_hold_window_label(_as_dict(surface.get('source_expected_hold_window')))}")
-    if surface.get("actual_hold_label"):
-        lines.append(f"* 실제 보유: {surface.get('actual_hold_label')}")
-    if surface.get("exit_alignment"):
-        detail = _strategy_horizon_alignment_label(surface.get("exit_alignment"))
-        if surface.get("hard_exit_reason"):
-            detail += f" ({_axis_label(surface.get('hard_exit_reason'))})"
-        lines.append(f"* 청산 정합성: {detail}")
-    reason = _strategy_horizon_reason_label(surface.get("decision_reason"))
-    if reason and reason != "-":
-        lines.append(f"* 지휘관 조정 사유: {reason}")
-    if not compact:
-        lines.append("* 해석: 이 값은 전략 의도와 실제 보유/청산을 비교하기 위한 기록이며, 현재는 모니터 청산을 강제로 지연시키지 않습니다.")
-    return lines
+    return _build_strategy_horizon_lines_impl(
+        report,
+        compact=compact,
+        strategy_horizon_report_surface_fn=_strategy_horizon_report_surface,
+        strategy_horizon_label_fn=_strategy_horizon_label,
+        strategy_horizon_alignment_label_fn=_strategy_horizon_alignment_label,
+        strategy_horizon_reason_label_fn=_strategy_horizon_reason_label,
+        as_dict=_as_dict,
+        axis_label=_axis_label,
+        hold_window_label_fn=_hold_window_label,
+        duration_label_compact_fn=_duration_label_compact,
+    )
 
 
 def _first_report_path(root: Dict[str, Any], paths: Iterable[str]) -> Any:
@@ -2292,17 +2128,25 @@ def _resolve_trade_symbol_metadata(report: Dict[str, Any], symbol: str) -> Dict[
 
 def _resolve_entry_execution_visibility(report: Dict[str, Any]) -> Dict[str, Any]:
     visibility = _as_dict(report.get("entry_execution_visibility"))
+    entry_monitor = _resolve_entry_monitor_artifact(report)
     strategist_output = _as_dict(report.get("strategist_output"))
     strategy_detail = _as_dict(strategist_output.get("strategy_detail"))
     monitor = _as_dict(report.get("monitor_snapshot"))
     shared = _as_dict(report.get("shared_facts"))
     commander_route = _as_dict(shared.get("commander_route"))
+    entry_policy_ref = _as_dict(entry_monitor.get("policy_ref"))
+    entry_applied_policy = _as_dict(entry_policy_ref.get("applied_policy"))
 
     proposal = _as_dict(visibility.get("strategy_candidate_watch_proposal"))
     if not proposal:
         proposal = _as_dict(strategy_detail.get("candidate_watch_policy"))
 
-    entry_control = _as_dict(visibility.get("commander_entry_control"))
+    entry_control = _first_dict(
+        _as_dict(entry_policy_ref.get("entry_control")),
+        _as_dict(entry_applied_policy.get("commander_entry_control")),
+        _as_dict(entry_applied_policy.get("entry_control")),
+        _as_dict(visibility.get("commander_entry_control")),
+    )
     if not entry_control:
         entry_control = _as_dict(commander_route.get("entry_control"))
     if not proposal:
@@ -2323,12 +2167,22 @@ def _resolve_entry_execution_visibility(report: Dict[str, Any]) -> Dict[str, Any
             if proposal.get(key) in (None, "", []) and nested.get(key) not in (None, "", []):
                 proposal[key] = nested.get(key)
 
-    cascade = _as_dict(visibility.get("monitor_entry_candidate_cascade"))
-    if not cascade:
-        cascade = _as_dict(monitor.get("entry_candidate_cascade"))
-    focus_context = _as_dict(visibility.get("monitor_focus_context"))
-    if not focus_context:
-        focus_context = _as_dict(monitor.get("monitor_focus_context"))
+    cascade = _first_dict(
+        _as_dict(entry_monitor.get("entry_candidate_cascade")),
+        _as_dict(_as_dict(entry_monitor.get("scanner_monitor_handoff")).get("entry_candidate_cascade")),
+        _as_dict(visibility.get("monitor_entry_candidate_cascade")),
+        _as_dict(monitor.get("entry_candidate_cascade")),
+    )
+    focus_context = _first_dict(
+        _as_dict(entry_monitor.get("monitor_focus_context")),
+        _as_dict(visibility.get("monitor_focus_context")),
+        _as_dict(monitor.get("monitor_focus_context")),
+    )
+    grouped_trace = _first_dict(
+        _as_dict(entry_monitor.get("entry_grouped_logic_trace")),
+        _as_dict(_as_dict(entry_monitor.get("threshold_snapshot")).get("entry_grouped_logic_trace")),
+        _as_dict(visibility.get("entry_grouped_logic_trace")),
+    )
 
     out: Dict[str, Any] = {}
     if proposal:
@@ -2339,10 +2193,89 @@ def _resolve_entry_execution_visibility(report: Dict[str, Any]) -> Dict[str, Any
         out["monitor_entry_candidate_cascade"] = cascade
     if focus_context:
         out["monitor_focus_context"] = focus_context
+    if grouped_trace:
+        out["entry_grouped_logic_trace"] = grouped_trace
     summary = _metadata_value(visibility.get("summary"))
     if summary:
         out["summary"] = summary
     return out
+
+
+def _first_dict(*items: Dict[str, Any]) -> Dict[str, Any]:
+    for item in items:
+        if isinstance(item, dict) and item:
+            return item
+    return {}
+
+
+def _safe_read_json_object(path_value: Any) -> Dict[str, Any]:
+    text = str(path_value or "").strip()
+    if not text:
+        return {}
+    try:
+        path = Path(text)
+        if not path.exists() or not path.is_file():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _is_entry_monitor_artifact(payload: Dict[str, Any]) -> bool:
+    if not payload:
+        return False
+    focus = _as_dict(payload.get("monitor_focus_context"))
+    if bool(payload.get("entry_triggered")) or str(payload.get("entry_decision") or "").upper() == "BUY":
+        return True
+    if bool(focus.get("entry_triggered")) or str(focus.get("entry_decision") or "").upper() == "BUY":
+        return True
+    return False
+
+
+def _canonical_monitor_from_trade_report_path(report: Dict[str, Any], run_id: str) -> Dict[str, Any]:
+    paths = _as_dict(report.get("paths"))
+    report_path_text = str(paths.get("ai_trade_report_json") or "").strip()
+    if not report_path_text or not run_id:
+        return {}
+    try:
+        report_path = Path(report_path_text)
+        parts = list(report_path.parts)
+        idx = parts.index("trades")
+        reports_root = Path(*parts[:idx])
+        day = parts[idx + 1]
+    except Exception:
+        return {}
+    return _safe_read_json_object(reports_root / "canonical" / day / run_id / "monitor.json")
+
+
+def _canonical_monitor_from_section_provenance(report: Dict[str, Any]) -> Dict[str, Any]:
+    provenance = _as_dict(report.get("section_provenance"))
+    for key in ("entry_decision", "why_this_symbol_was_chosen", "market_context_at_entry"):
+        row = _as_dict(provenance.get(key))
+        artifact_path = str(row.get("artifact_path") or "").strip()
+        if not artifact_path:
+            continue
+        monitor = _safe_read_json_object(Path(artifact_path).with_name("monitor.json"))
+        if _is_entry_monitor_artifact(monitor):
+            return monitor
+    return {}
+
+
+def _resolve_entry_monitor_artifact(report: Dict[str, Any]) -> Dict[str, Any]:
+    fact_payload = _as_dict(report.get("fact_payload"))
+    trade_payload = _as_dict(fact_payload.get("trade"))
+    entry_summary = _as_dict(trade_payload.get("entry_summary"))
+    entry_monitor = _as_dict(entry_summary.get("monitor_context"))
+    if _is_entry_monitor_artifact(entry_monitor):
+        return entry_monitor
+
+    entry_run_id = str(entry_summary.get("run_id") or report.get("run_id") or "").strip()
+    monitor = _canonical_monitor_from_trade_report_path(report, entry_run_id)
+    if _is_entry_monitor_artifact(monitor):
+        return monitor
+
+    return _canonical_monitor_from_section_provenance(report)
 
 
 def _rank_scope_text(row: Dict[str, Any]) -> str:
@@ -2690,69 +2623,15 @@ def _korea_index_lines(context: Dict[str, Any]) -> List[str]:
 
 
 def _operator_pnl_pct(truth_pnl: Dict[str, Any], shared: Dict[str, Any]) -> tuple[Any, bool]:
-    pct = truth_pnl.get("pct")
-    if pct not in (None, ""):
-        return pct, False
-    if str(truth_pnl.get("pct_display_role") or "").strip() == "fallback_mark_only":
-        display = truth_pnl.get("pct_display")
-        if display not in (None, ""):
-            return display, True
-    shared_pct = shared.get("pnl_pct")
-    if shared_pct not in (None, ""):
-        return shared_pct, False
-    return "", False
+    return _operator_pnl_pct_impl(truth_pnl, shared)
 
 
 def _first_present(*values: Any) -> Any:
-    for value in values:
-        if value not in (None, ""):
-            return value
-    return ""
+    return _first_present_impl(*values)
 
 
 def _extract_trade_quantity(report: Dict[str, Any]) -> Optional[float]:
-    shared = _as_dict(report.get("shared_facts"))
-    resolved = _as_dict(shared.get("resolved_trade_facts"))
-    fact_payload = _as_dict(report.get("fact_payload"))
-    fact_trade = _as_dict(fact_payload.get("trade"))
-    execution_details = _as_dict(fact_trade.get("execution_details"))
-    entry_execution_details = _as_dict(fact_trade.get("entry_execution_details"))
-    exit_execution_details = _as_dict(fact_trade.get("exit_execution_details"))
-    execution_outcome = _as_dict(fact_trade.get("execution_outcome_human"))
-    exit_summary = _as_dict(fact_trade.get("exit_summary"))
-    execution_context = _as_dict(exit_summary.get("execution_context"))
-    canonical = _as_dict(fact_trade.get("canonical_agent_artifacts"))
-    monitor_snapshot = _as_dict(_as_dict(canonical.get("monitor")).get("position_snapshot"))
-    supervisor_order = _as_dict(_as_dict(canonical.get("supervisor")).get("order_request_summary"))
-    executor = _as_dict(canonical.get("executor"))
-    executor_order = _as_dict(executor.get("order_request_summary"))
-
-    candidates = (
-        shared.get("filled_qty"),
-        shared.get("quantity"),
-        shared.get("qty"),
-        resolved.get("filled_qty"),
-        resolved.get("quantity"),
-        resolved.get("qty"),
-        execution_details.get("filled_qty"),
-        execution_details.get("quantity"),
-        execution_details.get("qty"),
-        entry_execution_details.get("filled_qty"),
-        exit_execution_details.get("filled_qty"),
-        execution_outcome.get("quantity"),
-        execution_context.get("quantity"),
-        execution_context.get("qty"),
-        monitor_snapshot.get("qty"),
-        supervisor_order.get("qty"),
-        executor.get("filled_qty"),
-        executor.get("qty"),
-        executor_order.get("qty"),
-    )
-    for candidate in candidates:
-        qty = _num_opt(candidate)
-        if qty is not None and qty > 0:
-            return qty
-    return None
+    return _extract_trade_quantity_impl(report, as_dict=_as_dict, num_opt=_num_opt)
 
 
 def _infer_trade_quantity_from_costs(
@@ -2763,151 +2642,34 @@ def _infer_trade_quantity_from_costs(
     fee: Any,
     tax: Any,
 ) -> Optional[float]:
-    buy = _num_opt(buy_price)
-    sell = _num_opt(sell_price)
-    pnl_num = _num_opt(pnl)
-    fee_num = _num_opt(fee) or 0.0
-    tax_num = _num_opt(tax) or 0.0
-    if buy is None or sell is None or pnl_num is None:
-        return None
-    price_delta = sell - buy
-    if abs(price_delta) < 1e-9:
-        return None
-    gross_price_pnl = pnl_num + fee_num + tax_num
-    qty = gross_price_pnl / price_delta
-    if qty <= 0:
-        return None
-    rounded = round(qty)
-    if rounded > 0 and abs(qty - rounded) <= 0.05:
-        return float(rounded)
-    return qty if qty < 1_000_000 else None
+    return _infer_trade_quantity_from_costs_impl(
+        buy_price=buy_price,
+        sell_price=sell_price,
+        pnl=pnl,
+        fee=fee,
+        tax=tax,
+        num_opt=_num_opt,
+    )
 
 
 def _build_trade_cost_analysis(report: Dict[str, Any]) -> Dict[str, Any]:
-    shared = _as_dict(report.get("shared_facts"))
-    truth = _get_truth_surface(report)
-    truth_price = _as_dict(truth.get("price"))
-    truth_pnl = _as_dict(truth.get("pnl"))
-
-    buy = _num_opt(_first_present(truth_price.get("broker_buy_price"), shared.get("broker_buy_price")))
-    sell = _num_opt(_first_present(truth_price.get("broker_fill_price"), shared.get("broker_fill_price")))
-    pnl = _num_opt(_first_present(shared.get("pnl"), truth_pnl.get("value")))
-    broker_pct = _num_opt(truth_pnl.get("pct"))
-    observed_pct, observed_pct_is_fallback = _operator_pnl_pct(truth_pnl, shared)
-    observed_pct_num = _num_opt(observed_pct) if observed_pct_is_fallback else None
-    fee_raw = _first_present(shared.get("broker_fee"), truth_pnl.get("broker_fee"))
-    tax_raw = _first_present(shared.get("broker_tax"), truth_pnl.get("broker_tax"))
-    fee_num = _num_opt(fee_raw)
-    tax_num = _num_opt(tax_raw)
-    fee_known = fee_num is not None
-    tax_known = tax_num is not None
-    fee = fee_num if fee_num is not None else 0.0
-    tax = tax_num if tax_num is not None else 0.0
-    total_cost = fee + tax
-    if buy is None or buy <= 0:
-        return {}
-    price_move_pct = ((sell - buy) / buy) if sell is not None and sell > 0 else None
-
-    qty = _extract_trade_quantity(report)
-    qty_source = "artifact"
-    if qty is None:
-        qty = _infer_trade_quantity_from_costs(
-            buy_price=buy,
-            sell_price=sell,
-            pnl=pnl,
-            fee=fee,
-            tax=tax,
-        )
-        qty_source = "inferred_from_pnl_fee_tax"
-    if qty is None or qty <= 0:
-        out: Dict[str, Any] = {}
-        if price_move_pct is not None:
-            out["price_move_pct"] = price_move_pct
-        if broker_pct is not None:
-            out["broker_reported_pnl_pct"] = broker_pct
-        elif observed_pct_num is not None:
-            out["observed_pnl_pct"] = observed_pct_num
-            out["observed_pnl_pct_role"] = "fallback_mark_only"
-        if (fee_known or tax_known) and broker_pct is not None and price_move_pct is not None:
-            drag = price_move_pct - broker_pct
-            out["total_cost"] = total_cost
-            out["cost_drag_pct"] = drag
-            out["breakeven_move_pct"] = max(0.0, drag)
-        return out
-
-    buy_notional = buy * qty
-    sell_notional = sell * qty if sell is not None and sell > 0 else None
-    if buy_notional <= 0:
-        return {}
-
-    out: Dict[str, Any] = {
-        "quantity": qty,
-        "quantity_source": qty_source,
-        "buy_notional": buy_notional,
-        "sell_notional": sell_notional,
-    }
-    if fee_known:
-        out["fee"] = fee
-    if tax_known:
-        out["tax"] = tax
-    if fee_known or tax_known:
-        out["total_cost"] = total_cost
-        out["cost_drag_pct"] = total_cost / buy_notional if total_cost else 0.0
-        out["breakeven_move_pct"] = total_cost / buy_notional if total_cost else 0.0
-    if broker_pct is not None:
-        out["broker_reported_pnl_pct"] = broker_pct
-    elif observed_pct_num is not None:
-        out["observed_pnl_pct"] = observed_pct_num
-        out["observed_pnl_pct_role"] = "fallback_mark_only"
-    if sell is not None and sell > 0:
-        out["gross_price_pnl"] = (sell - buy) * qty
-        out["price_move_pct"] = price_move_pct
-    if pnl is not None:
-        out["net_return_pct_on_buy_notional"] = pnl / buy_notional
-        if broker_pct is not None:
-            out["broker_pct_diff_abs"] = abs((pnl / buy_notional) - broker_pct)
-    if fee:
-        out["fee_drag_pct_on_buy_notional"] = fee / buy_notional
-    if tax and sell_notional:
-        out["tax_rate_on_sell_notional"] = tax / sell_notional
-
-    fee_drag = _num_opt(out.get("fee_drag_pct_on_buy_notional")) or 0.0
-    broker_diff = _num_opt(out.get("broker_pct_diff_abs")) or 0.0
-    out["mock_cost_warning"] = bool(fee_known and fee_drag >= 0.002)
-    out["broker_pct_display_warning"] = broker_diff >= 0.002
-    return out
+    return _build_trade_cost_analysis_impl(
+        report,
+        as_dict=_as_dict,
+        num_opt=_num_opt,
+        get_truth_surface_fn=_get_truth_surface,
+        extract_trade_quantity_fn=_extract_trade_quantity,
+    )
 
 
 def _trade_cost_analysis_lines(report: Dict[str, Any], *, bullet: str = "*") -> List[str]:
-    cost = _build_trade_cost_analysis(report)
-    if not cost:
-        return []
-    lines: List[str] = []
-    broker_pct = cost.get("broker_reported_pnl_pct")
-    observed_pct = cost.get("observed_pnl_pct")
-    net_pct = cost.get("net_return_pct_on_buy_notional")
-    total_cost = cost.get("total_cost")
-    cost_drag = cost.get("cost_drag_pct")
-    breakeven = cost.get("breakeven_move_pct")
-    price_move = cost.get("price_move_pct")
-
-    if broker_pct not in (None, ""):
-        lines.append(f"{bullet} 키움 제공 손익률: {_fmt_pct(broker_pct)}")
-    elif observed_pct not in (None, ""):
-        lines.append(f"{bullet} 관측 손익률(비용 미반영): {_fmt_pct(observed_pct)}")
-    if net_pct not in (None, ""):
-        lines.append(f"{bullet} 거래금액 기준 순수익률: **{_fmt_pct(net_pct)}**")
-    if price_move not in (None, ""):
-        lines.append(f"{bullet} 가격 변동률: {_fmt_pct(price_move)}")
-    if total_cost not in (None, "") and cost_drag not in (None, ""):
-        lines.append(f"{bullet} 비용 드래그: {_summary_money(total_cost)} ({_fmt_pct(cost_drag)})")
-    if breakeven not in (None, ""):
-        lines.append(f"{bullet} 손익분기 필요 상승률: 약 {_fmt_pct(breakeven)}")
-    if cost.get("broker_pct_display_warning"):
-        lines.append(f"{bullet} 표시 주의: 키움 제공 손익률은 거래금액 기준 순수익률과 다를 수 있습니다.")
-    if cost.get("mock_cost_warning"):
-        lines.append(f"{bullet} 모의투자 비용 주의: 현재 수수료는 실계좌 OpenAPI 기본 수수료보다 크게 반영될 수 있습니다.")
-    return lines
+    return _trade_cost_analysis_lines_impl(
+        report,
+        bullet=bullet,
+        build_trade_cost_analysis_fn=_build_trade_cost_analysis,
+        fmt_pct=_fmt_pct,
+        summary_money=_summary_money,
+    )
 
 
 def _post_exit_shadow_surface(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -3941,47 +3703,25 @@ def _build_generation_info(report: Dict[str, Any]) -> List[str]:
 
 
 def _get_truth_surface(report: Dict[str, Any]) -> Dict[str, Any]:
-    truth = _as_dict(report.get("truth_surface"))
-    if truth:
-        return truth
-    shared = _as_dict(report.get("shared_facts"))
-    return build_trade_report_truth_surface(shared)
+    return _get_truth_surface_impl(report, as_dict=_as_dict)
 
 
 def _truth_source_label(value: Any) -> str:
-    lowered = _clip(value, 80).lower()
-    return {
-        "broker_fill": "브로커 체결가 기준",
-        "monitor_mark": "모니터 관측값 기준",
-        "account_mark": "계좌 기준 마크 가격",
-        "kiwoom.ka10077": "키움 당일 실현손익 기준(ka10077)",
-        "broker_fill_account_snapshot_estimate": "브로커 체결가와 계좌 평가손익 역산 기준",
-    }.get(lowered, _metadata_value(value) or "-")
+    return _truth_source_label_impl(value, clip=_clip, metadata_value=_metadata_value)
 
 
 def _boolish(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    text = str(value or "").strip().lower()
-    return text in {"1", "true", "yes", "y", "on"}
+    return _boolish_impl(value)
 
 
 def _pnl_basis_label(truth_pnl: Dict[str, Any], shared: Dict[str, Any]) -> str:
-    source_value = _first_present(shared.get("pnl_truth_source"), truth_pnl.get("pnl_truth_source"))
-    source_label = _truth_source_label(source_value)
-    source_token = _clip(source_value, 80).lower()
-    authoritative = _boolish(_first_present(truth_pnl.get("broker_day_authoritative"), shared.get("broker_day_authoritative")))
-    if source_token == "kiwoom.ka10077" and not authoritative:
-        match_mode = _metadata_value(_first_present(truth_pnl.get("broker_day_match_mode"), shared.get("broker_day_match_mode")))
-        row_count = _metadata_value(_first_present(truth_pnl.get("broker_day_row_count"), shared.get("broker_day_row_count")))
-        details: List[str] = []
-        if match_mode != "-":
-            details.append(f"match={match_mode}")
-        if row_count != "-":
-            details.append(f"rows={row_count}")
-        suffix = f": {', '.join(details)}" if details else ""
-        return f"미확정 ({source_label} 매칭 미확정{suffix})"
-    return source_label
+    return _pnl_basis_label_impl(
+        truth_pnl,
+        shared,
+        clip=_clip,
+        metadata_value=_metadata_value,
+        truth_source_label_fn=_truth_source_label,
+    )
 
 
 def _memory_layer_label(value: Any) -> str:
@@ -4975,7 +4715,7 @@ def _build_strategist_summary(report: Dict[str, Any]) -> List[str]:
 
 
 def _resolve_strategist_output_surface(report: Dict[str, Any]) -> Dict[str, Any]:
-    direct = _as_dict(report.get("strategist_output"))
+    direct = _as_dict(report.get("strategist_output") or report.get("strategist_output_surface"))
     if direct:
         return direct
     strategist = _as_dict(report.get("strategist_summary"))
@@ -5337,287 +5077,48 @@ def _build_strategist_output_surface(report: Dict[str, Any]) -> List[str]:
 
 
 def _is_scanner_execution_mismatch_line(value: Any) -> bool:
-    text = _metadata_value(value)
-    if not text:
-        return False
-    lowered = text.lower()
-    has_mismatch = "불일치" in text or "mismatch" in lowered or "divergence" in lowered
-    has_scanner = "스캐너" in text or "scanner" in lowered
-    has_execution = any(token in text for token in ("실행", "체결", "진입", "선택")) or any(
-        token in lowered for token in ("execution", "executed", "entry", "selected")
-    )
-    return bool(has_mismatch and has_scanner and has_execution)
+    return _is_scanner_execution_mismatch_line_impl(value, metadata_value=_metadata_value)
 
 
 def _is_scanner_selection_label_line(value: Any) -> bool:
-    text = _metadata_value(value)
-    lowered = text.lower()
-    return text.startswith(("스캐너 선택 종목:", "실행 종목:")) or lowered.startswith(
-        ("scanner selected symbol:", "execution symbol:")
-    )
+    return _is_scanner_selection_label_line_impl(value, metadata_value=_metadata_value)
 
 
 def _is_redundant_symbol_selection_line(value: Any) -> bool:
-    text = _metadata_value(value)
-    if not text:
-        return True
-    lowered = text.lower()
-    if text.startswith(
-        (
-            "상위 후보는 ",
-            "스캐너 1순위 ",
-            "스캐너 상위 후보 ",
-            "실제 진입은 ",
-            "총 ",
-            "종합 점수 ",
-            "주요 선정 기준은 ",
-            "선정에는 ",
-            "주요 점수 기여는 ",
-            "전략가 플레이북 ",
-            "대상: ",
-            "스캐너 선정 순위:",
-            "1위였던 ",
-            "Actual traded symbol ",
-            "Fallback entry trigger:",
-            "Top-pick rejection reason:",
-            "Monitor fallback selected ",
-            "Selected rank:",
-        )
-    ):
-        return True
-    if "종합 점수" in text and ("신뢰도" in text or "리스크" in text):
-        return True
-    if "score" in lowered and "rank" in lowered:
-        return True
-    return False
+    return _is_redundant_symbol_selection_line_impl(value, metadata_value=_metadata_value)
 
 
 def _build_symbol_selection(report: Dict[str, Any]) -> List[str]:
-    section = _as_dict(report.get("why_this_symbol_was_chosen"))
-    context = _as_dict(report.get("market_context_at_entry"))
-    lines: List[str] = []
-    trace = _as_dict(section.get("scanner_selection_trace"))
-    ranked = [row for row in _listify(trace.get("ranked_candidates")) if _as_dict(row)]
-    traded_symbol = _metadata_value(report.get("symbol") or section.get("symbol") or trace.get("selected_symbol"))
-    section_symbol = _metadata_value(section.get("symbol") or trace.get("selected_symbol"))
-    fallback = _selection_fallback_context(section, traded_symbol)
-    reanchored_from_stale_symbol = bool(
-        traded_symbol and section_symbol and traded_symbol != "-" and section_symbol != "-" and traded_symbol != section_symbol
+    return _build_symbol_selection_impl(
+        report,
+        as_dict=_as_dict,
+        listify=_listify,
+        metadata_value=_metadata_value,
+        selection_fallback_context=_selection_fallback_context,
+        num_opt=_num_opt,
+        translate_text=_translate_text,
+        looks_corrupted=_looks_corrupted,
+        translate_reason_phrase=_translate_reason_phrase,
+        clip=_clip,
+        section_summary=_section_summary,
+        dedupe=_dedupe,
     )
-    selected_rank = section.get("selected_rank") or trace.get("selected_rank")
-    universe_size = section.get("universe_size") or len(ranked) or "-"
-    valid_universe = isinstance(universe_size, (int, float)) and int(universe_size) > 0
-    selected_score = None
-    selected_confidence = None
-    selected_risk = None
-    traded_row_found = False
-    for row in ranked:
-        item = _as_dict(row)
-        if _metadata_value(item.get("symbol")) == traded_symbol:
-            traded_row_found = True
-            if reanchored_from_stale_symbol:
-                selected_rank = item.get("rank") or item.get("selected_rank")
-            selected_score = item.get("score_total")
-            selected_confidence = item.get("confidence")
-            selected_risk = item.get("risk_score")
-            break
-    if fallback.get("used") and not traded_row_found:
-        selected_score = section.get("selected_score") or trace.get("selected_score") or _as_dict(trace.get("news_scanner_contribution")).get("selected_score_total")
-        selected_confidence = section.get("confidence") or trace.get("confidence")
-        selected_risk = section.get("risk_score") or trace.get("risk_score")
-    if reanchored_from_stale_symbol and not traded_row_found:
-        selected_rank = None
-    valid_rank = isinstance(selected_rank, (int, float)) and int(selected_rank) > 0
-
-    if valid_rank and valid_universe:
-        detail = f"{'차순위 재평가' if fallback.get('used') else '스캐너'} {selected_rank}위"
-        if universe_size not in (None, "", "-"):
-            detail += f"/{universe_size}개 후보"
-        score_num = _num_opt(selected_score)
-        confidence_num = _num_opt(selected_confidence)
-        risk_num = _num_opt(selected_risk)
-        if score_num is not None:
-            detail += f", 점수 {score_num:0.3f}"
-        if confidence_num is not None:
-            detail += f", 신뢰도 {confidence_num:0.3f}"
-        if risk_num is not None:
-            detail += f", 위험 점수 {risk_num:0.3f}"
-        lines.append(f"- 실제 체결 종목 {traded_symbol}은 {detail}로 집계됐습니다.")
-    elif traded_symbol and not ranked:
-        lines.append(f"- 실제 체결 종목 {traded_symbol}은 확인되지만, 저장된 스캐너 비교 표는 남아 있지 않습니다.")
-    elif reanchored_from_stale_symbol and traded_symbol:
-        lines.append(
-            f"- 실제 체결 종목은 {traded_symbol}입니다. 저장된 스캐너 비교 표는 {section_symbol} 기준으로 남아 있어 {traded_symbol}의 체결 근거로 그대로 쓰지 않습니다."
-        )
-
-    basis = _translate_text(section.get("basis"))
-    if basis and not _looks_corrupted(basis) and valid_universe and not reanchored_from_stale_symbol:
-        lines.append(f"- 이 종목은 {basis} 축에서 상대 우위를 보여 최종 체결 후보로 살아남았습니다.")
-
-    fallback_reason = _translate_reason_phrase(_clip(trace.get("monitor_fallback_reason"), 200))
-    if fallback.get("used") and fallback_reason and not _looks_corrupted(fallback_reason):
-        top_pick = fallback.get("scanner_top_pick_symbol") or _metadata_value(trace.get("scanner_top_pick_symbol"))
-        lines.append(
-            f"- 스캐너 상위 후보 {top_pick}은 모니터 단계에서 {fallback_reason} 사유로 보류됐고, {traded_symbol}이 차순위 재평가에서 실제 진입 종목이 됐습니다."
-        )
-
-    score_drivers = _as_dict(trace.get("selected_symbol_score_drivers"))
-    driver_pairs: List[str] = []
-    for key in ("momentum", "intraday_strength", "trend", "trading_value", "theme_boost", "sentiment"):
-        value = _num_opt(score_drivers.get(key))
-        if value is None or value == 0:
-            continue
-        label = {
-            "momentum": "모멘텀",
-            "intraday_strength": "장중 강도",
-            "trend": "추세",
-            "trading_value": "거래대금",
-            "theme_boost": "테마 정렬",
-            "sentiment": "심리 보정",
-        }.get(key, key)
-        driver_pairs.append(f"{label} {value:+0.3f}")
-    if driver_pairs and not (reanchored_from_stale_symbol and not traded_row_found):
-        lines.append(f"- 점수에 직접 반영된 핵심 축은 {', '.join(driver_pairs)}였습니다.")
-
-    summary = _section_summary(section)
-    if (
-        summary
-        and not ranked
-        and not _looks_corrupted(summary)
-        and valid_universe
-        and not _is_scanner_execution_mismatch_line(summary)
-        and not (reanchored_from_stale_symbol and section_symbol in summary and traded_symbol in summary)
-    ):
-        lines.insert(0, summary)
-    for raw in _listify(section.get("bullets")):
-        text = _translate_text(raw)
-        if text and not _looks_corrupted(text):
-            if (
-                (reanchored_from_stale_symbol and not traded_row_found)
-                or
-                text.startswith("실제 체결 종목 ")
-                or text.startswith("fallback 진입 트리거는")
-                or _is_scanner_execution_mismatch_line(text)
-                or _is_scanner_selection_label_line(text)
-                or (ranked and _is_redundant_symbol_selection_line(text))
-                or (reanchored_from_stale_symbol and section_symbol in text and traded_symbol not in text)
-            ):
-                continue
-            lines.append(f"- {text}")
-    for raw in _listify(context.get("bullets")):
-        text = _translate_text(raw)
-        if _looks_corrupted(text):
-            continue
-        if text.startswith("스캐너 연결 근거는"):
-            lines.append(f"- {text}")
-    if not valid_universe:
-        compact: List[str] = []
-        if traded_symbol and traded_symbol != "-":
-            compact.append(f"- 실제 체결 종목 {traded_symbol}은 확인되지만, 저장된 스캐너 비교 표는 남아 있지 않습니다.")
-        preserved_bullets: List[str] = []
-        for raw in _listify(section.get("bullets")):
-            text = _translate_text(raw)
-            if not text or _looks_corrupted(text):
-                continue
-            if any(token in text for token in ["스캐너 순위", "동률 해소 기준", "진입 이유는"]):
-                preserved_bullets.append(f"- {text}")
-        for raw in _listify(context.get("bullets")):
-            text = _translate_text(raw)
-            if text and not _looks_corrupted(text) and text.startswith("스캐너 연결 근거는"):
-                compact.append(f"- {text}")
-                break
-        compact.extend(_dedupe(preserved_bullets[:3]))
-        compact.append("- 이번 거래는 체결 사실은 확인되지만, 저장된 스캐너 순위·점수 표는 부족해 정밀 비교 설명은 생략합니다.")
-        return _dedupe(compact)
-    return _dedupe(lines)
 
 
 def _build_scanner_comparison(report: Dict[str, Any]) -> List[str]:
-    section = _as_dict(report.get("scanner_filters"))
-    why = _as_dict(report.get("why_this_symbol_was_chosen"))
-    lines: List[str] = []
-    summary = _section_summary(section)
-    if summary and not _looks_corrupted(summary):
-        lines.append(summary)
-    else:
-        lines.append("상위 후보 비교와 최종 채택 경로를 저장된 범위에서 정리했습니다.")
-
-    trace = _as_dict(why.get("scanner_selection_trace"))
-    ranked = [row for row in _listify(trace.get("ranked_candidates")) if _as_dict(row)]
-    universe_size = why.get("universe_size") or len(ranked) or 0
-    if ranked:
-        preview: List[str] = []
-        for row in ranked[:3]:
-            item = _as_dict(row)
-            symbol = _metadata_value(item.get("symbol"))
-            score = _num_opt(item.get("score_total"))
-            if symbol and score is not None:
-                preview.append(f"#{item.get('rank')} {symbol}({score:0.3f})")
-        if preview:
-            lines.append(f"- 저장된 비교 순위는 {', '.join(preview)}였습니다.")
-
-        selected_symbol = _metadata_value(trace.get("selected_symbol") or report.get("symbol"))
-        selected_row = None
-        prev_row = None
-        for idx, row in enumerate(ranked):
-            item = _as_dict(row)
-            if _metadata_value(item.get("symbol")) == selected_symbol:
-                selected_row = item
-                if idx > 0:
-                    prev_row = _as_dict(ranked[idx - 1])
-                break
-        if selected_row and prev_row:
-            prev_score = _num_opt(prev_row.get("score_total"))
-            selected_score = _num_opt(selected_row.get("score_total"))
-            if prev_score is not None and selected_score is not None:
-                lines.append(
-                    f"- 최종 체결 종목 {selected_symbol}은 직전 후보 {_metadata_value(prev_row.get('symbol'))}보다 점수가 {prev_score - selected_score:0.3f} 낮았지만, 차순위 재평가 경로에서 채택됐습니다."
-                )
-
-    selection_reason = _clip(trace.get("selection_reason"), 300)
-    if int(universe_size or 0) <= 0:
-        lines = [lines[0]]
-        lines.append("- 저장된 스캐너 후보 표가 없어, 최종 체결 종목과 실행 결과만 확인됩니다.")
-        return _dedupe(lines)
-    if selection_reason and not _looks_corrupted(selection_reason):
-        if selection_reason.startswith("Scanner top pick "):
-            m = re.match(
-                r"Scanner top pick\s+([A-Z0-9]+)\s+was blocked at monitor stage for\s+(.+?),\s+so runner-up re-evaluation selected\s+([A-Z0-9]+)\s+as scanner rank\s+#?(\d+)\s+with score\s+([0-9.]+)\.?",
-                selection_reason,
-                re.I,
-            )
-            if m:
-                reason = _translate_reason_phrase(m.group(2))
-                lines.append(
-                    f"- 최종 선택 경로는 원 스캐너 상위 후보 {m.group(1)}이 모니터 단계에서 {reason} 사유로 보류된 뒤, 차순위 재평가가 {m.group(3)}을 {m.group(4)}위 / 점수 {m.group(5).rstrip('.')}로 채택한 흐름이었습니다."
-                )
-            else:
-                lines.append(f"- 최종 선택 경로는 {_translate_text(selection_reason)}")
-        else:
-            lines.append(f"- 최종 선택 경로는 {_translate_text(selection_reason)}")
-
-    for raw in _listify(section.get("bullets")):
-        text = _translate_text(raw)
-        if text and not _looks_corrupted(text):
-            lines.append(f"- {text}")
-    deduped = _dedupe(lines)
-    if len(deduped) <= 3:
-        return deduped
-    compact: List[str] = []
-    first = deduped[0]
-    compact.append(first)
-    rest = deduped[1:]
-    key_lines: List[str] = []
-    for line in rest:
-        lowered = line.lower()
-        if any(token in lowered for token in ["시장 심리", "vix", "스트레스 신호", "시장 뉴스", "전략가 핵심 입력", "스캐너 연결 근거", "동률 해소 기준", "스캐너 순위"]):
-            key_lines.append(line)
-    if not key_lines:
-        key_lines = rest[:2]
-    compact.extend(_dedupe(key_lines[:3]))
-    if len(rest) > len(key_lines[:3]):
-        compact.append("- 장중 맥락의 나머지 세부 값은 저장된 시장 환경 근거에 남아 있습니다.")
-    return _dedupe(compact)
+    return _build_scanner_comparison_impl(
+        report,
+        as_dict=_as_dict,
+        listify=_listify,
+        metadata_value=_metadata_value,
+        section_summary=_section_summary,
+        looks_corrupted=_looks_corrupted,
+        num_opt=_num_opt,
+        clip=_clip,
+        translate_text=_translate_text,
+        translate_reason_phrase=_translate_reason_phrase,
+        dedupe=_dedupe,
+    )
 
 def _build_entry_decision(report: Dict[str, Any]) -> List[str]:
     section = _as_dict(report.get("entry_decision"))
@@ -5651,223 +5152,92 @@ def _build_guard_approval(report: Dict[str, Any]) -> List[str]:
     return _dedupe(lines)
 
 def _parse_monitor_bullet(text: str) -> Optional[str]:
-    if not text:
-        return None
-    if m := re.fullmatch(r"Monitor runs:\s*(\d+)", text, re.I):
-        return f"모니터는 총 {m.group(1)}회 실행되었습니다."
-    if m := re.fullmatch(r"Posture:\s*(.+)", text, re.I):
-        return f"현재 포지션 판단은 {_action_label(m.group(1))}입니다."
-    if m := re.fullmatch(r"Effective stop:\s*([0-9.]+%)\s*\(([^)]+)\)", text, re.I):
-        return f"유효 손절 기준은 {m.group(1)}입니다, 기준 축은 {_axis_label(m.group(2))}입니다."
-    if m := re.fullmatch(r"Effective stop:\s*([0-9.]+%)", text, re.I):
-        return f"유효 손절 기준은 {m.group(1)}입니다."
-    if m := re.fullmatch(r"Take profit:\s*([0-9.]+%)", text, re.I):
-        return f"목표 수익 실현 기준은 {m.group(1)}입니다."
-    if m := re.fullmatch(r"Watch axes:\s*(.+)", text, re.I):
-        axes = ", ".join(_axis_label(part.strip()) for part in m.group(1).split(","))
-        return f"주요 감시 축은 {axes}입니다."
-    if m := re.fullmatch(r"Decision chain:\s*(.+)", text, re.I):
-        return f"판단 흐름은 {m.group(1)} 순서로 이어졌습니다."
-    if m := re.fullmatch(r"Current price / avg / peak:\s*(.+)", text, re.I):
-        return f"청산 직전 모니터 관측값(현재/평균/고점)은 {m.group(1)}입니다."
-    if m := re.fullmatch(r"Current drawdown / peak drawdown:\s*(.+)", text, re.I):
-        return f"청산 직전 모니터 기준 손익 변동/고점 대비 하락폭은 {m.group(1)}입니다."
-    if m := re.fullmatch(r"Exit trigger:\s*(.+)", text, re.I):
-        return f"청산 트리거 상태는 {_metadata_value(m.group(1))}입니다."
-    return _translate_text(text)
+    return _parse_monitor_bullet_impl(
+        text,
+        action_label=_action_label,
+        axis_label=_axis_label,
+        metadata_value=_metadata_value,
+        translate_text=_translate_text,
+    )
 
 
 def _normalize_monitor_story_line(text: str, *, closed_trade: bool = False) -> Optional[str]:
-    raw = _clip(text, 240)
-    if not raw or raw == "보유 시간은 0였습니다.":
-        return None
-    parsed = _parse_monitor_bullet(raw)
-    if not parsed:
-        return None
-    if _looks_corrupted(parsed):
-        return None
-    if not closed_trade:
-        return parsed
-    if parsed.startswith("현재 포지션 판단은 "):
-        return parsed.replace("현재 포지션 판단은 ", "청산 직전 모니터 판단은 ", 1)
-    if parsed.startswith("현재가, 평균가, 고점 기준 값은 "):
-        return parsed.replace("현재가, 평균가, 고점 기준 값은 ", "청산 직전 모니터 관측값(현재/평균/고점)은 ", 1)
-    if parsed.startswith("현재 손익 변동과 고점 대비 하락폭은 "):
-        return parsed.replace("현재 손익 변동과 고점 대비 하락폭은 ", "청산 직전 모니터 기준 손익 변동/고점 대비 하락폭은 ", 1)
-    if parsed.startswith("가격 기준 소스는 "):
-        return parsed.replace("가격 기준 소스는 ", "청산 직전 모니터 가격 소스는 ", 1)
-    return parsed
+    return _normalize_monitor_story_line_impl(
+        text,
+        closed_trade=closed_trade,
+        clip=_clip,
+        parse_monitor_bullet_fn=_parse_monitor_bullet,
+        looks_corrupted=_looks_corrupted,
+    )
 
 
 def _closed_trade_monitor_preface(report: Dict[str, Any]) -> List[str]:
-    if not _is_closed_trade_context(report):
-        return []
-    truth = _get_truth_surface(report)
-    price = _as_dict(truth.get("price"))
-    pnl = _as_dict(truth.get("pnl"))
-    monitor = _as_dict(report.get("monitor_snapshot"))
-    lines = [f"- {_badge('모니터 관측', '#b91c1c')} 청산 직전 모니터 관측 기준입니다."]
-    monitor_mark = price.get("monitor_mark_price") or monitor.get("current_price")
-    broker_fill = price.get("broker_fill_price")
-    if monitor_mark not in (None, "") and broker_fill not in (None, ""):
-        lines.append(f"청산 직전 모니터 관측가는 {_fmt_price(monitor_mark)}였고 실제 매도 체결가는 {_fmt_price(broker_fill)}였습니다.")
-    if pnl.get("value") not in (None, "", "unavailable") and pnl.get("pct") not in (None, ""):
-        lines.append(f"실제 실현손익은 {pnl.get('value')} / {_fmt_pct(pnl.get('pct'))}였습니다.")
-    return lines
+    return _closed_trade_monitor_preface_impl(
+        report,
+        is_closed_trade_context=_is_closed_trade_context,
+        get_truth_surface=_get_truth_surface,
+        as_dict=_as_dict,
+        badge=_badge,
+        fmt_price=_fmt_price,
+        fmt_pct=_fmt_pct,
+    )
 
 
 def _build_holding_story(report: Dict[str, Any]) -> List[str]:
-    section = _as_dict(report.get("holding_monitoring_story"))
-    lines: List[str] = []
-    summary = _section_summary(section)
-    monitor = _as_dict(report.get("monitor_snapshot"))
-    closed_trade = _is_closed_trade_context(report)
-    if (not closed_trade or not monitor) and summary:
-        lines.append(summary)
-    if not closed_trade or not monitor:
-        for raw in _listify(section.get("bullets")):
-            text = _normalize_monitor_story_line(_clip(raw, 240), closed_trade=closed_trade)
-            if text:
-                lines.append(f"- {text}")
-        if monitor and monitor.get("posture") and not any("모니터 판단은" in line for line in lines):
-            if closed_trade:
-                lines.append(f"- 청산 직전 모니터 판단은 {_action_label(monitor.get('posture'))}입니다.")
-            else:
-                lines.append(f"- 현재 포지션 판단은 {_action_label(monitor.get('posture'))}입니다.")
-        return _dedupe(lines)
-
-    age_seconds = _num_opt(monitor.get("position_age_seconds"))
-    active_axis = _axis_label(monitor.get("active_exit_axis"))
-    if age_seconds is not None and active_axis and active_axis != "-":
-        lines.append(f"- 보유 시간은 약 {int(age_seconds)}초였고, 모니터의 핵심 감시 축은 {active_axis}이었습니다.")
-    else:
-        if age_seconds is not None:
-            lines.append(f"- 보유 시간은 약 {int(age_seconds)}초였습니다.")
-        if active_axis and active_axis != "-":
-            lines.append(f"- 당시 우선 감시 중이던 청산 축은 {active_axis}이었습니다.")
-
-    current_price = monitor.get("current_price")
-    average_price = monitor.get("average_price")
-    peak_price = monitor.get("peak_price")
-    current_drawdown = monitor.get("current_drawdown")
-    peak_drawdown = monitor.get("peak_drawdown")
-    observation_parts = []
-    if current_price not in (None, "") or average_price not in (None, "") or peak_price not in (None, ""):
-        observation_parts.append(f"관측값(현재/평균/고점)은 {_fmt_price(current_price)} / {_fmt_price(average_price)} / {_fmt_price(peak_price)}")
-    if current_drawdown not in (None, "") or peak_drawdown not in (None, ""):
-        observation_parts.append(f"모니터 기준 손익 변동/고점 대비 하락폭은 {_fmt_pct(current_drawdown)} / {_fmt_pct(peak_drawdown)}")
-    if observation_parts:
-        lines.append(f"- 청산 직전 {'이며, '.join(observation_parts)}였습니다.")
-    return _dedupe(lines)
+    return _build_holding_story_impl(
+        report,
+        as_dict=_as_dict,
+        section_summary=_section_summary,
+        is_closed_trade_context=_is_closed_trade_context,
+        listify=_listify,
+        clip=_clip,
+        normalize_monitor_story_line_fn=_normalize_monitor_story_line,
+        action_label=_action_label,
+        dedupe=_dedupe,
+        num_opt=_num_opt,
+        axis_label=_axis_label,
+        fmt_price=_fmt_price,
+        fmt_pct=_fmt_pct,
+    )
 
 def _build_exit_decision(report: Dict[str, Any]) -> List[str]:
-    section = _as_dict(report.get("exit_decision"))
-    shared = _as_dict(report.get("shared_facts"))
-    monitor = _as_dict(report.get("monitor_snapshot"))
-    lines: List[str] = []
-    summary = _section_summary(section)
-    closed_trade = _is_closed_trade_context(report)
-    if summary and (not closed_trade or not monitor):
-        lines.append(summary)
-    for pre in _closed_trade_monitor_preface(report):
-        lines.append(pre)
-    if not closed_trade or not monitor:
-        for raw in _listify(section.get("bullets")):
-            raw_text = _clip(raw, 240)
-            text = _translate_text(raw_text)
-            if not text:
-                continue
-            if raw_text.lower().startswith("trigger type:"):
-                lines.append(f"- 실제 청산 트리거는 {_axis_label(raw_text.split(':', 1)[1].strip())}였습니다.")
-                continue
-            if raw_text.lower().startswith("exit action:"):
-                lines.append(f"- 청산 액션은 {_action_label(raw_text.split(':',1)[1].strip())}입니다.")
-                continue
-            if raw_text.lower().startswith("exit reason:"):
-                lines.append(f"- 정규화된 청산 사유는 {_axis_label(raw_text.split(':',1)[1].strip())}입니다.")
-                continue
-            parsed = _normalize_monitor_story_line(raw_text, closed_trade=_clip(report.get("status"), 20).lower() == "closed")
-            if not parsed:
-                parsed = _normalize_monitor_story_line(text, closed_trade=_clip(report.get("status"), 20).lower() == "closed")
-            if not parsed:
-                continue
-            lines.append(f"- {parsed}")
-    action = _action_label(shared.get("action") or report.get("action"))
-    if action and action != "-":
-        lines.append(f"- 청산 액션은 {action}입니다.")
-    exit_reason = shared.get("exit_reason") or monitor.get("trigger_type")
-    if exit_reason:
-        lines.append(f"- 정규화된 청산 사유는 {_axis_label(exit_reason)}입니다.")
-    trigger_type = monitor.get("trigger_type")
-    if trigger_type:
-        lines.append(f"- 실제 청산 트리거는 {_axis_label(trigger_type)}이었습니다.")
-    if monitor.get("effective_stop_loss_pct") not in (None, ""):
-        lines.append(
-            f"- 청산 시점의 유효 손절 기준은 {_fmt_pct(monitor.get('effective_stop_loss_pct'))}입니다, 기준 축은 {_axis_label(monitor.get('effective_stop_reason'))}입니다."
-        )
-    return _dedupe(lines)
+    return _build_exit_decision_impl(
+        report,
+        as_dict=_as_dict,
+        section_summary=_section_summary,
+        is_closed_trade_context=_is_closed_trade_context,
+        closed_trade_monitor_preface_fn=_closed_trade_monitor_preface,
+        listify=_listify,
+        clip=_clip,
+        translate_text=_translate_text,
+        axis_label=_axis_label,
+        action_label=_action_label,
+        normalize_monitor_story_line_fn=_normalize_monitor_story_line,
+        fmt_pct=_fmt_pct,
+        dedupe=_dedupe,
+    )
 
 
 def _build_monitor_snapshot(report: Dict[str, Any]) -> List[str]:
-    monitor = _as_dict(report.get("monitor_snapshot"))
-    if not monitor and not _resolve_entry_execution_visibility(report):
-        return []
-    lines: List[str] = []
-    for watch_line in _entry_watch_execution_lines(report):
-        lines.append(f"- {watch_line}")
-    trigger = _axis_label(monitor.get("trigger_type"))
-    if trigger and trigger != "-":
-        lines.append(f"- 실제 청산 트리거는 {trigger}이었습니다.")
-
-    thresholds: List[str] = []
-    if monitor.get("effective_stop_loss_pct") not in (None, ""):
-        thresholds.append(f"유효 손절 {_fmt_pct(monitor.get('effective_stop_loss_pct'))}")
-    if monitor.get("take_profit_pct") not in (None, ""):
-        thresholds.append(f"목표 수익 실현 {_fmt_pct(monitor.get('take_profit_pct'))}")
-    if monitor.get("trailing_stop_pct") not in (None, ""):
-        thresholds.append(f"추적 손절 {_fmt_pct(monitor.get('trailing_stop_pct'))}")
-    if thresholds:
-        lines.append(f"- 모니터가 함께 본 기준은 {', '.join(thresholds)}였습니다.")
-
-    watch_axes = [_axis_label(x) for x in _listify(monitor.get("watch_axes")) if _axis_label(x) not in {"", "-"}]
-    if watch_axes:
-        lines.append(f"- 별도 조건 축은 {', '.join(watch_axes)}이었습니다.")
-    if str(monitor.get("price_source") or "").strip():
-        lines.append(f"- 모니터 가격 소스는 {_price_source_label(monitor.get('price_source'))}입니다.")
-    if str(monitor.get("price_source_policy") or "").strip():
-        lines.append(f"- 가격 소스 우선순위는 {_price_source_policy_label(monitor.get('price_source_policy'))}")
-    return lines
+    return _build_monitor_snapshot_impl(
+        report,
+        as_dict=_as_dict,
+        resolve_entry_execution_visibility=_resolve_entry_execution_visibility,
+        entry_watch_execution_lines=_entry_watch_execution_lines,
+        axis_label=_axis_label,
+        fmt_pct=_fmt_pct,
+        listify=_listify,
+        price_source_label=_price_source_label,
+        price_source_policy_label=_price_source_policy_label,
+    )
 
 
 def _price_source_label(value: Any) -> str:
-    raw = _clip(value, 180)
-    mapping = {
-        "position.current_price": "포지션 현재가",
-        "market.quote": "시장 호가",
-        "selected": "선택 종목 가격",
-        "market_snapshot": "시장 스냅샷",
-        "position.avg_plus_unrealized": "평균가와 평가손익 기반 가격",
-        "state.minute_ohlcv_by_symbol.close": "분봉 종가",
-    }
-    return mapping.get(raw, _metadata_value(raw) or "-")
+    return _price_source_label_impl(value, clip=_clip, metadata_value=_metadata_value)
 
 
 def _price_source_policy_label(value: Any) -> str:
-    raw = _clip(value, 500)
-    if not raw:
-        return "-"
-    replacements = {
-        "market.quote": "시장 호가",
-        "position.current_price": "포지션 현재가",
-        "selected": "선택 종목 가격",
-        "market_snapshot": "시장 스냅샷",
-        "position.avg_plus_unrealized": "평균가와 평가손익 기반 가격",
-        "effective_exit_price prefers the most conservative sane cross-check price and falls back when account-derived mark is anomalous": "청산가는 보수적인 교차검증 가격을 우선하고, 계좌 기반 가격이 비정상일 때 대체값을 사용합니다.",
-    }
-    out = raw
-    for src, dst in replacements.items():
-        out = out.replace(src, dst)
-    return out
+    return _price_source_policy_label_impl(value, clip=_clip)
 
 def _build_execution_quality(report: Dict[str, Any]) -> List[str]:
     truth = _get_truth_surface(report)

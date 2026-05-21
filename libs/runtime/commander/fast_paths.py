@@ -115,33 +115,37 @@ def run_closeout_guard_fast_path(
     state = hydrate_closeout_account_orders_fn(state)
     pending_buy_cancel_intents = pending_buy_cancel_intents_from_account_orders_fn(state)
     if pending_buy_cancel_intents:
-        cancel_intent = dict(pending_buy_cancel_intents[0])
-        state["selected"] = {
-            "symbol": cancel_intent.get("symbol"),
-            "_monitor_synthetic_selected": True,
-            "_closeout_guard_selected": True,
-            "_pending_buy_cancel_selected": True,
-        }
-        state["commander_pending_buy_cancel"] = {
-            "detected": True,
-            "intent": dict(cancel_intent),
-            "candidate_count": len(pending_buy_cancel_intents),
-            "reason": "session_closeout_pending_buy_cancel",
-        }
-        state["decision"] = "approve"
-        state["decision_reason"] = "session_closeout_pending_buy_cancel"
-        state["decision_packet"] = build_packet_from_state_fn(state, intent=cancel_intent)
-        log_commander_event_fn(
-            state,
-            "pending_buy_cancel",
-            {
-                "path": "integrated_chain_closeout_guard",
+        executed_cancels = []
+        for cancel_intent_raw in pending_buy_cancel_intents:
+            cancel_intent = dict(cancel_intent_raw)
+            state["selected"] = {
                 "symbol": cancel_intent.get("symbol"),
-                "orig_ord_no": cancel_intent.get("orig_ord_no"),
+                "_monitor_synthetic_selected": True,
+                "_closeout_guard_selected": True,
+                "_pending_buy_cancel_selected": True,
+            }
+            state["commander_pending_buy_cancel"] = {
+                "detected": True,
+                "intent": dict(cancel_intent),
                 "candidate_count": len(pending_buy_cancel_intents),
-            },
-        )
-        state = execute_fn(state)
+                "reason": "session_closeout_pending_buy_cancel",
+            }
+            state["decision"] = "approve"
+            state["decision_reason"] = "session_closeout_pending_buy_cancel"
+            state["decision_packet"] = build_packet_from_state_fn(state, intent=cancel_intent)
+            log_commander_event_fn(
+                state,
+                "pending_buy_cancel",
+                {
+                    "path": "integrated_chain_closeout_guard",
+                    "symbol": cancel_intent.get("symbol"),
+                    "orig_ord_no": cancel_intent.get("orig_ord_no"),
+                    "candidate_count": len(pending_buy_cancel_intents),
+                },
+            )
+            state = execute_fn(state)
+            executed_cancels.append(dict(cancel_intent))
+        state["commander_pending_buy_cancel"]["executed_intents"] = executed_cancels
         shadow_runtime["monitor_decision"] = "CANCEL"
         shadow_runtime["executor_action"] = str(
             (((state.get("execution") or {}).get("order") or {}).get("action") or "CANCEL")
@@ -181,18 +185,50 @@ def run_closeout_guard_fast_path(
                 return apply_strategist_block_fn(state, phase="closeout")
 
     log_commander_event_fn(state, "fast_path", {"path": "integrated_chain_closeout_guard", **closeout_payload})
-    state = run_monitor_decision_path(
-        state,
-        shadow_runtime=shadow_runtime,
-        hydrate_monitor_symbol_features_fn=hydrate_monitor_symbol_features_fn,
-        monitor_node_fn=monitor_node_fn,
-        decision_node_fn=decision_node_fn,
-        execute_fn=execute_fn,
-        emit_trade_report_fn=emit_trade_report_fn,
-        update_state_after_execution_fn=update_state_after_execution_fn,
-        intent_from_monitor_state_fn=intent_from_monitor_state_fn,
-        build_packet_from_state_fn=build_packet_from_state_fn,
-    )
+    symbols_for_closeout = list(dict.fromkeys([str(x) for x in held_symbols if str(x or "").strip()]))
+    if not symbols_for_closeout and focus_symbol:
+        symbols_for_closeout = [str(focus_symbol)]
+    attempted_symbols = []
+    if symbols_for_closeout:
+        for symbol in symbols_for_closeout:
+            state["selected"] = {
+                "symbol": symbol,
+                "_monitor_synthetic_selected": True,
+                "_closeout_guard_selected": True,
+                "_closeout_guard_sweep": True,
+            }
+            state = hydrate_monitor_symbol_features_fn(state)
+            state = run_monitor_decision_path(
+                state,
+                shadow_runtime=shadow_runtime,
+                hydrate_monitor_symbol_features_fn=lambda local_state: local_state,
+                monitor_node_fn=monitor_node_fn,
+                decision_node_fn=decision_node_fn,
+                execute_fn=execute_fn,
+                emit_trade_report_fn=emit_trade_report_fn,
+                update_state_after_execution_fn=update_state_after_execution_fn,
+                intent_from_monitor_state_fn=intent_from_monitor_state_fn,
+                build_packet_from_state_fn=build_packet_from_state_fn,
+            )
+            attempted_symbols.append(symbol)
+    else:
+        state = run_monitor_decision_path(
+            state,
+            shadow_runtime=shadow_runtime,
+            hydrate_monitor_symbol_features_fn=hydrate_monitor_symbol_features_fn,
+            monitor_node_fn=monitor_node_fn,
+            decision_node_fn=decision_node_fn,
+            execute_fn=execute_fn,
+            emit_trade_report_fn=emit_trade_report_fn,
+            update_state_after_execution_fn=update_state_after_execution_fn,
+            intent_from_monitor_state_fn=intent_from_monitor_state_fn,
+            build_packet_from_state_fn=build_packet_from_state_fn,
+        )
+    state["session_closeout_guard_sweep"] = {
+        "attempted_symbols": attempted_symbols,
+        "attempted_count": len(attempted_symbols),
+        "source": "commander_closeout_fast_path",
+    }
     state["path"] = "integrated_chain_closeout_guard"
     record_absent_later_stage_llm_reviews_fn(state)
     return state

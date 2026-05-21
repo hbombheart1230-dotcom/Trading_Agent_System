@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -138,68 +138,104 @@ def _load_existing_open_lifecycle_candidates(
     reports_root: Path,
     day: str,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    day_root = Path(reports_root) / "trades" / str(day or "").strip()
     candidates: Dict[str, List[Dict[str, Any]]] = {}
-    if not day_root.exists():
-        return candidates
-    for trade_dir in iter_trade_dirs(day_root):
-        lifecycle_path = trade_dir / "lifecycle_bundle.json"
-        if not lifecycle_path.exists():
+    day_text = str(day or "").strip()
+    days_to_scan: List[str] = []
+    if day_text:
+        days_to_scan.append(day_text)
+        try:
+            parsed_day = datetime.strptime(day_text, "%Y-%m-%d").date()
+            for offset in range(1, 4):
+                previous = (parsed_day - timedelta(days=offset)).isoformat()
+                if previous not in days_to_scan:
+                    days_to_scan.append(previous)
+        except Exception:
+            pass
+
+    seen_trade_ids: set[str] = set()
+    for scan_day in days_to_scan:
+        day_root = Path(reports_root) / "trades" / scan_day
+        if not day_root.exists():
             continue
-        payload = _read_json_if_exists(lifecycle_path)
-        if not isinstance(payload, dict) or not payload:
-            continue
-        status = str(payload.get("trade_lifecycle_status") or payload.get("status") or "").strip().lower()
-        if status not in {"open", "partial"}:
-            continue
-        entry_ctx = _extract_lifecycle_entry(payload)
-        if not _has_substantive_entry_evidence(entry_ctx):
-            continue
-        exit_ctx = _extract_lifecycle_exit(payload)
-        if str(exit_ctx.get("run_id") or "").strip():
-            # Closed lifecycle should not be reused.
-            continue
-        symbol = normalize_symbol(
-            payload.get("symbol")
-            or entry_ctx.get("symbol")
-            or (payload.get("execution") or {}).get("symbol")
-            or "",
-            allow_test_symbols=True,
-        )
-        if not symbol:
-            continue
-        holding = _extract_lifecycle_holding(payload)
-        run_ids_all = [str(x or "").strip() for x in list(payload.get("linked_run_ids") or []) if str(x or "").strip()]
-        entry_run_id = str(entry_ctx.get("run_id") or "").strip()
-        if entry_run_id and entry_run_id not in run_ids_all:
-            run_ids_all.append(entry_run_id)
-        for item in list(holding.get("run_ids") or []):
-            rid = str(item or "").strip()
-            if rid and rid not in run_ids_all:
-                run_ids_all.append(rid)
-        candidate = {
-            "trade_id": str(payload.get("trade_id") or trade_dir.name or "").strip(),
-            "symbol": symbol,
-            "status": status,
-            "entry": dict(entry_ctx),
-            "holding": dict(holding),
-            "run_ids_all": run_ids_all,
-            "story_type": str(payload.get("story_type") or "simulation"),
-            "execution_mode_label": str(payload.get("execution_mode_label") or "simulation (mock broker)"),
-            "timeline": [dict(row) for row in list(payload.get("timeline") or []) if isinstance(row, dict)],
-            "warnings": [str(x or "") for x in list(payload.get("warnings") or []) if str(x or "").strip()],
-            "entry_ts_epoch": _to_epoch(entry_ctx.get("ts")) or 0.0,
-        }
-        candidates.setdefault(symbol, []).append(candidate)
+        for trade_dir in iter_trade_dirs(day_root):
+            trade_id = str(trade_dir.name or "").strip()
+            if trade_id and trade_id in seen_trade_ids:
+                continue
+            if trade_id:
+                seen_trade_ids.add(trade_id)
+            _add_existing_open_lifecycle_candidate(
+                candidates=candidates,
+                trade_dir=trade_dir,
+                source_day=scan_day,
+            )
     for symbol, rows in candidates.items():
         rows.sort(
             key=lambda row: (
+                str(row.get("source_day") or ""),
                 _trade_id_sequence(str(row.get("trade_id") or "")),
                 float(row.get("entry_ts_epoch") or 0.0),
             ),
             reverse=True,
         )
     return candidates
+
+
+def _add_existing_open_lifecycle_candidate(
+    *,
+    candidates: Dict[str, List[Dict[str, Any]]],
+    trade_dir: Path,
+    source_day: str,
+) -> None:
+    lifecycle_path = trade_dir / "lifecycle_bundle.json"
+    if not lifecycle_path.exists():
+        return
+    payload = _read_json_if_exists(lifecycle_path)
+    if not isinstance(payload, dict) or not payload:
+        return
+    status = str(payload.get("trade_lifecycle_status") or payload.get("status") or "").strip().lower()
+    if status not in {"open", "partial"}:
+        return
+    entry_ctx = _extract_lifecycle_entry(payload)
+    if not _has_substantive_entry_evidence(entry_ctx):
+        return
+    exit_ctx = _extract_lifecycle_exit(payload)
+    if str(exit_ctx.get("run_id") or "").strip():
+        # Closed lifecycle should not be reused.
+        return
+    symbol = normalize_symbol(
+        payload.get("symbol")
+        or entry_ctx.get("symbol")
+        or (payload.get("execution") or {}).get("symbol")
+        or "",
+        allow_test_symbols=True,
+    )
+    if not symbol:
+        return
+    holding = _extract_lifecycle_holding(payload)
+    run_ids_all = [str(x or "").strip() for x in list(payload.get("linked_run_ids") or []) if str(x or "").strip()]
+    entry_run_id = str(entry_ctx.get("run_id") or "").strip()
+    if entry_run_id and entry_run_id not in run_ids_all:
+        run_ids_all.append(entry_run_id)
+    for item in list(holding.get("run_ids") or []):
+        rid = str(item or "").strip()
+        if rid and rid not in run_ids_all:
+            run_ids_all.append(rid)
+    candidate = {
+        "trade_id": str(payload.get("trade_id") or trade_dir.name or "").strip(),
+        "symbol": symbol,
+        "status": status,
+        "entry": dict(entry_ctx),
+        "holding": dict(holding),
+        "run_ids_all": run_ids_all,
+        "story_type": str(payload.get("story_type") or "simulation"),
+        "execution_mode_label": str(payload.get("execution_mode_label") or "simulation (mock broker)"),
+        "timeline": [dict(row) for row in list(payload.get("timeline") or []) if isinstance(row, dict)],
+        "warnings": [str(x or "") for x in list(payload.get("warnings") or []) if str(x or "").strip()],
+        "entry_ts_epoch": _to_epoch(entry_ctx.get("ts")) or 0.0,
+        "source_day": str(source_day or ""),
+        "source_trade_dir": str(trade_dir),
+    }
+    candidates.setdefault(symbol, []).append(candidate)
 
 
 def _snapshot_execution_debug(snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -301,7 +337,11 @@ def _exit_closure_quantity_state(lifecycle: Dict[str, Any], exit_ctx: Dict[str, 
     entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
     holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
     entry_qty = max(0, safe_int(entry.get("qty"), 0))
-    exit_qty = max(0, safe_int(exit_ctx.get("qty"), 0))
+    filled_qty_present = exit_ctx.get("filled_qty") not in (None, "")
+    exit_qty = max(
+        0,
+        safe_int(exit_ctx.get("filled_qty") if filled_qty_present else exit_ctx.get("qty"), 0),
+    )
     previous_partial_exit_qty = _holding_partial_exit_total(holding)
     cumulative_exit_qty = int(previous_partial_exit_qty + exit_qty)
     remaining_qty = max(0, int(entry_qty - cumulative_exit_qty)) if entry_qty > 0 else 0
@@ -311,7 +351,10 @@ def _exit_closure_quantity_state(lifecycle: Dict[str, Any], exit_ctx: Dict[str, 
         "previous_partial_exit_qty": int(previous_partial_exit_qty),
         "cumulative_exit_qty": int(cumulative_exit_qty),
         "remaining_qty": int(remaining_qty),
-        "closes_position": bool(entry_qty <= 0 or (exit_qty > 0 and cumulative_exit_qty >= entry_qty)),
+        "closes_position": bool(
+            (not filled_qty_present and entry_qty <= 0)
+            or (exit_qty > 0 and cumulative_exit_qty >= entry_qty)
+        ),
     }
 
 
@@ -518,6 +561,11 @@ def _build_trade_lifecycles(
             if isinstance(bundle.get("execution_details"), dict)
             else dict(execution)
         )
+        filled_qty = (
+            execution_details.get("filled_qty")
+            if execution_details.get("filled_qty") not in (None, "")
+            else execution.get("filled_qty")
+        )
         has_exit_monitor_trace = bool(
             str(snapshot.get("exit_reason") or "").strip()
             or str(snapshot.get("monitor_reason") or "").strip()
@@ -529,6 +577,7 @@ def _build_trade_lifecycles(
             "action": str(execution.get("action") or "SELL"),
             "price": execution.get("price"),
             "qty": safe_int(execution.get("qty"), 0),
+            "filled_qty": safe_int(filled_qty, 0) if filled_qty not in (None, "") else None,
             "reason_human": str(
                 (monitor_context or {}).get("summary")
                 or (bundle.get("execution_outcome_human") or {}).get("summary")

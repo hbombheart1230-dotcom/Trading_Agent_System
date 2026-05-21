@@ -120,6 +120,9 @@ from libs.runtime.commander.policy_readers import (
     resolve_commander_cooldown_policy as _resolve_commander_cooldown_policy,
     resolve_commander_route_toggle as _resolve_commander_route_toggle,
 )
+from libs.runtime.commander.output_frames import (
+    build_commander_decision_frame as _build_commander_decision_frame_impl,
+)
 from libs.runtime.commander.policy_surface import (
     CANDIDATE_WATCH_DEFAULT_CASCADE_ALLOWED_REASONS as _CANDIDATE_WATCH_DEFAULT_CASCADE_ALLOWED_REASONS,
     CANDIDATE_WATCH_DEFAULT_CASCADE_BLOCKED_REASONS as _CANDIDATE_WATCH_DEFAULT_CASCADE_BLOCKED_REASONS,
@@ -188,6 +191,92 @@ def _runtime_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _mapping(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _build_intraday_performance_circuit(
+    *,
+    strategist_output: Dict[str, Any],
+    memory_packets: Dict[str, Any],
+    current_day: str = "",
+) -> Dict[str, Any]:
+    if not str(current_day or "").strip():
+        return {
+            "schema_version": "intraday_performance_circuit.v1",
+            "active": False,
+            "playbook": str(strategist_output.get("final_playbook") or strategist_output.get("playbook") or "").strip().lower(),
+            "reason": "",
+            "triggers": [],
+            "thresholds": {"loss_count": 3, "avg_return": -0.008, "playbook_win_rate": 0.20},
+            "source": "disabled:no_current_day",
+        }
+    playbook = str(
+        strategist_output.get("final_playbook")
+        or strategist_output.get("playbook")
+        or ""
+    ).strip().lower()
+    daily = _mapping(memory_packets.get("daily_strategy_memory"))
+    resolved_day = str(daily.get("resolved_day") or daily.get("day") or "").strip()
+    if resolved_day and resolved_day != str(current_day or "").strip():
+        return {
+            "schema_version": "intraday_performance_circuit.v1",
+            "active": False,
+            "playbook": playbook,
+            "reason": "",
+            "triggers": [],
+            "thresholds": {"loss_count": 3, "avg_return": -0.008, "playbook_win_rate": 0.20},
+            "source": f"disabled:memory_day_mismatch:{resolved_day}",
+        }
+    pattern_snapshot = _mapping(daily.get("pattern_performance_snapshot"))
+    entry_exit = _mapping(pattern_snapshot.get("entry_exit_combos"))
+    playbook_stats = _mapping(daily.get("playbook_performance_snapshot") or daily.get("playbook_stats"))
+    triggers = []
+
+    if playbook:
+        for combo, payload in entry_exit.items():
+            combo_text = str(combo or "").strip().lower()
+            if not combo_text.startswith(f"{playbook} -> "):
+                continue
+            row = _mapping(payload)
+            loss_count = _coerce_int(row.get("loss_count"), 0)
+            avg_return = _runtime_float(row.get("avg_return"), 0.0)
+            if loss_count >= 3 or avg_return <= -0.008:
+                triggers.append(
+                    {
+                        "scope": "entry_exit_combo",
+                        "combo": combo_text,
+                        "loss_count": int(loss_count),
+                        "avg_return": float(avg_return),
+                    }
+                )
+        row = _mapping(playbook_stats.get(playbook))
+        usage_count = _coerce_int(row.get("usage_count") or row.get("trade_count"), 0)
+        avg_return = _runtime_float(row.get("avg_return"), 0.0)
+        win_rate = _runtime_float(row.get("win_rate"), 0.0)
+        if usage_count >= 3 and (avg_return <= -0.008 or win_rate <= 0.20):
+            triggers.append(
+                {
+                    "scope": "playbook",
+                    "playbook": playbook,
+                    "usage_count": int(usage_count),
+                    "win_rate": float(win_rate),
+                    "avg_return": float(avg_return),
+                }
+            )
+
+    active = bool(triggers)
+    return {
+        "schema_version": "intraday_performance_circuit.v1",
+        "active": active,
+        "playbook": playbook,
+        "reason": "intraday_playbook_exit_combo_underperforming" if active else "",
+        "triggers": triggers[:5],
+        "thresholds": {"loss_count": 3, "avg_return": -0.008, "playbook_win_rate": 0.20},
+        "source": "daily_strategy_memory.pattern_performance_snapshot",
+    }
+
+
 def _runtime_clock_dt_kst(state: Dict[str, Any], *, market_hours: MarketHours | None = None) -> datetime:
     mh = market_hours or MarketHours()
     epoch = _coerce_int(state.get("tick_ts"), 0)
@@ -200,6 +289,97 @@ def _runtime_clock_dt_kst(state: Dict[str, Any], *, market_hours: MarketHours | 
 
 def _runtime_clock_input_present(state: Dict[str, Any]) -> bool:
     return _coerce_int(state.get("tick_ts"), 0) > 0 or _coerce_int(state.get("now_epoch"), 0) > 0
+
+
+def _runtime_day_string_kst(state: Dict[str, Any]) -> str:
+    for key in ("day", "trading_day", "session_day", "trade_day"):
+        raw = str(state.get(key) or "").strip()
+        if not raw:
+            continue
+        if len(raw) == 8 and raw.isdigit():
+            return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+        return raw[:10]
+    return _runtime_clock_dt_kst(state).strftime("%Y-%m-%d")
+
+
+def _record_post_exit_recap_runtime_result(
+    state: Dict[str, Any],
+    *,
+    day: str,
+    trigger: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    runtime = _mapping(state.get("post_exit_shadow_recap_runtime"))
+    triggers = _mapping(runtime.get("triggers"))
+    day_triggers = _mapping(triggers.get(day))
+    day_triggers[trigger] = dict(payload)
+    triggers[day] = day_triggers
+    runtime["triggers"] = triggers
+    runtime["latest"] = {"day": day, "trigger": trigger, **dict(payload)}
+    state["post_exit_shadow_recap_runtime"] = runtime
+    persisted = state.get("persisted_state")
+    if isinstance(persisted, dict):
+        persisted["post_exit_shadow_recap_runtime"] = dict(runtime)
+        state["persisted_state"] = persisted
+    return state
+
+
+def _maybe_run_post_exit_shadow_recap_runtime(
+    state: Dict[str, Any],
+    *,
+    trigger: str,
+) -> Dict[str, Any]:
+    if os.getenv("PYTEST_CURRENT_TEST") and not _env_bool("POST_EXIT_SHADOW_RECAP_RUNTIME_IN_TESTS", False):
+        return state
+    if not _env_bool("POST_EXIT_SHADOW_RECAP_RUNTIME_ENABLED", True):
+        return state
+
+    day = _runtime_day_string_kst(state)
+    trigger_key = str(trigger or "").strip() or "unknown"
+    clock_kst = _runtime_clock_dt_kst(state)
+    if trigger_key == "closeout_guard_after_sweep" and clock_kst.strftime("%H%M") >= "1600":
+        trigger_key = "closeout_guard_after_sweep_1600_final"
+    runtime = _mapping(state.get("post_exit_shadow_recap_runtime"))
+    already = _mapping(_mapping(runtime.get("triggers")).get(day)).get(trigger_key)
+    if already:
+        return state
+
+    reports_root = Path(str(os.getenv("REPORTS_ROOT") or "reports"))
+    report_dir = Path(str(os.getenv("POST_EXIT_SHADOW_RECAP_REPORT_DIR") or "reports/dev/analysis/post_exit_shadow_recap"))
+    state_path_raw = str(os.getenv("STATE_STORE_PATH") or os.getenv("MOCK_EXAM_STATE_PATH") or "data/state.json").strip()
+    state_path = Path(state_path_raw) if state_path_raw else None
+    try:
+        from libs.reporting.post_exit_shadow_recap import generate_post_exit_shadow_recap
+
+        out = generate_post_exit_shadow_recap(
+            reports_root=reports_root,
+            report_dir=report_dir,
+            day=day,
+            state_path=state_path,
+        )
+        summary = _mapping(out.get("summary"))
+        return _record_post_exit_recap_runtime_result(
+            state,
+            day=day,
+            trigger=trigger_key,
+            payload={
+                "ok": True,
+                "source_trigger": str(trigger or ""),
+                "generated_at": str(out.get("generated_at") or ""),
+                "total": int(summary.get("total") or 0),
+                "observed": int(summary.get("observed") or 0),
+                "pending": int(summary.get("pending") or 0),
+                "report_json_path": str(out.get("report_json_path") or ""),
+                "report_md_path": str(out.get("report_md_path") or ""),
+            },
+        )
+    except Exception as exc:
+        return _record_post_exit_recap_runtime_result(
+            state,
+            day=day,
+            trigger=trigger_key,
+            payload={"ok": False, "source_trigger": str(trigger or ""), "error": str(exc)},
+        )
 
 
 def _ensure_market_context_clock_fields(
@@ -2238,6 +2418,7 @@ def _build_commander_entry_control(
     applied_policy: Dict[str, Any],
     max_positions: int = 1,
     strategist_output: Dict[str, Any] | None = None,
+    performance_circuit: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     blocker = str(monitor_feedback.get("dominant_blocker") or "").strip().lower()
     failure_streak = max(0, _coerce_int(monitor_feedback.get("failure_streak"), 0))
@@ -2263,6 +2444,7 @@ def _build_commander_entry_control(
         playbook=str(strategist_data.get("final_playbook") or strategist_data.get("playbook") or ""),
         tactical_strategy=str(strategist_data.get("tactical_strategy") or ""),
     )
+    perf_circuit = dict(performance_circuit or {})
     base: Dict[str, Any] = {
         "schema_version": "commander_entry_control.v1",
         "source": "commander_decision",
@@ -2286,6 +2468,7 @@ def _build_commander_entry_control(
         "max_positions": int(max_positions),
         "capacity_remaining": int(capacity_remaining),
         "open_position_gate_mode": "max_positions",
+        "performance_circuit": perf_circuit,
     }
     if candidate_watch_proposal:
         base["candidate_watch_policy_detected"] = True
@@ -2327,6 +2510,23 @@ def _build_commander_entry_control(
                 force_disable_cascade=True,
                 clamp_reason="preflight_or_runtime_blocked",
             )
+        return base
+    if bool(perf_circuit.get("active")):
+        base.update(
+            {
+                "mode": "intraday_performance_circuit",
+                "decision": "degrade_new_entries_after_intraday_losses",
+                "max_priority_rank": 1,
+                "max_runner_ups": 0,
+                "cascade_enabled": False,
+                "allow_dynamic_entry_band": False,
+                "reason": str(perf_circuit.get("reason") or "intraday_performance_circuit_active"),
+                "candidate_watch_policy_effect": "commander_intraday_performance_circuit",
+                "candidate_watch_policy_clamp_reason": str(
+                    perf_circuit.get("reason") or "intraday_performance_circuit_active"
+                ),
+            }
+        )
         return base
     if candidate_watch_proposal:
         rank_cap = _candidate_watch_rank_cap(
@@ -2772,6 +2972,11 @@ def _build_commander_decision(
         memory_packets=memory_packets,
     )
     monitor_memory_bias_summary = summarize_monitor_memory_bias(monitor_memory_bias)
+    intraday_performance_circuit = _build_intraday_performance_circuit(
+        strategist_output=strategist_output,
+        memory_packets=memory_packets,
+        current_day=str(state.get("day") or state.get("trading_day") or state.get("session_day") or ""),
+    )
     horizon_proposal = {}
     if isinstance(strategist_output.get("strategist_horizon_proposal"), dict):
         horizon_proposal = dict(strategist_output.get("strategist_horizon_proposal") or {})
@@ -3008,6 +3213,7 @@ def _build_commander_decision(
         applied_policy=applied_policy,
         max_positions=max_positions,
         strategist_output=strategist_output,
+        performance_circuit=intraday_performance_circuit,
     )
 
     adaptive_policy = {
@@ -3199,6 +3405,7 @@ def _build_commander_decision(
         "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
         "monitor_memory_bias": dict(monitor_memory_bias),
         "monitor_memory_bias_summary": dict(monitor_memory_bias_summary),
+        "intraday_performance_circuit": dict(intraday_performance_circuit),
         "commander_horizon_policy": dict(commander_horizon_policy),
         "horizon_context": dict(horizon_context),
         "prior_monitor_entry_policy_summary": dict(prior_monitor_entry_policy_summary),
@@ -5126,6 +5333,7 @@ def _run_stage4_carry_review(
     state = _attach_commander_applied_policy(state)
     state = strategist_node(state)
     state = _attach_commander_applied_policy(state)
+    state = _maybe_run_post_exit_shadow_recap_runtime(state, trigger="stage4_carry_review")
     return state, True
 
 
@@ -5211,7 +5419,7 @@ def _run_integrated_chain_impl(
 
     use_closeout_guard, closeout_payload = _should_use_session_closeout_fast_path(state)
     if use_closeout_guard:
-        return run_closeout_guard_fast_path(
+        state = run_closeout_guard_fast_path(
             state,
             shadow_runtime=shadow_runtime,
             closeout_payload=closeout_payload,
@@ -5238,6 +5446,7 @@ def _run_integrated_chain_impl(
             hydrate_monitor_symbol_features_fn=_hydrate_monitor_symbol_features,
             intent_from_monitor_state_fn=_intent_from_monitor_state,
         )
+        return _maybe_run_post_exit_shadow_recap_runtime(state, trigger="closeout_guard_after_sweep")
 
     use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
     if use_monitor_only:
@@ -5479,44 +5688,14 @@ def _run_commander_runtime_impl(
         path_value: str,
         reason_text: str = "",
     ) -> Dict[str, Any]:
-        runtime_plan = state.get("runtime_plan") if isinstance(state.get("runtime_plan"), dict) else {}
-        portfolio_snapshot = state.get("portfolio_snapshot") if isinstance(state.get("portfolio_snapshot"), dict) else {}
-        strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
-        return {
-            "session_type": str(phase_value or ""),
-            "market_clock_phase": str(phase_value or ""),
-            "portfolio_state_summary": {
-                "position_count": len(list(portfolio_snapshot.get("positions") or [])),
-                "cash": portfolio_snapshot.get("cash"),
-                "positions_source": str((state.get("portfolio_preflight") or {}).get("positions_source") if isinstance(state.get("portfolio_preflight"), dict) else ""),
-                "preflight_status": str((state.get("portfolio_preflight") or {}).get("status") if isinstance(state.get("portfolio_preflight"), dict) else ""),
-            },
-            "market_regime_summary": {
-                "market_regime": str(strategist_output.get("market_regime") or ""),
-                "market_sentiment": str(strategist_output.get("market_sentiment") or ""),
-                "playbook": str(strategist_output.get("playbook") or ""),
-            },
-            "goal": (
-                "Execute full trading session flow."
-                if str(phase_value or "").strip() == "session"
-                else f"Run {str(phase_value or '').strip() or 'runtime'} phase safely."
-            ),
-            "agent_invocation_plan": list(runtime_plan.get("agents") or []),
-            "decision_checkpoints": {
-                "runtime_transition": str(state.get("runtime_transition") or ""),
-                "runtime_status": str(status_value or state.get("runtime_status") or ""),
-                "portfolio_preflight_status": str((state.get("portfolio_preflight") or {}).get("status") if isinstance(state.get("portfolio_preflight"), dict) else ""),
-                "runtime_fast_path": dict(state.get("runtime_fast_path") or {}) if isinstance(state.get("runtime_fast_path"), dict) else {},
-            },
-            "final_runtime_path": str(path_value or ""),
-            "final_reason": str(reason_text or state.get("runtime_status") or ""),
-            "handoff_instruction": (
-                "Proceed to downstream agents according to runtime plan."
-                if str(status_value or "").strip().lower() in {"ok", "ready", "preopen_ready", "closeout_ready"}
-                else "Do not proceed. Inspect commander/runtime status first."
-            ),
-            "mode": str(mode_value or ""),
-        }
+        return _build_commander_decision_frame_impl(
+            state,
+            mode_value,
+            phase_value,
+            status_value=status_value,
+            path_value=path_value,
+            reason_text=reason_text,
+        )
 
     def _persist_commander(mode_value: str, phase_value: str, *, status_value: str, path_value: str, reason: str = "") -> None:
         state["commander_decision"] = _build_commander_decision(

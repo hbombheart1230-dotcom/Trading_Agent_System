@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from libs.runtime.quant.factors import build_factor_snapshot_from_candidate
 from libs.runtime.scanner.theme_filter import candidate_theme_match
 
 
@@ -78,6 +79,12 @@ def compact_selected_snapshot(selected: Dict[str, Any] | None) -> Dict[str, Any]
             "gap_penalty_component": components.get("gap_penalty_component"),
             "avoid_theme_penalty_component": components.get("avoid_theme_penalty_component"),
         },
+        "quant_factor_snapshot": build_factor_snapshot_from_candidate(
+            selected,
+            tactic_id=str(selected.get("tactical_strategy") or ""),
+            playbook=str(selected.get("playbook") or ""),
+        ),
+        "tactic_suitability": dict(selected.get("tactic_suitability") or {}),
     }
 
 
@@ -204,6 +211,12 @@ def ranking_table_rows(rows: List[Dict[str, Any]], *, max_rows: int = 5) -> List
                 "status": "selected" if idx == 1 else "runner_up",
                 "exclusion_reason": str(row.get("exclusion_reason") or ""),
                 "compact_feature_snapshot": compact_feature_snapshot(row),
+                "quant_factor_snapshot": build_factor_snapshot_from_candidate(
+                    row,
+                    tactic_id=str(row.get("tactical_strategy") or ""),
+                    playbook=str(row.get("playbook") or ""),
+                ),
+                "tactic_suitability": dict(row.get("tactic_suitability") or {}),
             }
         )
     return out

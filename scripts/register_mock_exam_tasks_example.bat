@@ -36,7 +36,7 @@ if errorlevel 1 exit /b %errorlevel%
 schtasks /Create /TN "%TASK_PREFIX%-SessionWatchdog" /SC WEEKLY /D %DAYS% /ST 09:05 /RI 5 /DU 06:20 /TR "\"%SESSION_WATCHDOG_BAT%\"" /RL LIMITED /F
 if errorlevel 1 exit /b %errorlevel%
 
-schtasks /Create /TN "%TASK_PREFIX%-Closeout" /SC WEEKLY /D %DAYS% /ST 15:35 /TR "\"%CLOSEOUT_BAT%\"" /RL LIMITED /F
+schtasks /Create /TN "%TASK_PREFIX%-Closeout" /SC WEEKLY /D %DAYS% /ST 16:00 /TR "\"%CLOSEOUT_BAT%\"" /RL LIMITED /F
 if errorlevel 1 exit /b %errorlevel%
 
 echo ok registered_tasks=%TASK_PREFIX%-Preopen,%TASK_PREFIX%-Session,%TASK_PREFIX%-SessionWatchdog,%TASK_PREFIX%-Closeout

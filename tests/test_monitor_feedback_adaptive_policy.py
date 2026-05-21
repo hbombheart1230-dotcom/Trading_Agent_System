@@ -44,8 +44,9 @@ def test_monitor_feedback_long_streak_diversification():
     }
     decision = _build_commander_decision(state, mode_value="integrated", phase_value="session", status_value="ok", path_value="")
     
-    assert decision["adaptive_policy"]["diversification_adjustment"] == 0.03
-    assert decision["scanner_policy"]["diversification_bias"] == 0.05
+    assert decision["entry_control"]["mode"] == "preserve_guardrail_no_trade_ok"
+    assert decision["adaptive_policy"]["diversification_adjustment"] == 0.0
+    assert decision["scanner_policy"]["diversification_bias"] == 0.0
 
 
 def test_commander_expands_entry_control_when_market_ok_and_repeated_overextension():

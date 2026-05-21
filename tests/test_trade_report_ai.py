@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 import libs.reporting.trade_report_ai as mod
@@ -4023,6 +4024,107 @@ def test_trade_summary_does_not_surface_stale_post_entry_gate_as_confirmed_entry
     assert "신뢰도 게이트 미통과" not in entry_section
     assert "사후 모니터 재평가와 혼재" in entry_section
     assert "청산 완료입니다." in summary_input["decision_flow"]["final_operator_summary"]
+
+
+def test_trade_summary_prefers_entry_run_monitor_visibility_over_exit_snapshot(tmp_path: Path) -> None:
+    run_id = "entry-run-1"
+    report_dir = tmp_path / "trades" / "2026-05-20" / "0900" / "TRD_20260520_000660_01" / "reports"
+    canonical_dir = tmp_path / "canonical" / "2026-05-20" / run_id
+    report_dir.mkdir(parents=True)
+    canonical_dir.mkdir(parents=True)
+    (canonical_dir / "monitor.json").write_text(
+        json.dumps(
+            {
+                "entry_reason": "breakout_above_recent_high_with_vwap_structure_confirmation",
+                "entry_triggered": True,
+                "entry_candidate_cascade": {
+                    "attempted": False,
+                    "top_pick_triggered": True,
+                    "blocked_reason": "",
+                },
+                "monitor_focus_context": {
+                    "entry_decision": "BUY",
+                    "entry_triggered": True,
+                    "entry_guard_blocked": False,
+                    "entry_guard_reason": "",
+                    "entry_cost_adjusted_edge_ok": True,
+                },
+                "entry_grouped_logic_trace": {
+                    "human_chart_entry_score": 0.73,
+                    "human_chart_setup_quality": "B",
+                },
+                "policy_ref": {
+                    "entry_control": {
+                        "max_priority_rank": 3,
+                        "max_runner_ups": 2,
+                        "cascade_enabled": True,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    report_path = report_dir / "ai_trade_report.json"
+    report = {
+        "trade_id": "TRD_20260520_000660_01",
+        "run_id": run_id,
+        "symbol": "000660",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation",
+        "action": "SELL",
+        "paths": {"ai_trade_report_json": str(report_path)},
+        "shared_facts": {
+            "symbol": "000660",
+            "status": "closed",
+            "action": "SELL",
+            "broker_buy_price": 1731000,
+            "broker_fill_price": 1716000,
+            "pnl": -30482,
+            "pnl_pct": -0.0176,
+        },
+        "fact_payload": {"trade": {"entry_summary": {"run_id": run_id}}},
+        "entry_execution_visibility": {
+            "monitor_focus_context": {
+                "entry_decision": "WAIT",
+                "entry_triggered": False,
+                "entry_guard_blocked": True,
+                "entry_guard_reason": "same_symbol_position_open",
+                "entry_cost_adjusted_edge_ok": False,
+            },
+            "entry_grouped_logic_trace": {
+                "human_chart_entry_score": 0.05,
+                "human_chart_setup_quality": "C",
+            },
+        },
+        "monitor_snapshot": {
+            "entry_candidate_cascade": {
+                "blocked_reason": "hard_entry_blocker_no_cascade",
+                "top_pick_guard_blocked": True,
+            },
+            "monitor_focus_context": {
+                "entry_guard_blocked": True,
+                "entry_guard_reason": "same_symbol_position_open",
+            },
+        },
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "truth_surface": {
+            "status": {"status": "closed"},
+            "price": {"broker_buy_price": 1731000, "broker_fill_price": 1716000},
+            "pnl": {"value": -30482, "pct": -0.0176},
+            "availability": {},
+        },
+    }
+
+    summary_input = mod.build_trade_summary_input(report)
+    visibility = summary_input["decision_flow"]["entry_execution_visibility"]
+
+    assert visibility["monitor_focus_context"]["entry_guard_blocked"] is False
+    assert visibility["monitor_focus_context"]["entry_cost_adjusted_edge_ok"] is True
+    assert visibility["entry_grouped_logic_trace"]["human_chart_entry_score"] == 0.73
+    assert visibility["monitor_entry_candidate_cascade"]["top_pick_triggered"] is True
 
 
 def test_render_trade_report_markdown_translates_fixed_english_report_phrases() -> None:

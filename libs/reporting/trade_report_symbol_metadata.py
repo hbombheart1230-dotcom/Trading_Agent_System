@@ -3,6 +3,36 @@
 import re
 from typing import Any, Callable, Dict, Iterable, List
 
+SYMBOL_NAME_FALLBACKS: Dict[str, str] = {
+    "000660": "SK하이닉스",
+    "012330": "현대모비스",
+    "003060": "에이프로젠바이오로직스",
+    "034220": "LG디스플레이",
+    "024840": "KBI메탈",
+    "005380": "현대차",
+    "005930": "삼성전자",
+    "005935": "삼성전자우",
+    "006345": "대원전선우",
+    "035420": "NAVER",
+    "073490": "이노와이어리스",
+    "090710": "휴림로봇",
+    "102120": "어보브반도체",
+    "114800": "KODEX 인버스",
+    "122630": "KODEX 레버리지",
+    "233740": "KODEX 코스닥150레버리지",
+    "252670": "KODEX 200선물인버스2X",
+    "252710": "TIGER 200선물인버스2X",
+    "402340": "SK스퀘어",
+}
+
+
+SYMBOL_THEME_FALLBACKS: Dict[str, List[str]] = {
+    "012330": ["자동차부품", "전기차", "자율주행차", "수소차"],
+    "006345": ["전선", "전력설비", "구리"],
+    "024840": ["전선", "구리", "전력설비"],
+    "034220": ["OLED", "LCD", "디스플레이패널"],
+}
+
 
 def clip_text(value: Any, max_len: int = 200) -> str:
     text = str(value or "").strip()
@@ -74,6 +104,35 @@ def append_theme_values(
             )
         else:
             append_unique_text(out, item, metadata_value=metadata_value, translate_text=translate_text)
+
+
+def looks_like_symbol_name(candidate: str, symbol: str) -> bool:
+    text = str(candidate or "").strip()
+    if not text or text == str(symbol or "").strip() or re.fullmatch(r"\d{6}", text):
+        return False
+    lowered = text.lower()
+    if any(
+        token in lowered
+        for token in (
+            "runner_up",
+            "runner-up",
+            "score",
+            "rank",
+            "fallback",
+            "selected",
+            "candidate",
+            "trigger",
+            "reason",
+            "highest",
+            "best score",
+            "total score",
+            "composite score",
+        )
+    ):
+        return False
+    if any(token in text for token in ("스코어", "점수", "순위", "후보", "선택", "사유", "최고", "종합")):
+        return False
+    return True
 
 
 def iter_trade_symbol_metadata_sources(report: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
@@ -170,24 +229,25 @@ def infer_symbol_name_from_report_text(report: Dict[str, Any], symbol: str, *, m
     target = str(symbol or "").strip()
     if not target:
         return ""
-    text_candidates: List[Any] = []
+    text_candidates: List[tuple[str, Any]] = []
     for source in iter_trade_symbol_metadata_sources(report):
-        text_candidates.extend(listify(source.get("symbol_news_titles")))
-        text_candidates.extend(listify(source.get("strategist_symbol_headlines")))
-        text_candidates.extend(listify(source.get("candidate_headlines_used")))
-        text_candidates.extend(listify(source.get("bullets")))
-        text_candidates.append(source.get("summary"))
-    for raw in text_candidates:
+        for key in ("symbol_news_titles", "strategist_symbol_headlines", "candidate_headlines_used"):
+            text_candidates.extend(("headline", item) for item in listify(source.get(key)))
+        text_candidates.extend(("narrative", item) for item in listify(source.get("bullets")))
+        text_candidates.append(("narrative", source.get("summary")))
+    for candidate_kind, raw in text_candidates:
         text = metadata_value(translate_text(raw))
         if not text or target not in text:
             continue
         paren_match = re.search(rf"([A-Za-z가-힣0-9&._\-\s]+)\(\s*{re.escape(target)}\s*\)", text)
         if paren_match:
             name = re.sub(r"\s+", " ", paren_match.group(1)).strip(" ,;:-")
-            if name and name != target:
+            if looks_like_symbol_name(name, target):
                 return clip_text(name.split()[-1], 80)
         prefix = re.search(rf"{re.escape(target)}\s*:\s*(.+)", text)
         if not prefix:
+            continue
+        if candidate_kind == "headline":
             continue
         headline = str(prefix.group(1) or "").strip()
         if "…" in headline:
@@ -197,7 +257,7 @@ def infer_symbol_name_from_report_text(report: Dict[str, Any], symbol: str, *, m
         headline = re.sub(r"\[[^\]]+\]", " ", headline)
         headline = re.split(r"[·,/]|[↑↓▲▼]", headline)[0]
         name = re.sub(r"\s+", " ", headline).strip(" ,;:-")
-        if name and not any(token in name for token in ("뉴스", "상승", "하락", "강세", "약세")):
+        if looks_like_symbol_name(name, target) and not any(token in name for token in ("뉴스", "상승", "하락", "강세", "약세")):
             return clip_text(name, 80)
     return ""
 
@@ -212,7 +272,6 @@ def resolve_trade_symbol_metadata(report: Dict[str, Any], symbol: str, *, metada
         "corp_name",
         "company_name",
         "name_kr",
-        "name",
     )
     exact_theme_keys = (
         "symbol_theme",
@@ -248,7 +307,7 @@ def resolve_trade_symbol_metadata(report: Dict[str, Any], symbol: str, *, metada
         if source_matches_symbol and not symbol_name:
             for key in name_keys:
                 candidate = metadata_value(translate_text(source.get(key))).strip()
-                if candidate and candidate != symbol_text and not re.fullmatch(r"\d{6}", candidate):
+                if looks_like_symbol_name(candidate, symbol_text):
                     symbol_name = clip_text(candidate, 80)
                     break
         if not component_themes:
@@ -274,7 +333,11 @@ def resolve_trade_symbol_metadata(report: Dict[str, Any], symbol: str, *, metada
         if symbol_name and len(themes) >= 4:
             break
     if not symbol_name:
+        symbol_name = SYMBOL_NAME_FALLBACKS.get(symbol_text, "")
+    if not symbol_name:
         symbol_name = infer_symbol_name_from_report_text(report, symbol_text, metadata_value=metadata_value, translate_text=translate_text)
+    if not themes:
+        themes = list(SYMBOL_THEME_FALLBACKS.get(symbol_text, []))
     return {
         "symbol": symbol_text,
         "symbol_name": symbol_name,

@@ -197,6 +197,7 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
         "closeout.daily",
         "closeout.reporter_analysis",
         "closeout.live_execution_bundles",
+        "closeout.post_exit_shadow_recap",
         "closeout.report_inventory",
     ]
     canonical_reports_root = str(mod.ROOT / "reports")
@@ -216,6 +217,13 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
     assert "--reports-root" in bundle_cmd
     assert canonical_reports_root in bundle_cmd
     assert str(mod.ROOT / "reports" / "dev" / "analysis" / "live_execution_bundles") in bundle_cmd
+
+    post_exit_cmd = commands_by_step["closeout.post_exit_shadow_recap"]
+    assert "--reports-root" in post_exit_cmd
+    assert canonical_reports_root in post_exit_cmd
+    assert "--state-path" in post_exit_cmd
+    assert str(state_path) in post_exit_cmd
+    assert str(mod.ROOT / "reports" / "dev" / "analysis" / "post_exit_shadow_recap") in post_exit_cmd
 
     inventory_cmd = commands_by_step["closeout.report_inventory"]
     assert "--report-root" in inventory_cmd

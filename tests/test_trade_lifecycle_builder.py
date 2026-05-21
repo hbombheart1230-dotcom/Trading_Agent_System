@@ -87,6 +87,52 @@ def test_build_trade_lifecycles_keeps_partial_sell_open() -> None:
     assert partial_exits[0]["qty"] == 1
 
 
+def test_build_trade_lifecycles_keeps_zero_fill_sell_open() -> None:
+    lifecycles = build_trade_lifecycles(
+        day="2026-05-19",
+        run_snapshots=[
+            {
+                "run_id": "run-buy",
+                "ts_start": "2026-05-19T05:46:00+00:00",
+                "ts_epoch": 1,
+                "symbol": "005930",
+                "execution_action": "BUY",
+                "execution": {"action": "BUY", "qty": 10, "price": 279450.0},
+                "verdict_allowed": True,
+            },
+            {
+                "run_id": "run-sell-zero-fill",
+                "ts_start": "2026-05-19T06:20:44+00:00",
+                "ts_epoch": 2,
+                "symbol": "005930",
+                "execution_action": "SELL",
+                "execution": {"action": "SELL", "qty": 10, "price": 277500.0},
+                "exit_reason": "eod_flat",
+                "monitor_reason": "confirmed_exit_signal",
+                "verdict_allowed": True,
+            },
+        ],
+        run_bundles={
+            "run-buy": {},
+            "run-sell-zero-fill": {
+                "execution_details": {
+                    "order_id": "0153269",
+                    "filled_qty": 0,
+                    "avg_price": 0.0,
+                    "broker_truth_source": "kiwoom.order_status",
+                }
+            },
+        },
+    )
+
+    assert len(lifecycles) == 1
+    lifecycle = lifecycles[0]
+    assert lifecycle["status"] == "open"
+    assert lifecycle.get("exit") == {}
+    assert lifecycle["remaining_qty"] == 10
+    assert lifecycle.get("partial_exit_qty", 0) == 0
+
+
 def test_build_trade_lifecycles_closes_after_cumulative_partial_sells() -> None:
     lifecycles = build_trade_lifecycles(
         day="2026-05-12",
@@ -178,3 +224,35 @@ def test_load_existing_open_lifecycle_candidates_filters_closed_trade(tmp_path: 
     assert "000660" in candidates
     assert "005930" not in candidates
     assert candidates["000660"][0]["trade_id"] == "TRD_20260416_000660_01"
+
+
+def test_load_existing_open_lifecycle_candidates_scans_previous_days(tmp_path: Path) -> None:
+    previous_day = "2026-05-19"
+    current_day = "2026-05-20"
+    open_trade_dir = tmp_path / "trades" / previous_day / "1400" / "TRD_20260519_102120_01"
+    open_trade_dir.mkdir(parents=True, exist_ok=True)
+    (open_trade_dir / "lifecycle_bundle.json").write_text(
+        json.dumps(
+            {
+                "trade_id": "TRD_20260519_102120_01",
+                "symbol": "102120",
+                "status": "open",
+                "entry": {
+                    "run_id": "run-buy-prev",
+                    "ts": "2026-05-19T06:16:37+00:00",
+                    "action": "BUY",
+                    "qty": 244,
+                    "price": 12275,
+                },
+                "exit": {},
+                "linked_run_ids": ["run-buy-prev"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    candidates = load_existing_open_lifecycle_candidates(reports_root=tmp_path, day=current_day)
+
+    assert "102120" in candidates
+    assert candidates["102120"][0]["trade_id"] == "TRD_20260519_102120_01"
+    assert candidates["102120"][0]["source_day"] == previous_day

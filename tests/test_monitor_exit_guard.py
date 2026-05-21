@@ -448,7 +448,8 @@ def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monke
     assert isinstance(entry_cost_filter, dict)
     assert entry_cost_filter.get("effective_cost_drag_pct") == 0.009
     assert entry_cost_filter.get("cost_floor_applied") is True
-    assert entry_cost_filter.get("required_gross_edge_pct") == 0.012
+    assert entry_cost_filter.get("required_gross_edge_pct") == 0.0165
+    assert entry_cost_filter.get("gross_edge_cost_multiplier") == 1.5
     assert entry_cost_filter.get("directional_edge_available") is True
     assert entry_cost_filter.get("edge_evidence_type") == "directional"
     assert "selected.expected_move_pct" in str(entry_cost_filter.get("estimated_gross_edge_source") or "")
@@ -672,6 +673,49 @@ def test_entry_cost_filter_allows_triggered_signal_volatility_proxy():
     assert result["estimated_gross_edge_pct"] == 0.01225
     assert result["cost_adjusted_edge_pct"] == 0.00325
     assert result["fail_reasons"] == []
+
+
+def test_entry_cost_filter_requires_gross_edge_above_cost_multiplier():
+    result = _evaluate_entry_cost_filter(
+        entry_info={
+            "triggered": True,
+            "metrics": {"current_price": 100.0},
+            "condition_scores": {"confidence_score": 0.8, "confidence_threshold": 0.7},
+        },
+        selected={
+            "symbol": "BBB",
+            "price": 100.0,
+            "expected_move_pct": 0.014,
+        },
+        qty=10,
+        config={
+            "enabled": True,
+            "buy_fee_rate": 0.00015,
+            "sell_fee_rate": 0.00015,
+            "sell_tax_rate": 0.0018,
+            "min_buy_fee": 0.0,
+            "min_sell_fee": 0.0,
+            "max_cost_drag_pct": 0.02,
+            "round_trip_cost_floor_pct": 0.009,
+            "min_net_profit_buffer_pct": 0.003,
+            "gross_edge_cost_multiplier": 1.5,
+            "min_cost_adjusted_edge_pct": 0.001,
+            "edge_scale_pct": 0.035,
+            "quality_proxy_max_edge_pct": 0.012,
+            "require_directional_edge_evidence": True,
+            "allow_volatility_proxy_edge": False,
+            "allow_quality_proxy_edge": False,
+            "allow_triggered_signal_proxy_edge": True,
+            "triggered_proxy_confidence_tolerance": 0.0,
+            "proxy_edge_haircut": 0.35,
+            "min_proxy_quality_score": 0.80,
+            "min_estimated_gross_edge_pct": 0.0,
+        },
+    )
+
+    assert result["passed"] is False
+    assert result["required_gross_edge_pct"] == 0.0165
+    assert "estimated_gross_edge_below_cost_floor" in list(result.get("fail_reasons") or [])
 
 
 def test_monitor_skips_buy_when_intraday_entry_signal_not_confirmed(monkeypatch):
@@ -3800,7 +3844,7 @@ def test_monitor_does_not_fallback_when_open_position_exists(monkeypatch):
     assert cascade.get("blocked_reason") == "max_positions_reached"
 
 
-def test_monitor_cascades_from_held_top_pick_when_capacity_remains(monkeypatch):
+def test_monitor_blocks_cascade_from_held_top_pick_even_when_capacity_remains(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
     monkeypatch.setenv("RISK_MAX_POSITIONS", "3")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
@@ -3830,17 +3874,15 @@ def test_monitor_cascades_from_held_top_pick_when_capacity_remains(monkeypatch):
     state["portfolio_snapshot"] = {"cash": 2_000_000.0, "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0}]}
     out = monitor_node(state)
 
-    intents = out.get("intents") or []
-    assert len(intents) == 1
-    assert intents[0]["symbol"] == "BBB"
+    assert out.get("intents") == []
     monitor = out.get("monitor") or {}
     assert monitor.get("open_position_count") == 1
     assert monitor.get("max_positions") == 3
-    assert monitor.get("buy_blocked_same_symbol") is False
+    assert monitor.get("buy_blocked_same_symbol") is True
     cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
-    assert cascade.get("attempted") is True
-    assert cascade.get("fallback_from_symbol") == "AAA"
-    assert cascade.get("fallback_to_symbol") == "BBB"
+    assert cascade.get("attempted") is False
+    assert cascade.get("blocked_reason") == "hard_entry_blocker_no_cascade"
+    assert cascade.get("hard_blocked_reason") == "same_symbol_position_open"
 
 
 def test_monitor_allows_zero_quote_metric_runner_up_and_reaches_third_candidate(monkeypatch):
@@ -3892,7 +3934,7 @@ def test_monitor_allows_zero_quote_metric_runner_up_and_reaches_third_candidate(
     assert {"symbol": "BBB", "reason": "quote_metrics_missing"} not in skipped
 
 
-def test_monitor_entry_candidate_cascade_reaches_fifth_priority_candidate(monkeypatch):
+def test_monitor_entry_candidate_cascade_blocks_fifth_priority_candidate_by_default(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
 
@@ -3937,17 +3979,15 @@ def test_monitor_entry_candidate_cascade_reaches_fifth_priority_candidate(monkey
 
     out = monitor_node(state)
 
-    intents = out.get("intents") or []
-    assert len(intents) == 1
-    assert intents[0]["symbol"] == "EEE"
+    assert out.get("intents") == []
     cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
     assert cascade.get("attempted") is True
-    assert cascade.get("max_priority_rank") == 10
-    assert cascade.get("max_runner_ups") == 9
-    assert cascade.get("runner_up_symbols") == ["BBB", "CCC", "DDD", "EEE"]
-    assert cascade.get("fallback_to_symbol") == "EEE"
+    assert cascade.get("max_priority_rank") == 3
+    assert cascade.get("max_runner_ups") == 2
+    assert cascade.get("runner_up_symbols") == ["BBB", "CCC"]
+    assert not cascade.get("fallback_to_symbol")
     fallback_trace = list(cascade.get("fallback_trace") or [])
-    assert len(fallback_trace) == 4
+    assert len(fallback_trace) == 2
     assert "transition_readiness_score" in fallback_trace[0]
     assert "minute_source_present" in fallback_trace[0]
 
@@ -4425,6 +4465,55 @@ def test_monitor_vwap_breakdown_exit_after_two_minute_confirmations(monkeypatch)
     assert bool(exit_info.get("vwap_breakdown_confirmed")) is True
 
 
+def test_monitor_vwap_breakdown_respects_short_min_hold_guard(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = _base_state()
+    state["selected"] = {
+        "symbol": "005930",
+        "price": 99.2,
+        "features": {"engine_vwap_distance": -0.01},
+    }
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "current_price": 99.2, "hold_sec": 31}],
+    }
+    state["minute_ohlcv_by_symbol"] = {
+        "005930": [
+            {"ts": 1778548740, "open": 100.0, "high": 100.1, "low": 99.2, "close": 99.3, "vwap": 100.0, "volume": 1000},
+            {"ts": 1778548800, "open": 99.3, "high": 99.4, "low": 99.0, "close": 99.2, "vwap": 100.0, "volume": 1500},
+        ]
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "vwap_breakdown_pct": 0.005,
+        "vwap_break_requires_profit": False,
+        "vwap_breakdown_min_hold_sec": 120,
+        "take_profit_pct": 0.0,
+        "peak_drawdown_exit_pct": 0.0,
+        "partial_take_profit_pct": 0.0,
+        "profit_ladder_levels_pct": [],
+        "risk_reward_take_profit_r": 0.0,
+        "vwap_extension_take_profit_pct": 0.0,
+        "resistance_take_profit_near_pct": 0.0,
+        "profit_time_stop_sec": 0,
+        "volume_exhaustion_take_profit_min_pct": 0.0,
+        "opening_gap_profit_take_min_pct": 0.0,
+        "exit_confirm_ticks": 1,
+    }
+    state["applied_policy"] = {"monitor": {"exit": {"confirm_ticks": 1}}}
+
+    out = monitor_node(state)
+
+    assert out.get("intents") == []
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") == "hold"
+    assert str(exit_info.get("hold_block_reason") or "") == "vwap_breakdown_min_hold_pending"
+    assert bool(exit_info.get("vwap_breakdown_confirmation_pending")) is True
+
+
 def test_monitor_vwap_breakdown_exit_prefers_fresh_minute_vwap_over_stale_feature(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
@@ -4478,6 +4567,7 @@ def test_monitor_intraday_low_break_exit_uses_ohlcv_structure(monkeypatch):
     state["policy"] = {
         "use_exit_policy": True,
         "intraday_low_break_pct": 0.001,
+        "intraday_low_break_consecutive_bars": 2,
         "take_profit_pct": 0.0,
     }
 

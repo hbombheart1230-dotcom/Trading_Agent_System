@@ -69,6 +69,16 @@ from libs.runtime.commander_memory_policy import build_commander_memory_policy
 from libs.runtime.memory_packet_loader import load_commander_memory_packets
 from libs.runtime.monitor_memory_bias import build_monitor_memory_bias, summarize_monitor_memory_bias
 from libs.runtime.scanner_memory_bias import build_scanner_memory_bias, summarize_scanner_memory_bias
+from libs.runtime.quant.contracts import TACTIC_IDS, TACTICAL_SUBTYPES
+from libs.runtime.quant.tactics import (
+    TACTIC_DEFAULT_RUNNER_UP_RANK,
+    canonical_tactic_key,
+    default_tactic_for_playbook,
+    normalize_playbook as normalize_tactic_playbook,
+    normalize_tactic_id,
+    normalize_tactical_subtype as normalize_quant_tactical_subtype,
+)
+from libs.runtime.quant.context import build_strategist_quant_context
 from libs.read.kiwoom_theme_reader import build_theme_strength_packet
 
 
@@ -1790,6 +1800,8 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "The first character must be { and the last character must be }. "
         "If deterministic evidence shows repeated NOOP-like blockage, you must decide whether entry conditions should be relaxed, tightened, or rebalanced. "
         "If deterministic evidence shows repeated false entries, stop-outs, or drawdown-heavy outcomes, you must tighten or rebalance policy. "
+        "Use quant_context when present as deterministic observation-only evidence: it does not execute behavior by itself, but it should inform tactic fit, scorecard-aware caution, selected-symbol review, hold review, and carry review. "
+        "Use selected_symbol_news_signal and candidate_news_signal_summary when present: negative selected-symbol news must block relaxation unless chart/volume evidence is exceptional; positive selected-symbol news may support relaxation only when monitor and cost evidence are also ready. "
         f"{memory_sensitive_directives}"
         "If evidence is mixed or weak, explicitly maintain conservative baseline. "
         "strategy_adjustment_directives must be actionable, specific, and bounded. "
@@ -2467,6 +2479,79 @@ def _compact_pattern_performance_for_llm(snapshot: Any) -> Dict[str, Any]:
     return out
 
 
+def _news_signal_label(score: Any) -> str:
+    value = _to_float(score, 0.0)
+    if value >= 0.25:
+        return "positive"
+    if value <= -0.25:
+        return "negative"
+    return "neutral"
+
+
+def _news_item_title_for_llm(row: Any, *, max_len: int = 120) -> str:
+    if isinstance(row, dict):
+        title = str(row.get("title") or row.get("headline") or "").strip()
+    else:
+        raw = str(row or "").strip()
+        match = re.search(r"title=['\"]([^'\"]+)['\"]", raw)
+        title = match.group(1).strip() if match else raw
+    title = re.sub(r"<[^>]+>", "", title).strip()
+    if len(title) > max_len:
+        return title[: max_len - 3] + "..."
+    return title
+
+
+def _compact_news_signal_summary_for_llm(
+    *,
+    signal_map: Any,
+    sample: Any,
+    symbols: List[str],
+    limit: int = 6,
+) -> List[Dict[str, Any]]:
+    signals = signal_map if isinstance(signal_map, dict) else {}
+    samples = sample if isinstance(sample, dict) else {}
+    ordered_symbols: List[str] = []
+    for symbol in list(symbols or []) + list(samples.keys()) + list(signals.keys()):
+        text = str(symbol or "").strip()
+        if text and text not in ordered_symbols:
+            ordered_symbols.append(text)
+    out: List[Dict[str, Any]] = []
+    for symbol in ordered_symbols[:limit]:
+        sig = signals.get(symbol) if isinstance(signals.get(symbol), dict) else {}
+        score = _round_optional(sig.get("score"), 4)
+        sample_row = samples.get(symbol) if isinstance(samples.get(symbol), dict) else {}
+        rows = sample_row.get("sample") if isinstance(sample_row.get("sample"), list) else []
+        evidence = [
+            title
+            for title in (_news_item_title_for_llm(row, max_len=120) for row in rows[:2])
+            if title
+        ]
+        out.append(
+            {
+                "symbol": symbol,
+                "score": score,
+                "label": _news_signal_label(score),
+                "status": str(sig.get("status") or ""),
+                "headline_count": int(sample_row.get("count") or len(rows) or 0),
+                "top_evidence": evidence,
+            }
+        )
+    return out
+
+
+def _selected_symbol_news_signal_for_llm(
+    rows: List[Dict[str, Any]],
+    selected_symbol: Any,
+) -> Dict[str, Any]:
+    symbol = str(selected_symbol or "").strip()
+    if not symbol:
+        return {}
+    for row in rows:
+        if str((row or {}).get("symbol") or "").strip() == symbol:
+            return dict(row)
+    return {"symbol": symbol, "score": None, "label": "unavailable", "status": "missing", "headline_count": 0, "top_evidence": []}
+
+
 def _clip_text_for_llm(raw: Any, *, max_len: int = 180) -> str:
     text = str(raw or "").strip()
     if len(text) <= max_len:
@@ -2882,8 +2967,14 @@ def _apply_strategist_llm_token_budget(compact: Dict[str, Any], *, memory_usage_
     if call_kind == "market_strategy_frame":
         return out
 
+    candidate_news_signal_summary = list(out.get("candidate_news_signal_summary") or [])[:4]
+    selected_symbol_news_signal = dict(out.get("selected_symbol_news_signal") or {})
+    market_news_signal_summary = list(out.get("market_news_signal_summary") or [])[:3]
     out["market_news_sample"] = {}
     out["candidate_news_sample"] = {}
+    out["candidate_news_signal_summary"] = candidate_news_signal_summary
+    out["selected_symbol_news_signal"] = selected_symbol_news_signal
+    out["market_news_signal_summary"] = market_news_signal_summary
     news_policy = out.get("news_collection_policy") if isinstance(out.get("news_collection_policy"), dict) else {}
     out["news_collection_policy"] = {
         "provider": str(news_policy.get("provider") or ""),
@@ -3028,6 +3119,37 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
         if selected_symbol_was_rank1_raw is not None
         else int(commander_refresh_context.get("selected_rank") or 0) == 1
     )
+    actual_selected_candidate = (
+        commander_refresh_context.get("actual_selected_candidate")
+        if isinstance(commander_refresh_context.get("actual_selected_candidate"), dict)
+        else commander_refresh_context.get("scanner_primary_candidate")
+        if isinstance(commander_refresh_context.get("scanner_primary_candidate"), dict)
+        else {}
+    )
+    selected_news_symbol = (
+        commander_refresh_context.get("selected_symbol")
+        or actual_selected_candidate.get("symbol")
+        or (compact.get("candidate_symbols_hint") or [""])[0]
+    )
+    candidate_news_signal_summary = _compact_news_signal_summary_for_llm(
+        signal_map=compact.get("news_sentiment_signal"),
+        sample=compact.get("candidate_news_sample"),
+        symbols=[str(x or "") for x in list(compact.get("candidate_symbols_hint") or [])],
+        limit=6,
+    )
+    compact["candidate_news_signal_summary"] = candidate_news_signal_summary
+    compact["selected_symbol_news_signal"] = _selected_symbol_news_signal_for_llm(
+        candidate_news_signal_summary,
+        selected_news_symbol,
+    )
+    compact["market_news_signal_summary"] = _compact_news_signal_summary_for_llm(
+        signal_map=compact.get("market_news_sentiment_signal"),
+        sample=compact.get("market_news_sample"),
+        symbols=[str(x or "") for x in list((compact.get("market_news_sample") or {}).keys())],
+        limit=4,
+    )
+    compact.pop("news_sentiment_signal", None)
+    compact.pop("market_news_sentiment_signal", None)
     compact["commander_refresh_context"] = {
         "requested": bool(commander_refresh_context.get("requested")),
         "reason": str(commander_refresh_context.get("reason") or ""),
@@ -3041,11 +3163,7 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
         "selected_rank": int(commander_refresh_context.get("selected_rank") or 0),
         "selected_score": _round_optional(commander_refresh_context.get("selected_score"), 4),
         "scanner_primary_candidate": dict(commander_refresh_context.get("scanner_primary_candidate") or {}),
-        "actual_selected_candidate": dict(
-            commander_refresh_context.get("actual_selected_candidate")
-            or commander_refresh_context.get("scanner_primary_candidate")
-            or {}
-        ),
+        "actual_selected_candidate": dict(actual_selected_candidate),
         "scanner_rank1_candidate": dict(commander_refresh_context.get("scanner_rank1_candidate") or {}),
         "scanner_runner_ups": [
             dict(row)
@@ -3234,11 +3352,82 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
             "use only current market, scanner, monitor, refresh, and risk evidence."
         )
     compact["resolved_call_kind"] = _resolve_strategist_llm_call_kind(compact)
+    quant_context = build_strategist_quant_context(
+        compact,
+        call_kind=str(compact["resolved_call_kind"]),
+        memory_usage_disabled=memory_usage_disabled,
+    )
+    quant_scorecard = (
+        ((quant_context.get("quant_market_context") or {}).get("scorecard") or {})
+        if isinstance(quant_context.get("quant_market_context"), dict)
+        else {}
+    )
+    if not (
+        compact["resolved_call_kind"] == "market_strategy_frame"
+        and str(quant_scorecard.get("reason") or "") == "reports_root_not_explicit"
+    ):
+        compact["quant_context"] = dict(quant_context)
     compact = _apply_strategist_llm_token_budget(compact, memory_usage_disabled=memory_usage_disabled)
     compact["resolved_call_kind"] = _resolve_strategist_llm_call_kind(compact)
     if not memory_usage_disabled and compact["resolved_call_kind"] == "market_strategy_frame":
         _hide_stage1_symbol_memory(compact)
     return compact
+
+
+def _quant_trace_stage_for_call_kind(call_kind: Any) -> str:
+    text = str(call_kind or "").strip()
+    if text == "selected_symbol_tactical_refresh":
+        return "post_scanner_refresh"
+    if text == "market_strategy_frame":
+        return "initial_frame"
+    if text == "stale_intraday_hold_review":
+        return "stale_intraday_hold_review"
+    if text == "end_of_day_carry_review":
+        return "end_of_day_carry_review"
+    return text or "quant_context"
+
+
+def _quant_trace_label_for_stage(stage: str) -> str:
+    if stage == "initial_frame":
+        return "Quant context - initial frame"
+    if stage == "post_scanner_refresh":
+        return "Quant context - selected symbol refresh"
+    if stage == "stale_intraday_hold_review":
+        return "Quant context - stale intraday hold review"
+    if stage == "end_of_day_carry_review":
+        return "Quant context - end of day carry review"
+    return "Quant context"
+
+
+def _attach_quant_context_to_strategy_refresh_trace(
+    trace: Any,
+    quant_context: Any,
+) -> Dict[str, Any]:
+    out = dict(trace or {}) if isinstance(trace, dict) else {}
+    ctx = dict(quant_context or {}) if isinstance(quant_context, dict) else {}
+    if not ctx:
+        return out
+    target_stage = _quant_trace_stage_for_call_kind(ctx.get("call_kind"))
+    raw_stages = out.get("stages") if isinstance(out.get("stages"), list) else []
+    stages: List[Dict[str, Any]] = [dict(row or {}) for row in raw_stages if isinstance(row, dict)]
+    attached = False
+    for row in stages:
+        if str(row.get("stage") or "").strip() == target_stage:
+            row["quant_context"] = dict(ctx)
+            attached = True
+            break
+    if not attached:
+        stages.append(
+            {
+                "stage": target_stage,
+                "label": _quant_trace_label_for_stage(target_stage),
+                "summary": "Strategist LLM received observation-only quant context for this call.",
+                "quant_context": dict(ctx),
+            }
+        )
+    out["stages"] = stages
+    out["quant_context_call_kind"] = str(ctx.get("call_kind") or "")
+    return out
 
 
 def _build_strategist_llm_repair_messages(payload: Dict[str, Any], raw_response: Any) -> List[Dict[str, str]]:
@@ -3387,6 +3576,11 @@ def _run_strategist_frame_llm(
         route_policy["response_format"] = {"type": "json_object"}
         
     compact_payload = _build_compact_strategist_llm_payload(payload)
+    quant_context_for_trace = (
+        dict(compact_payload.get("quant_context") or {})
+        if isinstance(compact_payload.get("quant_context"), dict)
+        else {}
+    )
     refresh_context = (
         compact_payload.get("commander_refresh_context")
         if isinstance(compact_payload.get("commander_refresh_context"), dict)
@@ -3645,6 +3839,7 @@ def _run_strategist_frame_llm(
                         "stage_response_ref": str(llm_artifacts.get("stage_response_ref") or ""),
                         "stage_meta_ref": str(llm_artifacts.get("stage_meta_ref") or ""),
                         "llm_stage_manifest_ref": str(llm_artifacts.get("llm_stage_manifest_ref") or ""),
+                        "quant_context": dict(quant_context_for_trace),
                     }
                     
             last_raw = raw
@@ -3685,6 +3880,7 @@ def _run_strategist_frame_llm(
         "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
         "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
         "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
+        "quant_context": dict(quant_context_for_trace),
     }
 
 def _extract_themes(state: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
@@ -4789,34 +4985,8 @@ def _monitor_guidance(*, market_regime: str, playbook: str) -> str:
     return "quick_take_profit"
 
 
-_TACTICAL_STRATEGIES = (
-    "opening_gap_momentum",
-    "opening_range_breakout",
-    "vwap_reclaim_pullback",
-    "volume_breakout",
-    "reversal_reclaim",
-    "cost_aware_scalp",
-    "defensive_observe",
-)
-
-_TACTICAL_STRATEGY_ALIASES = {
-    "leader_vwap_reclaim_pullback": "vwap_reclaim_pullback",
-}
-
-_TACTICAL_SUBTYPES = (
-    "theme_confirmed_pullback",
-    "market_representative_pullback",
-    "liquidity_confirmed_pullback",
-    "vwap_reclaim_setup",
-    "weak_fallback_pullback",
-    "none",
-)
-
-_TACTICAL_SUBTYPE_ALIASES = {
-    "theme_leader_pullback": "theme_confirmed_pullback",
-    "liquidity_leader_trend": "liquidity_confirmed_pullback",
-    "vwap_reclaim_pullback": "vwap_reclaim_setup",
-}
+_TACTICAL_STRATEGIES = TACTIC_IDS
+_TACTICAL_SUBTYPES = TACTICAL_SUBTYPES
 
 _TACTICAL_STRATEGY_BY_PLAYBOOK = {
     "breakout": "opening_range_breakout",
@@ -4826,13 +4996,7 @@ _TACTICAL_STRATEGY_BY_PLAYBOOK = {
 }
 
 _CANDIDATE_WATCH_DEFAULT_RANK = {
-    "defensive_observe": 3,
-    "vwap_reclaim_pullback": 5,
-    "opening_gap_momentum": 7,
-    "opening_range_breakout": 7,
-    "volume_breakout": 7,
-    "reversal_reclaim": 5,
-    "cost_aware_scalp": 5,
+    **dict(TACTIC_DEFAULT_RUNNER_UP_RANK),
 }
 
 _CANDIDATE_WATCH_CASCADE_ALLOWED_REASONS = (
@@ -4859,33 +5023,19 @@ _CANDIDATE_WATCH_CASCADE_BLOCKED_REASONS = (
 
 
 def _norm_playbook(value: Any, *, default: str = "") -> str:
-    raw = str(value or "").strip().lower()
-    if raw in ("breakout", "pullback", "reversal", "defensive"):
-        return raw
-    return str(default or "")
+    return normalize_tactic_playbook(value, default=default)
 
 
 def _default_tactical_strategy(playbook: str) -> str:
-    mode = _norm_playbook(playbook, default="defensive")
-    return str(_TACTICAL_STRATEGY_BY_PLAYBOOK.get(mode) or "defensive_observe")
+    return default_tactic_for_playbook(playbook)
 
 
 def _normalize_tactical_strategy(value: Any, *, playbook: str) -> str:
-    raw = str(value or "").strip().lower()
-    raw = _TACTICAL_STRATEGY_ALIASES.get(raw, raw)
-    if raw in _TACTICAL_STRATEGIES:
-        return raw
-    return _default_tactical_strategy(playbook)
+    return normalize_tactic_id(value, playbook=playbook)
 
 
 def _normalize_tactical_subtype(value: Any, *, tactical_strategy: str) -> str:
-    raw = str(value or "").strip().lower()
-    raw = _TACTICAL_SUBTYPE_ALIASES.get(raw, raw)
-    if raw in _TACTICAL_SUBTYPES:
-        return raw
-    if _normalize_tactical_strategy(tactical_strategy, playbook="pullback") == "vwap_reclaim_pullback":
-        return "vwap_reclaim_setup"
-    return "none"
+    return normalize_quant_tactical_subtype(value, tactic_id=tactical_strategy)
 
 
 def _unit_score(value: Any, default: float = 0.0) -> float:
@@ -4954,7 +5104,7 @@ def _normalize_strategy_scores(
     )
     if isinstance(raw, dict):
         for raw_key, raw_value in raw.items():
-            key = _TACTICAL_STRATEGY_ALIASES.get(str(raw_key or "").strip().lower(), str(raw_key or "").strip().lower())
+            key = canonical_tactic_key(raw_key)
             if key in _TACTICAL_STRATEGIES:
                 scores[key] = round(_unit_score(raw_value, scores.get(key, 0.0)), 4)
     return scores
@@ -4969,10 +5119,7 @@ def _normalize_rejected_strategy_reasons(
     out: Dict[str, str] = {}
     if isinstance(raw, dict):
         for key, value in raw.items():
-            name = _TACTICAL_STRATEGY_ALIASES.get(
-                str(key or "").strip().lower(),
-                str(key or "").strip().lower(),
-            )
+            name = canonical_tactic_key(key)
             if name not in _TACTICAL_STRATEGIES or name == tactical_strategy:
                 continue
             reason = _clean_directive_reason(value, default="")
@@ -7110,6 +7257,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "fallback_theme_hints": list(fallback_theme_hints),
         "news_collection_policy": dict(news_collection_policy),
         "news_query_targets": list(news_query_targets),
+        "news_sentiment_signal": dict(news_signal_map),
+        "market_news_sentiment_signal": dict(market_news_signal_map),
+        "reports_root": str(reports_root),
         "market_news_sample": _sample_news_for_evidence(
             market_news_items_by_target,
             max_symbols=6,
@@ -7924,6 +8074,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "llm_stage_index": int(llm_meta.get("llm_stage_index") or 0),
         "llm_stage_name": str(llm_meta.get("llm_stage_name") or ""),
         "llm_call_kind": str(llm_meta.get("llm_call_kind") or ""),
+        "quant_context": dict(llm_meta.get("quant_context") or {}),
         "stage_prompt_ref": str(llm_meta.get("stage_prompt_ref") or ""),
         "stage_response_ref": str(llm_meta.get("stage_response_ref") or ""),
         "stage_meta_ref": str(llm_meta.get("stage_meta_ref") or ""),
@@ -8017,6 +8168,12 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         news_evidence_ranked=news_evidence_ranked_payload,
     )
     strategist_output.update(strategist_explanation_fields)
+    if isinstance(llm_meta.get("quant_context"), dict) and llm_meta.get("quant_context"):
+        strategist_output["quant_context"] = dict(llm_meta.get("quant_context") or {})
+        strategist_output["strategy_refresh_trace"] = _attach_quant_context_to_strategy_refresh_trace(
+            strategist_output.get("strategy_refresh_trace"),
+            llm_meta.get("quant_context"),
+        )
     state["strategist_output"] = strategist_output
     _emit_strategist_event(
         state,

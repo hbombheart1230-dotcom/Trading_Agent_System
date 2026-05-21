@@ -1701,10 +1701,16 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
                     time.sleep(0.2)
                     active_job = {}
         if active_job:
+            queued = _enqueue_bundle_request(
+                repo_root,
+                run_id=run_id,
+                symbol=symbol,
+                reason="bundle_busy_queued",
+            )
             _log_bundle_event(
                 repo_root,
                 event="report_bundle_spawn_skipped_existing_process",
-                reason="bundle_busy_no_queue",
+                reason="bundle_busy_queued",
                 run_id=run_id,
                 symbol=symbol,
                 payload={
@@ -1713,17 +1719,20 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
                     "lock_path": str(active_job.get("lock_path") or _bundle_job_lock_path(repo_root)),
                     "active_pid": int(active_job.get("pid") or 0),
                     "dedupe_source": str(active_job.get("detection_source") or "lock"),
+                    "queue_path": str(queued.get("queue_path") or _bundle_job_queue_path(repo_root)),
+                    "queue_length": int(queued.get("queue_length") or 0),
+                    "queue_deduped": bool(queued.get("deduped")),
                 },
             )
             return {
                 "ok": True,
-                "status": "skipped",
-                "reason": "bundle_busy_no_queue",
+                "status": "queued",
+                "reason": "bundle_busy_queued",
                 "return_code": None,
                 "summary": {},
                 "trade_id": "",
                 "story_id": "",
-                "report_status": "skipped",
+                "report_status": "queued",
                 "report_path": "",
                 "symbol": symbol,
                 "cache_invalidated": [],
@@ -1732,6 +1741,9 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
                 "dedupe_source": str(active_job.get("detection_source") or "lock"),
                 "target_run_id": run_id,
                 "target_symbol": symbol,
+                "queue_path": str(queued.get("queue_path") or ""),
+                "queue_length": int(queued.get("queue_length") or 0),
+                "queue_deduped": bool(queued.get("deduped")),
                 "role": _bundle_role(),
             }
     if force_sync:

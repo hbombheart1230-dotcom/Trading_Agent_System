@@ -280,12 +280,31 @@ def test_exit_policy_intraday_low_break_triggers():
         policy={
             "prior_bar_low": 99.0,
             "intraday_low_break_pct": 0.001,
+            "intraday_low_break_consecutive_bars": 2,
             "take_profit_pct": 0.0,
         },
     )
     assert out["triggered"] is True
     assert out["reason"] == "intraday_low_break"
     assert float(out.get("prior_bar_low") or 0.0) == 99.0
+
+
+def test_exit_policy_intraday_low_break_waits_for_min_hold_or_confirmation():
+    out = evaluate_exit_policy(
+        price=98.8,
+        avg_price=100.0,
+        qty=1,
+        hold_sec=30,
+        policy={
+            "prior_bar_low": 99.0,
+            "intraday_low_break_pct": 0.001,
+            "take_profit_pct": 0.0,
+        },
+    )
+
+    assert out["triggered"] is False
+    assert out["intraday_low_break_min_hold_blocked"] is True
+    assert out["hold_block_reason"] == "intraday_low_break_min_hold_pending"
 
 
 def test_exit_policy_trend_breakdown_triggers():

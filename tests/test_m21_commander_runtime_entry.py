@@ -6,6 +6,7 @@ from graphs.commander_runtime import (
     _attach_commander_applied_policy,
     _assess_open_position_commander_override,
     _build_commander_decision,
+    _build_intraday_performance_circuit,
     _ensure_market_context_clock_fields,
     _intent_from_monitor_state,
     _normalize_candidate_watch_proposal_for_commander,
@@ -34,9 +35,11 @@ def test_candidate_watch_proposal_merges_default_cascade_reasons() -> None:
     )
 
     assert "below_vwap_reclaim_not_ready" in proposal["cascade_allowed_reasons"]
-    assert "pullback_not_mature" in proposal["cascade_allowed_reasons"]
-    assert "volume_confirmation_missing" in proposal["cascade_allowed_reasons"]
+    assert "pullback_not_mature" not in proposal["cascade_allowed_reasons"]
+    assert "volume_confirmation_missing" not in proposal["cascade_allowed_reasons"]
     assert "risk_policy_block" in proposal["cascade_blocked_reasons"]
+    assert "pullback_not_mature" in proposal["cascade_blocked_reasons"]
+    assert "volume_confirmation_missing" in proposal["cascade_blocked_reasons"]
     assert "open_position_present" in proposal["cascade_blocked_reasons"]
 
 
@@ -122,10 +125,33 @@ def test_commander_keeps_candidate_expansion_when_status_blocked_but_capacity_av
 
     entry_control = decision["entry_control"]
     assert decision["risk_mode"] == "balanced"
-    assert entry_control["mode"] == "expand_when_market_ok"
-    assert entry_control["max_priority_rank"] == 10
-    assert entry_control["max_runner_ups"] == 9
-    assert entry_control["candidate_watch_policy_effect"] == "commander_expanded_repeated_blocker"
+    assert entry_control["mode"] == "preserve_guardrail_no_trade_ok"
+    assert entry_control["max_priority_rank"] == 1
+    assert entry_control["max_runner_ups"] == 0
+    assert entry_control["reason"] == "dominant_blocker_not_expandable:volume_confirmation_missing"
+
+
+def test_intraday_performance_circuit_degrades_bad_playbook_exit_combo() -> None:
+    circuit = _build_intraday_performance_circuit(
+        strategist_output={"playbook": "pullback"},
+        current_day="2026-05-18",
+        memory_packets={
+            "daily_strategy_memory": {
+                "resolved_day": "2026-05-18",
+                "pattern_performance_snapshot": {
+                    "entry_exit_combos": {
+                        "pullback -> intraday_low_break": {
+                            "loss_count": 3,
+                            "avg_return": -0.009,
+                        }
+                    }
+                },
+            }
+        },
+    )
+
+    assert circuit["active"] is True
+    assert circuit["reason"] == "intraday_playbook_exit_combo_underperforming"
 
 
 def test_monitor_sell_intent_uses_monitor_meta_price_before_market_snapshot() -> None:
@@ -897,6 +923,67 @@ def test_m21_integrated_chain_closeout_guard_runs_stage4_carry_review_for_held_p
     assert refresh_context["selected_symbol"] == "005930"
     assert (out.get("commander_shadow_runtime") or {}).get("stage4_carry_review_requested") is True
     assert called == {"strategist": 1, "scanner": 0, "monitor": 1}
+
+
+def test_m21_integrated_chain_closeout_guard_sweeps_all_held_positions(monkeypatch):
+    import graphs.nodes.build_portfolio_snapshot as portfolio_mod
+    import graphs.nodes.build_risk_context as risk_mod
+    import graphs.nodes.decision_node as decision_mod
+    import graphs.nodes.monitor_node as monitor_mod
+    import graphs.nodes.scanner_node as scanner_mod
+    import graphs.nodes.strategist_node as strategist_mod
+
+    selected_symbols = []
+
+    monkeypatch.setattr(
+        portfolio_mod,
+        "build_portfolio_snapshot",
+        lambda state: {
+            **state,
+            "portfolio_snapshot": {
+                "cash": 1000.0,
+                "positions": [
+                    {"symbol": "005930", "qty": 10, "avg_price": 279450.0},
+                    {"symbol": "102120", "qty": 244, "avg_price": 12275.0},
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(risk_mod, "build_risk_context", lambda state: state)
+    monkeypatch.setattr(scanner_mod, "scanner_node", lambda state: (_ for _ in ()).throw(AssertionError("scanner should not run")))
+
+    def _strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["strategist_llm"] = {"status": "disabled", "reason": "test"}
+        state["strategist_output"] = {"playbook": "defensive", "monitor_guidance": "defensive_exit"}
+        return state
+
+    def _monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        selected_symbols.append(str(((state.get("selected") or {}).get("symbol") or "")))
+        state["intents"] = []
+        state["monitor_output"] = {"intent_side": "NOOP", "entry_exit_reason": "closeout_review_only"}
+        return state
+
+    monkeypatch.setattr(strategist_mod, "strategist_node", _strategist)
+    monkeypatch.setattr(monitor_mod, "monitor_node", _monitor)
+    monkeypatch.setattr(decision_mod, "decision_node", lambda state: {**state, "decision": "reject"})
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-closeout-sweep",
+            "runtime_phase": "session",
+            "market_context": {"minutes_to_close": 5},
+            "applied_policy": {
+                "monitor": {"exit": {"eod_flat": {"enabled": True, "cutoff_min": 10}}},
+            },
+        },
+        execute_fn=lambda state: state,
+    )
+
+    assert out["path"] == "integrated_chain_closeout_guard"
+    assert selected_symbols == ["005930", "102120"]
+    sweep = out["session_closeout_guard_sweep"]
+    assert sweep["attempted_symbols"] == ["005930", "102120"]
+    assert sweep["attempted_count"] == 2
 
 
 def test_m21_integrated_chain_closeout_cancels_pending_buy_before_monitor(monkeypatch):
@@ -3252,7 +3339,7 @@ def test_m31_integrated_chain_refreshes_when_selected_symbol_is_outside_cached_f
     ]
 
 
-def test_m31_integrated_chain_refreshes_when_selected_symbol_is_outside_fresh_cached_frame(monkeypatch):
+def test_m31_integrated_chain_reuses_when_selected_symbol_is_outside_fresh_cached_frame(monkeypatch):
     calls: list[str] = []
     strategist_decisions: list[Dict[str, Any]] = []
 
@@ -3277,7 +3364,7 @@ def test_m31_integrated_chain_refreshes_when_selected_symbol_is_outside_fresh_ca
 
     def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
         calls.append("scanner")
-        assert (state.get("strategist_output") or {}).get("playbook") == "fresh_entry_frame"
+        assert (state.get("strategist_output") or {}).get("playbook") == "cached_frame"
         return state
 
     def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -3322,19 +3409,13 @@ def test_m31_integrated_chain_refreshes_when_selected_symbol_is_outside_fresh_ca
         execute_fn=lambda s: s,
     )
 
-    assert out["path"] == "integrated_chain"
-    assert strategist_decisions
-    assert strategist_decisions[0]["strategist_invocation"] == "RUN_REFRESH"
-    assert strategist_decisions[0]["strategist_refresh_requested"] is True
-    assert strategist_decisions[0]["strategist_refresh_reason"] == "selected_symbol_outside_cached_frame"
-    assert strategist_decisions[0]["strategist_refresh_context"]["selected_symbol"] == "034020"
-    assert strategist_decisions[0]["strategist_refresh_context"]["cache_age_sec"] == 50
-    assert strategist_decisions[0]["strategist_refresh_context"]["fresh_cache_signal_override"] is True
-    assert strategist_decisions[0]["strategist_refresh_context"]["cache_freshness_gate_bypassed"] is True
+    assert out["path"] == "integrated_chain_cached_frame"
+    assert strategist_decisions == []
+    assert (out.get("runtime_fast_path") or {}).get("reason") == "commander_skip_cached_strategist"
+    assert (out.get("runtime_fast_path") or {}).get("cache_age_sec") == 50
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
-        "strategist",
         "scanner",
         "monitor",
         "decision",

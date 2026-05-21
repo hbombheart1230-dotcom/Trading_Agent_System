@@ -99,6 +99,37 @@ def test_update_state_mock_buy_pending_unfilled_does_not_create_position(monkeyp
     assert pending["remaining_qty"] == 2
 
 
+def test_update_state_mock_sell_zero_fill_truth_keeps_position_pending(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {
+            "last_order_epoch": 10,
+            "mock_positions": [{"symbol": "005930", "qty": 10, "avg_price": 279450.0}],
+            "mock_cash": 1_000_000.0,
+            "mock_realized_pnl": 0.0,
+        },
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "real", "filled_qty": 0, "order_id": "0153269"},
+            "reason": "Allowed",
+            "order": {"action": "SELL", "symbol": "005930", "qty": 10, "price": 277500},
+        },
+    }
+
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+
+    assert ps["open_positions"] == 1
+    assert ps["mock_positions"][0]["symbol"] == "005930"
+    assert ps["mock_positions"][0]["qty"] == 10
+    assert "last_trade_side" not in ps
+    assert "post_exit_shadow_watchlist" not in ps
+    pending = (ps.get("pending_unfilled_orders") or {}).get("005930") or {}
+    assert pending["action"] == "SELL"
+    assert pending["filled_qty"] == 0
+    assert pending["order_qty"] == 10
+
+
 def test_update_state_mock_buy_persists_entry_sizing_risk(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: 1234.0)
     state = {

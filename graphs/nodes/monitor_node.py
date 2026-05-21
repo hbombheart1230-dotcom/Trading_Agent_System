@@ -31,6 +31,7 @@ from libs.runtime.decision_observability import (
 )
 from libs.runtime.etf_deviation import extract_etf_deviation_signal
 from libs.runtime.monitor_candidate_cascade import build_entry_candidate_cascade_plan
+from libs.runtime.monitor_runner_up_quality import evaluate_runner_up_entry_quality
 from libs.runtime.commander_memory_application_trace import build_monitor_commander_memory_application_trace
 from libs.runtime.monitor_entry_blockers import evaluate_entry_guard
 from libs.runtime.monitor_entry_quality import (
@@ -70,6 +71,9 @@ from libs.runtime.monitor_entry_state import (
     monitor_posture_for_cycle as _monitor_posture_for_cycle,
     save_current_monitor_state as _save_current_monitor_state,
 )
+from libs.runtime.quant.decision import build_entry_quant_decision, build_exit_quant_decision
+from libs.runtime.quant.enforcement import build_entry_quant_enforcement
+from libs.runtime.quant.factors import build_factor_snapshot_from_monitor_entry
 from libs.runtime.intraday_monitor_signals import (
     evaluate_intraday_entry_signal,
     resolve_intraday_entry_policy,
@@ -601,6 +605,35 @@ def _evaluate_monitor_entry_candidate(
     entry_info["entry_quality_gate"] = dict(entry_quality_gate)
     entry_info["entry_lane"] = "strict"
     entry_info["scoring_mode"] = str(entry_info.get("scoring_mode") or "disabled")
+    tactic_id_for_quant_entry = str(
+        plan.get("tactical_strategy")
+        or strategy_frame.get("tactical_strategy")
+        or ""
+    )
+    playbook_for_quant_entry = str(
+        plan.get("selected_playbook")
+        or plan.get("playbook")
+        or strategy_frame.get("playbook")
+        or ""
+    )
+    quant_entry_factor_snapshot = build_factor_snapshot_from_monitor_entry(
+        entry_info,
+        selected=selected,
+        tactic_id=tactic_id_for_quant_entry,
+        playbook=playbook_for_quant_entry,
+    )
+    quant_entry_decision = build_entry_quant_decision(
+        entry_info,
+        selected=selected,
+        factor_snapshot=quant_entry_factor_snapshot,
+        state=state,
+        tactic_id=tactic_id_for_quant_entry,
+        playbook=playbook_for_quant_entry,
+    )
+    quant_entry_enforcement = build_entry_quant_enforcement(quant_entry_decision)
+    entry_info["quant_factor_snapshot"] = dict(quant_entry_factor_snapshot)
+    entry_info["entry_quant_decision"] = dict(quant_entry_decision)
+    entry_info["quant_entry_enforcement"] = dict(quant_entry_enforcement)
     entry_intent_cooldown_sec = max(0, _to_int((entry_info.get("thresholds") or {}).get("intent_cooldown_sec")))
     cooldown_until = max(0, _to_int(entry_cooldown_map.get(symbol)))
     if cooldown_until > 0 and cooldown_until <= now_epoch_for_entry:
@@ -636,6 +669,16 @@ def _evaluate_monitor_entry_candidate(
     entry_info["legacy_fallback_used"] = False
     entry_info["decision"] = "WAIT"
     entry_info["cascade_candidate"] = str(plan.get("cascade_candidate") or "")
+    if (
+        bool(quant_entry_enforcement.get("blocked"))
+        and not entry_guard_blocked
+        and bool(entry_info.get("triggered"))
+    ):
+        entry_guard_blocked = True
+        entry_guard_reason = str(quant_entry_enforcement.get("reason") or "quant_entry_block")
+        entry_info["guard_blocked"] = True
+        entry_info["guard_reason"] = entry_guard_reason
+        entry_info["reason"] = entry_guard_reason
 
     if symbol and qty > 0 and not entry_guard_blocked and bool(entry_info.get("triggered")):
         entry_info["intent_submitted"] = True
@@ -976,6 +1019,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             cascade_enabled=bool(entry_cascade_config.get("cascade_enabled", True)),
             cascade_allowed_reasons=list(entry_cascade_config.get("cascade_allowed_reasons") or []),
             cascade_blocked_reasons=list(entry_cascade_config.get("cascade_blocked_reasons") or []),
+            hard_block_override_enabled=bool(entry_cascade_config.get("hard_block_override_enabled")),
+            hard_block_override_reason=str(entry_cascade_config.get("hard_block_override_reason") or ""),
             excluded_symbols=sorted(held_symbols_for_entry | pending_buy_symbols_for_entry),
         )
         entry_candidate_cascade.update(dict(cascade_plan))
@@ -1053,6 +1098,23 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     }
                 )
                 if not bool(runner_entry.get("intent_submitted")):
+                    continue
+                runner_quality = evaluate_runner_up_entry_quality(
+                    runner_row=runner_row,
+                    runner_entry=runner_entry,
+                    runner_guard_blocked=bool(runner_result.get("entry_guard_blocked")),
+                )
+                if fallback_trace and isinstance(fallback_trace[-1], dict):
+                    fallback_trace[-1]["runner_up_quality_gate"] = dict(runner_quality)
+                if not bool(runner_quality.get("passed")):
+                    runner_entry["intent_submitted"] = False
+                    runner_entry["triggered"] = False
+                    runner_entry["reason"] = str(runner_quality.get("reason") or "runner_up_quality_gate_failed")
+                    runner_entry["runner_up_quality_gate"] = dict(runner_quality)
+                    if fallback_trace and isinstance(fallback_trace[-1], dict):
+                        fallback_trace[-1]["triggered"] = False
+                        fallback_trace[-1]["reason"] = str(runner_entry.get("reason") or "")
+                        fallback_trace[-1]["runner_up_quality_blocked"] = True
                     continue
                 runner_rank = int(_to_int(runner_row.get("rank") or runner_row.get("priority_rank")))
                 runner_subtype = _classify_vwap_reclaim_pullback_candidate(
@@ -1187,6 +1249,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
                     },
                     "entry_candidate_cascade": dict(entry_candidate_cascade),
+                    "quant_factor_snapshot": dict(entry_info.get("quant_factor_snapshot") or {}),
+                    "entry_quant_decision": dict(entry_info.get("entry_quant_decision") or {}),
+                    "quant_entry_enforcement": dict(entry_info.get("quant_entry_enforcement") or {}),
                 },
             }
             if bool(sizing_info.get("enabled")):
@@ -1930,6 +1995,49 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         monitor_entry_exit_reason = str(entry_info.get("guard_reason") or "")
     else:
         monitor_entry_exit_reason = str(entry_info.get("reason") or "entry_wait")
+    tactic_id = str(
+        strategist_output.get("tactical_strategy")
+        or strategist_plan.get("tactical_strategy")
+        or ""
+    )
+    tactic_playbook = str(strategist_output.get("playbook") or strategist_plan.get("selected_playbook") or "")
+    quant_entry_factor_snapshot = (
+        dict(entry_info.get("quant_factor_snapshot") or {})
+        if isinstance(entry_info.get("quant_factor_snapshot"), dict)
+        else build_factor_snapshot_from_monitor_entry(
+            entry_info,
+            selected=selected if isinstance(selected, dict) else {},
+            tactic_id=tactic_id,
+            playbook=tactic_playbook,
+        )
+    )
+    quant_entry_decision = (
+        dict(entry_info.get("entry_quant_decision") or {})
+        if isinstance(entry_info.get("entry_quant_decision"), dict)
+        else build_entry_quant_decision(
+            entry_info,
+            selected=selected if isinstance(selected, dict) else {},
+            factor_snapshot=quant_entry_factor_snapshot,
+            state=state,
+            tactic_id=tactic_id,
+            playbook=tactic_playbook,
+        )
+    )
+    quant_entry_enforcement = (
+        dict(entry_info.get("quant_entry_enforcement") or {})
+        if isinstance(entry_info.get("quant_entry_enforcement"), dict)
+        else build_entry_quant_enforcement(quant_entry_decision)
+    )
+    quant_exit_decision = build_exit_quant_decision(
+        exit_info,
+        state=state,
+        tactic_id=tactic_id,
+        playbook=tactic_playbook,
+    )
+    entry_info["quant_factor_snapshot"] = dict(quant_entry_factor_snapshot)
+    entry_info["entry_quant_decision"] = dict(quant_entry_decision)
+    entry_info["quant_entry_enforcement"] = dict(quant_entry_enforcement)
+    exit_info["exit_quant_decision"] = dict(quant_exit_decision)
     state["monitor_output"] = {
         "selected_symbol": (selected.get("symbol") if isinstance(selected, dict) else None),
         "intent_side": (str(intents[0].get("side")) if intents else "NOOP"),
@@ -1943,6 +2051,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
         "cost_drag_pct": entry_info.get("cost_drag_pct"),
         "exit_vs_strategy_intent": dict(exit_info.get("exit_vs_strategy_intent") or {}),
+        "quant_factor_snapshot": dict(quant_entry_factor_snapshot),
+        "entry_quant_decision": dict(quant_entry_decision),
+        "quant_entry_enforcement": dict(quant_entry_enforcement),
+        "exit_quant_decision": dict(quant_exit_decision),
     }
     state["monitor_entry"] = dict(entry_info)
     state["monitor_exit"] = exit_info
@@ -2423,6 +2535,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_monitor_handoff": dict(scanner_monitor_handoff),
         "entry_candidate_cascade": dict(entry_candidate_cascade),
         "entry_blocker_surface": dict(entry_blocker_surface),
+        "quant_factor_snapshot": dict(quant_entry_factor_snapshot),
+        "entry_quant_decision": dict(quant_entry_decision),
+        "quant_entry_enforcement": dict(quant_entry_enforcement),
         "monitor_focus_context": dict(monitor_focus_context),
         "scanner_selected_symbol": scanner_selected_symbol,
         "entry_candidate_symbol": entry_candidate_symbol,
@@ -2608,6 +2723,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "sell_skipped_reason": sell_skipped_reason,
         "final_reason": current_reason,
         "exit_vs_strategy_intent": dict(exit_info.get("exit_vs_strategy_intent") or {}),
+        "exit_quant_decision": dict(quant_exit_decision),
         "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
         "exit_trigger_basis": dict(monitor_policy_trace.get("exit_trigger_basis") or {}),
         "commander_context_consumed": bool(monitor_policy_trace.get("commander_context_consumed")),

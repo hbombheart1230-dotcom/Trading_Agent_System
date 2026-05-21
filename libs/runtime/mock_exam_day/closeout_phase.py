@@ -47,6 +47,10 @@ def run_closeout_phase(
     evidence_log_path = str(common["evidence_log_path"])
     intents_path = str(Path(common["event_log_path"]).with_name("intents.jsonl"))
     canonical_reports_root = Path(common["canonical_reports_root"])
+    state_path = common.get("state_path")
+    if not state_path:
+        default_state_path = root / "data" / "state.json"
+        state_path = default_state_path if default_state_path.exists() else None
     timeout_sec = int(common["timeout_sec"])
     generate_decision_story = bool(getattr(args, "generate_decision_story", False))
     generate_run_cards = bool(getattr(args, "generate_run_cards", False))
@@ -242,6 +246,28 @@ def run_closeout_phase(
                 day,
                 "--json",
             ],
+            cwd=root,
+            timeout_sec=timeout_sec,
+        )
+    )
+
+    post_exit_cmd = [
+        py,
+        str(root / "scripts" / "run_post_exit_shadow_recap.py"),
+        "--reports-root",
+        str(canonical_reports_root),
+        "--report-dir",
+        str(canonical_reports_root / "dev" / "analysis" / "post_exit_shadow_recap"),
+        "--day",
+        day,
+        "--json",
+    ]
+    if state_path:
+        post_exit_cmd += ["--state-path", str(state_path)]
+    steps.append(
+        run_subprocess(
+            step_id="closeout.post_exit_shadow_recap",
+            command=post_exit_cmd,
             cwd=root,
             timeout_sec=timeout_sec,
         )

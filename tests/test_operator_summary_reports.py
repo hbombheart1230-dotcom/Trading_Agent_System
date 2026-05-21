@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from libs.reporting.operator_visibility import _build_trading_health_status
 from libs.reporting.operator_period_summary import (
     generate_operator_daily_summary_artifact,
     generate_operator_period_summary,
@@ -13,6 +14,25 @@ from libs.reporting.operator_period_summary import (
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def test_trading_health_status_turns_red_on_weak_intraday_performance(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    _write_json(
+        reports / "performance" / "2026-05-18" / "summary.json",
+        {
+            "total_trades": 15,
+            "return_sample_count": 13,
+            "win_rate": 0.1538,
+            "avg_return": -0.0107,
+            "profit_factor": 0.05,
+        },
+    )
+
+    status = _build_trading_health_status(reports, "2026-05-18")
+
+    assert status["trading_health_level"] == "RED"
+    assert status["avg_return"] == -0.0107
 
 
 def test_operator_weekly_and_monthly_summary_reports_use_operator_symbol_history(tmp_path: Path) -> None:
@@ -165,6 +185,79 @@ def test_operator_daily_summary_prefers_truth_surface_net_result(tmp_path: Path)
     assert metrics["avg_return_pct"] == -1.0
     assert metrics["price_move_win_count"] == 1
     assert metrics["cost_drag_loss_count"] == 1
+
+
+def test_operator_daily_summary_aggregates_quant_tactic_diagnostics(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-05-20"
+    trade_id = "TRD_20260520_005930_01"
+    _write_json(
+        reports / "operator_summary" / "symbols" / "005930" / "trade_history.json",
+        [
+            {
+                "trade_id": trade_id,
+                "date": day,
+                "symbol": "005930",
+                "status": "closed",
+                "last_status": "closed",
+                "last_action": "SELL",
+                "entry_reason": "pullback_rebound",
+                "exit_reason": "SELL was triggered because intraday_low_break.",
+                "entry_pattern_type": "pullback",
+                "exit_pattern_type": "intraday_low_break",
+                "result_pct": -0.4,
+                "hold_seconds": 35,
+            }
+        ],
+    )
+    _write_json(
+        reports / "trades" / day / trade_id / "reports" / "ai_trade_report.json",
+        {
+            "why_this_symbol_was_chosen": {
+                "tactic_suitability": {"score": 0.42, "tier": "weak"},
+            },
+            "monitor_snapshot": {
+                "quant_factor_snapshot": {
+                    "tactic_id": "vwap_reclaim_pullback",
+                    "factors": {"cost_floor_state": "not_met"},
+                },
+                "entry_quant_decision": {
+                    "tactic_id": "vwap_reclaim_pullback",
+                    "decision": "block_recommended",
+                    "blockers": ["cost_edge_fail", "volume_confirmation_missing"],
+                    "warnings": ["weak_tactic_suitability"],
+                    "cost_edge": {
+                        "cost_floor_state": "not_met",
+                        "cost_adjusted_edge_pct": -0.001,
+                    },
+                },
+                "exit_quant_decision": {
+                    "tactic_id": "vwap_reclaim_pullback",
+                    "decision": "confirm_before_exit_recommended",
+                    "hard_exit": False,
+                    "confirmation_pending": True,
+                    "blockers": ["exit_confirmation_pending"],
+                    "warnings": ["early_exit_before_expected_min_hold"],
+                    "hold_window_mismatch": True,
+                    "actual_hold_sec": 35,
+                },
+            },
+        },
+    )
+
+    md, _json, daily = generate_operator_daily_summary_artifact(reports_root=reports, day=day)
+    perf = daily["pattern_performance"]
+
+    assert perf["quant"]["by_tactic_id"][0]["name"] == "vwap_reclaim_pullback"
+    assert perf["quant"]["by_tactic_suitability_tier"][0]["name"] == "weak"
+    assert perf["quant"]["by_entry_primary_blocker"][0]["name"] == "cost_edge_fail"
+    assert perf["quant"]["by_entry_cost_floor_state"][0]["name"] == "not_met"
+    assert perf["quant"]["by_exit_decision"][0]["name"] == "confirm_before_exit_recommended"
+    assert perf["quant"]["by_exit_confirmation_state"][0]["name"] == "pending"
+    assert perf["quant"]["by_exit_hold_window_state"][0]["name"] == "mismatch"
+    markdown = md.read_text(encoding="utf-8")
+    assert "Quant tactic" in markdown
+    assert "Quant entry blockers" in markdown
 
 
 def test_operator_daily_summary_finds_truth_surface_under_time_bucket(tmp_path: Path) -> None:

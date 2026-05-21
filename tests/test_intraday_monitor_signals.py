@@ -41,6 +41,17 @@ def _rows_pullback_rebound() -> list[dict]:
     ]
 
 
+def _rows_lower_vwap_rebound_probe() -> list[dict]:
+    return [
+        {"open": 100.0, "high": 100.8, "low": 99.7, "close": 100.4, "volume": 1000, "vwap": 100.2},
+        {"open": 100.4, "high": 101.6, "low": 100.2, "close": 101.2, "volume": 1000, "vwap": 100.5},
+        {"open": 101.2, "high": 101.9, "low": 100.6, "close": 101.7, "volume": 1000, "vwap": 100.8},
+        {"open": 101.7, "high": 101.8, "low": 99.8, "close": 100.1, "volume": 1000, "vwap": 100.9},
+        {"open": 100.1, "high": 100.4, "low": 100.0, "close": 100.2, "volume": 1000, "vwap": 100.8},
+        {"open": 100.2, "high": 100.7, "low": 100.2, "close": 100.5, "volume": 950, "vwap": 100.8},
+    ]
+
+
 def _rows_breakout_reclaim_near_ready() -> list[dict]:
     rows = _rows_breakout()
     rows[-1]["vwap"] = 101.96
@@ -216,6 +227,30 @@ def test_intraday_entry_allows_etf_discount_reversion_path() -> None:
     assert (out.get("condition_scores") or {}).get("etf_deviation_discount_entry_ok") is True
 
 
+def test_intraday_entry_allows_inverse_hedge_reclaim_in_risk_off() -> None:
+    rows = _rows_etf_discount_reversion()
+    baseline = evaluate_intraday_entry_signal(
+        rows,
+        features={"asset_class_detected": "inverse_etf"},
+        policy={"entry_volume_ratio_min": 1.2},
+        frame={"market_regime": "neutral", "playbook": "defensive"},
+    )
+    out = evaluate_intraday_entry_signal(
+        rows,
+        features={"asset_class_detected": "inverse_etf"},
+        policy={"entry_volume_ratio_min": 1.2},
+        frame={"market_regime": "risk_off", "playbook": "defensive"},
+    )
+
+    assert baseline["triggered"] is False
+    assert out["triggered"] is True
+    assert out["reason"] == "inverse_hedge_reclaim_entry"
+    assert out["pattern"] == "inverse_hedge_reclaim"
+    assert out["entry_condition_path"] == "inverse_hedge_reclaim_path"
+    assert "inverse_hedge_reclaim_path_ready" in list(out.get("signal_chain") or [])
+    assert (out.get("metrics") or {}).get("inverse_hedge_reclaim_path_ok") is True
+
+
 def test_intraday_entry_observes_opening_gap_chase_without_hard_gate() -> None:
     rows = [
         {"ts": 1777444440, "open": 225800.0, "high": 226000.0, "low": 225500.0, "close": 225800.0, "volume": 120000.0},
@@ -301,6 +336,43 @@ def test_intraday_entry_breakout_path_still_blocks_when_reclaim_gate_is_not_read
     assert out["entry_condition_path"] == ""
     assert out["reason"] == "below_vwap_reclaim_not_ready"
     assert "reclaim_gate_ok" in list(out.get("failed_checks") or [])
+
+
+def test_intraday_entry_allows_lower_vwap_rebound_probe_without_reclaim() -> None:
+    out = evaluate_intraday_entry_signal(
+        _rows_lower_vwap_rebound_probe(),
+        frame={"playbook": "pullback"},
+    )
+
+    assert out["evaluated"] is True
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["pattern"] == "lower_vwap_rebound_probe"
+    assert out["entry_condition_path"] == "lower_vwap_rebound_probe_path"
+    assert out["reason"] == "lower_vwap_rebound_probe_entry"
+    assert "lower_vwap_rebound_probe_path_ready" in list(out.get("signal_chain") or [])
+    assert "lower_vwap_rebound_probe_path" in list(out.get("entry_condition_paths_passed") or [])
+    grouped = out.get("grouped_logic_trace") or {}
+    assert grouped.get("reclaim_gate_ok") is False
+    assert grouped.get("lower_vwap_rebound_probe_path_ok") is True
+    assert (grouped.get("lower_vwap_rebound_probe") or {}).get("path_ok") is True
+
+
+def test_intraday_entry_lower_vwap_rebound_probe_blocks_when_too_far_below_vwap() -> None:
+    rows = _rows_lower_vwap_rebound_probe()
+    rows[-1]["close"] = 99.8
+    rows[-1]["high"] = 100.3
+    rows[-1]["vwap"] = 100.8
+
+    out = evaluate_intraday_entry_signal(rows, frame={"playbook": "pullback"})
+
+    assert out["evaluated"] is True
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "below_vwap_reclaim_not_ready"
+    grouped = out.get("grouped_logic_trace") or {}
+    assert grouped.get("lower_vwap_rebound_probe_path_ok") is False
+    assert (grouped.get("lower_vwap_rebound_probe") or {}).get("path_ok") is False
 
 
 def test_intraday_entry_rejects_overextended_pullback_even_after_rebound() -> None:

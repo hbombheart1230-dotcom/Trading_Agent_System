@@ -75,6 +75,38 @@ def test_execute_from_packet_blocks_new_buy_inside_entry_closeout_buffer(tmp_pat
     assert guard["buy_closeout_cutoff_min"] == 15
 
 
+def test_recent_sell_guard_does_not_assume_full_exit_without_fill_truth(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    guard_path = tmp_path / "sell_guard.json"
+    state = {
+        "recent_sell_guard_path": str(guard_path),
+        "runtime_phase": "session",
+        "tick_ts": 1779171644,
+        "run_id": "run-sell",
+    }
+    order = {
+        "action": "SELL",
+        "symbol": "005930",
+        "qty": 10,
+        "meta": {"position_qty": 10},
+    }
+    execution = {
+        "ok": True,
+        "order_id": "0153269",
+        "payload": {"mode": "real", "filled_qty": 0},
+    }
+
+    result = execute_from_packet_module._update_recent_sell_order_guard(state, order, execution)
+    data = json.loads(guard_path.read_text(encoding="utf-8"))
+    record = data["orders"]["005930"]
+
+    assert result["updated"] is True
+    assert record["filled_qty"] == 0
+    assert record["remaining_qty_hint"] == 10
+    assert record["fill_truth_confirmed"] is False
+
+
 def test_execute_from_packet_uses_real_mode_when_execution_mode_unset(tmp_path, monkeypatch):
     # EXECUTION_MODE unset, but KIWOOM_MODE=real => must not bypass supervisor.
     monkeypatch.delenv("EXECUTION_MODE", raising=False)

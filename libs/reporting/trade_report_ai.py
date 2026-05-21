@@ -54,6 +54,34 @@ from libs.reporting.trade_report_ai_merge_policy import (
     prefer_fallback_text as _prefer_fallback_text_impl,
     trade_report_priority_bullet_prefixes as _trade_report_priority_bullet_prefixes_impl,
 )
+from libs.reporting.trade_report_ai_prompting import (
+    build_concise_trade_report_messages as _build_concise_trade_report_messages_impl,
+    build_messages as _build_messages_impl,
+    build_repair_messages as _build_repair_messages_impl,
+    prompt_story_input_for_llm as _prompt_story_input_for_llm_impl,
+    trade_report_output_template as _trade_report_output_template_impl,
+)
+from libs.reporting.trade_report_ai_deterministic import (
+    append_news_scanner_choice_details as _append_news_scanner_choice_details_impl,
+    attach_backward_compatible_aliases as _attach_backward_compatible_aliases_impl,
+    build_monitor_snapshot as _build_monitor_snapshot_impl,
+    build_shared_facts as _build_shared_facts_impl,
+    build_deterministic_trade_report as _build_deterministic_trade_report_impl,
+    enrich_market_context_for_fallback as _enrich_market_context_for_fallback_impl,
+    enrich_scanner_reason_for_fallback as _enrich_scanner_reason_for_fallback_impl,
+    fallback_section_seeds as _fallback_section_seeds_impl,
+    failure_report as _failure_report_impl,
+    merge_trade_report_candidate as _merge_trade_report_candidate_impl,
+)
+from libs.reporting.trade_report_ai_llm import run_trade_report_llm_attempts as _run_trade_report_llm_attempts_impl
+from libs.reporting.trade_report_ai_summary_adapter import (
+    AI_TRADE_SUMMARY_EVALUATION_KEYS,
+    build_trade_summary_evaluation_messages as _build_trade_summary_evaluation_messages_impl,
+    deterministic_trade_summary_report as _deterministic_trade_summary_report_impl,
+    normalize_trade_summary_evaluation as _normalize_trade_summary_evaluation_impl,
+    trade_summary_evaluation_template as _trade_summary_evaluation_template_impl,
+    trade_summary_parse_meta as _trade_summary_parse_meta_impl,
+)
 from libs.reporting.truth_source_labels import (
     monitor_price_source_label,
     pnl_truth_source_label,
@@ -4063,6 +4091,10 @@ def _extract_entry_execution_visibility(story_input: Dict[str, Any]) -> Dict[str
     monitor_reason = _as_dict(story_input.get("monitor_reason_human"))
     monitor_output = _as_dict(story_input.get("monitor_output"))
     story_handoff = _as_dict(story_input.get("scanner_monitor_handoff"))
+    entry_summary = _as_dict(story_input.get("entry_summary"))
+    entry_monitor = _as_dict(entry_summary.get("monitor_context"))
+    entry_policy_ref = _as_dict(entry_monitor.get("policy_ref"))
+    entry_applied_policy = _as_dict(entry_policy_ref.get("applied_policy"))
     strategy_detail = _extract_strategy_detail_from_source(
         _first_dict_from(
             story_input.get("strategist_output"),
@@ -4072,6 +4104,9 @@ def _extract_entry_execution_visibility(story_input: Dict[str, Any]) -> Dict[str
         )
     )
     raw_entry_control = _first_dict_from(
+        _as_dict(entry_policy_ref.get("entry_control")),
+        _as_dict(entry_applied_policy.get("commander_entry_control")),
+        _as_dict(entry_applied_policy.get("entry_control")),
         story_input.get("commander_entry_control"),
         canonical_commander_decision.get("entry_control"),
         canonical_commander.get("entry_control"),
@@ -4082,6 +4117,8 @@ def _extract_entry_execution_visibility(story_input: Dict[str, Any]) -> Dict[str
         shared_commander_route.get("entry_control"),
     )
     raw_cascade = _first_dict_from(
+        entry_monitor.get("entry_candidate_cascade"),
+        _as_dict(entry_monitor.get("scanner_monitor_handoff")).get("entry_candidate_cascade"),
         story_input.get("monitor_entry_cascade"),
         story_input.get("entry_candidate_cascade"),
         story_handoff.get("entry_candidate_cascade"),
@@ -4092,6 +4129,7 @@ def _extract_entry_execution_visibility(story_input: Dict[str, Any]) -> Dict[str
         _as_dict(monitor_output.get("scanner_monitor_handoff")).get("entry_candidate_cascade"),
     )
     raw_focus_context = _first_dict_from(
+        entry_monitor.get("monitor_focus_context"),
         story_input.get("monitor_focus_context"),
         monitor_reason.get("monitor_focus_context"),
         canonical_monitor.get("monitor_focus_context"),
@@ -4116,6 +4154,12 @@ def _extract_entry_execution_visibility(story_input: Dict[str, Any]) -> Dict[str
         out["monitor_entry_candidate_cascade"] = cascade
     if raw_focus_context:
         out["monitor_focus_context"] = _as_dict(raw_focus_context)
+    grouped_trace = _first_dict_from(
+        entry_monitor.get("entry_grouped_logic_trace"),
+        _as_dict(entry_monitor.get("threshold_snapshot")).get("entry_grouped_logic_trace"),
+    )
+    if grouped_trace:
+        out["entry_grouped_logic_trace"] = _as_dict(grouped_trace)
     summary = _entry_execution_visibility_summary(
         proposal=proposal,
         entry_control=entry_control,
@@ -4205,19 +4249,36 @@ def _compact_strategy_refresh_trace(value: Any) -> Dict[str, Any]:
     for row in list(trace.get("stages") or [])[:4]:
         if not isinstance(row, dict):
             continue
+        quant_context = _as_dict(row.get("quant_context") or row.get("strategist_quant_context"))
+        quant_market = _as_dict(quant_context.get("quant_market_context"))
+        quant_scorecard = _as_dict(quant_market.get("scorecard"))
+        quant_feedback = _as_dict(quant_scorecard.get("quant_memory_feedback"))
+        compact_stage = {
+            "stage": _clip(row.get("stage"), max_len=80),
+            "label": _clip(row.get("label"), max_len=80),
+            "summary": _clip(row.get("summary"), max_len=320),
+            "requested": row.get("requested"),
+            "evaluated": row.get("evaluated"),
+            "effective": row.get("effective"),
+            "reason": _clip(row.get("reason"), max_len=160),
+            "selected_symbol": _clip(row.get("selected_symbol"), max_len=24),
+            "policy_delta_count": row.get("policy_delta_count"),
+            "policy_delta_fields": _listify(row.get("policy_delta_fields"), max_items=8, max_len=80),
+        }
+        if quant_context:
+            compact_stage.update(
+                {
+                    "quant_context_call_kind": _clip(quant_context.get("call_kind"), max_len=80),
+                    "quant_scorecard_available": quant_scorecard.get("available"),
+                    "quant_feedback_tags": _listify(quant_feedback.get("feedback_tags"), max_items=8, max_len=80),
+                    "selected_symbol_quant_snapshot_present": bool(quant_context.get("selected_symbol_quant_snapshot")),
+                    "hold_quant_context_present": bool(quant_context.get("hold_quant_context")),
+                    "carry_quant_context_present": bool(quant_context.get("carry_quant_context")),
+                    "quant_behavior_effect": _clip(quant_context.get("behavior_effect"), max_len=80),
+                }
+            )
         stages.append(
-            {
-                "stage": _clip(row.get("stage"), max_len=80),
-                "label": _clip(row.get("label"), max_len=80),
-                "summary": _clip(row.get("summary"), max_len=320),
-                "requested": row.get("requested"),
-                "evaluated": row.get("evaluated"),
-                "effective": row.get("effective"),
-                "reason": _clip(row.get("reason"), max_len=160),
-                "selected_symbol": _clip(row.get("selected_symbol"), max_len=24),
-                "policy_delta_count": row.get("policy_delta_count"),
-                "policy_delta_fields": _listify(row.get("policy_delta_fields"), max_items=8, max_len=80),
-            }
+            {key: val for key, val in compact_stage.items() if val not in ("", None, [], {})}
         )
     out = {
         "summary": _clip(trace.get("summary"), max_len=700),
@@ -5600,6 +5661,91 @@ def _trade_report_parse_meta(raw: Any, parsed: Dict[str, Any] | None) -> Dict[st
     }
 
 
+def _build_report_shared_facts(
+    *,
+    shared_seed: Dict[str, Any],
+    action: str,
+    symbol: str,
+    trade_id: str,
+    status_text: str,
+) -> Dict[str, Any]:
+    return _build_shared_facts_impl(
+        shared_seed=shared_seed,
+        action=action,
+        symbol=symbol,
+        trade_id=trade_id,
+        status_text=status_text,
+        clip=_clip,
+        as_dict=_as_dict,
+    )
+
+
+def _attach_backward_compatible_aliases(report: Dict[str, Any]) -> Dict[str, Any]:
+    return _attach_backward_compatible_aliases_impl(report)
+
+
+def _build_report_monitor_snapshot(
+    *,
+    monitor_reason: Dict[str, Any],
+    story_input: Dict[str, Any],
+    action: str,
+    entry_execution_visibility: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    return _build_monitor_snapshot_impl(
+        monitor_reason=monitor_reason,
+        story_input=story_input,
+        action=action,
+        clip=_clip,
+        listify=_listify,
+        as_dict=_as_dict,
+        entry_execution_visibility=entry_execution_visibility,
+        compact_entry_candidate_cascade=_compact_entry_candidate_cascade,
+    )
+
+
+def _enrich_market_context_for_fallback(
+    *,
+    market_context: Dict[str, Any],
+    strategist_context: Dict[str, Any],
+    policy_ref_context: Dict[str, Any],
+    scanner_bias_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    return _enrich_market_context_for_fallback_impl(
+        market_context=market_context,
+        strategist_context=strategist_context,
+        policy_ref_context=policy_ref_context,
+        scanner_bias_summary=scanner_bias_summary,
+    )
+
+
+def _enrich_scanner_reason_for_fallback(
+    *,
+    scanner_reason: Dict[str, Any],
+    shared_scanner_reasoning: Dict[str, Any],
+    shared_selection_trace: Dict[str, Any],
+) -> Dict[str, Any]:
+    return _enrich_scanner_reason_for_fallback_impl(
+        scanner_reason=scanner_reason,
+        shared_scanner_reasoning=shared_scanner_reasoning,
+        shared_selection_trace=shared_selection_trace,
+    )
+
+
+def _fallback_section_seeds(shared_seed: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    return _fallback_section_seeds_impl(shared_seed, as_dict=_as_dict)
+
+
+def _append_news_scanner_choice_details(
+    why_symbol_bullets: List[str],
+    news_scanner_contribution: Dict[str, Any],
+) -> List[str]:
+    return _append_news_scanner_choice_details_impl(
+        why_symbol_bullets,
+        news_scanner_contribution,
+        listify=_listify,
+    )
+
+
 def _merge_trade_report_candidate(
     story_input: Dict[str, Any],
     candidate: Dict[str, Any],
@@ -5609,91 +5755,21 @@ def _merge_trade_report_candidate(
     model: str,
     reason: str,
 ) -> Dict[str, Any]:
-    out = _fallback_report(
+    return _merge_trade_report_candidate_impl(
         story_input,
+        candidate,
         status=status,
         mode=mode,
         model=model,
         reason=reason,
+        fallback_report=_fallback_report,
+        normalize_section=_normalize_section,
+        merge_section_with_fallback=_merge_section_with_fallback,
+        prefer_fallback_text=_prefer_fallback_text,
+        listify=_listify,
+        clip=_clip,
+        normalize_trade_report_output=_normalize_trade_report_output,
     )
-    out["generation"] = {
-        "status": status,
-        "mode": mode,
-        "model": _clip(model, max_len=120),
-        "reason": _clip(reason, max_len=320),
-    }
-    used_fallback_sections: List[str] = []
-
-    def _merge_into(section_key: str, source_value: Any, fallback_key: str | None = None) -> None:
-        normalized = _normalize_section(
-            source_value,
-            default_summary=(out.get(section_key) or {}).get("summary") or "",
-        )
-        merged = _merge_section_with_fallback(
-            normalized,
-            out.get(section_key) if isinstance(out.get(section_key), dict) else {},
-            section_key=section_key,
-        )
-        if not (isinstance(source_value, dict) and source_value):
-            used_fallback_sections.append(section_key)
-        out[section_key] = merged
-        if fallback_key:
-            out[fallback_key] = dict(merged)
-
-    _merge_into("executive_summary", candidate.get("executive_summary"))
-    _merge_into("market_context_at_entry", candidate.get("market_context_at_entry") or candidate.get("market_context"), "market_context")
-    _merge_into("strategist_summary", candidate.get("strategist_summary"))
-    _merge_into("strategist_refresh_trace", candidate.get("strategist_refresh_trace"))
-    _merge_into("why_this_symbol_was_chosen", candidate.get("why_this_symbol_was_chosen") or candidate.get("why_this_symbol"), "why_this_symbol")
-    _merge_into("entry_decision", candidate.get("entry_decision"))
-    _merge_into("holding_monitoring_story", candidate.get("holding_monitoring_story") or candidate.get("monitor_trigger_reasoning"), "monitor_trigger_reasoning")
-    _merge_into("exit_decision", candidate.get("exit_decision"))
-    _merge_into("execution_quality", candidate.get("execution_quality") or candidate.get("execution_result"), "execution_result")
-    _merge_into("scanner_filters", candidate.get("scanner_filters") or candidate.get("scanner_logic_and_filters"), "scanner_logic_and_filters")
-    _merge_into("guard_approval_result", candidate.get("guard_approval_result"))
-    out["reporter_evaluation"] = _merge_section_with_fallback(
-        _normalize_section(candidate.get("reporter_evaluation"), default_summary=out["reporter_evaluation"]["summary"]),
-        out["reporter_evaluation"],
-        section_key="reporter_evaluation",
-    )
-    if not isinstance(candidate.get("reporter_evaluation"), dict):
-        used_fallback_sections.append("reporter_evaluation")
-    out["errors_weaknesses_improvement_points"] = _merge_section_with_fallback(
-        _normalize_section(
-            candidate.get("errors_weaknesses_improvement_points"),
-            default_summary=out["errors_weaknesses_improvement_points"]["summary"],
-        ),
-        out["errors_weaknesses_improvement_points"],
-        section_key="errors_weaknesses_improvement_points",
-    )
-    if not isinstance(candidate.get("errors_weaknesses_improvement_points"), dict):
-        used_fallback_sections.append("errors_weaknesses_improvement_points")
-
-    final_conclusion = candidate.get("final_operator_conclusion") if isinstance(candidate.get("final_operator_conclusion"), dict) else {}
-    out["final_operator_conclusion"] = {
-        "summary": _prefer_fallback_text(final_conclusion.get("summary"), out["final_operator_conclusion"]["summary"]),
-        "current_action": _clip(final_conclusion.get("current_action"), max_len=24) or out["final_operator_conclusion"]["current_action"],
-        "watch_next": _listify(final_conclusion.get("watch_next"), max_items=6, max_len=200) or out["final_operator_conclusion"]["watch_next"],
-        "thesis_invalidation": _listify(final_conclusion.get("thesis_invalidation"), max_items=6, max_len=200)
-        or out["final_operator_conclusion"]["thesis_invalidation"],
-    }
-    if not final_conclusion:
-        used_fallback_sections.append("final_operator_conclusion")
-
-    timeline_rows: List[Dict[str, Any]] = []
-    parsed_timeline = candidate.get("full_timeline")
-    if isinstance(parsed_timeline, list):
-        timeline_rows = [row for row in parsed_timeline if isinstance(row, dict)][:24]
-    if not timeline_rows:
-        timeline_rows = [row for row in list(candidate.get("timeline") or []) if isinstance(row, dict)][:24]
-    if timeline_rows:
-        out["full_timeline"] = timeline_rows
-        out["timeline"] = timeline_rows
-    else:
-        used_fallback_sections.append("timeline")
-
-    out["used_fallback_sections"] = sorted(set(used_fallback_sections))
-    return _normalize_trade_report_output(story_input, out)
 
 
 def _fallback_report(
@@ -5727,113 +5803,40 @@ def _fallback_report(
     )
     policy_ref_context = _extract_policy_ref_context(story_input, monitor_reason)
     scanner_bias_summary = _extract_scanner_bias_summary(story_input, scanner_reason)
-    market_context = dict(market_context)
     strategist_context = shared_seed.get("strategist_context") if isinstance(shared_seed.get("strategist_context"), dict) else {}
-    if strategist_context.get("playbook") and not market_context.get("playbook"):
-        market_context["playbook"] = strategist_context.get("playbook")
-    if strategist_context.get("selected_playbook") and not market_context.get("selected_playbook"):
-        market_context["selected_playbook"] = strategist_context.get("selected_playbook")
-    if strategist_context.get("policy_source") and not market_context.get("policy_source"):
-        market_context["policy_source"] = strategist_context.get("policy_source")
-    if strategist_context.get("risk_tone") and not market_context.get("risk_tone"):
-        market_context["risk_tone"] = strategist_context.get("risk_tone")
-    if strategist_context.get("trade_aggressiveness") and not market_context.get("trade_aggressiveness"):
-        market_context["trade_aggressiveness"] = strategist_context.get("trade_aggressiveness")
-    if strategist_context.get("monitor_guidance") and not market_context.get("monitor_guidance"):
-        market_context["monitor_guidance"] = strategist_context.get("monitor_guidance")
-    if strategist_context.get("themes") and not market_context.get("themes"):
-        market_context["themes"] = list(strategist_context.get("themes") or [])
-    if strategist_context.get("preferred_themes") and not market_context.get("preferred_themes"):
-        market_context["preferred_themes"] = list(strategist_context.get("preferred_themes") or [])
-    for theme_key in (
-        "theme_strength_packet",
-        "theme_source",
-        "theme_source_status",
-        "theme_source_reason",
-        "theme_strength_top_themes",
-        "theme_strength_scores",
-    ):
-        if strategist_context.get(theme_key) not in (None, "", [], {}) and not market_context.get(theme_key):
-            market_context[theme_key] = strategist_context.get(theme_key)
-    if strategist_context.get("market_context_summary") and not market_context.get("summary"):
-        market_context["summary"] = strategist_context.get("market_context_summary")
-    if policy_ref_context.get("risk_mode") and not market_context.get("risk_mode"):
-        market_context["risk_mode"] = policy_ref_context.get("risk_mode")
-    if policy_ref_context.get("selected_playbook") and not market_context.get("selected_playbook"):
-        market_context["selected_playbook"] = policy_ref_context.get("selected_playbook")
-    if policy_ref_context.get("preferred_themes") and not market_context.get("preferred_themes"):
-        market_context["preferred_themes"] = policy_ref_context.get("preferred_themes")
-    if policy_ref_context.get("avoid_themes") and not market_context.get("avoid_themes"):
-        market_context["avoid_themes"] = policy_ref_context.get("avoid_themes")
-    if scanner_bias_summary and not market_context.get("scanner_bias_summary"):
-        market_context["scanner_bias_summary"] = scanner_bias_summary
-    scanner_reason = dict(scanner_reason)
+    market_context = _enrich_market_context_for_fallback(
+        market_context=market_context,
+        strategist_context=strategist_context,
+        policy_ref_context=policy_ref_context,
+        scanner_bias_summary=scanner_bias_summary,
+    )
     has_runtime_monitor_reason = bool(monitor_reason)
     shared_scanner_reasoning = shared_seed.get("scanner_reasoning") if isinstance(shared_seed.get("scanner_reasoning"), dict) else {}
     shared_selection_trace = shared_scanner_reasoning.get("selection_trace") if isinstance(shared_scanner_reasoning.get("selection_trace"), dict) else {}
-    shared_report_section_seeds = shared_seed.get("report_section_seeds") if isinstance(shared_seed.get("report_section_seeds"), dict) else {}
-    market_context_seed = _as_dict(shared_report_section_seeds.get("market_context_at_entry"))
-    strategist_summary_seed = _as_dict(shared_report_section_seeds.get("strategist_summary"))
-    why_symbol_seed = _as_dict(shared_report_section_seeds.get("why_this_symbol_was_chosen"))
-    entry_decision_seed = _as_dict(shared_report_section_seeds.get("entry_decision"))
-    holding_story_seed = _as_dict(shared_report_section_seeds.get("holding_monitoring_story"))
-    exit_decision_seed = _as_dict(shared_report_section_seeds.get("exit_decision"))
-    scanner_filters_seed = _as_dict(shared_report_section_seeds.get("scanner_filters"))
-    execution_quality_seed = _as_dict(shared_report_section_seeds.get("execution_quality"))
-    guard_approval_seed = _as_dict(shared_report_section_seeds.get("guard_approval_result"))
-    reporter_evaluation_seed = _as_dict(shared_report_section_seeds.get("reporter_evaluation"))
-    final_operator_conclusion_seed = _as_dict(shared_report_section_seeds.get("final_operator_conclusion"))
-    if shared_scanner_reasoning.get("selection_reason_with_bias") and not scanner_reason.get("selection_reason_with_bias"):
-        scanner_reason["selection_reason_with_bias"] = shared_scanner_reasoning.get("selection_reason_with_bias")
-    if shared_scanner_reasoning.get("selection_reason_with_bias") and not scanner_reason.get("summary"):
-        scanner_reason["summary"] = shared_scanner_reasoning.get("selection_reason_with_bias")
-    if shared_selection_trace.get("selected_symbol") and not scanner_reason.get("selected_symbol"):
-        scanner_reason["selected_symbol"] = shared_selection_trace.get("selected_symbol")
-    if shared_selection_trace.get("selected_rank") and not scanner_reason.get("selected_rank"):
-        scanner_reason["selected_rank"] = shared_selection_trace.get("selected_rank")
-    if shared_selection_trace.get("selected_symbol_score_drivers") and not scanner_reason.get("selected_symbol_score_drivers"):
-        scanner_reason["selected_symbol_score_drivers"] = dict(shared_selection_trace.get("selected_symbol_score_drivers") or {})
-    if shared_selection_trace.get("ranked_candidates") and not scanner_reason.get("top_candidates"):
-        scanner_reason["top_candidates"] = list(shared_selection_trace.get("ranked_candidates") or [])
-    action = _clip(shared_seed.get("lifecycle_action"), max_len=24) or _clip(story_input.get("action"), max_len=24) or "WAIT"
-    monitor_stop_trace = _as_dict(
-        monitor_reason.get("monitor_stop_policy_trace")
-        or story_input.get("monitor_stop_policy_trace")
+    section_seeds = _fallback_section_seeds(shared_seed)
+    market_context_seed = section_seeds["market_context"]
+    strategist_summary_seed = section_seeds["strategist_summary"]
+    why_symbol_seed = section_seeds["why_symbol"]
+    entry_decision_seed = section_seeds["entry_decision"]
+    holding_story_seed = section_seeds["holding_story"]
+    exit_decision_seed = section_seeds["exit_decision"]
+    scanner_filters_seed = section_seeds["scanner_filters"]
+    execution_quality_seed = section_seeds["execution_quality"]
+    guard_approval_seed = section_seeds["guard_approval"]
+    reporter_evaluation_seed = section_seeds["reporter_evaluation"]
+    final_operator_conclusion_seed = section_seeds["final_operator_conclusion"]
+    scanner_reason = _enrich_scanner_reason_for_fallback(
+        scanner_reason=scanner_reason,
+        shared_scanner_reasoning=shared_scanner_reasoning,
+        shared_selection_trace=shared_selection_trace,
     )
-    monitor_snapshot = {
-        "posture": _clip(monitor_reason.get("posture"), max_len=40) or action or "WAIT",
-        "trigger_type": _clip(monitor_reason.get("trigger_type"), max_len=80) or "not_captured",
-        "position_age_seconds": int(monitor_reason.get("position_age_seconds") or 0),
-        "hard_stop_pct": monitor_reason.get("hard_stop_pct") or monitor_stop_trace.get("hard_stop_pct"),
-        "adaptive_stop_loss_pct": monitor_reason.get("adaptive_stop_loss_pct") or monitor_stop_trace.get("adaptive_stop_loss_pct"),
-        "stop_loss_pct": monitor_reason.get("stop_loss_pct"),
-        "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct") or monitor_stop_trace.get("effective_stop_loss_pct"),
-        "effective_stop_reason": _clip(monitor_reason.get("effective_stop_reason"), max_len=80) or "not_captured",
-        "strategist_baseline_stop_loss_pct": monitor_reason.get("strategist_baseline_stop_loss_pct")
-        or monitor_stop_trace.get("strategist_baseline_stop_loss_pct"),
-        "strategist_baseline_take_profit_pct": monitor_reason.get("strategist_baseline_take_profit_pct")
-        or monitor_stop_trace.get("strategist_baseline_take_profit_pct"),
-        "strategist_baseline_trailing_stop_pct": monitor_reason.get("strategist_baseline_trailing_stop_pct")
-        or monitor_stop_trace.get("strategist_baseline_trailing_stop_pct"),
-        "take_profit_pct": monitor_reason.get("take_profit_pct") or monitor_stop_trace.get("take_profit_pct"),
-        "trailing_stop_pct": monitor_reason.get("trailing_stop_pct") or monitor_stop_trace.get("trailing_stop_pct"),
-        "exit_triggered": bool(monitor_reason.get("exit_triggered")),
-        "current_price": monitor_reason.get("current_price"),
-        "average_price": monitor_reason.get("average_price"),
-        "peak_price": monitor_reason.get("peak_price"),
-        "current_drawdown": monitor_reason.get("current_drawdown"),
-        "peak_drawdown": monitor_reason.get("peak_drawdown"),
-        "vwap_distance": monitor_reason.get("vwap_distance"),
-        "active_exit_axis": _clip(monitor_reason.get("active_exit_axis"), max_len=80),
-        "watch_axes": _listify(monitor_reason.get("watch_axes"), max_items=8, max_len=120),
-        "price_source": _clip(monitor_reason.get("price_source"), max_len=120) or "not_captured",
-        "feature_source": _clip(monitor_reason.get("feature_source"), max_len=120) or "not_captured",
-        "price_source_policy": _clip(monitor_reason.get("price_source_policy"), max_len=260) or "",
-        "entry_candidate_cascade": _as_dict(
-            entry_execution_visibility.get("monitor_entry_candidate_cascade")
-        )
-        or _compact_entry_candidate_cascade(monitor_reason.get("entry_candidate_cascade")),
-    }
+    action = _clip(shared_seed.get("lifecycle_action"), max_len=24) or _clip(story_input.get("action"), max_len=24) or "WAIT"
+    monitor_snapshot = _build_report_monitor_snapshot(
+        monitor_reason=monitor_reason,
+        story_input=story_input,
+        action=action,
+        entry_execution_visibility=entry_execution_visibility,
+    )
     entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
     entry_monitor_reason = _resolve_entry_monitor_reason(story_input, monitor_reason, entry_summary)
     for key in (
@@ -5870,58 +5873,7 @@ def _fallback_report(
             {"scanner_selection_trace": effective_scanner_selection_trace}
         )
     why_symbol_bullets = _build_scanner_choice_bullets(scanner_reason, market_context)
-    if news_scanner_contribution:
-        core = news_scanner_contribution.get("core_score_contributions") if isinstance(news_scanner_contribution.get("core_score_contributions"), dict) else {}
-        sentiment_inputs = news_scanner_contribution.get("sentiment_inputs") if isinstance(news_scanner_contribution.get("sentiment_inputs"), dict) else {}
-        theme_trace = news_scanner_contribution.get("theme_alignment_trace") if isinstance(news_scanner_contribution.get("theme_alignment_trace"), dict) else {}
-        news_linkage = news_scanner_contribution.get("news_linkage_trace") if isinstance(news_scanner_contribution.get("news_linkage_trace"), dict) else {}
-        def _core_value(key: str) -> float:
-            row = core.get(key)
-            if isinstance(row, dict):
-                return float(row.get("value") or 0.0)
-            try:
-                return float(row or 0.0)
-            except Exception:
-                return 0.0
-        extra_rows: List[str] = []
-        extra_rows.append(
-            "점수 기여 세부값은 "
-            f"거래대금 {_core_value('trading_value'):+.3f}, "
-            f"모멘텀 {_core_value('momentum'):+.3f}, "
-            f"추세 {_core_value('trend'):+.3f}, "
-            f"테마 가점 {_core_value('theme_boost'):+.3f}, "
-            f"감성 {_core_value('sentiment'):+.3f}였습니다."
-        )
-        extra_rows.append(
-            "감성 입력은 "
-            f"뉴스 {float(sentiment_inputs.get('news_sentiment_score') or 0.0):+.3f}, "
-            f"글로벌 {float(sentiment_inputs.get('global_sentiment_score') or 0.0):+.3f}, "
-            f"혼합 {float(sentiment_inputs.get('blended_sentiment_component') or 0.0):+.3f}, "
-            f"최종 반영 {float(sentiment_inputs.get('weighted_sentiment_score_contribution') or 0.0):+.3f}였습니다."
-        )
-        extra_rows.append(
-            "테마 정렬은 "
-            f"일치 여부 {bool(theme_trace.get('theme_source_matched'))}, "
-            f"테마 가점 {float(theme_trace.get('theme_boost_score_contribution') or 0.0):+.3f}, "
-            f"전략가 테마 {', '.join(_listify(theme_trace.get('strategist_themes'), max_items=4, max_len=60)) or '기록 없음'} 기준으로 반영됐습니다."
-        )
-        if theme_trace.get("theme_source") or theme_trace.get("theme_source_status") or theme_trace.get("theme_source_reason"):
-            extra_rows.append(
-                "테마 packet 출처는 "
-                f"source={theme_trace.get('theme_source') or 'not_captured'}, "
-                f"status={theme_trace.get('theme_source_status') or 'not_captured'}, "
-                f"reason={theme_trace.get('theme_source_reason') or 'not_captured'} 기준으로 남았습니다."
-            )
-        extra_rows.append(
-            "뉴스 연계는 "
-            f"종목 헤드라인 {int(float(news_linkage.get('symbol_headline_count') or 0))}건, "
-            f"시장 헤드라인 {int(float(news_linkage.get('market_headline_count') or 0))}건, "
-            f"조회 대상 {', '.join(_listify(news_linkage.get('news_query_targets'), max_items=6, max_len=60)) or '기록 없음'} 기준으로 남았습니다."
-        )
-        existing = set(str(row) for row in why_symbol_bullets)
-        for row in extra_rows:
-            if row not in existing:
-                why_symbol_bullets.append(row)
+    why_symbol_bullets = _append_news_scanner_choice_details(why_symbol_bullets, news_scanner_contribution)
     raw_scanner_bullets = _listify(scanner_reason.get("bullets"), max_items=8, max_len=220)
     raw_scanner_bullets.extend(_listify(scanner_reason.get("why_selected"), max_items=4, max_len=180))
     selection_basis_text = _clip(scanner_reason.get("selection_basis"), max_len=220)
@@ -6286,41 +6238,13 @@ def _fallback_report(
                 or _listify(final_operator_conclusion_seed.get("thesis_invalidation"), max_items=6, max_len=200)
             ),
         },
-        "shared_facts": {
-            "symbol": symbol,
-            "trade_id": trade_id,
-            "action": action,
-            "status": status_text,
-            "holding_duration": _clip(shared_seed.get("holding_duration"), max_len=80) or "unavailable",
-            "exit_reason": _clip(shared_seed.get("exit_reason"), max_len=280) or "unavailable",
-            "pnl": shared_seed.get("pnl", "unavailable"),
-            "pnl_pct": shared_seed.get("pnl_pct", "unavailable"),
-            "broker_fee": shared_seed.get("broker_fee"),
-            "broker_tax": shared_seed.get("broker_tax"),
-            "pnl_truth_source": _clip(shared_seed.get("pnl_truth_source"), max_len=80) or "unavailable",
-            "broker_day_truth_source": _clip(shared_seed.get("broker_day_truth_source"), max_len=80) or "",
-            "broker_day_match_mode": _clip(shared_seed.get("broker_day_match_mode"), max_len=40) or "",
-            "broker_day_authoritative": bool(shared_seed.get("broker_day_authoritative")),
-            "broker_day_row_count": shared_seed.get("broker_day_row_count"),
-            "broker_truth_attempted": bool(shared_seed.get("broker_truth_attempted")),
-            "broker_truth_error": _clip(shared_seed.get("broker_truth_error"), max_len=240) or "",
-            "broker_day_truth_attempted": bool(shared_seed.get("broker_day_truth_attempted")),
-            "broker_day_truth_error": _clip(shared_seed.get("broker_day_truth_error"), max_len=240) or "",
-            "broker_fill_price": shared_seed.get("broker_fill_price"),
-            "broker_buy_price": shared_seed.get("broker_buy_price"),
-            "account_mark_price": shared_seed.get("account_mark_price"),
-            "monitor_mark_price": shared_seed.get("monitor_mark_price"),
-            "price_truth_source": _clip(shared_seed.get("price_truth_source"), max_len=40) or "unavailable",
-            "monitor_price_source": _clip(shared_seed.get("monitor_price_source"), max_len=120) or "unavailable",
-            "data_source": dict((_as_dict(shared_seed.get("resolved_trade_facts")).get("data_source"))),
-            "resolved_trade_facts": dict(shared_seed.get("resolved_trade_facts") or {}),
-            "lifecycle_action": action,
-            "lifecycle_status": status_text,
-            "monitor_decision": dict(shared_seed.get("monitor_decision") or {}),
-            "scanner_evidence_status": _clip(shared_seed.get("scanner_evidence_status"), max_len=24),
-            "strategist_evidence_status": _clip(shared_seed.get("strategist_evidence_status"), max_len=24),
-            "commander_route": dict(shared_seed.get("commander_route") or {}),
-        },
+        "shared_facts": _build_report_shared_facts(
+            shared_seed=shared_seed,
+            action=action,
+            symbol=symbol,
+            trade_id=trade_id,
+            status_text=status_text,
+        ),
     }
     out["truth_surface"] = build_trade_report_truth_surface(out.get("shared_facts"))
     out["memory_surface"] = memory_surface
@@ -6331,13 +6255,7 @@ def _fallback_report(
     post_exit_shadow = _story_post_exit_shadow(story_input)
     if post_exit_shadow:
         out["post_exit_shadow"] = dict(post_exit_shadow)
-    # Backward-compatible aliases used by earlier UI/report consumers.
-    out["market_context"] = dict(out.get("market_context_at_entry") or {})
-    out["why_this_symbol"] = dict(out.get("why_this_symbol_was_chosen") or {})
-    out["scanner_logic_and_filters"] = dict(out.get("scanner_filters") or {})
-    out["monitor_trigger_reasoning"] = dict(out.get("holding_monitoring_story") or {})
-    out["execution_result"] = dict(out.get("execution_quality") or {})
-    return out
+    return _attach_backward_compatible_aliases(out)
 
 
 def _failure_report(
@@ -6349,143 +6267,23 @@ def _failure_report(
     reason: str,
     error: str = "",
 ) -> Dict[str, Any]:
-    shared_seed = _build_shared_summary_seed(story_input)
-    trade_id = _clip(shared_seed.get("trade_id"), max_len=120) or _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
-    action = _clip(shared_seed.get("lifecycle_action"), max_len=24) or _actual_lifecycle_action(story_input)
-    symbol = _clip(shared_seed.get("symbol"), max_len=32) or _clip(story_input.get("symbol"), max_len=32) or "unknown"
-    status_text = _clip(shared_seed.get("lifecycle_status"), max_len=32) or _clip(story_input.get("status"), max_len=32) or "unknown"
-    reporter_status = story_input.get("reporter_status_human") if isinstance(story_input.get("reporter_status_human"), dict) else {}
-    monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
-    monitor_stop_trace = _as_dict(
-        monitor_reason.get("monitor_stop_policy_trace")
-        or story_input.get("monitor_stop_policy_trace")
+    return _failure_report_impl(
+        story_input,
+        status=status,
+        mode=mode,
+        model=model,
+        reason=reason,
+        error=error,
+        build_shared_summary_seed=_build_shared_summary_seed,
+        clip=_clip,
+        actual_lifecycle_action=_actual_lifecycle_action,
+        as_dict=_as_dict,
+        utc_now_iso=_utc_now_iso,
+        build_report_strategist_refresh_trace=_build_report_strategist_refresh_trace,
+        listify=_listify,
+        build_monitor_snapshot_fn=_build_report_monitor_snapshot,
+        normalize_trade_report_output=_normalize_trade_report_output,
     )
-    full_timeline = [
-        row
-        for row in list(story_input.get("timeline") or [])
-        if isinstance(row, dict)
-    ][:24]
-    out = {
-        "schema_version": "ai_trade_report.v2",
-        "generated_at": _utc_now_iso(),
-        "trade_id": trade_id,
-        "story_id": _clip(story_input.get("story_id"), max_len=120) or trade_id,
-        "run_id": _clip(story_input.get("run_id"), max_len=120),
-        "symbol": symbol,
-        "action": action,
-        "status": status_text,
-        "story_type": _clip(story_input.get("story_type"), max_len=40),
-        "execution_mode_label": _clip(story_input.get("execution_mode_label"), max_len=80),
-        "generation": {
-            "status": status,
-            "mode": mode,
-            "model": _clip(model, max_len=120),
-            "reason": _clip(reason, max_len=320),
-        },
-        "failure": {
-            "status": status,
-            "reason": _clip(reason, max_len=320),
-            "error": _clip(error, max_len=500),
-        },
-        "executive_summary": {
-            "headline": f"AI trade report failed for {symbol}",
-            "action": action,
-            "symbol": symbol,
-            "confidence": "not_available",
-            "summary": "AI trade report generation failed after retry attempts. Review the saved LLM response artifact for details.",
-        },
-        "market_context_at_entry": {
-            "summary": "AI generation failed before a rendered market-context section was produced.",
-            "bullets": [],
-        },
-        "strategist_summary": {
-            "summary": "AI generation failed before a rendered strategist-summary section was produced.",
-            "bullets": [],
-        },
-        "strategist_refresh_trace": _build_report_strategist_refresh_trace(story_input),
-        "why_this_symbol_was_chosen": {
-            "summary": "AI generation failed before a rendered symbol-selection section was produced.",
-            "bullets": [],
-        },
-        "entry_decision": {
-            "summary": "AI generation failed before a rendered entry-decision section was produced.",
-            "bullets": [],
-        },
-        "holding_monitoring_story": {
-            "summary": "AI generation failed before a rendered holding-monitoring section was produced.",
-            "bullets": _listify(monitor_reason.get("bullets"), max_items=8, max_len=260),
-        },
-        "exit_decision": {
-            "summary": "AI generation failed before a rendered exit-decision section was produced.",
-            "bullets": [],
-        },
-        "execution_quality": {
-            "summary": "AI generation failed before a rendered execution-quality section was produced.",
-            "bullets": [],
-        },
-        "monitor_snapshot": {
-            "posture": _clip(monitor_reason.get("posture"), max_len=40) or action or "WAIT",
-            "trigger_type": _clip(monitor_reason.get("trigger_type"), max_len=80) or "not_captured",
-            "position_age_seconds": int(monitor_reason.get("position_age_seconds") or 0),
-            "hard_stop_pct": monitor_reason.get("hard_stop_pct") or monitor_stop_trace.get("hard_stop_pct"),
-            "adaptive_stop_loss_pct": monitor_reason.get("adaptive_stop_loss_pct") or monitor_stop_trace.get("adaptive_stop_loss_pct"),
-            "stop_loss_pct": monitor_reason.get("stop_loss_pct"),
-            "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct") or monitor_stop_trace.get("effective_stop_loss_pct"),
-            "effective_stop_reason": _clip(monitor_reason.get("effective_stop_reason"), max_len=80) or "not_captured",
-            "strategist_baseline_stop_loss_pct": monitor_reason.get("strategist_baseline_stop_loss_pct")
-            or monitor_stop_trace.get("strategist_baseline_stop_loss_pct"),
-            "strategist_baseline_take_profit_pct": monitor_reason.get("strategist_baseline_take_profit_pct")
-            or monitor_stop_trace.get("strategist_baseline_take_profit_pct"),
-            "strategist_baseline_trailing_stop_pct": monitor_reason.get("strategist_baseline_trailing_stop_pct")
-            or monitor_stop_trace.get("strategist_baseline_trailing_stop_pct"),
-            "take_profit_pct": monitor_reason.get("take_profit_pct") or monitor_stop_trace.get("take_profit_pct"),
-            "trailing_stop_pct": monitor_reason.get("trailing_stop_pct") or monitor_stop_trace.get("trailing_stop_pct"),
-            "exit_triggered": bool(monitor_reason.get("exit_triggered")),
-            "current_price": monitor_reason.get("current_price"),
-            "average_price": monitor_reason.get("average_price"),
-            "peak_price": monitor_reason.get("peak_price"),
-            "current_drawdown": monitor_reason.get("current_drawdown"),
-            "peak_drawdown": monitor_reason.get("peak_drawdown"),
-            "vwap_distance": monitor_reason.get("vwap_distance"),
-            "active_exit_axis": _clip(monitor_reason.get("active_exit_axis"), max_len=80),
-            "watch_axes": _listify(monitor_reason.get("watch_axes"), max_items=8, max_len=120),
-            "price_source": _clip(monitor_reason.get("price_source"), max_len=120) or "not_captured",
-            "feature_source": _clip(monitor_reason.get("feature_source"), max_len=120) or "not_captured",
-            "price_source_policy": _clip(monitor_reason.get("price_source_policy"), max_len=260) or "",
-        },
-        "scanner_filters": {
-            "summary": "AI generation failed before a rendered scanner-filter section was produced.",
-            "bullets": [],
-        },
-        "guard_approval_result": {
-            "summary": "AI generation failed before a rendered guard-approval section was produced.",
-            "bullets": [],
-        },
-        "reporter_evaluation": {
-            "summary": _clip(reporter_status.get("summary"), max_len=600) or "Reporter linkage status was recorded separately.",
-            "status": _clip(reporter_status.get("status"), max_len=40) or "missing",
-            "grade": _clip(reporter_status.get("grade"), max_len=16) or "N/A",
-            "bullets": _listify(reporter_status.get("bullets"), max_items=8, max_len=260),
-        },
-        "errors_weaknesses_improvement_points": {
-            "summary": "AI generation failed and no rendered improvement section is available.",
-            "bullets": [entry for entry in [_clip(reason, max_len=240), _clip(error, max_len=240)] if entry],
-        },
-        "full_timeline": full_timeline,
-        "timeline": full_timeline,
-        "final_operator_conclusion": {
-            "summary": "AI generation failed. Review lifecycle artifacts and the saved LLM response artifact before taking action.",
-            "current_action": "HOLD" if status_text.lower() == "open" and action == "BUY" else action,
-            "watch_next": [],
-            "thesis_invalidation": [],
-        },
-    }
-    out["market_context"] = dict(out.get("market_context_at_entry") or {})
-    out["why_this_symbol"] = dict(out.get("why_this_symbol_was_chosen") or {})
-    out["scanner_logic_and_filters"] = dict(out.get("scanner_filters") or {})
-    out["monitor_trigger_reasoning"] = dict(out.get("holding_monitoring_story") or {})
-    out["execution_result"] = dict(out.get("execution_quality") or {})
-    return _normalize_trade_report_output(story_input, out)
 
 
 def build_separated_ai_trade_report(trade_dir: str, *, model: Optional[str] = None) -> Dict[str, Any]:
@@ -6592,22 +6390,7 @@ def _load_trade_read_model_hint(story_input: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _trade_report_output_template() -> Dict[str, Any]:
-    return {
-        "executive_summary": {"headline": "", "summary": ""},
-        "market_context_at_entry": {"summary": "", "bullets": [""]},
-        "strategist_summary": {"summary": "", "bullets": [""]},
-        "strategist_refresh_trace": {"summary": "", "bullets": [""], "stages": []},
-        "why_this_symbol_was_chosen": {"summary": "", "bullets": [""]},
-        "entry_decision": {"summary": "", "bullets": [""]},
-        "holding_monitoring_story": {"summary": "", "bullets": [""]},
-        "exit_decision": {"summary": "", "bullets": [""]},
-        "execution_quality": {"summary": "", "bullets": [""]},
-        "scanner_filters": {"summary": "", "bullets": [""]},
-        "guard_approval_result": {"summary": "", "bullets": [""]},
-        "reporter_evaluation": {"summary": "", "bullets": [""]},
-        "errors_weaknesses_improvement_points": {"summary": "", "bullets": [""]},
-        "final_operator_conclusion": {"summary": "", "watch_next": [""], "thesis_invalidation": [""]},
-    }
+    return _trade_report_output_template_impl()
 
 
 def _trade_report_language_meta(candidate: Dict[str, Any]) -> Dict[str, Any]:
@@ -6664,158 +6447,23 @@ def _build_concise_trade_report_messages(
     repair: bool = False,
     enforce_korean: bool = False,
 ) -> List[Dict[str, str]]:
-    prompt_input = _prompt_story_input_for_llm(compact_input)
-    mode_label = "복구 모드" if repair else "작성 모드"
-    korean_note = ""
-    if enforce_korean:
-        korean_note = "\n최종 JSON을 반환하기 전에 남아 있는 영어 설명 문장을 모두 한국어로 번역하십시오."
-    previous_note = ""
-    if repair:
-        previous_note = f"\n이전 응답:\n{previous_response_text}\n"
-    return [
-        {
-            "role": "system",
-            "content": (
-                "당신은 트레이딩 시스템의 사후 거래 리포트 narrative editor입니다. "
-                "반드시 JSON 객체 하나만 반환하십시오. 설명문, 사고 과정, markdown, code fence, 계획 문장은 절대 쓰지 마십시오. "
-                "trade lifecycle retrospective만 작성하고, 숫자, 이벤트, 이유, evidence를 지어내지 마십시오. "
-                f"{AI_TRADE_REPORT_KOREAN_RULES} "
-                "값을 모르면 빈 문자열, 빈 리스트, null을 사용하십시오."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"{mode_label}: 아래 compact input과 출력 템플릿만 사용해 ai_trade_report narrative JSON을 작성하십시오.\n"
-                "파이프라인 순서는 strategist -> scanner -> monitor -> supervisor -> executor -> reporter입니다.\n"
-                "답해야 할 질문은 왜 진입했는가, 왜 보유했는가, 왜 청산했는가, 실행은 어땠는가, 다음에는 무엇을 개선할 것인가입니다.\n"
-                "LLM은 전체 리포트/타임라인/메타데이터를 재생성하지 않습니다. 템플릿에 있는 narrative section만 채우십시오.\n"
-                "영어 source 문장을 그대로 복사하지 마십시오. 사람이 읽는 문장은 한국어로 번역하십시오.\n"
-                "selection_basis, runner_ups_lost, decision_reason_chain, monitor thresholds가 있으면 해당 섹션에 직접 반영하십시오.\n"
-                "strategist_output이 있으면 strategy_thesis, strategy_refresh_trace, memory_usage_trace, news_usage_trace, scanner_handoff, monitor_handoff를 직접 사용하십시오.\n"
-                "The strategist is not the final symbol selector; scanner/why_this_symbol_was_chosen owns selection_trace/rank/score.\n"
-                "memory_usage_trace와 news_usage_trace는 메모리/뉴스 사용 설명의 기준입니다. 새 근거를 만들지 마십시오.\n"
-                "strategy_refresh_trace가 있으면 1차 전략 프레임, 2차 후보 확정 후 refresh, 최종 적용 결과를 한 문단으로 합치지 말고 분리하십시오.\n"
-                f"{partial_note}{korean_note}{previous_note}\n"
-                "출력 템플릿:\n"
-                f"{json.dumps(contract, ensure_ascii=False)}\n"
-                "입력:\n"
-                f"{json.dumps(prompt_input, ensure_ascii=False)}"
-            ),
-        },
-    ]
+    return _build_concise_trade_report_messages_impl(
+        compact_input,
+        contract,
+        korean_rules=AI_TRADE_REPORT_KOREAN_RULES,
+        compact_section_seed_for_llm=_compact_section_seed_for_llm,
+        partial_note=partial_note,
+        previous_response_text=previous_response_text,
+        repair=repair,
+        enforce_korean=enforce_korean,
+    )
 
 
 def _prompt_story_input_for_llm(compact_input: Dict[str, Any]) -> Dict[str, Any]:
-    data = compact_input if isinstance(compact_input, dict) else {}
-    market = _as_dict(data.get("market_context"))
-    commander = _as_dict(data.get("commander"))
-    scanner = _as_dict(data.get("scanner"))
-    monitor = _as_dict(data.get("monitor"))
-    entry_visibility = _as_dict(data.get("entry_execution_visibility"))
-    seeds = _as_dict(data.get("report_section_seeds"))
-    return {
-        "trade_id": data.get("trade_id"),
-        "run_id": data.get("run_id"),
-        "symbol": data.get("symbol"),
-        "action": data.get("action"),
-        "status": data.get("status"),
-        "execution_mode_label": data.get("execution_mode_label"),
-        "strategist_output": _as_dict(data.get("strategist_output")),
-        "market_context": {
-            "regime": market.get("regime"),
-            "market_sentiment": market.get("market_sentiment"),
-            "risk_mode": market.get("risk_mode"),
-            "selected_playbook": market.get("selected_playbook"),
-            "global_sentiment_score": market.get("global_sentiment_score"),
-            "vix_level": market.get("vix_level"),
-            "preferred_themes": _listify(market.get("preferred_themes"), max_items=3, max_len=60),
-            "avoid_themes": _listify(market.get("avoid_themes"), max_items=3, max_len=60),
-            "market_headlines": _listify(market.get("market_headlines"), max_items=2, max_len=140),
-            "symbol_headlines": _listify(market.get("symbol_headlines"), max_items=2, max_len=140),
-            "key_events": _listify(market.get("key_events"), max_items=2, max_len=140),
-        },
-        "commander": {
-            "command_intent": commander.get("command_intent"),
-            "selected_route": commander.get("selected_route"),
-            "route_reason_text": commander.get("route_reason_text"),
-            "policy_source": commander.get("policy_source"),
-            "strategist_cache_used": commander.get("strategist_cache_used"),
-            "strategist_called": commander.get("strategist_called"),
-            "entry_control": _as_dict(commander.get("entry_control")),
-        },
-        "entry": _as_dict(data.get("entry")),
-        "scanner": {
-            "selected_symbol": scanner.get("selected_symbol"),
-            "selected_rank": scanner.get("selected_rank"),
-            "universe_size": scanner.get("universe_size"),
-            "ranking_basis": scanner.get("ranking_basis"),
-            "playbook": scanner.get("playbook"),
-            "policy_source": scanner.get("policy_source"),
-            "confidence": scanner.get("confidence"),
-            "top_reasons": _listify(scanner.get("top_reasons"), max_items=3, max_len=120),
-            "why_selected": _listify(scanner.get("why_selected"), max_items=3, max_len=120),
-            "selection_basis": scanner.get("selection_basis"),
-            "selection_reason_with_bias": _clip(scanner.get("selection_reason_with_bias"), max_len=180),
-            "runner_ups": _listify(scanner.get("runner_ups"), max_items=2, max_len=120),
-            "runner_ups_lost": _listify(scanner.get("runner_ups_lost"), max_items=2, max_len=160),
-            "selection_trace": {
-                "ranked_candidates": _listify(
-                    _as_dict(scanner.get("selection_trace")).get("ranked_candidates"),
-                    max_items=3,
-                    max_len=160,
-                ),
-                "selected_symbol": _as_dict(scanner.get("selection_trace")).get("selected_symbol"),
-                "selected_rank": _as_dict(scanner.get("selection_trace")).get("selected_rank"),
-                "selection_reason": _clip(_as_dict(scanner.get("selection_trace")).get("selection_reason"), max_len=180),
-                "selected_symbol_score_drivers": _compact_scalar_dict(
-                    _as_dict(scanner.get("selection_trace")).get("selected_symbol_score_drivers"),
-                    max_items=5,
-                    max_len=80,
-                ),
-            },
-        },
-        "holding": _as_dict(data.get("holding")),
-        "monitor": {
-            "posture": monitor.get("posture"),
-            "trigger_type": monitor.get("trigger_type"),
-            "summary": _clip(monitor.get("summary"), max_len=220),
-            "entry_check_summary": _clip(monitor.get("entry_check_summary"), max_len=180),
-            "entry_blockers": _listify(monitor.get("entry_blockers"), max_items=5, max_len=100),
-            "threshold_shortfalls": _listify(monitor.get("threshold_shortfalls"), max_items=3, max_len=120),
-            "decision_reason_chain": _listify(monitor.get("decision_reason_chain"), max_items=5, max_len=80),
-            "confirm_required": monitor.get("confirm_required"),
-            "confirm_count": monitor.get("confirm_count"),
-            "effective_policy_deltas": _listify(monitor.get("effective_policy_deltas"), max_items=5, max_len=100),
-            "position_age_seconds": monitor.get("position_age_seconds"),
-            "effective_stop_loss_pct": monitor.get("effective_stop_loss_pct"),
-            "take_profit_pct": monitor.get("take_profit_pct"),
-            "trailing_stop_pct": monitor.get("trailing_stop_pct"),
-            "current_price": monitor.get("current_price"),
-            "average_price": monitor.get("average_price"),
-            "peak_price": monitor.get("peak_price"),
-            "current_drawdown": monitor.get("current_drawdown"),
-            "active_exit_axis": monitor.get("active_exit_axis"),
-            "watch_axes": _listify(monitor.get("watch_axes"), max_items=4, max_len=80),
-            "price_source": monitor.get("price_source"),
-            "monitor_stop_policy_trace": _compact_scalar_dict(monitor.get("monitor_stop_policy_trace"), max_items=6, max_len=80),
-            "entry_candidate_cascade": _as_dict(monitor.get("entry_candidate_cascade")),
-        },
-        "entry_execution_visibility": entry_visibility,
-        "exit": _as_dict(data.get("exit")),
-        "guard": _as_dict(data.get("guard")),
-        "execution": _as_dict(data.get("execution")),
-        "reporter": _as_dict(data.get("reporter")),
-        "operator_conclusion": _as_dict(data.get("operator_conclusion")),
-        "section_seed_summaries": {
-            key: _compact_section_seed_for_llm(value)
-            for key, value in seeds.items()
-            if key
-        },
-        "timeline": _listify(data.get("timeline"), max_items=4, max_len=180),
-        "improvement_points": _listify(data.get("improvement_points"), max_items=4, max_len=120),
-        "ai_report_diagnostics": _as_dict(data.get("ai_report_diagnostics")),
-    }
+    return _prompt_story_input_for_llm_impl(
+        compact_input,
+        compact_section_seed_for_llm=_compact_section_seed_for_llm,
+    )
 
 
 def _build_repair_messages(
@@ -6825,151 +6473,24 @@ def _build_repair_messages(
     sparse: bool = False,
     enforce_korean: bool = False,
 ) -> List[Dict[str, str]]:
-    compact_input = _sparse_story_input_for_llm(story_input)
-    contract = _trade_report_output_template()
-    previous_response = str(raw_response or "").strip()
-    previous_parse = parse_llm_json_response(previous_response)
-    previous_response_text = "[previous response was non-JSON reasoning or invalid text; ignore it]"
-    if bool(previous_parse.get("is_full")):
-        previous_response_text = previous_response[:1800]
-    elif bool(previous_parse.get("is_partial")) and isinstance(previous_parse.get("partial_object"), dict):
-        previous_response_text = json.dumps(previous_parse.get("partial_object") or {}, ensure_ascii=False)[:1800]
-    partial_note = ""
-    if str(story_input.get("status") or "").strip().lower() == "partial":
-        partial_note = (
-            "\n이 lifecycle은 partial 상태입니다. 일부 entry 또는 holding 근거가 비어 있습니다. "
-            "확인되지 않은 진입 근거는 만들어 쓰지 말고, 저장되지 않았다고 명확히 적으십시오."
-        )
-    shape_note = ""
-    if sparse:
-        shape_note = (
-            "\n이번 단계는 마지막 복구 패스입니다. 각 summary는 2문장 이하로 유지하고, 각 섹션의 bullets는 1개에서 3개만 작성하며, "
-            "full_timeline은 최대 8개 행까지만 유지하십시오."
-        )
-    language_note = ""
-    if sparse:
-        shape_note = "\n마지막 복구 시도입니다. 각 summary는 2문장 이하, bullets는 1~3개만 작성하십시오."
-    return _build_concise_trade_report_messages(
-        compact_input,
-        contract,
-        partial_note=f"{partial_note}{shape_note}",
-        previous_response_text=previous_response_text,
-        repair=True,
+    return _build_repair_messages_impl(
+        story_input,
+        raw_response,
+        sparse_story_input_for_llm=_sparse_story_input_for_llm,
+        compact_section_seed_for_llm=_compact_section_seed_for_llm,
+        korean_rules=AI_TRADE_REPORT_KOREAN_RULES,
+        sparse=sparse,
         enforce_korean=enforce_korean,
     )
-    if enforce_korean:
-        language_note = (
-            "\n최종 JSON을 반환하기 전에 남아 있는 영어 설명 문장을 모두 한국어로 번역하십시오. "
-            "JSON 키, 타임스탬프, 숫자, 액션 코드, 종목코드는 그대로 유지하십시오."
-        )
-    return [
-        {
-            "role": "system",
-            "content": (
-                "당신은 AI 거래 리포트 출력을 복구하는 역할입니다. 반드시 JSON 객체 하나만 반환하십시오. "
-                "설명문, 사고 과정, 지시문 반복, markdown, code fence는 모두 금지합니다. "
-                "'먼저', '우선', 'First, I need' 같은 계획 문장은 절대 쓰지 마십시오. JSON 앞에 어떤 텍스트가 있어도 실패입니다. "
-                "출력은 반드시 '{'로 시작하고 '}'로 끝나야 하며, JSON 키는 계약과 정확히 일치해야 합니다. "
-                f"{AI_TRADE_REPORT_KOREAN_RULES} "
-                "값을 알 수 없으면 추측하지 말고 빈 문자열, 빈 리스트, 또는 null을 사용하십시오."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "이전 응답이 요구된 JSON 계약을 만족하지 못했습니다. 유효한 JSON만 다시 생성하십시오.\n"
-                f"출력 템플릿:\n{json.dumps(contract, ensure_ascii=False)}\n"
-                "템플릿 값만 실제 리포트 내용으로 채우고, 키 이름과 중첩 구조는 그대로 유지하십시오."
-                "\n- If strategist_output is present, use strategy_thesis, strategy_refresh_trace, memory_usage_trace, news_usage_trace, scanner_handoff, and monitor_handoff as the strategist rationale directly.\n"
-                "- The strategist is not the final symbol selector. Do not write that the strategist selected the final symbol.\n"
-                "- Symbol-selection rationale belongs in scanner/why_this_symbol_was_chosen and must follow scanner selection_trace, score, and rank evidence.\n"
-                "- memory_usage_trace and news_usage_trace are authoritative for memory/news usage. Do not invent new memory/news explanations in the report LLM.\n"
-                "- strategy_refresh_trace is authoritative for 1st/base frame, 2nd/post-scanner refresh, and final application. Do not collapse these stages.\n"
-                f"{partial_note}{shape_note}{language_note}\n\n"
-                "원본 입력이 영어로 적혀 있어도 그대로 복사하지 말고 한국어로 옮겨 쓰십시오.\n"
-                "핵심 evidence 규칙:\n"
-                "- market_context_human에 headline_count, news_query_count, news_query_targets, key_events_hint가 있으면 market_context_at_entry에 반영하십시오.\n"
-                "- strategist_summary에는 입력 -> 시장 해석 -> 스캐너 반영 -> 종목 연결 순서를 유지하십시오.\n"
-                "- scanner_reason_human에 why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost가 있으면 why_this_symbol_was_chosen과 entry_decision에 반영하십시오.\n"
-                "- monitor_reason_human에 effective_stop_loss_pct, take_profit_pct, active_exit_axis, watch_axes, confirm_required, confirm_count, decision_reason_chain이 있으면 holding_monitoring_story와 exit_decision에 반영하십시오.\n"
-                "- 구체적인 숫자 근거를 모호한 표현으로 바꾸지 마십시오.\n"
-                f"입력:\n{json.dumps(compact_input, ensure_ascii=False)}\n\n"
-                f"이전 응답:\n{previous_response_text}"
-            ),
-        },
-    ]
 
 
 def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
-    compact_input = _sparse_story_input_for_llm(story_input)
-    contract = _trade_report_output_template()
-    partial_note = ""
-    if str(story_input.get("status") or "").strip().lower() == "partial":
-        partial_note = "\n이 lifecycle은 partial 상태입니다. 확인되지 않은 진입/보유 근거를 새로 만들지 마십시오."
-    return _build_concise_trade_report_messages(
-        compact_input,
-        contract,
-        partial_note=partial_note,
+    return _build_messages_impl(
+        story_input,
+        sparse_story_input_for_llm=_sparse_story_input_for_llm,
+        compact_section_seed_for_llm=_compact_section_seed_for_llm,
+        korean_rules=AI_TRADE_REPORT_KOREAN_RULES,
     )
-    if str(story_input.get("status") or "").strip().lower() == "partial":
-        partial_note = (
-            "이 lifecycle은 partial 상태입니다. 일부 entry 또는 holding 근거가 비어 있습니다. "
-            "확인되지 않은 진입 근거는 만들어 쓰지 말고, 저장되지 않았다고 명확히 적으십시오.\n"
-        )
-    return [
-        {
-            "role": "system",
-            "content": (
-                "당신은 트레이딩 시스템의 사후 거래 복기용 AI 거래 리포트를 작성합니다. "
-                "이 문서는 operator_brief 같은 즉시 상황 스냅샷이 아니라 trade lifecycle retrospective입니다. "
-                "반드시 제공된 입력만 사용하고, 숫자, 이벤트, 이유, evidence를 지어내지 마십시오. "
-                "반드시 JSON 객체 하나만 반환하십시오. markdown, JSON 앞 설명문, 분석 문장, code fence는 금지합니다. "
-                "'먼저', '우선', 'First, I need' 같은 계획 문장은 절대 쓰지 마십시오. JSON 앞의 모든 텍스트는 실패입니다. "
-                "출력은 반드시 '{'로 시작하고 '}'로 끝나야 하며, JSON 키는 계약과 정확히 일치해야 합니다. "
-                f"{AI_TRADE_REPORT_KOREAN_RULES} "
-                "값을 알 수 없으면 추측하지 말고 빈 문자열, 빈 리스트, 또는 null을 사용하십시오."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "아래 trade story input을 바탕으로 trade lifecycle retrospective AI 거래 리포트를 작성하십시오.\n"
-                "파이프라인 순서는 strategist -> scanner -> monitor -> supervisor -> executor -> reporter를 정확히 따라야 합니다.\n"
-                "이 리포트는 즉시 대응용 snapshot이 아니라 사후 복기 문서입니다.\n"
-                "반드시 다음 질문에 답할 수 있게 작성하십시오: 왜 진입했는가, 왜 보유했는가, 왜 청산했는가, 실행 품질은 어땠는가, 다음에는 무엇을 개선할 것인가.\n"
-                "작성 요구사항:\n"
-                "- global sentiment score, VIX, headline count, query-target count가 있으면 구체적인 숫자를 그대로 반영하십시오.\n"
-                "- 시장 환경 요약에는 headline_count, news_query_count, news_query_targets, key_events_hint를 우선 반영하십시오.\n"
-                "- strategist_summary에는 입력 -> 해석 -> 스캐너 반영 -> 종목 선택 순서로 정리하십시오.\n"
-                "- scanner 후보 수, 선택 종목, runner-up, Kiwoom source mix(top_value, top_volume, sector_theme 등), score breakdown, feature coverage를 설명하십시오.\n"
-                "- 선택 종목 상세 분석에는 why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost를 가능한 한 직접 반영하십시오.\n"
-                "- Entry 상세 근거에서는 generic한 문장을 반복하지 말고 strategist guidance와 scanner ranking이 어떻게 연결됐는지 설명하십시오.\n"
-                "- monitor thresholds와 watch axes, stop, effective stop, 목표 수익 실현 기준, 현재가, price source를 설명하십시오.\n"
-                "- Holding 경과와 Exit 판단 근거에는 active_exit_axis, confirm_required, confirm_count, decision_reason_chain, watch_axes를 가능한 한 직접 반영하십시오.\n"
-                "- supervisor 승인과 executor 결과는 분리해서 설명하십시오.\n"
-                "- reporter linkage가 없으면 그 사실을 한국어로 명확하게 설명하십시오.\n"
-                "- 사람이 읽는 모든 문장은 한국어로 옮겨 쓰고, 영어 source 문장을 그대로 복사하지 마십시오.\n"
-                "- 종목코드, JSON 키, BUY/SELL/HOLD/WAIT 액션 코드, VIX, Kiwoom source id, 타임스탬프는 그대로 유지하십시오.\n"
-                "- deterministic report skeleton은 이미 존재하므로 메타데이터를 다시 만들지 말고 section narrative content만 채우십시오.\n"
-                "- section summary, ranked comparison, monitor reasoning, operator-facing bullets에 집중하십시오.\n"
-                "- strategist evidence fields(candidate hints, market headlines, symbol headlines)가 있으면 시장/전략가 evidence를 별도 문장으로 명확히 설명하십시오.\n"
-                "- scanner_selection_trace가 있으면 strategist hints -> ranked candidates -> selected symbol -> selection reason -> score drivers 순서를 유지하십시오.\n"
-                "- monitor_stop_policy_trace가 있으면 hard fail-safe stop, adaptive stop, effective stop, trailing stop, take profit을 서로 다른 층위로 구분해 설명하십시오.\n"
-                "- adaptive stop이 있으면 stop을 단일 3% 규칙처럼 뭉뚱그리지 말고 실제 active stop을 명시하십시오.\n"
-                "- strategist_output: use strategy_thesis, strategy_refresh_trace, memory_usage_trace, news_usage_trace, scanner_handoff, monitor_handoff directly.\n"
-                "- strategy_refresh_trace가 있으면 1차 전략 프레임, 2차 후보 확정 후 refresh, 최종 적용 결과를 분리해 작성하십시오.\n"
-                "- The strategist is not the final symbol selector; scanner/why_this_symbol_was_chosen owns selection_trace/rank/score.\n"
-                f"{partial_note}"
-                "아래 JSON 템플릿에 값만 채워 반환하십시오:\n"
-                f"{json.dumps(contract, ensure_ascii=False)}\n"
-                "evidence가 있으면 각 section에 bullets를 3개에서 6개까지 작성하십시오.\n"
-                "summary는 간결하되 운영 판단에 실제로 도움이 되게 쓰십시오.\n"
-                "입력에 ranked comparison detail이 있으면 생략하지 마십시오.\n"
-                "section narrative field 바깥에서 action/symbol/status 메타를 반복하지 마십시오.\n"
-                f"입력:\n{json.dumps(compact_input, ensure_ascii=False)}"
-            ),
-        },
-    ]
 
 
 def _canonical_ai_report_status(value: Any) -> str:
@@ -7055,18 +6576,10 @@ def _attach_report_status_matrix(
 
 
 def build_deterministic_trade_report(story_input: Dict[str, Any]) -> Dict[str, Any]:
-    report = _fallback_report(
+    return _build_deterministic_trade_report_impl(
         story_input,
-        status="ok",
-        mode="deterministic",
-        model="",
-        reason="deterministic_report_generated",
-    )
-    return _attach_report_status_matrix(
-        report,
-        story_input,
-        ai_trade_report_status="skipped",
-        deterministic_report_status="ok",
+        fallback_report=_fallback_report,
+        attach_report_status_matrix=_attach_report_status_matrix,
     )
 
 
@@ -7271,12 +6784,6 @@ def build_ai_trade_report(
     final_status = "error"
     final_reason = ""
     final_error = ""
-    final_latency_ms = 0
-    parsed: Optional[Dict[str, Any]] = None
-    best_partial: Dict[str, Any] = {}
-    best_partial_meta: Dict[str, Any] = {}
-    raw = ""
-    current_messages = list(messages)
     current_policy = {
         "temperature": temp,
         "max_tokens": max(600, token_budget),
@@ -7285,190 +6792,31 @@ def build_ai_trade_report(
         "plugins": [{"id": "response-healing"}],
         **({"model": chosen_model} if chosen_model else {}),
     }
-    for attempt_index in range(retry_max + 1):
-        step = "primary" if attempt_index == 0 else f"retry_{attempt_index}"
-        needs_korean_repair = False
-        t0 = time.perf_counter()
-        try:
-            raw = _router_chat_with_hard_timeout(
-                router,
-                "trade_report",
-                current_messages,
-                policy=current_policy,
-                hard_timeout_sec=hard_timeout_sec,
-            )
-        except Exception as exc:
-            final_latency_ms = int((time.perf_counter() - t0) * 1000)
-            final_status = classify_llm_exception(exc)
-            final_reason = f"trade_report_ai_exception:{type(exc).__name__}:{exc}"
-            final_error = f"{type(exc).__name__}:{exc}"
-            attempts.append(
-                make_attempt(
-                    step=step,
-                    messages=current_messages,
-                    raw_response_text=f"ERROR:{final_error}",
-                    parsed_output={},
-                    model=chosen_model or resolved_model,
-                    latency_ms=final_latency_ms,
-                    status=final_status,
-                    meta={"role": "ai_trade_report", "error": final_error, **execution_observability},
-                )
-            )
-        else:
-            final_latency_ms = int((time.perf_counter() - t0) * 1000)
-            parse_result = parse_llm_json_response(raw)
-            candidate = parse_result.get("full_object") if isinstance(parse_result.get("full_object"), dict) else parse_result.get("partial_object")
-            candidate = dict(candidate) if isinstance(candidate, dict) else {}
-            parse_meta = _trade_report_parse_meta(raw, candidate)
-            language_meta = _trade_report_language_meta(candidate) if candidate else {
-                "language_sample_count": 0,
-                "language_hangul_chars": 0,
-                "language_latin_chars": 0,
-                "language_english_like_count": 0,
-                "requires_korean_repair": False,
-            }
-            if not bool(parse_result.get("raw_nonempty")):
-                final_status = "empty_response"
-                final_reason = "trade_report_ai returned an empty response"
-                attempts.append(
-                    make_attempt(
-                        step=step,
-                        messages=current_messages,
-                        raw_response_text=raw,
-                        parsed_output={},
-                        model=chosen_model or resolved_model,
-                        latency_ms=final_latency_ms,
-                        status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
-                    )
-                )
-            elif bool(parse_result.get("is_full")) and not parse_meta.get("required_keys_missing"):
-                if bool(language_meta.get("requires_korean_repair")) and attempt_index < retry_max:
-                    final_status = "partial"
-                    final_reason = "trade_report_ai returned valid JSON but human-readable sections remained mostly English"
-                    needs_korean_repair = True
-                    attempts.append(
-                        make_attempt(
-                            step=step,
-                            messages=current_messages,
-                            raw_response_text=raw,
-                            parsed_output=candidate,
-                            model=chosen_model or resolved_model,
-                            latency_ms=final_latency_ms,
-                            status=final_status,
-                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
-                        )
-                    )
-                else:
-                    parsed = candidate
-                    final_reason = ""
-                    final_status = "ok"
-                    attempts.append(
-                        make_attempt(
-                            step=step,
-                            messages=current_messages,
-                            raw_response_text=raw,
-                            parsed_output=parsed,
-                            model=chosen_model or resolved_model,
-                            latency_ms=final_latency_ms,
-                            status=final_status,
-                            meta={"role": "ai_trade_report", **parse_meta, **language_meta, **execution_observability},
-                        )
-                    )
-                    break
-            elif bool(parse_result.get("is_partial")) and candidate and not parse_meta.get("required_keys_missing"):
-                if attempt_index < retry_max:
-                    final_status = "partial"
-                    final_reason = "trade_report_ai returned a complete JSON object with extra non-JSON text; retrying strict JSON-only regeneration"
-                    needs_korean_repair = bool(language_meta.get("requires_korean_repair"))
-                    attempts.append(
-                        make_attempt(
-                            step=step,
-                            messages=current_messages,
-                            raw_response_text=raw,
-                            parsed_output=candidate,
-                            model=chosen_model or resolved_model,
-                            latency_ms=final_latency_ms,
-                            status=final_status,
-                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
-                        )
-                    )
-                else:
-                    parsed = candidate
-                    final_status = "ok"
-                    final_reason = ""
-                    attempts.append(
-                        make_attempt(
-                            step=step,
-                            messages=current_messages,
-                            raw_response_text=raw,
-                            parsed_output=parsed,
-                            model=chosen_model or resolved_model,
-                            latency_ms=final_latency_ms,
-                            status=final_status,
-                            meta={
-                                "role": "ai_trade_report",
-                                "finish_reason": "complete_json_extracted_after_protocol_deviation",
-                                **parse_meta,
-                                **language_meta,
-                                **execution_observability,
-                            },
-                        )
-                    )
-                    break
-            elif candidate:
-                best_partial = dict(candidate)
-                best_partial_meta = dict(parse_meta)
-                final_status = "partial"
-                missing = list(parse_meta.get("required_keys_missing") or [])
-                if bool(parse_result.get("is_partial")):
-                    final_reason = "trade_report_ai returned truncated or partial JSON"
-                elif missing:
-                    final_reason = f"trade_report_ai response is missing required keys: {', '.join(missing)}"
-                else:
-                    final_reason = "trade_report_ai response was incomplete"
-                attempts.append(
-                    make_attempt(
-                        step=step,
-                        messages=current_messages,
-                        raw_response_text=raw,
-                        parsed_output=candidate,
-                        model=chosen_model or resolved_model,
-                        latency_ms=final_latency_ms,
-                        status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
-                    )
-                )
-            else:
-                final_status = "parse_error"
-                final_reason = "trade_report_ai returned non-JSON response"
-                attempts.append(
-                    make_attempt(
-                        step=step,
-                        messages=current_messages,
-                        raw_response_text=raw,
-                        parsed_output={},
-                        model=chosen_model or resolved_model,
-                        latency_ms=final_latency_ms,
-                        status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
-                    )
-                )
-        if attempt_index < retry_max:
-            if final_status in {"parse_error", "partial"}:
-                current_messages = _build_repair_messages(
-                    story_input,
-                    raw,
-                    sparse=(attempt_index + 1) >= retry_max,
-                    enforce_korean=needs_korean_repair,
-                )
-            current_policy = {
-                **current_policy,
-                "temperature": 0.0,
-                "max_tokens": max(800, retry_token_budget),
-            }
-            if retry_backoff_sec > 0.0:
-                time.sleep(float(retry_backoff_sec))
+    llm_result = _run_trade_report_llm_attempts_impl(
+        router=router,
+        story_input=story_input,
+        messages=messages,
+        current_policy=current_policy,
+        retry_max=retry_max,
+        retry_token_budget=retry_token_budget,
+        retry_backoff_sec=retry_backoff_sec,
+        hard_timeout_sec=hard_timeout_sec,
+        chosen_model=chosen_model,
+        resolved_model=resolved_model,
+        execution_observability=execution_observability,
+        router_chat_with_hard_timeout=_router_chat_with_hard_timeout,
+        trade_report_parse_meta=_trade_report_parse_meta,
+        trade_report_language_meta=_trade_report_language_meta,
+        build_repair_messages=_build_repair_messages,
+    )
+    attempts = list(llm_result.get("attempts") or [])
+    parsed = llm_result.get("parsed") if isinstance(llm_result.get("parsed"), dict) else None
+    best_partial = llm_result.get("best_partial") if isinstance(llm_result.get("best_partial"), dict) else {}
+    best_partial_meta = llm_result.get("best_partial_meta") if isinstance(llm_result.get("best_partial_meta"), dict) else {}
+    raw = str(llm_result.get("raw") or "")
+    final_status = str(llm_result.get("final_status") or final_status)
+    final_reason = str(llm_result.get("final_reason") or final_reason)
+    final_error = str(llm_result.get("final_error") or final_error)
 
     if not parsed and best_partial:
         final_status = "salvaged"
@@ -7568,51 +6916,16 @@ def build_trade_summary_input(report: Dict[str, Any]) -> Dict[str, Any]:
     return build_trade_summary_input_clean(report)
 
 
-AI_TRADE_SUMMARY_EVALUATION_KEYS = (
-    "conclusion",
-    "root_cause",
-    "priority_actions",
-    "risk_notes",
-    "validation_questions",
-)
-
-
 def _trade_summary_evaluation_template() -> Dict[str, Any]:
-    return {
-        "conclusion": "",
-        "root_cause": "",
-        "priority_actions": [],
-        "risk_notes": [],
-        "validation_questions": [],
-    }
+    return _trade_summary_evaluation_template_impl()
 
 
 def _normalize_trade_summary_evaluation(value: Any) -> Dict[str, Any]:
-    payload = value if isinstance(value, dict) else {}
-    if isinstance(payload.get("llm_evaluation"), dict):
-        payload = dict(payload.get("llm_evaluation") or {})
-    out = _trade_summary_evaluation_template()
-    out["conclusion"] = _clip(payload.get("conclusion"), max_len=420)
-    out["root_cause"] = _clip(payload.get("root_cause"), max_len=520)
-    out["priority_actions"] = _listify(payload.get("priority_actions"), max_items=5, max_len=180)
-    out["risk_notes"] = _listify(payload.get("risk_notes"), max_items=5, max_len=180)
-    out["validation_questions"] = _listify(payload.get("validation_questions"), max_items=5, max_len=180)
-    return out
+    return _normalize_trade_summary_evaluation_impl(value, clip=_clip, listify=_listify)
 
 
 def _trade_summary_parse_meta(raw_response: Any, candidate: Dict[str, Any]) -> Dict[str, Any]:
-    evaluation = candidate.get("llm_evaluation") if isinstance(candidate.get("llm_evaluation"), dict) else candidate
-    evaluation = evaluation if isinstance(evaluation, dict) else {}
-    present = [key for key in AI_TRADE_SUMMARY_EVALUATION_KEYS if key in evaluation]
-    missing = [key for key in AI_TRADE_SUMMARY_EVALUATION_KEYS if key not in evaluation]
-    return {
-        "parse_mode": "json",
-        "required_keys_expected": list(AI_TRADE_SUMMARY_EVALUATION_KEYS),
-        "required_keys_present": present,
-        "required_keys_missing": missing,
-        "completeness_score": float(len(present)) / float(len(AI_TRADE_SUMMARY_EVALUATION_KEYS)),
-        "raw_char_count": len(str(raw_response or "")),
-    }
+    return _trade_summary_parse_meta_impl(raw_response, candidate)
 
 
 def _build_trade_summary_evaluation_messages(
@@ -7621,47 +6934,12 @@ def _build_trade_summary_evaluation_messages(
     previous_response_text: str = "",
     repair: bool = False,
 ) -> List[Dict[str, str]]:
-    mode_label = "복구 모드" if repair else "작성 모드"
-    previous_note = f"\n이전 응답:\n{previous_response_text}\n" if repair else ""
-    return [
-        {
-            "role": "system",
-            "content": (
-                "당신은 트레이딩 시스템의 운영 요약 평가자입니다. "
-                "반드시 JSON 객체 하나만 반환하십시오. markdown, code fence, 설명문, 사고 과정은 금지합니다. "
-                "가격, 손익, 수수료, 세금, 체결 사실, 순위, 점수는 절대 만들거나 수정하지 마십시오. "
-                "모든 판단은 제공된 ai_trade_summary_input 안의 사실로만 제한하십시오. "
-                "체결가, 매수가, 매도가, 실현손익, 수수료, 세금은 truth_surface만 정답으로 사용하십시오. "
-                "decision_flow.exit_observation은 모니터 신호 판단용 스냅샷일 뿐이며 체결가나 실현손익으로 해석하지 마십시오. "
-                "post_exit_shadow는 매도 후 가격 관측-only 근거이며 보유 연장 규칙이 이미 바뀐 것으로 해석하지 마십시오. "
-                "deterministic_findings는 확정 원인이 아니라 검증 후보로 다루십시오. "
-                "root_cause_candidates, deterministic_findings, decision_flow 같은 내부 키 이름을 출력문에 그대로 쓰지 마십시오. "
-                "종목명은 trade.symbol을 그대로 사용하고 00번.symbol 같은 placeholder를 만들지 마십시오. "
-                "한국어만 사용하고 일본어/중국어 조각이나 번역되지 않은 문장을 남기지 마십시오. "
-                f"{AI_TRADE_REPORT_KOREAN_RULES} "
-                "근거가 약하면 단정하지 말고 검증 필요라고 쓰십시오."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"{mode_label}: 아래 ai_trade_summary_input만 사용해서 llm_evaluation JSON을 작성하십시오.\n"
-                "출력 필드는 conclusion, root_cause, priority_actions, risk_notes, validation_questions 다섯 개뿐입니다.\n"
-                "conclusion은 운영자가 바로 볼 수 있게 종목, 결과, 핵심 운영 판단을 한두 문장으로 요약하십시오.\n"
-                "root_cause는 확정 사실과 검증 후보를 구분하고, 입력에 있는 정책/선정/청산 근거로만 제한하십시오.\n"
-                "priority_actions는 다음 검증 또는 패치 우선순위이며 실행 가능한 문장으로 쓰십시오.\n"
-                "risk_notes는 이 거래를 해석할 때 조심해야 할 점이며 과잉 일반화를 막는 문장으로 쓰십시오.\n"
-                "validation_questions는 다음 라이브 검증에서 확인할 질문이며 물음표로 끝내십시오.\n"
-                "청산 관련 가격을 언급할 때는 Truth Surface 기준과 모니터 관측값 기준을 반드시 구분하십시오.\n"
-                "post_exit_shadow를 언급할 때는 관측-only, 표본 부족, 행동 변경 금지를 함께 전제하십시오.\n"
-                "출력 템플릿:\n"
-                f"{json.dumps(_trade_summary_evaluation_template(), ensure_ascii=False)}\n"
-                "입력:\n"
-                f"{json.dumps(summary_input, ensure_ascii=False)}"
-                f"{previous_note}"
-            ),
-        },
-    ]
+    return _build_trade_summary_evaluation_messages_impl(
+        summary_input,
+        korean_rules=AI_TRADE_REPORT_KOREAN_RULES,
+        previous_response_text=previous_response_text,
+        repair=repair,
+    )
 
 
 def _deterministic_trade_summary_report(
@@ -7674,30 +6952,17 @@ def _deterministic_trade_summary_report(
     evaluation: Dict[str, Any] | None = None,
     llm_response_artifact: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    trade = _as_dict(summary_input.get("trade"))
-    out = {
-        "schema_version": "ai_trade_summary.v1",
-        "artifact_type": "ai_trade_summary",
-        "source_artifact": "ai_trade_summary_input.json",
-        "trade": trade,
-        "truth_surface": _as_dict(summary_input.get("truth_surface")),
-        "same_day_context": _as_dict(summary_input.get("same_day_context")),
-        "market_and_strategy": _as_dict(summary_input.get("market_and_strategy")),
-        "decision_flow": _as_dict(summary_input.get("decision_flow")),
-        "memory_and_policy": _as_dict(summary_input.get("memory_and_policy")),
-        "deterministic_findings": _as_dict(summary_input.get("deterministic_findings")),
-        "llm_evaluation": _normalize_trade_summary_evaluation(evaluation or {}),
-        "generation": {
-            "status": str(status or ""),
-            "mode": str(mode or ""),
-            "model": str(model or ""),
-            "reason": str(reason or ""),
-        },
-        "summary_status": str(status or ""),
-    }
-    if llm_response_artifact:
-        out["llm_response_artifact"] = dict(llm_response_artifact)
-    return out
+    return _deterministic_trade_summary_report_impl(
+        summary_input,
+        status=status,
+        mode=mode,
+        model=model,
+        reason=reason,
+        evaluation=evaluation,
+        llm_response_artifact=llm_response_artifact,
+        as_dict=_as_dict,
+        normalize_evaluation=_normalize_trade_summary_evaluation,
+    )
 
 
 def build_trade_summary_report(

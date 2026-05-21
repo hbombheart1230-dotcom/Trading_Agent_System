@@ -8,6 +8,8 @@ from libs.runtime.commander.policy_surface import (
     PRE_BUY_STRATEGIST_REFRESH_FORCE_SIGNALS,
     PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC,
     PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD,
+    SELECTED_SYMBOL_TACTICAL_REFRESH_MIN_CACHE_AGE_SEC,
+    SELECTED_SYMBOL_TACTICAL_REFRESH_MIN_SCORE,
 )
 from libs.runtime.commander.strategist_cache_decision import (
     portfolio_open_position_count,
@@ -37,6 +39,66 @@ def resolve_risk_max_positions(state: Dict[str, Any] | None = None) -> int:
     return 1
 
 
+def _cached_candidate_hints(cached_output: Dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    for value in list(cached_output.get("candidate_hints") or []):
+        symbol = str(value or "").strip().upper()
+        if symbol and symbol not in hints:
+            hints.append(symbol)
+    for value in list(cached_output.get("candidate_symbols_hint") or []):
+        symbol = str(value or "").strip().upper()
+        if symbol and symbol not in hints:
+            hints.append(symbol)
+    for row in list(cached_output.get("candidates") or []):
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol and symbol not in hints:
+            hints.append(symbol)
+    return hints
+
+
+def _monitor_entry_readiness_context(state: Dict[str, Any]) -> Dict[str, Any]:
+    monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+    monitor_state = state.get("monitor") if isinstance(state.get("monitor"), dict) else {}
+    entry_detail = state.get("monitor_entry_decision_detail") if isinstance(state.get("monitor_entry_decision_detail"), dict) else {}
+    transition_trace = entry_detail.get("transition_trace") if isinstance(entry_detail.get("transition_trace"), dict) else {}
+    readiness_score = shadow_float(
+        monitor_output.get("entry_transition_readiness_score")
+        if monitor_output.get("entry_transition_readiness_score") not in (None, "")
+        else monitor_state.get("entry_transition_readiness_score")
+        if monitor_state.get("entry_transition_readiness_score") not in (None, "")
+        else transition_trace.get("transition_readiness_score")
+    )
+    became_ready = bool(
+        monitor_output.get("entry_became_ready_this_cycle")
+        or monitor_state.get("entry_became_ready_this_cycle")
+        or transition_trace.get("became_ready_this_cycle")
+    )
+    prior_intent = str(monitor_output.get("intent_side") or monitor_state.get("intent_side") or "").strip().upper()
+    prior_reason = str(
+        monitor_output.get("entry_exit_reason")
+        or entry_detail.get("primary_reason_code")
+        or entry_detail.get("reason")
+        or ""
+    ).strip()
+    actionable = bool(
+        prior_intent == "BUY"
+        or became_ready
+        or (
+            readiness_score is not None
+            and readiness_score >= float(PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD)
+        )
+    )
+    return {
+        "actionable": bool(actionable),
+        "transition_readiness_score": readiness_score,
+        "became_ready_this_cycle": bool(became_ready),
+        "prior_intent_side": prior_intent,
+        "prior_reason": prior_reason,
+    }
+
+
 def assess_pre_buy_strategist_refresh_need(
     state: Dict[str, Any],
     *,
@@ -53,9 +115,6 @@ def assess_pre_buy_strategist_refresh_need(
     generated_epoch = max(0, coerce_int(cache_payload.get("generated_epoch"), 0))
     cache_age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
     monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
-    monitor_state = state.get("monitor") if isinstance(state.get("monitor"), dict) else {}
-    entry_detail = state.get("monitor_entry_decision_detail") if isinstance(state.get("monitor_entry_decision_detail"), dict) else {}
-    transition_trace = entry_detail.get("transition_trace") if isinstance(entry_detail.get("transition_trace"), dict) else {}
     selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
     selected_symbol = str(
         selected.get("symbol")
@@ -72,21 +131,7 @@ def assess_pre_buy_strategist_refresh_need(
         text = str(value or "").strip()
         if text and text not in cached_news_query_targets:
             cached_news_query_targets.append(text)
-    cached_candidate_hints: list[str] = []
-    for value in list(cached_output.get("candidate_hints") or []):
-        symbol = str(value or "").strip().upper()
-        if symbol and symbol not in cached_candidate_hints:
-            cached_candidate_hints.append(symbol)
-    for value in list(cached_output.get("candidate_symbols_hint") or []):
-        symbol = str(value or "").strip().upper()
-        if symbol and symbol not in cached_candidate_hints:
-            cached_candidate_hints.append(symbol)
-    for row in list(cached_output.get("candidates") or []):
-        if not isinstance(row, dict):
-            continue
-        symbol = str(row.get("symbol") or "").strip().upper()
-        if symbol and symbol not in cached_candidate_hints:
-            cached_candidate_hints.append(symbol)
+    cached_candidate_hints = _cached_candidate_hints(cached_output)
     selected_symbol_upper = str(selected_symbol or "").strip().upper()
     selected_symbol_in_cached_frame = bool(
         not selected_symbol_upper
@@ -95,25 +140,11 @@ def assess_pre_buy_strategist_refresh_need(
     )
     cached_market_regime = str(cached_output.get("market_regime") or "").strip().lower()
     current_market_regime = str(commander_market_regime or state.get("market_regime") or "").strip().lower()
-    readiness_score = shadow_float(
-        monitor_output.get("entry_transition_readiness_score")
-        if monitor_output.get("entry_transition_readiness_score") not in (None, "")
-        else monitor_state.get("entry_transition_readiness_score")
-        if monitor_state.get("entry_transition_readiness_score") not in (None, "")
-        else transition_trace.get("transition_readiness_score")
-    )
-    became_ready = bool(
-        monitor_output.get("entry_became_ready_this_cycle")
-        or monitor_state.get("entry_became_ready_this_cycle")
-        or transition_trace.get("became_ready_this_cycle")
-    )
-    prior_intent = str(monitor_output.get("intent_side") or "").strip().upper()
-    prior_reason = str(
-        monitor_output.get("entry_exit_reason")
-        or entry_detail.get("primary_reason_code")
-        or entry_detail.get("reason")
-        or ""
-    ).strip()
+    readiness_context = _monitor_entry_readiness_context(state)
+    readiness_score = readiness_context.get("transition_readiness_score")
+    became_ready = bool(readiness_context.get("became_ready_this_cycle"))
+    prior_intent = str(readiness_context.get("prior_intent_side") or "")
+    prior_reason = str(readiness_context.get("prior_reason") or "")
 
     signal = ""
     if (
@@ -210,7 +241,28 @@ def force_selected_symbol_tactical_refresh_decision(
     snapshot = post_scanner_candidate_snapshot(state, selected_symbol)
     primary = dict(snapshot.get("primary") or {})
     input_drift = assess_cached_strategist_input_drift(state)
-    if bool(input_drift.get("comparable")) and not bool(input_drift.get("material_change")):
+    cache_payload = strategist_cache_payload(state)
+    cached_output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
+    cached_candidate_hints = _cached_candidate_hints(cached_output)
+    now_epoch = runtime_now_epoch(state)
+    generated_epoch = max(0, coerce_int(cache_payload.get("generated_epoch"), 0))
+    cache_age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
+    min_cache_age_sec = int(SELECTED_SYMBOL_TACTICAL_REFRESH_MIN_CACHE_AGE_SEC)
+    readiness_context = _monitor_entry_readiness_context(state)
+    selected_score = shadow_float(primary.get("score") if primary.get("score") is not None else primary.get("score_total"))
+    selected_in_cached_frame = bool(
+        not cached_candidate_hints
+        or selected_symbol in set(cached_candidate_hints)
+    )
+    selected_symbol_was_rank1 = bool(snapshot.get("selected_symbol_was_rank1"))
+    strong_new_leader = bool(
+        not selected_in_cached_frame
+        and selected_symbol_was_rank1
+        and selected_score is not None
+        and selected_score >= float(SELECTED_SYMBOL_TACTICAL_REFRESH_MIN_SCORE)
+    )
+
+    def _suppress(reason: str) -> Dict[str, Any]:
         out = dict(commander_decision)
         refresh_context = (
             dict(out.get("strategist_refresh_context") or {})
@@ -224,9 +276,20 @@ def force_selected_symbol_tactical_refresh_decision(
                 "selected_symbol": selected_symbol,
                 "selected_rank": int(primary.get("rank") or 0),
                 "selected_score": primary.get("score"),
+                "selected_symbol_in_cached_frame": bool(selected_in_cached_frame),
+                "selected_symbol_was_rank1": bool(selected_symbol_was_rank1),
+                "cached_candidate_hints": list(cached_candidate_hints[:8]),
+                "cache_age_sec": int(cache_age_sec) if cache_age_sec < 10**9 else None,
+                "min_cache_age_sec": int(min_cache_age_sec),
+                "strong_new_leader": bool(strong_new_leader),
+                "entry_readiness_actionable": bool(readiness_context.get("actionable")),
+                "transition_readiness_score": readiness_context.get("transition_readiness_score"),
+                "became_ready_this_cycle": bool(readiness_context.get("became_ready_this_cycle")),
+                "prior_intent_side": str(readiness_context.get("prior_intent_side") or ""),
+                "prior_reason": str(readiness_context.get("prior_reason") or ""),
                 "post_scanner_refresh_required": False,
                 "post_scanner_refresh_suppressed": True,
-                "post_scanner_refresh_suppressed_reason": "strategist_input_context_unchanged",
+                "post_scanner_refresh_suppressed_reason": reason,
                 "strategist_input_drift": dict(input_drift),
             }
         )
@@ -236,10 +299,19 @@ def force_selected_symbol_tactical_refresh_decision(
             **dict(observations),
             "post_scanner_refresh_requested": False,
             "post_scanner_refresh_suppressed": True,
-            "post_scanner_refresh_suppressed_reason": "strategist_input_context_unchanged",
+            "post_scanner_refresh_suppressed_reason": reason,
             "strategist_input_change_score": input_drift.get("change_score"),
         }
         return out
+
+    if bool(input_drift.get("comparable")) and not bool(input_drift.get("material_change")):
+        return _suppress("strategist_input_context_unchanged")
+    if selected_in_cached_frame and not bool(readiness_context.get("actionable")):
+        return _suppress("selected_symbol_covered_by_cached_frame")
+    if cache_age_sec < min_cache_age_sec and not bool(readiness_context.get("actionable")) and not strong_new_leader:
+        return _suppress("selected_symbol_tactical_refresh_cache_too_fresh")
+    if not bool(readiness_context.get("actionable")) and not strong_new_leader:
+        return _suppress("selected_symbol_tactical_refresh_not_actionable")
     refresh_context = (
         dict(commander_decision.get("strategist_refresh_context") or {})
         if isinstance(commander_decision.get("strategist_refresh_context"), dict)
@@ -252,6 +324,16 @@ def force_selected_symbol_tactical_refresh_decision(
             "selected_symbol": selected_symbol,
             "selected_rank": int(primary.get("rank") or 0),
             "selected_score": primary.get("score"),
+            "selected_symbol_in_cached_frame": bool(selected_in_cached_frame),
+            "cached_candidate_hints": list(cached_candidate_hints[:8]),
+            "cache_age_sec": int(cache_age_sec) if cache_age_sec < 10**9 else None,
+            "min_cache_age_sec": int(min_cache_age_sec),
+            "strong_new_leader": bool(strong_new_leader),
+            "entry_readiness_actionable": bool(readiness_context.get("actionable")),
+            "transition_readiness_score": readiness_context.get("transition_readiness_score"),
+            "became_ready_this_cycle": bool(readiness_context.get("became_ready_this_cycle")),
+            "prior_intent_side": str(readiness_context.get("prior_intent_side") or ""),
+            "prior_reason": str(readiness_context.get("prior_reason") or ""),
             "scanner_primary_candidate": dict(primary),
             "actual_selected_candidate": dict(snapshot.get("selected_candidate") or primary),
             "scanner_rank1_candidate": dict(snapshot.get("scanner_rank1_candidate") or {}),

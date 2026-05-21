@@ -85,6 +85,12 @@ def resolve_entry_cost_filter_config(
             "MONITOR_ENTRY_MIN_NET_PROFIT_BUFFER_PCT",
             0.003,
         ),
+        "gross_edge_cost_multiplier": _config_float(
+            config,
+            "gross_edge_cost_multiplier",
+            "MONITOR_ENTRY_GROSS_EDGE_COST_MULTIPLIER",
+            1.5,
+        ),
         "min_cost_adjusted_edge_pct": _config_float(
             config,
             "min_cost_adjusted_edge_pct",
@@ -254,8 +260,10 @@ def evaluate_entry_cost_filter(
         if estimated_gross_edge_pct is not None and effective_cost_drag_pct is not None
         else None
     )
+    gross_edge_cost_multiplier = max(1.0, _to_float(config.get("gross_edge_cost_multiplier"), 1.0))
     required_gross_edge_pct = (
-        float(effective_cost_drag_pct) + _to_float(config.get("min_net_profit_buffer_pct"))
+        (float(effective_cost_drag_pct) * float(gross_edge_cost_multiplier))
+        + _to_float(config.get("min_net_profit_buffer_pct"))
         if effective_cost_drag_pct is not None
         else None
     )
@@ -296,6 +304,7 @@ def evaluate_entry_cost_filter(
             and effective_cost_drag_pct > cost_drag_pct
         ),
         "min_net_profit_buffer_pct": float(config.get("min_net_profit_buffer_pct") or 0.0),
+        "gross_edge_cost_multiplier": round(float(gross_edge_cost_multiplier), 6),
         "required_gross_edge_pct": (
             round(float(required_gross_edge_pct), 6) if required_gross_edge_pct is not None else None
         ),
