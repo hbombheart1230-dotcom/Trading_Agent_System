@@ -55,6 +55,7 @@ from libs.reporting.llm_artifacts import (
     write_json,
     write_text,
 )
+from libs.reporting.broker_alignment import build_broker_alignment_report as _build_broker_alignment_report
 from libs.reporting.live_execution_post_exit import (
     attach_post_exit_shadow_to_trade_report as _attach_post_exit_shadow_to_trade_report,
     post_exit_shadow_from_lifecycle as _post_exit_shadow_from_lifecycle,
@@ -123,6 +124,7 @@ from libs.reporting.live_execution_execution_runs import (
     resolve_execution_runs as _resolve_execution_runs,
     targeted_execution_context as _targeted_execution_context,
 )
+from libs.reporting.event_log_reader import iter_jsonl_events
 from libs.reporting.live_execution_trade_evidence import (
     build_trade_evidence_from_events as _build_trade_evidence_from_events,
 )
@@ -285,7 +287,7 @@ def _spawn_followup_background_job(
     target_symbol = str(next_request.get("target_symbol") or "").strip()
     if not target_run_id:
         return {}
-    cmd = [sys.executable, str(ROOT / "scripts" / "run_live_execution_bundle_report.py")]
+    cmd = [sys.executable, "-m", "scripts.run_live_execution_bundle_report"]
     if args.env_path:
         cmd.extend(["--env-path", str(args.env_path)])
     cmd.extend(["--event-log-path", str(args.event_log_path)])
@@ -1281,6 +1283,67 @@ def _build_trade_lifecycles(
         existing_open_lifecycles_by_symbol=existing_open_lifecycles_by_symbol,
     )
 
+
+def _align_sell_run_bundles_with_broker_fill_truth(
+    *,
+    day: str,
+    run_snapshots: List[Dict[str, Any]],
+    run_bundles: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Hydrate SELL fill truth before lifecycle closure is decided."""
+
+    for snapshot in list(run_snapshots or []):
+        if str(snapshot.get("execution_action") or "").strip().upper() != "SELL":
+            continue
+        run_id = str(snapshot.get("run_id") or "").strip()
+        if not run_id or not isinstance(run_bundles.get(run_id), dict):
+            continue
+        bundle = dict(run_bundles.get(run_id) or {})
+        execution = bundle.get("execution") if isinstance(bundle.get("execution"), dict) else {}
+        existing_details = (
+            dict(bundle.get("execution_details") or {})
+            if isinstance(bundle.get("execution_details"), dict)
+            else {}
+        )
+        order_id = str(
+            existing_details.get("order_id")
+            or existing_details.get("ord_no")
+            or execution.get("order_id")
+            or execution.get("ord_no")
+            or ""
+        ).strip()
+        if not order_id.isdigit():
+            continue
+        symbol = normalize_symbol(
+            snapshot.get("symbol") or execution.get("symbol") or "",
+            allow_test_symbols=True,
+        )
+        details = _build_execution_details_from_bundle(
+            bundle,
+            context={
+                "trade_day": day,
+                "action": "SELL",
+                "symbol": symbol,
+                "ts": str(snapshot.get("ts_start") or execution.get("ts") or ""),
+                "broker_fill_lookup_enabled": True,
+                "broker_day_truth_lookup_enabled": False,
+                "execution_details": existing_details,
+            },
+        )
+        filled_qty = safe_int(details.get("filled_qty"), 0)
+        fill_truth_confirmed = bool(
+            filled_qty > 0
+            and str(details.get("broker_truth_source") or "").strip() == "kiwoom.order_status"
+        )
+        bundle["execution_details"] = dict(details)
+        bundle["lifecycle_fill_truth_required"] = True
+        bundle["lifecycle_fill_truth_confirmed"] = fill_truth_confirmed
+        bundle["lifecycle_fill_truth_source"] = str(details.get("broker_truth_source") or "")
+        bundle["lifecycle_fill_truth_attempted"] = bool(details.get("broker_truth_attempted"))
+        run_bundles[run_id] = bundle
+    return run_bundles
+
+
 def _resolve_existing_day_artifact(report_dir: Path, prefix: str, day: str) -> Tuple[Path, Path]:
     return report_dir / f"{prefix}_{day}.md", report_dir / f"{prefix}_{day}.json"
 
@@ -1457,13 +1520,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(out, ensure_ascii=False) if bool(args.json) else "ok=false error=no_execution_day_detected")
         return 3
 
-    day_event_rows = [row for row in _iter_jsonl(event_log_path) if not day or _utc_day(row.get("ts")) == day]
+    day_event_rows = list(iter_jsonl_events(event_log_path, day=day))
     all_day_event_rows = list(day_event_rows)
-    day_evidence_rows = [
-        row
-        for row in _iter_jsonl(evidence_log_path)
-        if not day or _utc_day(row.get("timestamp") or row.get("ts")) == day
-    ]
+    day_evidence_rows = list(iter_jsonl_events(evidence_log_path, day=day))
     all_execution_runs = _resolve_execution_runs(event_log_path, day, event_rows=day_event_rows)
     execution_runs, target_ctx = _targeted_execution_context(
         all_execution_runs,
@@ -1509,6 +1568,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     daily_paths = daily_artifact_paths(reports_root, day)
     operator_summary_json = daily_paths["operator_summary_json"]
     operator_summary_md = daily_paths["operator_summary_md"]
+    broker_alignment_snapshot = _build_broker_alignment_report(event_log_path, reports_root, day)
     canonical_trades_root = reports_root / "trades"
     year_part, month_part = (day.split("-") + ["01", "01"])[:2]
 
@@ -1613,6 +1673,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         reports_root=reports_root,
         include_run_ids=run_id_set or None,
         event_rows=day_event_rows,
+    )
+    run_bundles_by_run = _align_sell_run_bundles_with_broker_fill_truth(
+        day=day,
+        run_snapshots=run_snapshots,
+        run_bundles=run_bundles_by_run,
     )
     existing_open_lifecycles_by_symbol = _load_existing_open_lifecycle_candidates(
         reports_root=reports_root,
@@ -2491,6 +2556,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         lifecycle_bundle = dict(final_context.get("lifecycle_bundle") or lifecycle_bundle)
         trade_story_input = dict(final_context.get("trade_story_input") or trade_story_input)
         trade_report = dict(final_context.get("trade_report") or trade_report)
+        if trade_report:
+            trade_report["broker_alignment"] = dict(broker_alignment_snapshot or {})
         trade_report = _attach_post_exit_shadow_to_trade_report(
             trade_report,
             lifecycle=lifecycle,

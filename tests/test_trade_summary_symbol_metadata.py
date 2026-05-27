@@ -109,6 +109,50 @@ def test_trade_summary_does_not_use_runner_up_reason_as_symbol_name() -> None:
     assert summary_input["trade"]["themes"] == ["OLED", "LCD", "\ub514\uc2a4\ud50c\ub808\uc774\ud328\ub110"]
 
 
+def test_trade_summary_does_not_use_entry_reason_as_symbol_name() -> None:
+    entry_reason = "pullback_structure_above_vwap_with_volume_confirmation"
+    report = {
+        "trade_id": "TRD_TEST",
+        "symbol": "011930",
+        "status": "closed",
+        "shared_facts": {"symbol": "011930", "status": "closed"},
+        "why_this_symbol_was_chosen": {
+            "symbol": "011930",
+            "selected_candidate": {
+                "symbol": "011930",
+                "name": entry_reason,
+            },
+        },
+    }
+
+    markdown = render_trade_summary_markdown_clean(report)
+    summary_input = build_trade_summary_input_clean(report)
+
+    assert "* \uc885\ubaa9: 011930 (\uc2e0\uc131\uc774\uc5d4\uc9c0)" in markdown
+    assert summary_input["trade"]["symbol_name"] == "\uc2e0\uc131\uc774\uc5d4\uc9c0"
+    assert entry_reason not in summary_input["trade"]["symbol_name"]
+
+
+def test_trade_summary_prefers_symbol_prefix_over_news_headline_tail() -> None:
+    report = {
+        "trade_id": "TRD_TEST",
+        "symbol": "999999",
+        "status": "closed",
+        "shared_facts": {"symbol": "999999", "status": "closed"},
+        "why_this_symbol_was_chosen": {
+            "symbol": "999999",
+            "summary": (
+                "999999: \ud14c\uc2a4\ud2b8\uc885\ubaa9, 1\ubd84\uae30 \uc218\uc8fc "
+                "4246\uc5b5\u2026\uc791\ub144 \uc5f0\uac04 \uc218\uc8fc 60% \ub3cc\ud30c"
+            ),
+        },
+    }
+
+    summary_input = build_trade_summary_input_clean(report)
+
+    assert summary_input["trade"]["symbol_name"] == "\ud14c\uc2a4\ud2b8\uc885\ubaa9"
+
+
 def test_trade_summary_does_not_infer_score_text_as_symbol_name() -> None:
     report = {
         "trade_id": "TRD_TEST",
@@ -152,6 +196,35 @@ def test_trade_summary_input_contains_quant_tactic_surface() -> None:
 
     assert summary_input["quant_tactic"]["tactic_id"] == "vwap_reclaim_pullback"
     assert summary_input["quant_tactic"]["entry_quant_decision"]["decision"] == "block_recommended"
+
+
+def test_trade_summary_input_and_diagnostics_surface_broker_alignment() -> None:
+    report = {
+        "trade_id": "TRD_TEST",
+        "symbol": "005930",
+        "status": "closed",
+        "shared_facts": {"symbol": "005930", "status": "closed"},
+        "broker_alignment": {
+            "status": "mismatch",
+            "generated_at": "2026-05-22T07:00:00+00:00",
+            "report_json_path": "reports/reconciliation/broker_trade_reconciliation_2026-05-22.json",
+            "summary": {
+                "local_total": 4,
+                "broker_total": 7,
+                "matched_by_ord_no": 4,
+                "missing_in_local_total": 3,
+                "missing_in_broker_total": 0,
+            },
+        },
+    }
+
+    summary_input = build_trade_summary_input_clean(report)
+    markdown = render_trade_summary_markdown_with_evaluation_clean(report, summary_input)
+
+    assert summary_input["broker_alignment"]["status"] == "mismatch"
+    assert summary_input["broker_alignment"]["local_total"] == 4
+    assert summary_input["broker_alignment"]["broker_total"] == 7
+    assert "* 브로커 주문 정합성: mismatch / local 4 / broker 7 / local누락 3 / broker누락 0" in markdown
 
 
 def test_trade_summary_evaluation_diagnostics_replaces_stale_runner_up_symbol_name() -> None:

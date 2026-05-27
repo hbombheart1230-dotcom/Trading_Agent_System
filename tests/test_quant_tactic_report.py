@@ -117,3 +117,101 @@ def test_monitor_reason_human_preserves_quant_decisions():
     assert out["exit_quant_decision"]["decision"] == "hold_watch"
     assert out["quant_factor_snapshot"]["tactic_id"] == "vwap_reclaim_pullback"
     assert any("Entry quant decision" in line for line in out["bullets"])
+
+
+def test_quant_tactic_surface_recovers_entry_diagnostics_from_execution_visibility():
+    report = {
+        "symbol": "034220",
+        "market_context_at_entry": {"playbook": "breakout"},
+        "entry_execution_visibility": {
+            "monitor_focus_context": {
+                "entry_triggered": True,
+                "entry_decision": "BUY",
+                "entry_reason": "pullback_structure_above_vwap_with_volume_confirmation",
+                "entry_primary_failure_axis": "confirmed_entry",
+                "entry_cost_adjusted_edge_ok": True,
+                "entry_cost_adjusted_edge_pct": 0.011,
+                "entry_cost_drag_pct": 0.002,
+                "entry_cost_filter": {"passed": True, "cost_adjusted_edge_ok": True},
+            },
+            "entry_grouped_logic_trace": {"volume_confirmation_missing": False},
+        },
+        "fact_payload": {
+            "trade": {
+                "scanner_evidence": {
+                    "candidate_ranking_tables": [
+                        {
+                            "payload": {
+                                "rows": [
+                                    {
+                                        "symbol": "034220",
+                                        "score_total": 1.0,
+                                        "confidence": 0.68,
+                                        "scanner_chart_fit_score": 0.61,
+                                        "scanner_chart_fit_authority": "soft_rank_bias_only",
+                                        "quant_factor_snapshot": {
+                                            "source": "quant_candidate_factor_snapshot.v1",
+                                            "tactic_id": "opening_range_breakout",
+                                            "playbook": "breakout",
+                                            "factors": {
+                                                "symbol": "034220",
+                                                "volume_ratio": 1.4,
+                                                "trend_strength": 0.6,
+                                                "scanner_chart_fit_score": 0.61,
+                                                "cost_floor_state": "met",
+                                            },
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+    }
+
+    surface = quant_tactic_surface(report)
+
+    assert surface["tactic_id"] == "opening_range_breakout"
+    assert surface["entry_quant_decision"]["decision"] == "entry_ready"
+    assert surface["entry_quant_decision"]["cost_edge"]["cost_floor_state"] == "met"
+    assert surface["tactic_suitability"]["schema_version"] == "tactic_suitability.v1"
+    assert surface["scanner_chart_fit"]["score"] == 0.61
+
+
+def test_quant_tactic_surface_keeps_entry_tactic_when_exit_tactic_disagrees():
+    report = {
+        "symbol": "011930",
+        "market_context_at_entry": {"playbook": "pullback"},
+        "entry_execution_visibility": {
+            "monitor_focus_context": {
+                "entry_triggered": True,
+                "entry_decision": "BUY",
+                "entry_reason": "pullback_structure_above_vwap_with_volume_confirmation",
+            },
+        },
+        "monitor_snapshot": {
+            "quant_factor_snapshot": {
+                "tactic_id": "vwap_reclaim_pullback",
+                "playbook": "pullback",
+                "factors": {"cost_floor_state": "met"},
+            },
+            "exit_quant_decision": {
+                "tactic_id": "defensive_observe",
+                "playbook": "defensive",
+                "decision": "hold_watch",
+            },
+        },
+    }
+
+    surface = quant_tactic_surface(report)
+
+    assert surface["tactic_id"] == "vwap_reclaim_pullback"
+    assert surface["tactic_id_source"] == "factor_snapshot"
+    assert surface["entry_quant_decision"]["tactic_id"] == "vwap_reclaim_pullback"
+    assert surface["tactic_id_mismatches"] == []
+    assert {
+        "source": "exit_quant_decision",
+        "tactic_id": "defensive_observe",
+    } in surface["exit_tactic_drifts"]

@@ -58,6 +58,81 @@ def render_route_and_narrative_sections(payload: Dict[str, Any]) -> List[str]:
     ]
 
 
+def render_trade_report_integrity(payload: Dict[str, Any]) -> List[str]:
+    integrity = payload.get("trade_report_integrity") if isinstance(payload.get("trade_report_integrity"), dict) else {}
+    if not integrity:
+        return []
+    missing = integrity.get("missing") if isinstance(integrity.get("missing"), list) else []
+    lines = [
+        "",
+        "## Trade Report Integrity",
+        "",
+        f"- status: **{str(integrity.get('status') or 'unknown').upper()}**",
+        f"- expected_trade_count: **{int(integrity.get('expected_trade_count') or 0)}**",
+        f"- summary_md_count: **{int(integrity.get('summary_md_count') or 0)}**",
+        f"- summary_json_count: **{int(integrity.get('summary_json_count') or 0)}**",
+        f"- summary_input_count: **{int(integrity.get('summary_input_count') or 0)}**",
+        f"- missing_count: **{int(integrity.get('missing_count') or 0)}**",
+    ]
+    for row in missing[:10]:
+        if not isinstance(row, dict):
+            continue
+        lines.append(
+            f"- missing `{row.get('trade_id') or '-'}` {row.get('symbol') or ''}: "
+            f"`{json.dumps(row.get('missing') or [], ensure_ascii=False)}`"
+        )
+    return lines
+
+
+def render_broker_alignment(payload: Dict[str, Any]) -> List[str]:
+    alignment = payload.get("broker_alignment") if isinstance(payload.get("broker_alignment"), dict) else {}
+    if not alignment:
+        return []
+    summary = alignment.get("summary") if isinstance(alignment.get("summary"), dict) else {}
+    status = str(alignment.get("status") or "unknown")
+    lines = [
+        "",
+        "## Broker Alignment",
+        "",
+        f"- status: **{status.upper()}**",
+        f"- generated_at: `{alignment.get('generated_at') or '-'}`",
+        f"- local_total: **{int(summary.get('local_total') or 0)}**",
+        f"- broker_total: **{int(summary.get('broker_total') or 0)}**",
+        f"- matched_by_ord_no: **{int(summary.get('matched_by_ord_no') or 0)}**",
+        f"- missing_in_local: **{int(summary.get('missing_in_local_total') or 0)}**",
+        f"- missing_in_broker: **{int(summary.get('missing_in_broker_total') or 0)}**",
+    ]
+    if alignment.get("error"):
+        lines.append(f"- error: `{alignment.get('error')}`")
+    if alignment.get("report_json_path"):
+        lines.append(f"- report_json: `{alignment.get('report_json_path')}`")
+    snapshot = alignment.get("account_snapshot") if isinstance(alignment.get("account_snapshot"), dict) else {}
+    if snapshot:
+        lines.append(f"- account_snapshot_status: **{str(snapshot.get('status') or 'unknown').upper()}**")
+        if snapshot.get("path"):
+            lines.append(f"- account_snapshot_json: `{snapshot.get('path')}`")
+        if snapshot.get("api_call_count") not in (None, ""):
+            lines.append(
+                f"- account_snapshot_calls: **{int(snapshot.get('ok_count') or 0)}"
+                f"/{int(snapshot.get('api_call_count') or 0)} ok**"
+            )
+        if snapshot.get("error"):
+            lines.append(f"- account_snapshot_error: `{snapshot.get('error')}`")
+    for title, key in (("missing broker-only rows", "missing_in_local"), ("missing local-only rows", "missing_in_broker")):
+        rows = summary.get(key) if isinstance(summary.get(key), list) else []
+        if not rows:
+            continue
+        lines.append(f"- {title}:")
+        for row in rows[:5]:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"  - ord_no={row.get('ord_no') or '-'} symbol={row.get('symbol') or '-'} "
+                f"side={row.get('side') or '-'} qty={row.get('filled_qty') or row.get('qty') or row.get('order_qty') or 0}"
+            )
+    return lines
+
+
 def render_policy_surface_sections(payload: Dict[str, Any]) -> List[str]:
     policy_surface_summary = (
         payload.get("policy_surface_quality_summary")
@@ -189,6 +264,8 @@ def render_no_event_daily_markdown(
     lines += [f"- operator_summary_snapshot_stale: **{operator_snapshot_freshness['stale']}**"]
     lines += render_operator_summary_snapshot(operator_summary_snapshot, include_system_status=False)
     lines += render_residual_positions(residual_positions)
+    lines += render_trade_report_integrity(payload)
+    lines += render_broker_alignment(payload)
     lines += render_route_and_narrative_sections(payload)
     lines += render_policy_surface_sections(payload)
     return "\n".join(lines) + "\n"
@@ -237,6 +314,8 @@ def render_daily_markdown(
 
     lines += render_operator_summary_snapshot(operator_summary_snapshot, include_system_status=True)
     lines += render_residual_positions(residual_positions)
+    lines += render_trade_report_integrity(summary)
+    lines += render_broker_alignment(summary)
     lines += render_route_and_narrative_sections(summary)
     lines += render_policy_surface_sections(summary)
     lines += render_top_issues(operator_summary_snapshot)

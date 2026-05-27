@@ -85,9 +85,12 @@ def build_entry_quant_decision(
     warnings: list[str] = []
     positives: list[str] = []
 
-    cost_floor_state = str(factors.get("cost_floor_state") or "").strip()
     cost_ok = bool(entry.get("cost_adjusted_edge_ok"))
     cost_filter_passed = bool(cost_filter.get("passed") or cost_filter.get("cost_adjusted_edge_ok"))
+    cost_floor_state = str(factors.get("cost_floor_state") or "").strip()
+    if not cost_floor_state:
+        if cost_filter or entry.get("cost_adjusted_edge_pct") not in (None, ""):
+            cost_floor_state = "met" if bool(cost_ok or cost_filter_passed) else "not_met"
     if cost_filter and not cost_filter_passed:
         _append_unique(blockers, "cost_edge_fail")
     elif cost_floor_state == "not_met" or (entry.get("cost_adjusted_edge_pct") not in (None, "") and not cost_ok):

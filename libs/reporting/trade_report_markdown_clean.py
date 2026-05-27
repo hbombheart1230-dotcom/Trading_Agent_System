@@ -1149,6 +1149,9 @@ def build_trade_summary_input_clean(report: Dict[str, Any]) -> Dict[str, Any]:
         report,
         require_trade_symbol_match=bool(selection_fallback.get("used")) or bool(exit_only_report),
     )
+    broker_alignment = _as_dict(report.get("broker_alignment"))
+    broker_alignment_summary = _as_dict(broker_alignment.get("summary"))
+    broker_account_snapshot = _as_dict(broker_alignment.get("account_snapshot"))
 
     deterministic_positives: List[str] = []
     if truth_price.get("broker_fill_price") not in (None, "") or truth_pnl.get("value") not in (None, ""):
@@ -1260,6 +1263,22 @@ def build_trade_summary_input_clean(report: Dict[str, Any]) -> Dict[str, Any]:
             "label": "당일 성과(리포트 생성 시점 기준)",
             "basis": "report_generation_time",
             "reporter_evaluation": _compact_section(reporter_eval, limit=6),
+        },
+        "broker_alignment": {
+            "status": _metadata_value(broker_alignment.get("status")),
+            "generated_at": _metadata_value(broker_alignment.get("generated_at")),
+            "report_json_path": _metadata_value(broker_alignment.get("report_json_path")),
+            "account_snapshot_path": _metadata_value(broker_account_snapshot.get("path")),
+            "account_snapshot_status": _metadata_value(broker_account_snapshot.get("status")),
+            "account_snapshot_api_call_count": broker_account_snapshot.get("api_call_count"),
+            "account_snapshot_ok_count": broker_account_snapshot.get("ok_count"),
+            "account_snapshot_error_count": broker_account_snapshot.get("error_count"),
+            "local_total": broker_alignment_summary.get("local_total"),
+            "broker_total": broker_alignment_summary.get("broker_total"),
+            "matched_by_ord_no": broker_alignment_summary.get("matched_by_ord_no"),
+            "missing_in_local_total": broker_alignment_summary.get("missing_in_local_total"),
+            "missing_in_broker_total": broker_alignment_summary.get("missing_in_broker_total"),
+            "error": _metadata_value(broker_alignment.get("error")),
         },
         "market_and_strategy": {
             "market_summary": _translate_text(market.get("summary")).strip(),
@@ -1456,6 +1475,7 @@ def _build_summary_deterministic_diagnostics_section(
     trade = _as_dict(payload.get("trade"))
     truth = _as_dict(payload.get("truth_surface"))
     decision = _as_dict(payload.get("decision_flow"))
+    broker_alignment = _as_dict(payload.get("broker_alignment"))
     findings = _as_dict(payload.get("deterministic_findings"))
     fallback_meta = _resolve_trade_symbol_metadata(report or {}, str(trade.get("symbol") or ""))
 
@@ -1474,6 +1494,22 @@ def _build_summary_deterministic_diagnostics_section(
     if truth.get("pnl") not in (None, "") or truth.get("pnl_pct_text") not in (None, ""):
         pnl_text = _summary_money(truth.get("pnl")) if truth.get("pnl") not in (None, "") else "-"
         facts.append(f"실현손익: {pnl_text} ({truth.get('pnl_pct_text') or '-'})")
+    if broker_alignment:
+        status = _metadata_value(broker_alignment.get("status"))
+        local_total = broker_alignment.get("local_total")
+        broker_total = broker_alignment.get("broker_total")
+        missing_local = broker_alignment.get("missing_in_local_total")
+        missing_broker = broker_alignment.get("missing_in_broker_total")
+        facts.append(
+            "브로커 주문 정합성: "
+            f"{status or '-'} / local {local_total if local_total not in (None, '') else '-'}"
+            f" / broker {broker_total if broker_total not in (None, '') else '-'}"
+            f" / local누락 {missing_local if missing_local not in (None, '') else '-'}"
+            f" / broker누락 {missing_broker if missing_broker not in (None, '') else '-'}"
+        )
+        snapshot_path = _metadata_value(broker_alignment.get("account_snapshot_path"))
+        if snapshot_path not in {"", "-"}:
+            facts.append(f"키움 계좌 스냅샷: {snapshot_path}")
     if decision.get("scanner_rank") not in (None, ""):
         score = _summary_decimal(decision.get("scanner_score"), 3)
         facts.append(f"스캐너 순위/점수: {decision.get('scanner_rank')}위 / {score}")

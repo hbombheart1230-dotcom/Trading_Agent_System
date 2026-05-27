@@ -345,15 +345,26 @@ def _exit_closure_quantity_state(lifecycle: Dict[str, Any], exit_ctx: Dict[str, 
     previous_partial_exit_qty = _holding_partial_exit_total(holding)
     cumulative_exit_qty = int(previous_partial_exit_qty + exit_qty)
     remaining_qty = max(0, int(entry_qty - cumulative_exit_qty)) if entry_qty > 0 else 0
+    fill_truth_required = bool(exit_ctx.get("fill_truth_required"))
+    fill_truth_confirmed = bool(exit_ctx.get("fill_truth_confirmed"))
+    if fill_truth_required and not fill_truth_confirmed:
+        exit_qty = 0
+        cumulative_exit_qty = int(previous_partial_exit_qty)
+        remaining_qty = max(0, int(entry_qty - cumulative_exit_qty)) if entry_qty > 0 else 0
     return {
         "entry_qty": int(entry_qty),
         "exit_qty": int(exit_qty),
         "previous_partial_exit_qty": int(previous_partial_exit_qty),
         "cumulative_exit_qty": int(cumulative_exit_qty),
         "remaining_qty": int(remaining_qty),
+        "fill_truth_required": fill_truth_required,
+        "fill_truth_confirmed": fill_truth_confirmed,
         "closes_position": bool(
-            (not filled_qty_present and entry_qty <= 0)
-            or (exit_qty > 0 and cumulative_exit_qty >= entry_qty)
+            (
+                (not filled_qty_present and entry_qty <= 0)
+                or (exit_qty > 0 and cumulative_exit_qty >= entry_qty)
+            )
+            and (not fill_truth_required or fill_truth_confirmed)
         ),
     }
 
@@ -566,6 +577,10 @@ def _build_trade_lifecycles(
             if execution_details.get("filled_qty") not in (None, "")
             else execution.get("filled_qty")
         )
+        fill_truth_required = bool(bundle.get("lifecycle_fill_truth_required"))
+        fill_truth_confirmed = bool(bundle.get("lifecycle_fill_truth_confirmed"))
+        if fill_truth_required and not fill_truth_confirmed:
+            filled_qty = None
         has_exit_monitor_trace = bool(
             str(snapshot.get("exit_reason") or "").strip()
             or str(snapshot.get("monitor_reason") or "").strip()
@@ -578,6 +593,8 @@ def _build_trade_lifecycles(
             "price": execution.get("price"),
             "qty": safe_int(execution.get("qty"), 0),
             "filled_qty": safe_int(filled_qty, 0) if filled_qty not in (None, "") else None,
+            "fill_truth_required": fill_truth_required,
+            "fill_truth_confirmed": fill_truth_confirmed,
             "reason_human": str(
                 (monitor_context or {}).get("summary")
                 or (bundle.get("execution_outcome_human") or {}).get("summary")

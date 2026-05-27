@@ -41,6 +41,7 @@ from libs.reporting.daily_report_runtime.symbol_refresh import (
     symbol_report_is_current as _symbol_report_is_current,
     symbol_report_mode as _symbol_report_mode,
 )
+from libs.reporting.broker_alignment import build_broker_alignment_report as _build_broker_alignment_report
 from libs.reporting.report_source_helpers import build_policy_surface_quality_snapshot
 from libs.reporting.symbol_trade_report import build_daily_trade_index
 from libs.reporting.symbol_trade_report import collect_symbols_for_day
@@ -81,6 +82,58 @@ def _load_operator_summary_snapshot(events_path: Path, out_dir: Path, day: str) 
 
 def _load_policy_surface_quality_snapshot(events_path: Path, out_dir: Path, day: str) -> Dict[str, Any]:
     return build_policy_surface_quality_snapshot(events_path, out_dir, day)
+
+
+def _find_trade_dir(reports_root: Path, day: str, trade_id: str) -> Path | None:
+    direct = reports_root / "trades" / day / trade_id
+    if direct.exists():
+        return direct
+    matches = sorted((reports_root / "trades" / day).glob(f"*/{trade_id}"))
+    return matches[0] if matches else None
+
+
+def _build_trade_report_integrity(reports_root: Path, day: str, trade_index: List[Dict[str, Any]]) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+    missing: List[Dict[str, Any]] = []
+    for item in trade_index:
+        if not isinstance(item, dict):
+            continue
+        trade_id = str(item.get("trade_id") or "").strip()
+        if not trade_id:
+            continue
+        trade_dir = _find_trade_dir(reports_root, day, trade_id)
+        reports_dir = trade_dir / "reports" if trade_dir else None
+        checks = {
+            "ai_trade_summary_input_json": bool(reports_dir and (reports_dir / "ai_trade_summary_input.json").exists()),
+            "ai_trade_summary_json": bool(reports_dir and (reports_dir / "ai_trade_summary.json").exists()),
+            "ai_trade_summary_md": bool(reports_dir and (reports_dir / "ai_trade_summary.md").exists()),
+        }
+        row = {
+            "trade_id": trade_id,
+            "symbol": str(item.get("symbol") or ""),
+            "trade_dir": str(trade_dir) if trade_dir else "",
+            **checks,
+        }
+        rows.append(row)
+        if not all(checks.values()):
+            missing.append(
+                {
+                    "trade_id": trade_id,
+                    "symbol": row["symbol"],
+                    "missing": [key for key, value in checks.items() if not value],
+                }
+            )
+    return {
+        "schema_version": "trade_report_integrity.v1",
+        "expected_trade_count": len([x for x in trade_index if isinstance(x, dict) and str(x.get("trade_id") or "").strip()]),
+        "checked_trade_count": len(rows),
+        "summary_md_count": sum(1 for row in rows if row.get("ai_trade_summary_md")),
+        "summary_json_count": sum(1 for row in rows if row.get("ai_trade_summary_json")),
+        "summary_input_count": sum(1 for row in rows if row.get("ai_trade_summary_input_json")),
+        "missing_count": len(missing),
+        "status": "ok" if not missing else "missing_reports",
+        "missing": missing,
+    }
 
 
 def _render_residual_positions_markdown(residual: Dict[str, Any]) -> List[str]:
@@ -178,6 +231,8 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         generated_symbol_reports = list(symbol_report_refresh.get("generated") or [])
         operator_summary_snapshot = _load_operator_summary_snapshot(events_path, out_dir, day)
         residual_positions = build_residual_positions_payload(reports_root=out_dir, day=day)
+        trade_report_integrity = _build_trade_report_integrity(out_dir, day, trade_index)
+        broker_alignment = _build_broker_alignment_report(events_path, out_dir, day)
         report_freshness = {
             "generated_at": _utc_now_iso(),
             "source_run_count": 0,
@@ -203,6 +258,8 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             symbols_for_day=symbols_for_day,
             generated_symbol_reports=generated_symbol_reports,
             symbol_report_refresh=symbol_report_refresh,
+            trade_report_integrity=trade_report_integrity,
+            broker_alignment=broker_alignment,
             operator_summary_snapshot=operator_summary_snapshot,
             residual_positions=residual_positions,
             policy_surface_quality=policy_surface_quality,
@@ -248,6 +305,8 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     generated_symbol_reports = list(symbol_report_refresh.get("generated") or [])
     operator_summary_snapshot = _load_operator_summary_snapshot(events_path, out_dir, day)
     residual_positions = build_residual_positions_payload(reports_root=out_dir, day=day)
+    trade_report_integrity = _build_trade_report_integrity(out_dir, day, trade_index)
+    broker_alignment = _build_broker_alignment_report(events_path, out_dir, day)
     operator_summary_snapshot_freshness = _build_snapshot_freshness(
         snapshot=operator_summary_snapshot,
         source_freshness=report_freshness,
@@ -267,6 +326,8 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         symbols_for_day=symbols_for_day,
         generated_symbol_reports=generated_symbol_reports,
         symbol_report_refresh=symbol_report_refresh,
+        trade_report_integrity=trade_report_integrity,
+        broker_alignment=broker_alignment,
         operator_summary_snapshot=operator_summary_snapshot,
         residual_positions=residual_positions,
         operator_summary_snapshot_freshness=operator_summary_snapshot_freshness,

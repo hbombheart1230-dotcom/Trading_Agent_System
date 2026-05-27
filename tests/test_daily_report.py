@@ -167,6 +167,87 @@ def test_generate_daily_report_uses_lifecycle_bundle_for_trade_index(tmp_path: P
     assert data["symbols_observed"] == ["005930"]
 
 
+def test_generate_daily_report_surfaces_missing_trade_summary_artifacts(tmp_path: Path):
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({"ts": "2026-03-23T06:24:32+00:00", "run_id": "r1", "stage": "monitor", "event": "summary", "payload": {"symbol": "005930"}}) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "reports"
+    bundle = out_dir / "trades" / "2026-03-23" / "0900" / "TRD_20260323_005930_01" / "lifecycle_bundle.json"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    bundle.write_text(
+        json.dumps(
+            {
+                "schema_version": "lifecycle_bundle.v1",
+                "day": "2026-03-23",
+                "trade_id": "TRD_20260323_005930_01",
+                "symbol": "005930",
+                "trade_lifecycle_status": "closed",
+                "lifecycle": {
+                    "entry": {"run_id": "r1", "ts": "2026-03-23T06:20:00+00:00", "price": 100.0},
+                    "exit": {"run_id": "r2", "ts": "2026-03-23T06:30:00+00:00", "price": 103.0},
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    md, js = generate_daily_report(events, out_dir, day="2026-03-23")
+
+    data = json.loads(js.read_text(encoding="utf-8"))
+    integrity = data["trade_report_integrity"]
+    assert integrity["expected_trade_count"] == 1
+    assert integrity["missing_count"] == 1
+    assert integrity["missing"][0]["missing"] == [
+        "ai_trade_summary_input_json",
+        "ai_trade_summary_json",
+        "ai_trade_summary_md",
+    ]
+    assert "## Trade Report Integrity" in md.read_text(encoding="utf-8")
+    assert "MISSING_REPORTS" in md.read_text(encoding="utf-8")
+
+
+def test_generate_daily_report_surfaces_broker_alignment(tmp_path: Path, monkeypatch) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({"ts": "2026-03-23T06:24:32+00:00", "run_id": "r1", "stage": "monitor", "event": "summary", "payload": {"symbol": "005930"}}) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "reports"
+
+    def fake_alignment(events_path, reports_root, day):
+        return {
+            "day": day,
+            "generated_at": "2026-03-23T06:40:00+00:00",
+            "event_log_path": str(events_path),
+            "status": "mismatch",
+            "report_json_path": str(reports_root / "reconciliation" / f"broker_trade_reconciliation_{day}.json"),
+            "summary": {
+                "local_total": 1,
+                "broker_total": 2,
+                "matched_by_ord_no": 1,
+                "missing_in_local_total": 1,
+                "missing_in_broker_total": 0,
+                "missing_in_local": [{"ord_no": "002", "symbol": "005930", "side": "BUY", "filled_qty": 1}],
+                "missing_in_broker": [],
+            },
+        }
+
+    monkeypatch.setattr(daily_generator, "_build_broker_alignment_report", fake_alignment)
+
+    md, js = generate_daily_report(events, out_dir, day="2026-03-23")
+
+    data = json.loads(js.read_text(encoding="utf-8"))
+    assert data["broker_alignment"]["status"] == "mismatch"
+    text = md.read_text(encoding="utf-8")
+    assert "## Broker Alignment" in text
+    assert "MISMATCH" in text
+    assert "missing_in_local: **1**" in text
+
+
 def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path, monkeypatch) -> None:
     events = tmp_path / "events.jsonl"
     events.write_text(

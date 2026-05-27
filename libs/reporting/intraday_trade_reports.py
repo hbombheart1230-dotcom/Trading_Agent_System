@@ -57,6 +57,31 @@ def _trade_day_from_trade_id(trade_id: str) -> str:
     return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
 
 
+def _runtime_trade_day(state: Dict[str, Any]) -> str:
+    execution = state.get("execution") if isinstance(state.get("execution"), dict) else {}
+    payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
+    for value in (
+        state.get("ts"),
+        state.get("timestamp"),
+        execution.get("ts"),
+        execution.get("timestamp"),
+        payload.get("ts"),
+        payload.get("timestamp"),
+    ):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except Exception:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d")
+    return ""
+
+
 def _root_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -1437,6 +1462,9 @@ def _build_bundle_argv(root: Path, state: Dict[str, Any] | None = None) -> List[
         argv.extend(["--target-run-id", run_id])
     if symbol:
         argv.extend(["--target-symbol", symbol])
+    day = _runtime_trade_day(runtime_state)
+    if day:
+        argv.extend(["--day", day])
     return argv
 
 

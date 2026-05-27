@@ -3,6 +3,63 @@ from __future__ import annotations
 from libs.reporting.kiwoom_day_trade_truth import attach_broker_day_pnl
 
 
+def test_attach_broker_day_pnl_prefers_ka10170_trade_diary_truth() -> None:
+    class _FakeReader:
+        def get_day_trade_diary(self, *, day: str, symbol: str = ""):
+            assert day == "20260420"
+            assert symbol == "005930"
+            return {
+                "rows": [
+                    {
+                        "symbol": "005930",
+                        "sell_qty": 2,
+                        "sell_avg_price": 70100,
+                        "buy_avg_price": 69900,
+                        "realized_pnl": 377,
+                        "pnl_ratio": 0.0027,
+                        "fee_tax": 31,
+                    }
+                ],
+                "source": "kiwoom.ka10170",
+            }
+
+        def get_day_realized_details(self, *, symbol: str = ""):
+            raise AssertionError("ka10077 should not be called when ka10170 is authoritative")
+
+    out = attach_broker_day_pnl(
+        {
+            "execution": {
+                "action": "SELL",
+                "symbol": "005930",
+                "qty": 2,
+                "ts": "2026-04-20T06:10:00+00:00",
+            }
+        },
+        context={
+            "trade_day": "2026-04-20",
+            "broker_day_pnl_reader": _FakeReader(),
+            "broker_day_truth_lookup_enabled": True,
+            "entry_execution_details": {"broker_truth_source": "kiwoom.order_status", "filled_price": 69900},
+            "execution_context": {
+                "broker_order_status": {
+                    "side": "SELL",
+                    "symbol": "005930",
+                    "filled_qty": 2,
+                    "filled_price": 70100,
+                }
+            },
+        },
+    )
+
+    broker_day_pnl = ((out.get("execution_context") or {}).get("broker_day_pnl") or {})
+    assert broker_day_pnl.get("authoritative") is True
+    assert broker_day_pnl.get("source") == "kiwoom.ka10170"
+    assert broker_day_pnl.get("match_mode") == "ka10170_symbol_buy_sell_qty_exact"
+    assert broker_day_pnl.get("realized_pnl") == 377.0
+    assert broker_day_pnl.get("pnl_ratio") == 0.0027
+    assert broker_day_pnl.get("fee_tax") == 31
+
+
 def test_attach_broker_day_pnl_matches_exact_symbol_qty_and_price() -> None:
     class _FakeReader:
         def get_day_realized_details(self, *, symbol: str = ""):

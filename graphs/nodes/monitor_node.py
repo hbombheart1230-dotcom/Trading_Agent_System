@@ -74,6 +74,7 @@ from libs.runtime.monitor_entry_state import (
 from libs.runtime.quant.decision import build_entry_quant_decision, build_exit_quant_decision
 from libs.runtime.quant.enforcement import build_entry_quant_enforcement
 from libs.runtime.quant.factors import build_factor_snapshot_from_monitor_entry
+from libs.runtime.quant.shadow_candidates import save_quant_shadow_candidates_for_state
 from libs.runtime.intraday_monitor_signals import (
     evaluate_intraday_entry_signal,
     resolve_intraday_entry_policy,
@@ -216,6 +217,51 @@ def _resolve_now_epoch(state: Dict[str, Any]) -> int:
     except Exception:
         pass
     return int(time.time())
+
+
+def _entry_forced_block_reason_for_open_carry(
+    state: Dict[str, Any],
+    all_pos_map: Dict[str, Any],
+    *,
+    now_epoch: int,
+) -> str:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    unresolved: set[str] = set()
+    for source in (state, persisted):
+        if not isinstance(source, dict):
+            continue
+        marker = source.get("closeout_unresolved_flatten_by_symbol")
+        if isinstance(marker, dict):
+            unresolved.update(_norm_symbol(x) for x in marker.keys() if _norm_symbol(x))
+        backup = source.get("closeout_backup_liquidation")
+        if isinstance(backup, dict):
+            for key in ("unresolved_flatten_symbols", "unresolved_flatten_requires_next_open_symbols"):
+                unresolved.update(_norm_symbol(x) for x in list(backup.get(key) or []) if _norm_symbol(x))
+
+    open_rows = [
+        (_norm_symbol(sym), row if isinstance(row, dict) else {})
+        for sym, row in (all_pos_map or {}).items()
+        if _norm_symbol(sym) and max(0, _to_int((row or {}).get("qty"))) > 0
+    ]
+    if any(sym in unresolved for sym, _row in open_rows):
+        return "closeout_unresolved_flatten_required"
+
+    entry_epoch_by_symbol = (
+        persisted.get("position_entry_epoch_by_symbol")
+        if isinstance(persisted.get("position_entry_epoch_by_symbol"), dict)
+        else {}
+    )
+    for sym, row in open_rows:
+        entry_epoch = _to_int(
+            row.get("position_entry_epoch")
+            if row.get("position_entry_epoch") not in (None, "")
+            else row.get("entry_epoch")
+        )
+        if entry_epoch <= 0:
+            entry_epoch = _to_int(entry_epoch_by_symbol.get(sym))
+        if entry_epoch > 0 and now_epoch > entry_epoch and (now_epoch - entry_epoch) >= 12 * 3600:
+            return "overnight_carry_recovery_pending"
+    return ""
 
 
 def _norm_symbol(v: Any) -> str:
@@ -646,6 +692,11 @@ def _evaluate_monitor_entry_candidate(
     entry_info["intent_cooldown_until"] = int(cooldown_until) if cooldown_until > 0 else None
 
     max_positions_reached = bool(open_position_count >= max_positions)
+    forced_entry_block_reason = _entry_forced_block_reason_for_open_carry(
+        state,
+        all_pos_map,
+        now_epoch=int(now_epoch_for_entry),
+    )
     entry_guard = evaluate_entry_guard(
         entry_info=entry_info,
         entry_quality_gate=entry_quality_gate,
@@ -658,6 +709,7 @@ def _evaluate_monitor_entry_candidate(
         entry_intent_cooldown_sec=int(entry_intent_cooldown_sec),
         cooldown_until=int(cooldown_until),
         now_epoch=int(now_epoch_for_entry),
+        forced_entry_block_reason=forced_entry_block_reason,
     )
     entry_info = dict(entry_guard.get("entry_info") or entry_info)
     entry_guard_blocked = bool(entry_guard.get("entry_guard_blocked"))
@@ -1095,6 +1147,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "minute_refetch_succeeded": runner_metrics.get("minute_refetch_succeeded"),
                         "minute_cache_fallback_used": runner_metrics.get("minute_cache_fallback_used"),
                         "guard_blocked": bool(runner_result.get("entry_guard_blocked")),
+                        "guard_reason": str(runner_result.get("entry_guard_reason") or ""),
+                        "intent_submitted": bool(runner_entry.get("intent_submitted")),
+                        "buy_blocked_open_position": bool(runner_result.get("buy_blocked_open_position")),
+                        "buy_blocked_same_symbol": bool(runner_result.get("buy_blocked_same_symbol")),
+                        "buy_blocked_pending_buy": bool(runner_result.get("buy_blocked_pending_buy")),
+                        "buy_blocked_post_exit_cooldown": bool(runner_result.get("buy_blocked_post_exit_cooldown")),
+                        "buy_blocked_closeout_window": bool(runner_result.get("buy_blocked_closeout_window")),
                     }
                 )
                 if not bool(runner_entry.get("intent_submitted")):
@@ -1549,6 +1608,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         emergency_exit = _is_emergency_exit_reason(str(decision.get("reason") or ""))
         hard_exit = _is_hard_exit_reason(str(decision.get("reason") or ""))
         decision_reason = str(decision.get("reason") or "").strip()
+        eod_flat_exit = decision_reason == "eod_flat"
         decision_thresholds = (
             decision.get("thresholds")
             if isinstance(decision.get("thresholds"), dict)
@@ -1580,7 +1640,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 sell_guard_blocked = True
                 sell_guard_reason = "sell_guard_open_order_pending"
                 monitor_reason = "pending_exit_lock"
-            elif lock_until > now_epoch:
+            elif lock_until > now_epoch and not eod_flat_exit:
                 sell_guard_blocked = True
                 sell_guard_reason = "sell_guard_pending_exit_lock"
                 monitor_reason = "pending_exit_lock"
@@ -1989,6 +2049,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         monitor_entry_exit_reason = "same_symbol_position_open"
     elif bool(max_positions_reached and buy_blocked_open_position):
         monitor_entry_exit_reason = "max_positions_reached"
+    elif bool(buy_blocked_open_position) and str(entry_info.get("guard_reason") or "").strip() in {
+        "closeout_unresolved_flatten_required",
+        "overnight_carry_recovery_pending",
+    }:
+        monitor_entry_exit_reason = str(entry_info.get("guard_reason") or "")
     elif bool(buy_blocked_open_position):
         monitor_entry_exit_reason = "buy_blocked_open_position"
     elif bool(entry_info.get("guard_blocked")):
@@ -3245,6 +3310,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
     except Exception:
         pass
+    try:
+        shadow_result = save_quant_shadow_candidates_for_state(state, trigger="monitor_cycle")
+        state["quant_shadow_candidates"] = dict(shadow_result)
+        if isinstance(state.get("monitor_output"), dict):
+            state["monitor_output"]["quant_shadow_candidates"] = dict(shadow_result)
+    except Exception as exc:
+        state["quant_shadow_candidates"] = {"status": "error", "error": str(exc)}
+        if isinstance(state.get("monitor_output"), dict):
+            state["monitor_output"]["quant_shadow_candidates"] = dict(state["quant_shadow_candidates"])
     try:
         write_monitor_artifact(state)
     except Exception:

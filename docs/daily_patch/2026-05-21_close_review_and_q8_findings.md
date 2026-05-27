@@ -107,3 +107,66 @@ Candidate next behavior after integrity fix:
 - Keep `exit_aligned` logic as-is.
 - Keep post-exit shadow observation-only.
 
+## Q8 Artifact Integrity Patch
+
+Completed after the close review.
+
+Code changes:
+
+- `libs/reporting/quant_tactic_report.py`
+  - Recovers the executed symbol from the report/fact payload.
+  - Finds the selected scanner candidate row recursively by symbol.
+  - Uses selected candidate `quant_factor_snapshot` as a fallback.
+  - Rebuilds missing `entry_quant_decision` from
+    `entry_execution_visibility`, monitor state, and scanner candidate data.
+  - Recomputes missing `tactic_suitability` from the selected candidate.
+  - Adds `scanner_chart_fit` to the quant tactic report surface.
+- `libs/runtime/quant/decision.py`
+  - Derives `cost_floor_state` from the cost filter when the explicit factor
+    is missing.
+- `tests/test_quant_tactic_report.py`
+  - Adds coverage that proves trade summary diagnostics can be recovered from
+    execution visibility plus scanner evidence.
+
+Regenerated artifacts:
+
+- `scripts/run_post_exit_shadow_recap.py --day 2026-05-21 --json`
+- `scripts/run_operator_daily_summary.py --day 2026-05-21 --json`
+- `scripts/generate_daily_report.py` with alternate day-cache directory after
+  the default cache file was locked by another process.
+
+Validation:
+
+- Targeted regression passed: 23 tests.
+- All six closed 2026-05-21 trade summary inputs now include:
+  - `entry_quant_decision`
+  - `cost_floor_state`
+  - `tactic_suitability`
+  - scanner chart-fit score
+
+Recovered entry-side diagnostics:
+
+| Trade | Tactic | Entry decision | Cost floor | Suitability | Chart score |
+| --- | --- | --- | --- | --- | --- |
+| TRD_20260521_024840_01 | defensive_observe | entry_ready | met | weak | 0.1321 |
+| TRD_20260521_012330_02 | defensive_observe | entry_ready | met | watch | 0.4488 |
+| TRD_20260521_034220_01 | opening_range_breakout | entry_ready | met | weak | 0.4769 |
+| TRD_20260521_006345_01 | opening_gap_momentum | entry_ready | met | weak | 0.4000 |
+| TRD_20260521_233740_01 | opening_range_breakout | block_recommended | not_met | watch | 0.5600 |
+| TRD_20260521_034220_02 | opening_range_breakout | entry_ready | met | weak | 0.1892 |
+
+Patch read:
+
+- `233740` is the clearest Q8 finding. It now shows
+  `block_recommended`, `cost_floor_state=not_met`, and blockers including
+  `cost_edge_fail` and `volume_confirmation_missing`.
+- Weak suitability alone should not become a hard veto yet. Some profitable
+  trades, including `024840` and `006345`, also recovered as weak suitability.
+- `034220_02` deserves review because chart-fit was very weak at 0.1892 while
+  the reconstructed entry decision was still `entry_ready`.
+
+Next behavior-promotion candidate:
+
+- Promote entry-side cost/volume blockers first, not raw suitability tier.
+- Keep tactic suitability and chart-fit as diagnostics until another live
+  sample confirms which thresholds separate losses from wins.

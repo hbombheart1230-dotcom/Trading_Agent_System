@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from libs.core.symbols import normalize_symbol
 from libs.reporting.trade_fill_aggregator import build_split_fill_match_payload
+from libs.reporting.kiwoom_day_trade_diary_truth import match_trade_diary_row
 from libs.reporting.kiwoom_day_trade_match_estimate import (
     extract_buy_price_anchor_candidates,
     infer_buy_price_from_monitor_context,
@@ -515,13 +516,36 @@ def attach_broker_day_pnl(
             return context_obj
 
     try:
+        diary_payload = (
+            reader.get_day_trade_diary(day=trade_day, symbol=symbol)
+            if hasattr(reader, "get_day_trade_diary")
+            else {}
+        )
+    except Exception as exc:
+        execution_context["broker_day_trade_diary_error"] = str(exc)
+        diary_payload = {}
+
+    matched = match_trade_diary_row(
+        list(diary_payload.get("rows") or []),
+        symbol=symbol,
+        filled_qty=filled_qty,
+        filled_price=filled_price,
+        buy_price=buy_price,
+    )
+    if matched and bool(matched.get("authoritative")):
+        matched["day"] = trade_day
+        execution_context["broker_day_pnl"] = matched
+        context_obj["execution_context"] = execution_context
+        return context_obj
+
+    try:
         payload = reader.get_day_realized_details(symbol=symbol)
     except Exception as exc:
         execution_context["broker_day_pnl_error"] = str(exc)
         context_obj["execution_context"] = execution_context
         return context_obj
 
-    matched = _match_detail_row(
+    detail_matched = _match_detail_row(
         list(payload.get("rows") or []),
         symbol=symbol,
         filled_qty=filled_qty,
@@ -533,6 +557,8 @@ def attach_broker_day_pnl(
             else {}
         ),
     )
+    if detail_matched and (not matched or bool(detail_matched.get("authoritative"))):
+        matched = detail_matched
     if (not matched or not bool(matched.get("authoritative"))) and hasattr(reader, "get_account_profit_rate_rows"):
         try:
             profit_payload = reader.get_account_profit_rate_rows()

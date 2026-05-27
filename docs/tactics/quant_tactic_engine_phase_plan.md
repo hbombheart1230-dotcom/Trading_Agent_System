@@ -1,6 +1,6 @@
 # Quant Tactic Engine Phase Plan
 
-Last updated: 2026-05-21
+Last updated: 2026-05-27
 
 ## Implementation Status
 
@@ -82,6 +82,38 @@ Last updated: 2026-05-21
   - Preserved compact quant context usage fields in strategist refresh trace.
   - Added `tests/test_strategist_quant_context_report.py`.
   - Preserved observation-only behavior.
+- 2026-05-24: Phase Q8 data truth gate started.
+  - Q8 validation is blocked unless trade count, order/fill count, and realized
+    PnL truth are reliable.
+  - `ka10170` 당일매매일지 is the preferred realized trade result source when
+    a single symbol row can be matched.
+  - `ka10077` remains the detailed realized PnL fallback and ambiguity surface.
+  - `kt00007`/`kt00009` remain the order/fill count reconciliation sources.
+  - Broad Kiwoom account snapshots are archived under
+    `data/logs/kiwoom_account_snapshots/YYYY-MM-DD/` at report-generation
+    alignment time.
+- 2026-05-24: Phase Q8 candidate shadow dataset started.
+  - Added `libs/runtime/quant/shadow_candidates.py`.
+  - Added `libs/reporting/quant_shadow_candidate_evaluation.py`.
+  - Monitor now saves observation-only top-pick, runner-up evaluated, and
+    runner-up skipped candidate rows under
+    `data/logs/quant_shadow_candidates/YYYY-MM-DD/`.
+  - Operator daily/weekly/monthly/symbol summaries now surface Q8 shadow
+    candidate counts, roles, reasons, tactic IDs, suitability tiers, cost-floor
+    states, and failure axes.
+  - Operator summaries also expose a recommendation-only Q8 promotion candidate
+    among cost-edge, runner-up, and entry-guard based on shadow candidate
+    blocker counts.
+  - Added observation-only `opening_momentum_probe_shadow` so strong opening
+    momentum opportunities can be evaluated without changing live buy behavior.
+  - Added observation-only `opening_largecap_surge_shadow` for the 09:00-09:20
+    largecap watchlist lane (`005930`, `000660`, `009150`). It records whether
+    fixed largecap leaders were missed by the normal scanner/monitor path,
+    including ranked watchlist rows that were not evaluated by monitor.
+  - This does not change entry behavior. It creates a larger evaluation set for
+    Q8 when actual trade count is too low.
+  - Added `tests/test_quant_shadow_candidates.py` and
+    `tests/test_quant_shadow_candidate_evaluation.py`.
 
 Q7 alignment note:
 
@@ -94,6 +126,58 @@ Q7 alignment note:
   Q4 `quant_context` injection plus Q7 Slice 3 compact scorecard feedback,
   and completed in the 2026-05-21 residual patch with the full-report
   `전략가 Quant Context 사용` section.
+
+## Phase Q8 - Validation Gate And Truth First
+
+Goal: validate Q1-Q7 only on reliable samples.
+
+Q8 is not a new tactic rollout phase. It is the validation layer that decides
+which quant diagnostics are safe to promote from observation/shadow into live
+behavior.
+
+### Q8 Priority Order
+
+1. Data truth and sample validity.
+   - Use `ka10170` as the preferred same-day trade result source.
+   - Use `ka10077` as detailed realized PnL fallback.
+   - Use `kt00007`/`kt00009` for broker order/fill count alignment.
+   - Mark Q8 samples invalid when broker/local counts or report artifacts are
+     inconsistent.
+2. Q8 evaluation surface.
+   - Daily/weekly reports must show tactic state, sample count, invalid sample
+     count, win/loss, average PnL, and observation/shadow/live mode.
+   - Invalid samples must include compact examples with trade ID, symbol, and
+     invalid reason so reporting integrity problems can be fixed before tactic
+     promotion.
+3. Candidate shadow dataset.
+   - Store blocked top candidates, runner-up candidates, and cost-edge failed
+     candidates as shadow observations so low real-trade count does not stall
+     evaluation.
+   - Runtime storage path:
+     `data/logs/quant_shadow_candidates/YYYY-MM-DD/`.
+   - Current captured roles: `top_pick`, `runner_up_evaluated`,
+     `runner_up_skipped`, `opening_largecap_watchlist`.
+   - Operator summary exposes shadow candidate counts by role, reason, tactic
+     ID, tactic suitability, cost-floor state, and primary failure axis.
+   - Operator summary also exposes `promotion_candidate`, but it is
+     `recommendation_only` and does not change live behavior.
+   - Opening momentum probe shadow is tracked separately from normal
+     `would_enter`, so Q8 can compare missed opening momentum against late
+     pullback entries without mixing policies.
+   - Opening largecap surge shadow is tracked separately again so 09:00-09:20
+     moves in `005930`, `000660`, and `009150` can be reviewed without opening
+     live orders or weakening the normal scanner rank.
+   - Current behavior effect: `observation_only`.
+4. Behavior promotion.
+   - Promote one behavior at a time only after enough valid samples exist.
+   - Current first candidates are cost-edge filter, runner-up independent
+     suitability, and entry guard hard veto.
+
+### Q8 Hard Rule
+
+No tactic conclusion should be promoted from a day where trade reports, broker
+orders, or realized PnL truth disagree. Such samples are evidence for reporting
+integrity fixes, not tactic quality.
 
 ## Purpose
 
@@ -429,6 +513,19 @@ Validation scope:
   `behavior_effect`
 - trade report, summary, and operator summary expose quant diagnostics
 - live restart includes Q1-Q7 code paths and logs the expected artifacts
+
+2026-05-22 evaluation surface:
+
+- Added operator-summary `quant_tactic_evaluation` diagnostics for Q8.
+- Daily/period/symbol operator summary JSON and Pattern Performance markdown
+  now expose sample sufficiency, missing required quant fields, and tactic ID
+  mismatch counts before any behavior promotion review.
+- The summary status is evaluation-only:
+  - `hold_sample_insufficient`
+  - `hold_field_gaps`
+  - `hold_tactic_id_mismatch`
+  - `review_sample_building`
+  - `promotion_review_ready`
 
 Rules:
 

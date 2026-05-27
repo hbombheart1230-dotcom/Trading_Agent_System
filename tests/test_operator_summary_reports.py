@@ -211,6 +211,18 @@ def test_operator_daily_summary_aggregates_quant_tactic_diagnostics(tmp_path: Pa
         ],
     )
     _write_json(
+        reports / "trades" / day / trade_id / "reports" / "ai_trade_summary_input.json",
+        {
+            "quant_tactic": {
+                "tactic_id": "vwap_reclaim_pullback",
+                "tactic_id_source": "entry_quant_decision",
+                "tactic_id_mismatches": [
+                    {"source": "exit_quant_decision", "tactic_id": "breakout_continuation"},
+                ],
+            },
+        },
+    )
+    _write_json(
         reports / "trades" / day / trade_id / "reports" / "ai_trade_report.json",
         {
             "why_this_symbol_was_chosen": {
@@ -255,9 +267,62 @@ def test_operator_daily_summary_aggregates_quant_tactic_diagnostics(tmp_path: Pa
     assert perf["quant"]["by_exit_decision"][0]["name"] == "confirm_before_exit_recommended"
     assert perf["quant"]["by_exit_confirmation_state"][0]["name"] == "pending"
     assert perf["quant"]["by_exit_hold_window_state"][0]["name"] == "mismatch"
+    assert daily["quant_tactic_evaluation"]["status"] == "hold_sample_insufficient"
+    assert daily["quant_tactic_evaluation"]["tactic_id_mismatch_trade_count"] == 0
+    assert daily["quant_tactic_evaluation"]["exit_tactic_drift_trade_count"] == 0
     markdown = md.read_text(encoding="utf-8")
     assert "Quant tactic" in markdown
     assert "Quant entry blockers" in markdown
+    assert "Quant Q8 readiness" in markdown
+    assert "mismatch trades 0" in markdown
+
+
+def test_operator_daily_summary_surfaces_quant_shadow_candidates(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-05-24"
+    _write_json(
+        tmp_path / "data" / "logs" / "quant_shadow_candidates" / day / "sample.json",
+        {
+            "schema_version": "quant_shadow_candidates.v1",
+            "behavior_effect": "observation_only",
+            "day": day,
+            "candidates": [
+                {
+                    "symbol": "005930",
+                    "shadow_role": "top_pick",
+                    "evaluated": True,
+                    "would_enter": False,
+                    "guard_blocked": True,
+                    "reason": "volume_confirmation_missing",
+                    "quant_tactic_id": "vwap_reclaim_pullback",
+                    "tactic_suitability_tier": "weak",
+                    "entry_quant_cost_floor_state": "not_met",
+                    "primary_failure_axis": "volume",
+                },
+                {
+                    "symbol": "000660",
+                    "shadow_role": "runner_up_evaluated",
+                    "evaluated": True,
+                    "would_enter": True,
+                    "reason": "ready",
+                    "quant_tactic_id": "breakout_continuation",
+                    "tactic_suitability_tier": "strong",
+                },
+            ],
+        },
+    )
+
+    md, _json, daily = generate_operator_daily_summary_artifact(reports_root=reports, day=day)
+
+    shadow = daily["quant_shadow_candidate_evaluation"]
+    assert shadow["candidate_count"] == 2
+    assert shadow["would_enter_count"] == 1
+    assert {"name": "volume_confirmation_missing", "count": 1} in shadow["by_reason"]
+    assert shadow["promotion_candidate"]["candidate"] == "cost_edge"
+    markdown = md.read_text(encoding="utf-8")
+    assert "Quant Shadow Candidates" in markdown
+    assert "would-enter 1" in markdown
+    assert "Q8 promotion candidate" in markdown
 
 
 def test_operator_daily_summary_finds_truth_surface_under_time_bucket(tmp_path: Path) -> None:

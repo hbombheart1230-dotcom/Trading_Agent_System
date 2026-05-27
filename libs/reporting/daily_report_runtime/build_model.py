@@ -89,6 +89,8 @@ def build_no_event_daily_payload(
     symbols_for_day: List[str],
     generated_symbol_reports: List[Dict[str, Any]],
     symbol_report_refresh: Dict[str, Any],
+    trade_report_integrity: Dict[str, Any],
+    broker_alignment: Dict[str, Any],
     operator_summary_snapshot: Dict[str, Any],
     residual_positions: Dict[str, Any],
     policy_surface_quality: Dict[str, Any],
@@ -109,6 +111,8 @@ def build_no_event_daily_payload(
         "symbols_observed": symbols_for_day,
         "generated_symbol_report_count": len(generated_symbol_reports),
         "symbol_report_refresh": {key: value for key, value in symbol_report_refresh.items() if key != "generated"},
+        "trade_report_integrity": dict(trade_report_integrity),
+        "broker_alignment": dict(broker_alignment),
         "operator_summary_snapshot": operator_summary_snapshot,
         "residual_positions": residual_positions,
         "policy_surface_quality_summary": dict(policy_surface_quality.get("summary") or {}),
@@ -134,6 +138,8 @@ def enrich_daily_summary_payload(
     symbols_for_day: List[str],
     generated_symbol_reports: List[Dict[str, Any]],
     symbol_report_refresh: Dict[str, Any],
+    trade_report_integrity: Dict[str, Any],
+    broker_alignment: Dict[str, Any],
     operator_summary_snapshot: Dict[str, Any],
     residual_positions: Dict[str, Any],
     operator_summary_snapshot_freshness: Dict[str, Any],
@@ -152,6 +158,8 @@ def enrich_daily_summary_payload(
     enriched["symbols_observed"] = symbols_for_day
     enriched["generated_symbol_report_count"] = len(generated_symbol_reports)
     enriched["symbol_report_refresh"] = {key: value for key, value in symbol_report_refresh.items() if key != "generated"}
+    enriched["trade_report_integrity"] = dict(trade_report_integrity)
+    enriched["broker_alignment"] = dict(broker_alignment)
     enriched["operator_summary_snapshot"] = operator_summary_snapshot
     enriched["residual_positions"] = residual_positions
     enriched["operator_summary_snapshot_freshness"] = operator_summary_snapshot_freshness

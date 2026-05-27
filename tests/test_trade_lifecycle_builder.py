@@ -133,6 +133,94 @@ def test_build_trade_lifecycles_keeps_zero_fill_sell_open() -> None:
     assert lifecycle.get("partial_exit_qty", 0) == 0
 
 
+def test_build_trade_lifecycles_keeps_broker_aligned_sell_open_until_fill_truth() -> None:
+    lifecycles = build_trade_lifecycles(
+        day="2026-05-22",
+        run_snapshots=[
+            {
+                "run_id": "run-buy",
+                "ts_start": "2026-05-22T01:00:00+00:00",
+                "ts_epoch": 1,
+                "symbol": "009150",
+                "execution_action": "BUY",
+                "execution": {"action": "BUY", "qty": 5, "price": 190000.0},
+                "verdict_allowed": True,
+            },
+            {
+                "run_id": "run-sell-accepted",
+                "ts_start": "2026-05-22T03:01:58+00:00",
+                "ts_epoch": 2,
+                "symbol": "009150",
+                "execution_action": "SELL",
+                "execution": {"action": "SELL", "qty": 5, "price": 191000.0},
+                "verdict_allowed": True,
+            },
+        ],
+        run_bundles={
+            "run-buy": {},
+            "run-sell-accepted": {
+                "lifecycle_fill_truth_required": True,
+                "lifecycle_fill_truth_confirmed": False,
+                "execution_details": {
+                    "order_id": "0113162",
+                    "filled_qty": 5,
+                    "broker_truth_attempted": True,
+                },
+            },
+        },
+    )
+
+    lifecycle = lifecycles[0]
+    assert lifecycle["status"] == "open"
+    assert lifecycle.get("exit") == {}
+    assert lifecycle["remaining_qty"] == 5
+    assert lifecycle.get("partial_exit_qty", 0) == 0
+
+
+def test_build_trade_lifecycles_closes_broker_aligned_sell_after_fill_truth() -> None:
+    lifecycles = build_trade_lifecycles(
+        day="2026-05-22",
+        run_snapshots=[
+            {
+                "run_id": "run-buy",
+                "ts_start": "2026-05-22T01:00:00+00:00",
+                "ts_epoch": 1,
+                "symbol": "009150",
+                "execution_action": "BUY",
+                "execution": {"action": "BUY", "qty": 5, "price": 190000.0},
+                "verdict_allowed": True,
+            },
+            {
+                "run_id": "run-sell-filled",
+                "ts_start": "2026-05-22T03:01:58+00:00",
+                "ts_epoch": 2,
+                "symbol": "009150",
+                "execution_action": "SELL",
+                "execution": {"action": "SELL", "qty": 5, "price": 191000.0},
+                "verdict_allowed": True,
+            },
+        ],
+        run_bundles={
+            "run-buy": {},
+            "run-sell-filled": {
+                "lifecycle_fill_truth_required": True,
+                "lifecycle_fill_truth_confirmed": True,
+                "execution_details": {
+                    "order_id": "0113162",
+                    "filled_qty": 5,
+                    "filled_price": 191000,
+                    "broker_truth_source": "kiwoom.order_status",
+                },
+            },
+        },
+    )
+
+    lifecycle = lifecycles[0]
+    assert lifecycle["status"] == "closed"
+    assert lifecycle["exit"]["run_id"] == "run-sell-filled"
+    assert lifecycle["remaining_qty"] == 0
+
+
 def test_build_trade_lifecycles_closes_after_cumulative_partial_sells() -> None:
     lifecycles = build_trade_lifecycles(
         day="2026-05-12",

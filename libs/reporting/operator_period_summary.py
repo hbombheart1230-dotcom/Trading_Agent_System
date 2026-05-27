@@ -19,6 +19,17 @@ from libs.reporting.llm_artifacts import (
     symbol_artifact_paths,
     weekly_artifact_paths,
 )
+from libs.reporting.quant_tactic_evaluation import (
+    build_quant_tactic_evaluation,
+    render_quant_tactic_evaluation_lines,
+)
+from libs.reporting.quant_shadow_candidate_evaluation import (
+    build_quant_shadow_candidate_evaluation,
+    load_quant_shadow_candidate_payloads,
+    load_quant_shadow_candidate_payloads_for_range,
+    render_quant_shadow_candidate_evaluation_lines,
+)
+from libs.reporting.quant_tactic_report import quant_tactic_surface as build_quant_tactic_surface
 
 
 _WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
@@ -766,6 +777,11 @@ def _extract_trade_decision_fields(row: Dict[str, Any], reports_root: Path) -> D
     if not shared_facts:
         shared_facts = summary_input.get("shared_facts") if isinstance(summary_input.get("shared_facts"), dict) else {}
     market_strategy = _as_dict(summary_input.get("market_and_strategy"))
+    broker_alignment = _first_dict(
+        summary_input.get("broker_alignment"),
+        summary_report.get("broker_alignment"),
+        full_report.get("broker_alignment"),
+    )
     strategy_detail = _as_dict(strategist_summary.get("strategy_detail"))
     strategy_frame = _as_dict(strategist_summary.get("strategy_frame"))
     candidate_watch = _as_dict(strategy_detail.get("candidate_watch_policy"))
@@ -778,6 +794,15 @@ def _extract_trade_decision_fields(row: Dict[str, Any], reports_root: Path) -> D
     monitor_context = _as_dict(exit_payload.get("monitor_context"))
     full_monitor = _as_dict(full_report.get("monitor_snapshot"))
     summary_monitor = _as_dict(summary_input.get("monitor_snapshot"))
+    quant_tactic_surface = _first_dict(
+        summary_input.get("quant_tactic"),
+        summary_report.get("quant_tactic"),
+        full_report.get("quant_tactic"),
+        full_report.get("quant_tactic_surface"),
+    )
+    recomputed_quant_tactic_surface = build_quant_tactic_surface(full_report)
+    if recomputed_quant_tactic_surface:
+        quant_tactic_surface = recomputed_quant_tactic_surface
     entry_quant_decision = _first_dict(
         full_monitor.get("entry_quant_decision"),
         summary_monitor.get("entry_quant_decision"),
@@ -835,6 +860,23 @@ def _extract_trade_decision_fields(row: Dict[str, Any], reports_root: Path) -> D
     if shared_facts:
         out["last_action"] = str(shared_facts.get("action") or row.get("last_action") or "")
         out["last_status"] = str(shared_facts.get("status") or row.get("last_status") or row.get("status") or "")
+    if broker_alignment:
+        alignment_status = _text_value(broker_alignment.get("status"))
+        if alignment_status:
+            out["broker_alignment_status"] = alignment_status
+        for key in (
+            "local_total",
+            "broker_total",
+            "missing_in_local_total",
+            "missing_in_broker_total",
+            "account_snapshot_error_count",
+        ):
+            value = broker_alignment.get(key)
+            if _safe_int(value, default=-1) >= 0:
+                out[f"broker_alignment_{key}"] = _safe_int(value)
+        snapshot_status = _text_value(broker_alignment.get("account_snapshot_status"))
+        if snapshot_status:
+            out["broker_account_snapshot_status"] = snapshot_status
     for field in ("lifecycle_completeness", "trade_origin", "evidence_recovery_used"):
         if lifecycle_bundle.get(field) not in (None, ""):
             out[field] = lifecycle_bundle.get(field)
@@ -954,6 +996,7 @@ def _extract_trade_decision_fields(row: Dict[str, Any], reports_root: Path) -> D
     if _safe_float(_find_key_recursive(exit_payload, "vwap_distance")) is not None:
         out["vwap_breakdown_state"] = "observed"
     quant_tactic = _first_text(
+        quant_tactic_surface.get("tactic_id"),
         entry_quant_decision.get("tactic_id"),
         exit_quant_decision.get("tactic_id"),
         quant_factor_snapshot.get("tactic_id"),
@@ -963,6 +1006,19 @@ def _extract_trade_decision_fields(row: Dict[str, Any], reports_root: Path) -> D
         out["quant_tactic_id"] = quant_tactic
         if not out.get("tactical_strategy"):
             out["tactical_strategy"] = quant_tactic
+    tactic_source = _text_value(quant_tactic_surface.get("tactic_id_source"))
+    if tactic_source:
+        out["quant_tactic_id_source"] = tactic_source
+    tactic_mismatches = quant_tactic_surface.get("tactic_id_mismatches")
+    if isinstance(tactic_mismatches, list):
+        out["quant_tactic_mismatch_count"] = len([row for row in tactic_mismatches if isinstance(row, dict)])
+    elif entry_quant_decision.get("tactic_id") and exit_quant_decision.get("tactic_id"):
+        out["quant_tactic_mismatch_count"] = int(
+            str(entry_quant_decision.get("tactic_id")).strip() != str(exit_quant_decision.get("tactic_id")).strip()
+        )
+    exit_tactic_drifts = quant_tactic_surface.get("exit_tactic_drifts")
+    if isinstance(exit_tactic_drifts, list):
+        out["quant_exit_tactic_drift_count"] = len([row for row in exit_tactic_drifts if isinstance(row, dict)])
     for key, value in {
         "entry_quant_decision": entry_quant_decision.get("decision"),
         "exit_quant_decision": exit_quant_decision.get("decision"),
@@ -1869,6 +1925,11 @@ def build_operator_period_summary(
     rows = _enrich_rows_with_truth_surface(rows, reports_root)
     metrics = _trade_metrics(rows)
     counters = _pattern_counters(rows)
+    shadow_payloads = load_quant_shadow_candidate_payloads_for_range(
+        reports_root=reports_root,
+        start=start.isoformat(),
+        end=end.isoformat(),
+    )
 
     summary = {
         "schema_version": "operator_period_summary.v1",
@@ -1885,6 +1946,8 @@ def build_operator_period_summary(
         },
         "patterns": _pattern_payload(counters),
         "pattern_performance": _pattern_performance_payload(rows),
+        "quant_tactic_evaluation": build_quant_tactic_evaluation(rows),
+        "quant_shadow_candidate_evaluation": build_quant_shadow_candidate_evaluation(shadow_payloads),
         "symbol_summary": _symbol_rows(rows),
     }
     summary["operator_readout"] = _operator_readout(
@@ -1917,6 +1980,10 @@ def build_operator_daily_summary_artifact_payload(
     rows = _enrich_rows_with_truth_surface(rows, reports_root)
     metrics = _trade_metrics(rows)
     counters = _pattern_counters(rows)
+    shadow_payloads = load_quant_shadow_candidate_payloads(
+        reports_root=reports_root,
+        days=[normalized_day],
+    )
     if metrics["trade_count"] == 0 and trade_index:
         metrics["trade_count"] = len(trade_index)
 
@@ -1938,6 +2005,8 @@ def build_operator_daily_summary_artifact_payload(
         "metrics": metrics,
         "patterns": _pattern_payload(counters),
         "pattern_performance": _pattern_performance_payload(rows),
+        "quant_tactic_evaluation": build_quant_tactic_evaluation(rows),
+        "quant_shadow_candidate_evaluation": build_quant_shadow_candidate_evaluation(shadow_payloads),
         "symbol_summary": _symbol_rows(rows),
         "residual_positions": _build_residual_positions_payload(reports_root=reports_root, day=normalized_day),
     }
@@ -1965,6 +2034,14 @@ def build_operator_symbol_summary_artifact_payload(
     rows = _enrich_rows_with_truth_surface(rows, reports_root)
     metrics = _trade_metrics(rows)
     counters = _pattern_counters(rows)
+    days = sorted(
+        {
+            str(row.get("date") or row.get("day") or "")[:10]
+            for row in rows
+            if str(row.get("date") or row.get("day") or "").strip()
+        }
+    )
+    shadow_payloads = load_quant_shadow_candidate_payloads(reports_root=reports_root, days=days)
     pattern_insights = payload.get("pattern_insights") if isinstance(payload.get("pattern_insights"), dict) else {}
     memory = dict(symbol_memory_payload or {})
 
@@ -1981,6 +2058,11 @@ def build_operator_symbol_summary_artifact_payload(
         "metrics": metrics,
         "patterns": _pattern_payload(counters),
         "pattern_performance": _pattern_performance_payload(rows),
+        "quant_tactic_evaluation": build_quant_tactic_evaluation(rows),
+        "quant_shadow_candidate_evaluation": build_quant_shadow_candidate_evaluation(
+            shadow_payloads,
+            symbol=normalized_symbol,
+        ),
         "symbol_memory": {
             "available": bool(memory),
             "trade_stats": dict(memory.get("trade_stats") or {}) if isinstance(memory.get("trade_stats"), dict) else {},
@@ -2025,7 +2107,7 @@ def _render_pattern_performance_lines(payload: Dict[str, Any]) -> List[str]:
     perf = payload.get("pattern_performance") if isinstance(payload.get("pattern_performance"), dict) else {}
     if not perf or int(perf.get("trade_count") or 0) <= 0:
         return []
-    return [
+    lines = [
         "",
         "---",
         "",
@@ -2045,6 +2127,17 @@ def _render_pattern_performance_lines(payload: Dict[str, Any]) -> List[str]:
             limit=2,
         ),
     ]
+    quant_eval = payload.get("quant_tactic_evaluation")
+    if isinstance(quant_eval, dict):
+        lines += [""] + render_quant_tactic_evaluation_lines(quant_eval)
+    return lines
+
+
+def _render_quant_shadow_candidate_lines(payload: Dict[str, Any]) -> List[str]:
+    shadow_eval = payload.get("quant_shadow_candidate_evaluation")
+    if not isinstance(shadow_eval, dict):
+        return []
+    return render_quant_shadow_candidate_evaluation_lines(shadow_eval)
 
 
 def render_operator_period_summary_markdown(payload: Dict[str, Any]) -> str:
@@ -2105,6 +2198,7 @@ def render_operator_period_summary_markdown(payload: Dict[str, Any]) -> str:
         text = ", ".join(f"{row.get('name')} ({row.get('count')})" for row in rows[:3] if isinstance(row, dict))
         lines.append(f"- {label}: {text or '없음'}")
     lines.extend(_render_pattern_performance_lines(payload))
+    lines.extend(_render_quant_shadow_candidate_lines(payload))
 
     lines += ["", "---", "", "## 주요 종목", ""]
     if not symbols:
@@ -2277,6 +2371,7 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
         text = ", ".join(f"{row.get('name')} ({row.get('count')})" for row in rows[:3] if isinstance(row, dict))
         lines.append(f"- {label}: {text or '없음'}")
     lines.extend(_render_pattern_performance_lines(payload))
+    lines.extend(_render_quant_shadow_candidate_lines(payload))
 
     lines += ["", "---", "", "## 종목별 요약", ""]
     if not symbols:
@@ -2364,6 +2459,7 @@ def render_operator_symbol_summary_markdown(payload: Dict[str, Any]) -> str:
         text = ", ".join(f"{row.get('name')} ({row.get('count')})" for row in rows[:3] if isinstance(row, dict))
         lines.append(f"- {label}: {text or '없음'}")
     lines.extend(_render_pattern_performance_lines(payload))
+    lines.extend(_render_quant_shadow_candidate_lines(payload))
 
     bias = memory.get("bias_recommendation") if isinstance(memory.get("bias_recommendation"), dict) else {}
     if bias or risk_notes:

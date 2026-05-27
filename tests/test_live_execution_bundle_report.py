@@ -206,7 +206,50 @@ def test_live_execution_bundle_report_background_job_paths_default_to_repo_root(
     assert mod._background_job_queue_path() == mod.ROOT / "reports" / "runtime" / "intraday_trade_report_bundle.queue.json"
 
 
-def test_live_execution_bundle_report_spawn_followup_uses_script_wrapper_and_repo_root(
+def test_align_sell_run_bundles_with_broker_fill_truth_marks_numeric_kiwoom_sell(monkeypatch) -> None:
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_execution_details_from_bundle",
+        lambda bundle, context=None: {
+            "order_id": "0113162",
+            "filled_qty": 5,
+            "filled_price": 191000,
+            "broker_truth_source": "kiwoom.order_status",
+            "broker_truth_attempted": True,
+        },
+    )
+    run_bundles = {
+        "run-sell": {
+            "execution": {
+                "action": "SELL",
+                "symbol": "009150",
+                "qty": 5,
+                "ord_no": "0113162",
+                "ts": "2026-05-22T03:01:58+00:00",
+            }
+        }
+    }
+
+    out = runner_mod._align_sell_run_bundles_with_broker_fill_truth(
+        day="2026-05-22",
+        run_snapshots=[
+            {
+                "run_id": "run-sell",
+                "ts_start": "2026-05-22T03:01:58+00:00",
+                "symbol": "009150",
+                "execution_action": "SELL",
+            }
+        ],
+        run_bundles=run_bundles,
+    )
+
+    assert out["run-sell"]["lifecycle_fill_truth_required"] is True
+    assert out["run-sell"]["lifecycle_fill_truth_confirmed"] is True
+    assert out["run-sell"]["lifecycle_fill_truth_source"] == "kiwoom.order_status"
+    assert out["run-sell"]["execution_details"]["filled_price"] == 191000
+
+
+def test_live_execution_bundle_report_spawn_followup_uses_module_entrypoint_and_repo_root(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -247,7 +290,7 @@ def test_live_execution_bundle_report_spawn_followup_uses_script_wrapper_and_rep
     assert out["pid"] == 42424
     cmd = list(captured["cmd"])
     assert cmd[0].endswith("python.exe") or cmd[0].endswith("python")
-    assert cmd[1] == str(mod.ROOT / "scripts" / "run_live_execution_bundle_report.py")
+    assert cmd[1:3] == ["-m", "scripts.run_live_execution_bundle_report"]
     assert captured["cwd"] == str(mod.ROOT)
     assert captured["env"]["INTRADAY_TRADE_REPORT_PARENT_SPAWN"] == "1"
 

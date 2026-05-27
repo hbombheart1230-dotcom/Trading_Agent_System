@@ -23,6 +23,7 @@ def evaluate_entry_guard(
     entry_intent_cooldown_sec: int,
     cooldown_until: int,
     now_epoch: int,
+    forced_entry_block_reason: str = "",
 ) -> Dict[str, Any]:
     out_entry = dict(entry_info or {})
     guard_blocked = False
@@ -32,7 +33,12 @@ def evaluate_entry_guard(
     buy_blocked_same_symbol = False
     buy_blocked_pending_buy = False
 
-    if selected_already_held:
+    forced_reason = str(forced_entry_block_reason or "").strip()
+    if forced_reason:
+        guard_blocked = True
+        guard_reason = forced_reason
+        buy_blocked_open_position = True
+    elif selected_already_held:
         guard_blocked = True
         guard_reason = "same_symbol_position_open"
         buy_blocked_open_position = True

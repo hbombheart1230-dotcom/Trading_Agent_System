@@ -45,6 +45,8 @@ def truth_source_label(
     metadata_value: Callable[[Any], str],
 ) -> str:
     lowered = clip(value, 80).lower()
+    if lowered == "kiwoom.ka10170":
+        return "키움 당일매매일지 기준(ka10170)"
     return {
         "broker_fill": "브로커 체결가 기준",
         "monitor_mark": "모니터 관측값 기준",

@@ -314,6 +314,23 @@ def test_monitor_exit_cooldown_suppresses_duplicate_sell_intents(monkeypatch):
     assert "sell_guard_pending_exit_lock" in reason
 
 
+def test_monitor_eod_flat_overrides_pending_exit_lock(monkeypatch):
+    state = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=300, confirm_ticks=1)
+    state["tick_ts"] = 1779431100  # 2026-05-22 15:25:00 KST, Friday closeout window.
+    state["selected"]["price"] = 70000.0
+    state["_monitor_pending_exit_lock"] = {"005930": 1779431400}
+    state["policy"] = {"use_exit_policy": True, "exit_policy": {"use_eod_flat": True, "eod_flat_cutoff_min": 10}}
+    state["market_context"] = {"minutes_to_close": 5}
+
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert (out.get("monitor_exit") or {}).get("reason") == "eod_flat"
+    assert (out.get("monitor_exit") or {}).get("sell_guard_blocked") is False
+
+
 def test_monitor_exit_cooldown_applies_after_position_closed(monkeypatch):
     s1 = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=300, confirm_ticks=1)
     s1["tick_ts"] = 1772850000
@@ -455,6 +472,47 @@ def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monke
     assert "selected.expected_move_pct" in str(entry_cost_filter.get("estimated_gross_edge_source") or "")
     assert intents[0]["meta"]["cost_adjusted_edge_ok"] is True
     assert isinstance(intents[0]["meta"]["entry_cost_filter"], dict)
+
+
+def test_monitor_blocks_new_buy_when_overnight_carry_recovery_pending(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("RISK_MAX_POSITIONS", "3")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    state = {
+        "tick_ts": 1779747900,  # 2026-05-26 09:05:00 KST.
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "expected_move_pct": 0.018,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": _entry_breakout_rows()},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [
+                {
+                    "symbol": "000660",
+                    "qty": 1,
+                    "avg_price": 1936000.0,
+                    "position_entry_epoch": 1779413796,
+                }
+            ],
+        },
+        "policy": _policy_with_entry_cooldown(
+            0,
+            base={"entry_cost_filter": {"require_directional_edge_evidence": True}},
+        ),
+    }
+
+    out = monitor_node(state)
+
+    assert out.get("intents") == []
+    monitor = out.get("monitor") or {}
+    assert monitor.get("entry_guard_reason") == "overnight_carry_recovery_pending"
+    assert monitor.get("buy_blocked_open_position") is True
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "overnight_carry_recovery_pending"
 
 
 def test_monitor_blocks_buy_when_cost_adjusted_edge_is_not_enough(monkeypatch):

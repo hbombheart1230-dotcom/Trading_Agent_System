@@ -29,6 +29,8 @@ def price_truth_source_label(source: Any) -> str:
 def pnl_truth_source_label(source: Any) -> str:
     token = _clip(source, max_len=120)
     token_lower = token.lower()
+    if token_lower == "kiwoom.ka10170":
+        return "키움 당일매매일지 기준(ka10170)"
     mapping = {
         "kiwoom.ka10077": "키움 당일 실현손익 기준(ka10077)",
         "broker_fill_account_snapshot_estimate": "브로커 체결가와 계좌 평가손익 역산 기준",

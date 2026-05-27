@@ -101,6 +101,21 @@ def test_entry_quant_enforcement_ignores_non_promoted_blockers():
     assert out["matched_blockers"] == []
 
 
+def test_entry_quant_enforcement_always_enforces_cost_edge_even_if_config_omits_it():
+    out = build_entry_quant_enforcement(
+        {
+            "decision": "block_recommended",
+            "blockers": ["cost_edge_fail"],
+        },
+        mode="enforce",
+        enforced_blockers="volume_confirmation_missing",
+    )
+
+    assert out["blocked"] is True
+    assert out["matched_blockers"] == ["cost_edge_fail"]
+    assert out["reason"] == "quant_entry_block:cost_edge_fail"
+
+
 def test_exit_quant_decision_flags_early_confirmation_pending():
     out = build_exit_quant_decision(
         {

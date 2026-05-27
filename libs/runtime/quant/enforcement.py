@@ -10,6 +10,7 @@ DEFAULT_ENTRY_ENFORCED_BLOCKERS = (
     "directional_edge_evidence_missing",
     "volume_confirmation_missing",
 )
+MANDATORY_ENTRY_ENFORCED_BLOCKERS = ("cost_edge_fail",)
 
 
 def _text(value: Any) -> str:
@@ -38,7 +39,9 @@ def _csv_set(value: Any) -> set[str]:
 
 def _enforced_blockers(value: Any = None) -> set[str]:
     configured = _csv_set(value or os.getenv("QUANT_ENTRY_ENFORCED_BLOCKERS"))
-    return configured or set(DEFAULT_ENTRY_ENFORCED_BLOCKERS)
+    blockers = configured or set(DEFAULT_ENTRY_ENFORCED_BLOCKERS)
+    blockers.update(MANDATORY_ENTRY_ENFORCED_BLOCKERS)
+    return blockers
 
 
 def build_entry_quant_enforcement(
@@ -63,4 +66,3 @@ def build_entry_quant_enforcement(
         "source_decision": _text(decision.get("decision")),
         "behavior_effect": "entry_guard_enforced" if enforce else "observation_only",
     }
-

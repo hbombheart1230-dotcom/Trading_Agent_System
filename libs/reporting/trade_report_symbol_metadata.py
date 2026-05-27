@@ -13,12 +13,17 @@ SYMBOL_NAME_FALLBACKS: Dict[str, str] = {
     "005930": "삼성전자",
     "005935": "삼성전자우",
     "006345": "대원전선우",
+    "009150": "삼성전기",
+    "011930": "신성이엔지",
     "035420": "NAVER",
+    "046970": "우리로",
+    "062970": "한국첨단소재",
     "073490": "이노와이어리스",
     "090710": "휴림로봇",
     "102120": "어보브반도체",
     "114800": "KODEX 인버스",
     "122630": "KODEX 레버리지",
+    "126340": "비나텍",
     "233740": "KODEX 코스닥150레버리지",
     "252670": "KODEX 200선물인버스2X",
     "252710": "TIGER 200선물인버스2X",
@@ -111,6 +116,22 @@ def looks_like_symbol_name(candidate: str, symbol: str) -> bool:
     if not text or text == str(symbol or "").strip() or re.fullmatch(r"\d{6}", text):
         return False
     lowered = text.lower()
+    if re.fullmatch(r"[a-z][a-z0-9_]{8,}", lowered) and any(
+        token in lowered
+        for token in (
+            "_entry",
+            "_pullback",
+            "_structure",
+            "_confirmation",
+            "_breakout",
+            "_reclaim",
+            "_vwap",
+            "_volume",
+            "_reason",
+            "_ready",
+        )
+    ):
+        return False
     if any(
         token in lowered
         for token in (
@@ -127,6 +148,9 @@ def looks_like_symbol_name(candidate: str, symbol: str) -> bool:
             "best score",
             "total score",
             "composite score",
+            "structure_above_vwap",
+            "volume_confirmation",
+            "entry_reason",
         )
     ):
         return False
@@ -250,6 +274,10 @@ def infer_symbol_name_from_report_text(report: Dict[str, Any], symbol: str, *, m
         if candidate_kind == "headline":
             continue
         headline = str(prefix.group(1) or "").strip()
+        name_prefix = re.split(r"[,·/]|[↑↓▲▼]", headline)[0]
+        name_prefix = re.sub(r"\s+", " ", name_prefix).strip(" ,;:-")
+        if looks_like_symbol_name(name_prefix, target):
+            return clip_text(name_prefix, 80)
         if "…" in headline:
             headline = headline.rsplit("…", 1)[-1]
         elif "..." in headline:

@@ -14,7 +14,7 @@ _STRING_TS_RE = re.compile(r'"ts"\s*:\s*"(\d{4}-\d{2}-\d{2})')
 
 def event_ts(row: Dict[str, Any]) -> Any:
     payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-    return row.get("ts") or payload.get("ts")
+    return row.get("ts") or row.get("timestamp") or payload.get("ts") or payload.get("timestamp")
 
 
 def to_epoch(ts: Any) -> int:
@@ -98,6 +98,27 @@ def _cache_is_valid(path: Path, day: str, cache_path: Path, meta_path: Path) -> 
     )
 
 
+def _cache_append_offset(path: Path, day: str, cache_path: Path, meta_path: Path) -> int:
+    if not cache_path.exists() or not meta_path.exists():
+        return -1
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return -1
+    if not isinstance(meta, dict):
+        return -1
+    source = _source_signature(path)
+    cached_size = int(meta.get("source_size") or 0)
+    if (
+        str(meta.get("day") or "") != str(day or "")
+        or str(meta.get("source_path") or "") != str(Path(path).resolve())
+        or cached_size <= 0
+        or int(source.get("source_size") or 0) <= cached_size
+    ):
+        return -1
+    return cached_size
+
+
 def _iter_cached_events(cache_path: Path) -> Iterable[Dict[str, Any]]:
     def _gen() -> Iterable[Dict[str, Any]]:
         with cache_path.open("r", encoding="utf-8") as handle:
@@ -111,6 +132,62 @@ def _iter_cached_events(cache_path: Path) -> Iterable[Dict[str, Any]]:
                     continue
                 if isinstance(row, dict):
                     yield row
+
+    return _gen()
+
+
+def _write_cache_meta(source_path: Path, day: str, meta_path: Path) -> None:
+    signature = _source_signature(source_path)
+    meta = {
+        "day": day,
+        "source_path": str(source_path.resolve()),
+        "source_size": int(signature.get("source_size") or 0),
+        "source_mtime_ns": int(signature.get("source_mtime_ns") or 0),
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _iter_cached_events_with_append(
+    path: Path,
+    day: str,
+    cache_path: Path,
+    meta_path: Path,
+    *,
+    source_offset: int,
+) -> Iterable[Dict[str, Any]]:
+    def _gen() -> Iterable[Dict[str, Any]]:
+        yield from _iter_cached_events(cache_path)
+        source_path = Path(path)
+        completed = False
+        try:
+            with source_path.open("r", encoding="utf-8") as source, cache_path.open("a", encoding="utf-8") as cache:
+                source.seek(source_offset)
+                for raw in source:
+                    line = raw.strip()
+                    if not line or not _raw_line_can_match_day(line, day):
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    row_day = utc_day(event_ts(row))
+                    if row_day and row_day != day:
+                        continue
+                    cache.write(line + "\n")
+                    yield row
+            _write_cache_meta(source_path, day, meta_path)
+            completed = True
+        finally:
+            if not completed:
+                # Leave the stale meta in place so the next read rebuilds rather than
+                # trusting a partially appended cache.
+                try:
+                    meta_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     return _gen()
 
@@ -140,16 +217,8 @@ def _iter_source_events_with_cache(path: Path, day: str, cache_path: Path, meta_
                         continue
                     cache.write(line + "\n")
                     yield row
-            signature = _source_signature(source_path)
-            meta = {
-                "day": day,
-                "source_path": str(source_path.resolve()),
-                "source_size": int(signature.get("source_size") or 0),
-                "source_mtime_ns": int(signature.get("source_mtime_ns") or 0),
-                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            }
             tmp_path.replace(cache_path)
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_cache_meta(source_path, day, meta_path)
             completed = True
         finally:
             if not completed:
@@ -171,6 +240,15 @@ def iter_jsonl_events(path: Path, *, day: str | None = None) -> Iterable[Dict[st
         cache_path, meta_path = _cache_paths(path, target_day)
         if _cache_is_valid(path, target_day, cache_path, meta_path):
             return _iter_cached_events(cache_path)
+        append_offset = _cache_append_offset(path, target_day, cache_path, meta_path)
+        if append_offset >= 0:
+            return _iter_cached_events_with_append(
+                path,
+                target_day,
+                cache_path,
+                meta_path,
+                source_offset=append_offset,
+            )
         try:
             return _iter_source_events_with_cache(path, target_day, cache_path, meta_path)
         except Exception:

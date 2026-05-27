@@ -97,6 +97,57 @@ class KiwoomDayPnlReader:
             "raw": payload,
         }
 
+    def get_day_trade_diary(self, *, day: str, symbol: str = "") -> Dict[str, Any]:
+        api_id = require_api(self.catalog, "ka10170", "당일매매일지요청")
+        payload = self.client.call(
+            api_id,
+            {
+                "base_dt": str(day).replace("-", ""),
+                "ottks_tp": "1",
+                "ch_crd_tp": "0",
+            },
+        )
+        wanted_symbol = normalize_symbol(symbol) if str(symbol or "").strip() else ""
+        rows_raw = payload.get("tdy_trde_diary")
+        rows: List[Dict[str, Any]] = []
+        if isinstance(rows_raw, list):
+            for row in rows_raw:
+                if not isinstance(row, dict):
+                    continue
+                row_symbol = normalize_symbol(first_present(row, ["stk_cd", "symbol"]))
+                if wanted_symbol and row_symbol != wanted_symbol:
+                    continue
+                raw_prft_rt = first_present(row, ["prft_rt", "pnl_ratio"])
+                rows.append(
+                    {
+                        "symbol": row_symbol,
+                        "name": str(first_present(row, ["stk_nm", "name"]) or "").strip(),
+                        "buy_avg_price": to_float(first_present(row, ["buy_avg_pric", "buy_price"])),
+                        "buy_qty": to_int(first_present(row, ["buy_qty"])),
+                        "sell_avg_price": to_float(first_present(row, ["sel_avg_pric", "filled_price", "sell_price"])),
+                        "sell_qty": to_int(first_present(row, ["sell_qty", "filled_qty"])),
+                        "fee_tax": to_int(first_present(row, ["cmsn_alm_tax", "fee_tax"])),
+                        "realized_pnl": to_float(first_present(row, ["pl_amt", "realized_pnl"])),
+                        "sell_amount": to_float(first_present(row, ["sell_amt"])),
+                        "buy_amount": to_float(first_present(row, ["buy_amt"])),
+                        "pnl_ratio": _normalize_percent(raw_prft_rt) if raw_prft_rt not in (None, "") else None,
+                        "raw": row,
+                    }
+                )
+        return {
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "day": str(day).replace("-", ""),
+            "total_sell_amount": to_float(first_present(payload, ["tot_sell_amt"])),
+            "total_buy_amount": to_float(first_present(payload, ["tot_buy_amt"])),
+            "total_fee_tax": to_int(first_present(payload, ["tot_cmsn_tax"])),
+            "total_settlement_amount": to_float(first_present(payload, ["tot_exct_amt"])),
+            "total_realized_pnl": to_float(first_present(payload, ["tot_pl_amt"])),
+            "total_pnl_ratio": _normalize_percent(first_present(payload, ["tot_prft_rt"])),
+            "rows": rows,
+            "source": "kiwoom.ka10170",
+            "raw": payload,
+        }
+
     def get_account_profit_rate_rows(self) -> Dict[str, Any]:
         api_id = require_api(self.catalog, "ka10085", "계좌수익률요청")
         payload = self.client.call(api_id, {})

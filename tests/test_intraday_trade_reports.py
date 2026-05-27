@@ -655,6 +655,7 @@ def test_intraday_trade_reports_queues_background_job_after_timeout(tmp_path: Pa
     out = generate_intraday_trade_artifacts(
         {
             "run_id": "run-timeout",
+            "ts": "2026-05-22T01:25:55+00:00",
             "execution": {
                 "ok": True,
                 "allowed": True,
@@ -677,6 +678,7 @@ def test_intraday_trade_reports_queues_background_job_after_timeout(tmp_path: Pa
     assert "--max-runs" not in flat_cmd
     assert "--target-run-id run-timeout" in flat_cmd
     assert "--target-symbol 069500" in flat_cmd
+    assert "--day 2026-05-22" in flat_cmd
     assert "--role intraday_trade_report_bundle" in flat_cmd
 
 

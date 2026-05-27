@@ -63,7 +63,7 @@ def build_broker_cost_profile_from_execution_details(
 ) -> Dict[str, Any]:
     details = dict(execution_details or {})
     source = str(details.get("pnl_truth_source") or details.get("broker_day_truth_source") or "").strip()
-    if source not in {"kiwoom.ka10077", "kiwoom.ka10085"}:
+    if source not in {"kiwoom.ka10170", "kiwoom.ka10077", "kiwoom.ka10085"}:
         return {}
 
     qty = _safe_int(details.get("filled_qty"))
