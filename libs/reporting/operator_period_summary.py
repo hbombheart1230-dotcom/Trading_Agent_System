@@ -30,6 +30,10 @@ from libs.reporting.quant_shadow_candidate_evaluation import (
     render_quant_shadow_candidate_evaluation_lines,
 )
 from libs.reporting.quant_tactic_report import quant_tactic_surface as build_quant_tactic_surface
+from libs.reporting.strategist_llm_evaluation import (
+    build_strategist_llm_evaluation,
+    render_strategist_llm_evaluation_lines,
+)
 
 
 _WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
@@ -313,6 +317,83 @@ def _load_state_snapshot(reports_root: Path) -> Tuple[Dict[str, Any], str]:
         if isinstance(payload, dict):
             return payload, str(path)
     return {}, ""
+
+
+def _normalize_symbol_code(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text.startswith("A") and len(text) == 7:
+        text = text[1:]
+    return text
+
+
+def _latest_account_snapshot_path(reports_root: Path, day: str | None) -> Path:
+    return Path(reports_root).parent / "data" / "logs" / "kiwoom_account_snapshots" / str(day or "").strip() / "latest.json"
+
+
+def _snapshot_position_symbols(snapshot: Dict[str, Any]) -> set[str]:
+    symbols: set[str] = set()
+    for call in list(snapshot.get("calls") or []):
+        if not isinstance(call, dict):
+            continue
+        api_id = str(call.get("api_id") or "").strip()
+        payload = call.get("payload") if isinstance(call.get("payload"), dict) else {}
+        rows: List[Any] = []
+        if api_id == "kt00018":
+            rows = list(payload.get("acnt_evlt_remn_indv_tot") or [])
+        elif api_id == "kt00004":
+            rows = list(payload.get("stk_acnt_evlt_prst") or [])
+        else:
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = _normalize_symbol_code(row.get("stk_cd"))
+            qty = _safe_int(row.get("rmnd_qty"))
+            if symbol and qty > 0:
+                symbols.add(symbol)
+    return symbols
+
+
+def _account_snapshot_closeout_reconciliation(reports_root: Path, day: str | None) -> Dict[str, Any]:
+    normalized_day = str(day or "").strip()[:10]
+    path = _latest_account_snapshot_path(reports_root, normalized_day)
+    snapshot = _read_json(path)
+    if not isinstance(snapshot, dict):
+        return {"available": False, "reason": "account_snapshot_missing", "path": str(path)}
+    generated_at = str(snapshot.get("generated_at") or "").strip()
+    generated_dt = _iso_to_kst_dt(generated_at)
+    generated_day = generated_dt.strftime("%Y-%m-%d") if generated_dt is not None else ""
+    after_closeout_window = False
+    if generated_dt is not None:
+        closeout_start = generated_dt.replace(hour=15, minute=20, second=0, microsecond=0)
+        after_closeout_window = bool(generated_dt >= closeout_start)
+    summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
+    ok_count = _safe_int(summary.get("ok_count"))
+    error_count = _safe_int(summary.get("error_count"))
+    api_call_count = _safe_int(summary.get("api_call_count"))
+    positions = _snapshot_position_symbols(snapshot)
+    fresh = bool(
+        normalized_day
+        and generated_day == normalized_day
+        and after_closeout_window
+        and api_call_count > 0
+        and ok_count > 0
+    )
+    return {
+        "available": True,
+        "fresh_after_closeout_window": fresh,
+        "path": str(path),
+        "snapshot_path": str(snapshot.get("path") or path),
+        "generated_at": generated_at,
+        "generated_at_kst": generated_dt.strftime("%Y-%m-%d %H:%M:%S KST") if generated_dt is not None else "",
+        "generated_day_kst": generated_day,
+        "after_closeout_window": after_closeout_window,
+        "api_call_count": api_call_count,
+        "ok_count": ok_count,
+        "error_count": error_count,
+        "position_symbols": sorted(positions),
+        "position_count": len(positions),
+    }
 
 
 def _residual_position_status(row: Dict[str, Any], decision: Dict[str, Any], closeout: Dict[str, Any]) -> str:
@@ -653,6 +734,13 @@ def _build_residual_positions_payload(*, reports_root: Path, day: str | None = N
         if isinstance(state.get("monitor_last_state_by_symbol"), dict)
         else {}
     )
+    account_snapshot_reconciliation = _account_snapshot_closeout_reconciliation(reports_root, day)
+    account_snapshot_positions = {
+        str(item or "").strip().upper()
+        for item in list(account_snapshot_reconciliation.get("position_symbols") or [])
+        if str(item or "").strip()
+    }
+    account_snapshot_fresh = bool(account_snapshot_reconciliation.get("fresh_after_closeout_window"))
     positions: List[Dict[str, Any]] = []
     reconciled_closed: List[Dict[str, Any]] = []
     for raw_row in raw_positions:
@@ -661,6 +749,20 @@ def _build_residual_positions_payload(*, reports_root: Path, day: str | None = N
         symbol = str(raw_row.get("symbol") or "").strip().upper()
         qty = _safe_int(raw_row.get("qty"))
         if not symbol or qty <= 0:
+            continue
+        if account_snapshot_fresh and symbol not in account_snapshot_positions:
+            reconciled_closed.append(
+                {
+                    "symbol": symbol,
+                    "trade_id": "",
+                    "lifecycle_bundle_path": "",
+                    "reason": "fresh_account_snapshot_position_absent_after_closeout",
+                    "exit_reason": "latest Kiwoom account snapshot has no remaining position after 15:20 closeout window",
+                    "exit_ts": str(account_snapshot_reconciliation.get("generated_at_kst") or ""),
+                    "exit_qty": qty,
+                    "source_path": str(account_snapshot_reconciliation.get("snapshot_path") or ""),
+                }
+            )
             continue
         sell_guard_reconciliation = _same_day_sell_guard_reconciliation(
             reports_root=reports_root,
@@ -737,6 +839,7 @@ def _build_residual_positions_payload(*, reports_root: Path, day: str | None = N
         "position_count": len(positions),
         "positions": positions,
         "reconciled_closed_positions": reconciled_closed,
+        "account_snapshot_reconciliation": account_snapshot_reconciliation,
         "closeout_state": {
             "mode": str(closeout.get("mode") or ""),
             "reason": str(closeout.get("reason") or ""),
@@ -1948,6 +2051,7 @@ def build_operator_period_summary(
         "pattern_performance": _pattern_performance_payload(rows),
         "quant_tactic_evaluation": build_quant_tactic_evaluation(rows),
         "quant_shadow_candidate_evaluation": build_quant_shadow_candidate_evaluation(shadow_payloads),
+        "strategist_llm_evaluation": build_strategist_llm_evaluation(rows, shadow_payloads),
         "symbol_summary": _symbol_rows(rows),
     }
     summary["operator_readout"] = _operator_readout(
@@ -2007,6 +2111,7 @@ def build_operator_daily_summary_artifact_payload(
         "pattern_performance": _pattern_performance_payload(rows),
         "quant_tactic_evaluation": build_quant_tactic_evaluation(rows),
         "quant_shadow_candidate_evaluation": build_quant_shadow_candidate_evaluation(shadow_payloads),
+        "strategist_llm_evaluation": build_strategist_llm_evaluation(rows, shadow_payloads),
         "symbol_summary": _symbol_rows(rows),
         "residual_positions": _build_residual_positions_payload(reports_root=reports_root, day=normalized_day),
     }
@@ -2063,6 +2168,7 @@ def build_operator_symbol_summary_artifact_payload(
             shadow_payloads,
             symbol=normalized_symbol,
         ),
+        "strategist_llm_evaluation": build_strategist_llm_evaluation(rows, shadow_payloads),
         "symbol_memory": {
             "available": bool(memory),
             "trade_stats": dict(memory.get("trade_stats") or {}) if isinstance(memory.get("trade_stats"), dict) else {},
@@ -2140,6 +2246,13 @@ def _render_quant_shadow_candidate_lines(payload: Dict[str, Any]) -> List[str]:
     return render_quant_shadow_candidate_evaluation_lines(shadow_eval)
 
 
+def _render_strategist_llm_evaluation_lines(payload: Dict[str, Any]) -> List[str]:
+    evaluation = payload.get("strategist_llm_evaluation")
+    if not isinstance(evaluation, dict):
+        return []
+    return render_strategist_llm_evaluation_lines(evaluation)
+
+
 def render_operator_period_summary_markdown(payload: Dict[str, Any]) -> str:
     period_type = str(payload.get("period_type") or "").strip().lower()
     period_label = "Weekly" if period_type == "weekly" else "Monthly"
@@ -2199,6 +2312,7 @@ def render_operator_period_summary_markdown(payload: Dict[str, Any]) -> str:
         lines.append(f"- {label}: {text or '없음'}")
     lines.extend(_render_pattern_performance_lines(payload))
     lines.extend(_render_quant_shadow_candidate_lines(payload))
+    lines.extend(_render_strategist_llm_evaluation_lines(payload))
 
     lines += ["", "---", "", "## 주요 종목", ""]
     if not symbols:
@@ -2287,6 +2401,23 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
         lines.append(f"{idx}. {item}")
 
     lines += ["", "---", "", "## 장마감 잔여 보유 종목", ""]
+    account_snapshot = (
+        residual.get("account_snapshot_reconciliation")
+        if isinstance(residual.get("account_snapshot_reconciliation"), dict)
+        else {}
+    )
+    if account_snapshot:
+        snapshot_status = (
+            "fresh_after_1520"
+            if bool(account_snapshot.get("fresh_after_closeout_window"))
+            else "stale_or_unavailable"
+        )
+        snapshot_time = str(account_snapshot.get("generated_at_kst") or "").strip()
+        snapshot_position_count = _safe_int(account_snapshot.get("position_count"))
+        lines.append(
+            f"- account snapshot: {snapshot_status} / positions {snapshot_position_count}"
+            + (f" / {snapshot_time}" if snapshot_time else "")
+        )
     if not bool(residual.get("available")):
         lines.append("- 상태 스냅샷을 읽지 못해 잔여 보유 종목을 확인하지 못했습니다.")
     elif not residual_positions:
@@ -2372,6 +2503,7 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
         lines.append(f"- {label}: {text or '없음'}")
     lines.extend(_render_pattern_performance_lines(payload))
     lines.extend(_render_quant_shadow_candidate_lines(payload))
+    lines.extend(_render_strategist_llm_evaluation_lines(payload))
 
     lines += ["", "---", "", "## 종목별 요약", ""]
     if not symbols:
@@ -2460,6 +2592,7 @@ def render_operator_symbol_summary_markdown(payload: Dict[str, Any]) -> str:
         lines.append(f"- {label}: {text or '없음'}")
     lines.extend(_render_pattern_performance_lines(payload))
     lines.extend(_render_quant_shadow_candidate_lines(payload))
+    lines.extend(_render_strategist_llm_evaluation_lines(payload))
 
     bias = memory.get("bias_recommendation") if isinstance(memory.get("bias_recommendation"), dict) else {}
     if bias or risk_notes:

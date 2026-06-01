@@ -101,9 +101,11 @@ Last updated: 2026-05-27
   - Operator daily/weekly/monthly/symbol summaries now surface Q8 shadow
     candidate counts, roles, reasons, tactic IDs, suitability tiers, cost-floor
     states, and failure axes.
-  - Operator summaries also expose a recommendation-only Q8 promotion candidate
-    among cost-edge, runner-up, and entry-guard based on shadow candidate
-    blocker counts.
+  - Operator summaries expose a Q8 promotion candidate among cost-edge,
+    runner-up, and entry-guard based on shadow candidate blocker counts.
+    If the candidate is already enforced in live runtime, the summary must
+    show `already_promoted_monitor_hard_gate` instead of recommending a
+    duplicate promotion.
   - Added observation-only `opening_momentum_probe_shadow` so strong opening
     momentum opportunities can be evaluated without changing live buy behavior.
   - Added observation-only `opening_largecap_surge_shadow` for the 09:00-09:20
@@ -159,8 +161,12 @@ behavior.
      `runner_up_skipped`, `opening_largecap_watchlist`.
    - Operator summary exposes shadow candidate counts by role, reason, tactic
      ID, tactic suitability, cost-floor state, and primary failure axis.
-   - Operator summary also exposes `promotion_candidate`, but it is
-     `recommendation_only` and does not change live behavior.
+   - Operator summary also exposes `promotion_candidate` and
+     `shadow_readiness` separately from live-trade readiness.
+   - Shadow-only promotion is allowed for pre-entry filters whose outcome is
+     fully observable before order placement. Cost-edge is the first such
+     candidate: it can be promoted from a sufficient shadow sample even when
+     actual closed-trade performance samples are still insufficient.
    - Opening momentum probe shadow is tracked separately from normal
      `would_enter`, so Q8 can compare missed opening momentum against late
      pullback entries without mixing policies.
@@ -169,7 +175,12 @@ behavior.
      live orders or weakening the normal scanner rank.
    - Current behavior effect: `observation_only`.
 4. Behavior promotion.
-   - Promote one behavior at a time only after enough valid samples exist.
+   - Promote one behavior at a time only after enough valid samples exist for
+     the relevant evidence type.
+   - `live_trade_readiness` is required for claims about realized win rate,
+     average PnL, exits, and holding windows.
+   - `shadow_readiness` is enough for pre-entry guard promotion when the guard
+     only depends on fields known before a BUY order.
    - Current first candidates are cost-edge filter, runner-up independent
      suitability, and entry guard hard veto.
 

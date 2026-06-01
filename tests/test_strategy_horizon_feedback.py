@@ -58,6 +58,34 @@ def test_build_exit_vs_strategy_intent_marks_non_hard_early_exit_as_unproven() -
     assert out["exit_alignment"] == "early_unproven"
 
 
+def test_exit_vs_strategy_intent_does_not_treat_intraday_low_break_deep_as_hard_exit() -> None:
+    state = {
+        "strategist_output": {
+            "strategy_horizon_feedback": {
+                "strategy_horizon": "intraday",
+                "expected_hold_window": {"min_sec": 60, "target_sec": 300, "max_sec": 900},
+            }
+        }
+    }
+
+    out = build_exit_vs_strategy_intent(
+        state=state,
+        exit_info={
+            "triggered": True,
+            "reason": "intraday_low_break",
+            "position_age_seconds": 32,
+            "hard_exit": True,
+            "protective_exit_hard_invalidation": True,
+            "protective_exit_hard_invalidation_reason": "intraday_low_break_deep:0.0065",
+        },
+        sell_submitted=True,
+    )
+
+    assert out["early_exit_flag"] is True
+    assert out["hard_exit"] is False
+    assert out["exit_alignment"] == "early_unproven"
+
+
 def test_build_commander_horizon_policy_caps_long_horizon_in_live_validation() -> None:
     proposal = build_strategy_horizon_feedback(
         {"strategy_horizon": "1_2day_swing"},

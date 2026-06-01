@@ -1273,6 +1273,11 @@ def evaluate_exit_policy(
         out["prior_bar_low"] = float(prior_bar_low)
         if prior_bar_low > 0.0 and technical_px <= float(prior_bar_low * (1.0 - intraday_low_break_pct)):
             hard_invalidation = _protective_exit_hard_invalidation("intraday_low_break")
+            hard_invalidation_reason = str(out.get("protective_exit_hard_invalidation_reason") or "")
+            explicit_hard_invalidation = bool(
+                hard_invalidation
+                and not hard_invalidation_reason.startswith("intraday_low_break_deep:")
+            )
             min_hold_required = int(out["thresholds"].get("intraday_low_break_min_hold_sec") or 60)
             confirm_bars_required = int(out["thresholds"].get("intraday_low_break_confirm_bars") or 2)
             consecutive_bars = max(0, int(_to_float(p.get("intraday_low_break_consecutive_bars"), 0.0)))
@@ -1280,7 +1285,7 @@ def evaluate_exit_policy(
             volume_confirmed = _to_bool(p.get("intraday_low_break_volume_confirmed"), False)
             confirmation_required = _to_bool(p.get("intraday_low_break_confirmation_required"), True)
             confirmed = bool(
-                hard_invalidation
+                explicit_hard_invalidation
                 or not confirmation_required
                 or consecutive_bars >= confirm_bars_required
                 or (low_break_confirmed and volume_confirmed)
@@ -1288,7 +1293,7 @@ def evaluate_exit_policy(
                 or _to_bool(p.get("intraday_low_break_hard_invalidation"), False)
             )
             early_hold_blocked = bool(
-                not hard_invalidation
+                not explicit_hard_invalidation
                 and min_hold_required > 0
                 and hs is not None
                 and int(hs) < int(min_hold_required)

@@ -1429,6 +1429,62 @@ def test_compact_strategist_llm_payload_limits_read_model_and_operator_summary_b
     assert len(encoded) < 8000
 
 
+def test_compact_strategist_llm_payload_surfaces_q8_tactic_lane_guidance() -> None:
+    payload = {
+        "memory_packets": {
+            "daily_strategy_memory": {
+                "status": "ok",
+                "operator_summary": {
+                    "available": True,
+                    "metrics": {"trade_count": 7, "win_rate": 0.142857, "avg_return_pct": -0.33},
+                    "strategist_llm_evaluation": {
+                        "lane_selection_quality": "weak_lane_selection",
+                        "selected_primary_tactic": "vwap_reclaim_pullback",
+                        "selected_primary_lane": "vwap_reclaim",
+                        "overused_lane_or_tactic": "vwap_reclaim_pullback",
+                        "underused_shadow_lane": "breakout",
+                    },
+                    "quant_shadow_candidate_evaluation": {
+                        "shadow_readiness": {
+                            "status": "ready",
+                            "action": "promote_shadow_validated_guard",
+                            "candidate": "cost_edge",
+                            "confidence": "medium",
+                            "promotion_scope": "pre_entry_filter",
+                        },
+                        "promotion_candidate": {
+                            "candidate": "cost_edge",
+                            "confidence": "medium",
+                            "recommended_action": "promote_shadow_validated_guard",
+                            "counts": {"cost_edge": 308, "runner_up": 8, "entry_guard": 227},
+                        },
+                        "entry_shape_diagnostics": {
+                            "pullback_or_vwap_blocked_count": 681,
+                            "breakout_ready_like_count": 26,
+                            "breakout_not_ready_count": 25,
+                        },
+                    },
+                },
+            }
+        }
+    }
+
+    compact = _build_compact_strategist_llm_payload(payload)
+    guidance = compact["memory_packets"]["daily_strategy_memory"]["operator_summary"]["tactic_lane_guidance"]
+
+    assert guidance["selected_primary_tactic"] == "vwap_reclaim_pullback"
+    assert guidance["underused_shadow_lane"] == "breakout"
+    assert guidance["shadow_readiness"]["action"] == "promote_shadow_validated_guard"
+    assert guidance["promotion_candidate"]["candidate"] == "cost_edge"
+    assert guidance["promotion_counts"]["cost_edge"] == 308
+    assert "downweight_repeated_vwap_reclaim_pullback_unless_cost_volume_and_maturity_are_ready" in guidance[
+        "strategist_directives"
+    ]
+    assert "explicitly_score_breakout_or_volume_breakout_against_pullback_before_selecting_tactic" in guidance[
+        "strategist_directives"
+    ]
+
+
 def test_stage1_compact_payload_excludes_symbol_memory_until_selected_refresh() -> None:
     payload = {
         "read_model_facts": {

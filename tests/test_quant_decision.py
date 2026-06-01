@@ -60,6 +60,30 @@ def test_lower_vwap_probe_downgrades_pullback_maturity_to_warning():
     assert "pullback_not_mature" in out["warnings"]
 
 
+def test_lower_vwap_probe_weak_suitability_blocks_entry():
+    out = build_entry_quant_decision(
+        {
+            "reason": "lower_vwap_rebound_probe_entry",
+            "cost_adjusted_edge_ok": True,
+            "entry_cost_filter": {"passed": True},
+            "triggered": True,
+        },
+        selected={"playbook": "pullback", "tactic_suitability": {"score": 0.48, "tier": "weak"}},
+        factor_snapshot={
+            "source": "quant_monitor_entry_factor_snapshot.v1",
+            "tactic_id": "lower_vwap_rebound_probe",
+            "factors": {"cost_floor_state": "met"},
+            "missing": [],
+        },
+        tactic_id="lower_vwap_rebound_probe",
+        playbook="pullback",
+    )
+
+    assert out["decision"] == "block_recommended"
+    assert "weak_probe_tactic_suitability" in out["blockers"]
+    assert "weak_tactic_suitability" in out["warnings"]
+
+
 def test_entry_quant_enforcement_blocks_only_configured_hard_blockers():
     out = build_entry_quant_enforcement(
         {
@@ -165,3 +189,30 @@ def test_exit_quant_decision_allows_hard_exit_even_when_early():
     assert out["hard_exit"] is True
     assert out["hold_window_mismatch"] is False
     assert "hard_exit_allowed" in out["positive_reasons"]
+
+
+def test_exit_quant_decision_does_not_treat_intraday_low_break_deep_as_hard_exit():
+    out = build_exit_quant_decision(
+        {
+            "triggered": True,
+            "reason": "intraday_low_break",
+            "position_age_seconds": 32,
+            "hard_exit": True,
+            "protective_exit_hard_invalidation": True,
+            "protective_exit_hard_invalidation_reason": "intraday_low_break_deep:0.0065",
+            "intraday_low_break_confirmation_required": True,
+            "intraday_low_break_confirmation_pending": True,
+            "intraday_low_break_confirmed": False,
+            "exit_vs_strategy_intent": {
+                "expected_hold_window": {"min_sec": 60, "target_sec": 300, "max_sec": 900},
+            },
+        },
+        state={"strategy_horizon_feedback": {"expected_hold_window": {"min_sec": 60, "target_sec": 300, "max_sec": 900}}},
+        tactic_id="lower_vwap_rebound_probe",
+        playbook="pullback",
+    )
+
+    assert out["decision"] == "confirm_before_exit_recommended"
+    assert out["hard_exit"] is False
+    assert out["confirmation_pending"] is True
+    assert "exit_confirmation_pending" in out["blockers"]

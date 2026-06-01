@@ -615,9 +615,19 @@ def extract_strategy_horizon_feedback_from_state(state: Mapping[str, Any] | None
 
 
 def _is_hard_exit(reason: str, exit_info: Mapping[str, Any]) -> bool:
-    if bool(exit_info.get("hard_exit")) or bool(exit_info.get("emergency_exit")):
-        return True
     reason_text = str(reason or "").strip().lower()
+    confirmation_style_reason = reason_text.replace(" ", "_") in {"intraday_low_break", "vwap_breakdown", "vwap_exit"}
+    hard_invalidation_reason = str(exit_info.get("protective_exit_hard_invalidation_reason") or "")
+    metric_only_protective_hard = bool(
+        confirmation_style_reason
+        and hard_invalidation_reason.startswith(("intraday_low_break_deep:", "vwap_breakdown_deep:"))
+    )
+    if bool(exit_info.get("emergency_exit")):
+        return True
+    if bool(exit_info.get("protective_exit_hard_invalidation")) and not metric_only_protective_hard:
+        return True
+    if bool(exit_info.get("hard_exit")) and not confirmation_style_reason:
+        return True
     return any(marker in reason_text for marker in _HARD_EXIT_REASON_MARKERS)
 
 

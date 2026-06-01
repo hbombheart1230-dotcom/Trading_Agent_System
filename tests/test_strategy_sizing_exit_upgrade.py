@@ -307,6 +307,25 @@ def test_exit_policy_intraday_low_break_waits_for_min_hold_or_confirmation():
     assert out["hold_block_reason"] == "intraday_low_break_min_hold_pending"
 
 
+def test_exit_policy_intraday_low_break_deep_still_waits_for_min_hold():
+    out = evaluate_exit_policy(
+        price=98.2,
+        avg_price=100.0,
+        qty=1,
+        hold_sec=32,
+        policy={
+            "prior_bar_low": 99.0,
+            "intraday_low_break_pct": 0.001,
+            "take_profit_pct": 0.0,
+        },
+    )
+
+    assert out["triggered"] is False
+    assert out["intraday_low_break_min_hold_blocked"] is True
+    assert str(out.get("protective_exit_hard_invalidation_reason") or "").startswith("intraday_low_break_deep:")
+    assert out["hold_block_reason"] == "intraday_low_break_min_hold_pending"
+
+
 def test_exit_policy_trend_breakdown_triggers():
     out = evaluate_exit_policy(
         price=100.5,
@@ -739,7 +758,7 @@ def test_exit_policy_vwap_breakdown_exits_after_two_bars():
     assert out["vwap_breakdown_confirmed"] is True
 
 
-def test_exit_policy_vwap_breakdown_exits_on_volume_or_low_break_confirmation():
+def test_exit_policy_vwap_breakdown_waits_for_single_confirmation_signal():
     low_break = evaluate_exit_policy(
         price=100.8,
         avg_price=100.0,
@@ -767,10 +786,32 @@ def test_exit_policy_vwap_breakdown_exits_on_volume_or_low_break_confirmation():
         },
     )
 
-    assert low_break["triggered"] is True
-    assert low_break["reason"] == "vwap_breakdown"
-    assert volume["triggered"] is True
-    assert volume["reason"] == "vwap_breakdown"
+    assert low_break["triggered"] is False
+    assert low_break["reason"] == "hold"
+    assert low_break["vwap_breakdown_confirmation_pending"] is True
+    assert volume["triggered"] is False
+    assert volume["reason"] == "hold"
+    assert volume["vwap_breakdown_confirmation_pending"] is True
+
+
+def test_exit_policy_vwap_breakdown_exits_on_volume_and_low_break_confirmation():
+    out = evaluate_exit_policy(
+        price=100.8,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "take_profit_pct": 0.0,
+            "peak_price": 101.5,
+            "vwap_distance": -0.006,
+            "vwap_breakdown_pct": 0.005,
+            "vwap_breakdown_consecutive_bars": 1,
+            "vwap_breakdown_low_break_confirmed": True,
+            "vwap_breakdown_volume_confirmed": True,
+        },
+    )
+
+    assert out["triggered"] is True
+    assert out["reason"] == "vwap_breakdown"
 
 
 def test_exit_policy_cost_aware_floor_blocks_metric_hard_vwap_breakdown_on_small_profit():
@@ -881,7 +922,7 @@ def test_exit_policy_peak_drawdown_protects_cost_floor_runup_giveback():
     assert out["peak_drawdown_profit_protection_reason"] == "max_runup_crossed_cost_floor_then_gave_back"
 
 
-def test_exit_policy_cost_aware_floor_blocks_intraday_low_break_on_small_profit():
+def test_exit_policy_waits_for_intraday_low_break_confirmation_before_cost_floor_block():
     out = evaluate_exit_policy(
         price=100.4,
         avg_price=100.0,
@@ -897,7 +938,7 @@ def test_exit_policy_cost_aware_floor_blocks_intraday_low_break_on_small_profit(
 
     assert out["triggered"] is False
     assert out["reason"] == "hold"
+    assert out["intraday_low_break_confirmation_pending"] is True
     assert out["cost_aware_profit_floor_blocked"] is True
-    assert out["protective_exit_floor_blocked"] is True
-    assert out["protective_exit_floor_blocked_reason"] == "intraday_low_break"
-    assert out["hold_block_reason"] == "intraday_low_break:cost_aware_profit_floor_not_met"
+    assert out["protective_exit_floor_blocked"] is False
+    assert out["hold_block_reason"] == "intraday_low_break_confirmation_pending"

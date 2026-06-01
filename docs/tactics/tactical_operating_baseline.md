@@ -272,14 +272,39 @@ intent.
 
 ### Post-Q8 Candidate Behavior Patch: Cost Floor Hard Gate
 
-Promote `cost_floor_state=not_met` from reporting evidence to entry hard veto,
-unless an explicit commander override exists.
+Promoted. `cost_floor_state=not_met` / `cost_edge_fail` is a pre-entry hard
+veto, unless an explicit commander override exists.
 
-Required evidence before patch:
+Q8 now evaluates this on the shadow surface instead of waiting for actual
+closed-trade samples. That is intentional: cost-edge is known before order
+placement, so shadow candidates are valid evidence for whether the guard would
+have blocked weak entries.
+
+Required evidence for continued operation:
 
 - verify current monitor has cost floor state at entry time
 - verify BUY exceptions are documented in commander reason
 - verify trade report summary shows veto reason
+- daily summary shows `Q8 shadow readiness` and
+  `already_promoted_monitor_hard_gate` when the cost-edge shadow signal is
+  ready and the monitor hard gate is already active
+
+### Post-Q8 Strategist Lane Rebalance
+
+Promoted as strategist input guidance, not as a scanner/monitor override.
+
+When operator summary shows weak or poor `vwap_reclaim_pullback` lane
+selection and Q8 shadow diagnostics show breakout-ready-like candidates, the
+next strategist LLM payload must include `tactic_lane_guidance`:
+
+- downweight repeated `vwap_reclaim_pullback` unless cost, volume, and
+  pullback maturity are all ready
+- explicitly score `breakout` / `volume_breakout` against pullback before
+  choosing the tactical strategy
+- keep promoted cost-edge guard intact when Q8 shadow readiness recommends it
+
+Authority owner: strategist. Commander still controls policy application,
+scanner still selects candidates, and monitor still confirms entry/exit.
 
 ### Post-Q8 Candidate Behavior Patch: Human Chart Hard Veto
 

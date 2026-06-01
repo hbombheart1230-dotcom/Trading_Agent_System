@@ -325,6 +325,52 @@ def test_operator_daily_summary_surfaces_quant_shadow_candidates(tmp_path: Path)
     assert "Q8 promotion candidate" in markdown
 
 
+def test_operator_daily_summary_surfaces_strategist_llm_evaluation(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-05-27"
+    _write_json(
+        reports / "operator_summary" / "symbols" / "005930" / "trade_history.json",
+        [
+            {
+                "trade_id": f"TRD_20260527_005930_{idx:02d}",
+                "date": day,
+                "symbol": "005930",
+                "status": "closed",
+                "last_status": "closed",
+                "last_action": "SELL",
+                "tactical_strategy": "vwap_reclaim_pullback",
+                "quant_tactic_id": "vwap_reclaim_pullback",
+                "result_pct": -1.0,
+            }
+            for idx in range(1, 4)
+        ],
+    )
+    _write_json(
+        tmp_path / "data" / "logs" / "quant_shadow_candidates" / day / "sample.json",
+        {
+            "candidates": [
+                {
+                    "symbol": "000660",
+                    "reason": "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation",
+                    "primary_failure_axis": "confirmed_entry",
+                    "would_enter": True,
+                    "opening_largecap_surge_would_enter": True,
+                }
+            ]
+        },
+    )
+
+    md, _json, daily = generate_operator_daily_summary_artifact(reports_root=reports, day=day)
+
+    evaluation = daily["strategist_llm_evaluation"]
+    assert evaluation["selected_primary_tactic"] == "vwap_reclaim_pullback"
+    assert evaluation["lane_selection_quality"] == "poor_lane_selection"
+    assert evaluation["overused_lane_or_tactic"] == "vwap_reclaim_pullback"
+    markdown = md.read_text(encoding="utf-8")
+    assert "Strategist LLM Evaluation" in markdown
+    assert "poor_lane_selection" in markdown
+
+
 def test_operator_daily_summary_finds_truth_surface_under_time_bucket(tmp_path: Path) -> None:
     reports = tmp_path / "reports"
     day = "2026-05-07"
@@ -842,6 +888,60 @@ def test_operator_daily_summary_reconciles_flattened_position_from_lifecycle(tmp
     assert "장중 청산 확인: 005930은 당일 전량 매도 기록으로 잔여 보유에서 제외했습니다." in text
     assert "000660: 잔여 보유" in text
     assert "000660: 거래 1건 / 완료 0건" in text
+
+
+def test_operator_daily_summary_reconciles_residuals_from_fresh_account_snapshot(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-05-29"
+    _write_json(
+        tmp_path / "data" / "state.json",
+        {
+            "mock_positions": [
+                {"symbol": "005930", "qty": 9, "avg_price": 314000.0, "current_price": 317000.0},
+                {"symbol": "122630", "qty": 14, "avg_price": 200252.0, "current_price": 202580.0},
+            ],
+            "monitor_last_state_by_symbol": {},
+            "overnight_decision_by_symbol": {},
+            "closeout_backup_liquidation": {},
+        },
+    )
+    _write_json(
+        tmp_path / "data" / "logs" / "kiwoom_account_snapshots" / day / "latest.json",
+        {
+            "schema_version": "kiwoom_account_snapshot.v1",
+            "day": day,
+            "generated_at": "2026-05-29T07:04:53+00:00",
+            "summary": {"api_call_count": 19, "ok_count": 19, "error_count": 0},
+            "path": str(tmp_path / "data" / "logs" / "kiwoom_account_snapshots" / day / "snapshot.json"),
+            "calls": [
+                {
+                    "api_id": "kt00018",
+                    "status": "ok",
+                    "payload": {"acnt_evlt_remn_indv_tot": [], "return_code": 0},
+                },
+                {
+                    "api_id": "kt00004",
+                    "status": "ok",
+                    "payload": {"stk_acnt_evlt_prst": [], "return_code": 0},
+                },
+            ],
+        },
+    )
+
+    md, _json, daily = generate_operator_daily_summary_artifact(reports_root=reports, day=day)
+
+    residual = daily["residual_positions"]
+    assert residual["position_count"] == 0
+    assert residual["account_snapshot_reconciliation"]["fresh_after_closeout_window"] is True
+    assert residual["account_snapshot_reconciliation"]["position_count"] == 0
+    assert [row["symbol"] for row in residual["reconciled_closed_positions"]] == ["005930", "122630"]
+    assert {
+        row["reason"] for row in residual["reconciled_closed_positions"]
+    } == {"fresh_account_snapshot_position_absent_after_closeout"}
+    text = md.read_text(encoding="utf-8")
+    assert "account snapshot: fresh_after_1520 / positions 0 / 2026-05-29 16:04:53 KST" in text
+    assert "005930: ?붿뿬 蹂댁쑀" not in text
+    assert "122630: ?붿뿬 蹂댁쑀" not in text
 
 
 def test_operator_daily_summary_keeps_unavailable_truth_as_observation_only(tmp_path: Path) -> None:

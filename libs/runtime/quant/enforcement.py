@@ -9,6 +9,7 @@ DEFAULT_ENTRY_ENFORCED_BLOCKERS = (
     "same_symbol_position_open",
     "directional_edge_evidence_missing",
     "volume_confirmation_missing",
+    "weak_probe_tactic_suitability",
 )
 MANDATORY_ENTRY_ENFORCED_BLOCKERS = ("cost_edge_fail",)
 

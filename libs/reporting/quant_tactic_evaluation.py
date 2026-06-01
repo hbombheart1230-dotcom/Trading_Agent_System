@@ -150,6 +150,7 @@ def build_quant_tactic_evaluation(rows: Iterable[Mapping[str, Any]]) -> Dict[str
         "schema_version": "quant_tactic_evaluation.v1",
         "behavior_effect": "evaluation_only",
         "status": status,
+        "live_trade_readiness": status,
         "promotion_action": "hold" if status.startswith("hold_") else "manual_review",
         "closed_or_realized_sample_count": len(evaluation_rows),
         "raw_closed_or_realized_sample_count": len(all_evaluation_rows),
@@ -184,6 +185,9 @@ def render_quant_tactic_evaluation_lines(payload: Mapping[str, Any] | None) -> L
         f"/ sample {evaluation.get('closed_or_realized_sample_count') or 0}"
         f" valid, invalid {evaluation.get('invalid_sample_count') or 0}"
         f"/{evaluation.get('promotion_sample_target') or _TARGET_PROMOTION_SAMPLE}",
+        "- Quant Q8 live-trade readiness: "
+        f"`{evaluation.get('live_trade_readiness') or evaluation.get('status') or 'not_available'}` "
+        "(actual closed-trade performance only)",
         f"- Quant Q8 missing fields: {missing_text}",
         "- Quant Q8 tactic ID integrity: "
         f"mismatch trades {evaluation.get('tactic_id_mismatch_trade_count') or 0}, "

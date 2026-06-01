@@ -355,9 +355,93 @@ def _skipped_row(row: Mapping[str, Any], ranked_by_symbol: Mapping[str, Dict[str
     return base
 
 
-def _opening_largecap_watchlist_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+def _metric_value(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _has_metric_data(row: Mapping[str, Any]) -> bool:
+    factors = _factor_snapshot(row)
+    return any(
+        _metric_value(
+            row.get(key),
+            factors.get(key),
+            factors.get("vwap_distance_pct") if key == "vwap_distance" else None,
+        )
+        not in (None, "")
+        for key in ("volume_ratio", "vwap_distance", "breakout_ok", "cost_floor_state")
+    ) or _bool(row.get("cost_adjusted_edge_ok"))
+
+
+def _same_symbol_metric_row(symbol: str, candidates: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
+    for row in candidates:
+        if _text(row.get("symbol")) == symbol and _has_metric_data(row):
+            return dict(row)
+    return {}
+
+
+def _opening_largecap_watchlist_row(row: Mapping[str, Any], *, metric_row: Mapping[str, Any] | None = None) -> Dict[str, Any]:
     base = _candidate_context(row)
     symbol = _symbol(row)
+    metrics = _as_dict(metric_row)
+    row_features = _as_dict(row.get("features"))
+    row_metrics = _as_dict(row.get("metrics"))
+    metric_factors = _factor_snapshot(metrics)
+    row_factors = _factor_snapshot(row)
+    volume_ratio = _metric_value(
+        metrics.get("volume_ratio"),
+        metric_factors.get("volume_ratio"),
+        row.get("volume_ratio"),
+        row_factors.get("volume_ratio"),
+        row_features.get("volume_ratio"),
+        row_metrics.get("volume_ratio"),
+    )
+    vwap_distance = _metric_value(
+        metrics.get("vwap_distance"),
+        metric_factors.get("vwap_distance_pct"),
+        metric_factors.get("vwap_distance"),
+        row.get("vwap_distance"),
+        row.get("vwap_distance_pct"),
+        row_factors.get("vwap_distance_pct"),
+        row_factors.get("vwap_distance"),
+        row_features.get("vwap_distance_pct"),
+        row_metrics.get("vwap_distance_pct"),
+    )
+    breakout_ok = _metric_value(
+        metrics.get("breakout_ok"),
+        metric_factors.get("breakout_ok"),
+        row.get("breakout_ok"),
+        row_factors.get("breakout_ok"),
+        row_features.get("breakout_ok"),
+        row_metrics.get("breakout_ok"),
+    )
+    cost_adjusted_edge_ok = _metric_value(
+        metrics.get("cost_adjusted_edge_ok"),
+        metric_factors.get("cost_adjusted_edge_ok"),
+        row.get("cost_adjusted_edge_ok"),
+        row_factors.get("cost_adjusted_edge_ok"),
+    )
+    metric_source = (
+        f"{_text(metrics.get('shadow_role'))}_same_symbol"
+        if metrics
+        else "ranked_candidates"
+    )
+    metric_missing = not any(value not in (None, "") for value in (volume_ratio, vwap_distance, breakout_ok, cost_adjusted_edge_ok))
+    factor_snapshot = _candidate_factor_snapshot(row)
+    if metrics:
+        merged_factors = _as_dict(factor_snapshot.get("factors"))
+        merged_factors.update({key: value for key, value in metric_factors.items() if value not in (None, "")})
+        if volume_ratio not in (None, ""):
+            merged_factors["volume_ratio"] = volume_ratio
+        if vwap_distance not in (None, ""):
+            merged_factors["vwap_distance_pct"] = vwap_distance
+        if breakout_ok not in (None, ""):
+            merged_factors["breakout_ok"] = breakout_ok
+        if cost_adjusted_edge_ok not in (None, ""):
+            merged_factors["cost_adjusted_edge_ok"] = cost_adjusted_edge_ok
+        factor_snapshot = {"factors": merged_factors} if merged_factors else factor_snapshot
     base.update(
         {
             "symbol": symbol,
@@ -365,19 +449,14 @@ def _opening_largecap_watchlist_row(row: Mapping[str, Any]) -> Dict[str, Any]:
             "evaluated": False,
             "reason": "opening_largecap_watchlist_not_evaluated_by_monitor",
             "would_enter": False,
-            "volume_ratio": row.get("volume_ratio")
-            or _as_dict(row.get("features")).get("volume_ratio")
-            or _as_dict(row.get("metrics")).get("volume_ratio"),
-            "vwap_distance": row.get("vwap_distance")
-            or row.get("vwap_distance_pct")
-            or _as_dict(row.get("features")).get("vwap_distance_pct")
-            or _as_dict(row.get("metrics")).get("vwap_distance_pct"),
-            "breakout_ok": row.get("breakout_ok")
-            or _as_dict(row.get("features")).get("breakout_ok")
-            or _as_dict(row.get("metrics")).get("breakout_ok"),
-            "cost_adjusted_edge_ok": _bool(row.get("cost_adjusted_edge_ok")),
-            "quant_factor_snapshot": _candidate_factor_snapshot(row),
+            "volume_ratio": volume_ratio,
+            "vwap_distance": vwap_distance,
+            "breakout_ok": breakout_ok,
+            "cost_adjusted_edge_ok": _bool(cost_adjusted_edge_ok),
+            "quant_factor_snapshot": factor_snapshot,
             "source": "ranked_candidates",
+            "metric_source": metric_source,
+            "metric_missing_reason": "minute_metrics_not_available" if metric_missing else "",
         }
     )
     return base
@@ -428,9 +507,10 @@ def build_quant_shadow_candidate_payload(
             symbol = _symbol(row)
             if symbol not in OPENING_LARGECAP_SURGE_WATCHLIST or symbol in seen_symbols:
                 continue
+            metric_row = _same_symbol_metric_row(symbol, candidates)
             candidates.append(
                 _attach_opening_probe(
-                    _opening_largecap_watchlist_row(row),
+                    _opening_largecap_watchlist_row(row, metric_row=metric_row),
                     opening_minutes=opening_minutes,
                 )
             )

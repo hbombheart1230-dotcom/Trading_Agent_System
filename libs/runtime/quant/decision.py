@@ -113,6 +113,8 @@ def build_entry_quant_decision(
 
     if suitability_tier == "weak":
         _append_unique(warnings, "weak_tactic_suitability")
+        if tactic == "lower_vwap_rebound_probe":
+            _append_unique(blockers, "weak_probe_tactic_suitability")
     elif suitability_tier in {"strong", "watch"}:
         _append_unique(positives, f"tactic_suitability_{suitability_tier}")
 
@@ -177,11 +179,18 @@ def build_exit_quant_decision(
     triggered = bool(exit_obj.get("triggered") or exit_obj.get("exit_signal_detected"))
     reason_key = reason.lower().replace(" ", "_")
     confirmation_style_reason = reason_key in {"intraday_low_break", "vwap_breakdown", "vwap_exit"}
+    hard_invalidation_reason = str(exit_obj.get("protective_exit_hard_invalidation_reason") or "")
+    metric_only_protective_hard = bool(
+        confirmation_style_reason
+        and hard_invalidation_reason.startswith(("intraday_low_break_deep:", "vwap_breakdown_deep:"))
+    )
+    explicit_hard_exit = bool(exit_obj.get("hard_exit") and not confirmation_style_reason)
+    protective_hard_exit = bool(exit_obj.get("protective_exit_hard_invalidation") and not metric_only_protective_hard)
     hard_exit = bool(
         is_emergency_exit_reason(reason)
-        or exit_obj.get("protective_exit_hard_invalidation")
-        or exit_obj.get("hard_exit")
         or exit_obj.get("emergency_exit")
+        or protective_hard_exit
+        or explicit_hard_exit
         or (is_hard_exit_reason(reason) and not confirmation_style_reason)
     )
     confirmation_required = bool(

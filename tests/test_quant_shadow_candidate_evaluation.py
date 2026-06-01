@@ -54,9 +54,12 @@ def test_quant_shadow_candidate_evaluation_counts_roles_and_blockers() -> None:
     assert {"name": "volume_confirmation_missing", "count": 1} in evaluation["by_reason"]
     assert evaluation["promotion_candidate"]["candidate"] == "cost_edge"
     assert evaluation["promotion_candidate"]["behavior_effect"] == "recommendation_only"
+    assert evaluation["promotion_candidate"]["recommended_action"] == "manual_review_before_live_change"
+    assert evaluation["shadow_readiness"]["status"] == "hold_shadow_sample_insufficient"
     lines = "\n".join(render_quant_shadow_candidate_evaluation_lines(evaluation))
     assert "Quant Shadow Candidates" in lines
     assert "would-enter 1" in lines
+    assert "Q8 shadow readiness" in lines
     assert "Q8 promotion candidate" in lines
 
 
@@ -79,6 +82,9 @@ def test_quant_shadow_candidate_evaluation_recommends_cost_edge_when_dominant() 
 
     assert evaluation["promotion_candidate"]["candidate"] == "cost_edge"
     assert evaluation["promotion_candidate"]["confidence"] == "high"
+    assert evaluation["promotion_candidate"]["recommended_action"] == "already_promoted_monitor_hard_gate"
+    assert evaluation["promotion_candidate"]["promotion_state"] == "active"
+    assert evaluation["promotion_candidate"]["behavior_effect"] == "entry_guard_enforced"
 
 
 def test_quant_shadow_candidate_evaluation_recommends_runner_up_when_dominant() -> None:
@@ -151,6 +157,32 @@ def test_quant_shadow_candidate_evaluation_counts_entry_quant_cost_edge_blockers
     assert evaluation["by_cost_floor_state"][0] == {"name": "not_met", "count": 3}
     assert evaluation["promotion_candidate"]["candidate"] == "cost_edge"
     assert evaluation["promotion_candidate"]["counts"]["cost_edge"] == 3
+
+
+def test_quant_shadow_candidate_evaluation_marks_cost_edge_shadow_ready_when_sample_is_sufficient() -> None:
+    payload = {
+        "candidates": [
+            {
+                "symbol": f"0059{idx:02d}",
+                "shadow_role": "top_pick",
+                "evaluated": True,
+                "would_enter": False,
+                "reason": "cost_edge_fail",
+                "primary_failure_axis": "cost",
+            }
+            for idx in range(100)
+        ]
+    }
+
+    evaluation = build_quant_shadow_candidate_evaluation([payload])
+    lines = "\n".join(render_quant_shadow_candidate_evaluation_lines(evaluation))
+
+    assert evaluation["shadow_readiness"]["status"] == "ready"
+    assert evaluation["shadow_readiness"]["action"] == "already_promoted_monitor_hard_gate"
+    assert evaluation["shadow_readiness"]["promotion_scope"] == "pre_entry_filter"
+    assert "Q8 shadow readiness: `ready`" in lines
+    assert "action `already_promoted_monitor_hard_gate`" in lines
+    assert "Q8 promotion state: active" in lines
 
 
 def test_quant_shadow_candidate_evaluation_surfaces_entry_shape_diagnostics() -> None:

@@ -27,10 +27,12 @@ def test_quant_tactic_evaluation_holds_when_sample_is_small() -> None:
     payload = build_quant_tactic_evaluation([_row()])
 
     assert payload["status"] == "hold_sample_insufficient"
+    assert payload["live_trade_readiness"] == "hold_sample_insufficient"
     assert payload["promotion_action"] == "hold"
     assert payload["closed_or_realized_sample_count"] == 1
     assert payload["missing_required_fields"] == []
     assert "hold_sample_insufficient" in "\n".join(render_quant_tactic_evaluation_lines(payload))
+    assert "live-trade readiness" in "\n".join(render_quant_tactic_evaluation_lines(payload))
 
 
 def test_quant_tactic_evaluation_holds_for_invalid_broker_alignment_samples() -> None:

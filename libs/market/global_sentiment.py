@@ -20,7 +20,10 @@ from __future__ import annotations
 import math
 import os
 import time
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from libs.data_quality.signal_contract import (
@@ -185,6 +188,259 @@ def _fetch_last2_closes_yfinance(ticker: str) -> Optional[Tuple[float, float]]:
         return None
 
 
+def _pct_change(pair: Optional[Tuple[float, float]]) -> Optional[float]:
+    if not pair:
+        return None
+    prev, last = pair
+    if float(prev or 0.0) == 0.0:
+        return None
+    return float((float(last) / float(prev)) - 1.0)
+
+
+def _indicator_from_pair(
+    *,
+    key: str,
+    label: str,
+    category: str,
+    source: str,
+    ticker: str,
+    pair: Optional[Tuple[float, float]],
+    unit: str,
+    role: str,
+    transform: str = "pct",
+) -> Dict[str, Any]:
+    if not pair:
+        return {
+            "key": key,
+            "label": label,
+            "category": category,
+            "source": source,
+            "ticker": ticker,
+            "status": "unavailable",
+            "reason": "fetch_failed_or_not_configured",
+            "unit": unit,
+            "role": role,
+        }
+    prev, last = float(pair[0]), float(pair[1])
+    row: Dict[str, Any] = {
+        "key": key,
+        "label": label,
+        "category": category,
+        "source": source,
+        "ticker": ticker,
+        "status": "ok",
+        "previous": prev,
+        "current": last,
+        "unit": unit,
+        "role": role,
+    }
+    if transform == "yield_delta":
+        scale = 10.0 if max(abs(last), abs(prev)) > 20.0 else 1.0
+        row["delta"] = float((last - prev) / scale)
+        row["current_yield_pct"] = float(last / scale)
+        row["previous_yield_pct"] = float(prev / scale)
+    else:
+        pct = _pct_change(pair)
+        row["change_pct"] = float(pct * 100.0) if pct is not None else None
+    return row
+
+
+def _indicator_from_korea_index(key: str, label: str, row: Dict[str, Any]) -> Dict[str, Any]:
+    if not row:
+        return {
+            "key": key,
+            "label": label,
+            "category": "equity_index",
+            "source": "kiwoom.ka20009",
+            "status": "unavailable",
+            "reason": "korea_index_missing",
+            "unit": "index_point",
+            "role": "korea_equity_market_direction",
+        }
+    return {
+        "key": key,
+        "label": label,
+        "category": "equity_index",
+        "source": str(row.get("source") or "kiwoom.ka20009"),
+        "ticker": str(row.get("code") or ""),
+        "status": "ok",
+        "current": row.get("current"),
+        "previous": row.get("previous_close"),
+        "change": row.get("change"),
+        "change_pct": row.get("change_pct"),
+        "unit": "index_point",
+        "role": "korea_equity_market_direction",
+        "current_date": str(row.get("current_date") or ""),
+        "previous_date": str(row.get("previous_date") or ""),
+    }
+
+
+def _indicator_from_override(key: str, base: Dict[str, Any], override: Any) -> Dict[str, Any]:
+    if not isinstance(override, dict):
+        return base
+    out = dict(base)
+    for field in (
+        "source",
+        "ticker",
+        "status",
+        "reason",
+        "previous",
+        "current",
+        "change",
+        "change_pct",
+        "delta",
+        "current_yield_pct",
+        "previous_yield_pct",
+        "asof",
+    ):
+        if override.get(field) not in (None, ""):
+            out[field] = override.get(field)
+    if out.get("current") not in (None, "") or out.get("current_yield_pct") not in (None, ""):
+        out["status"] = str(override.get("status") or "ok")
+        if str(out.get("reason") or "") in {"no_provider_configured", "fetch_failed_or_not_configured"}:
+            out["reason"] = str(override.get("reason") or "override")
+        else:
+            out["reason"] = str(out.get("reason") or override.get("reason") or "override")
+    out["key"] = key
+    return out
+
+
+def _fetch_extended_macro_indicators(
+    state: Dict[str, Any],
+    policy: Dict[str, Any],
+    *,
+    inputs: Optional[SentimentInputs],
+    korea_indices: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    tickers = dict(policy.get("macro_indicator_tickers") or {})
+    defaults = {
+        "us_2y_yield": "^IRX",
+        "us_10y_yield": "^TNX",
+        "dxy": "DX-Y.NYB",
+        "usdkrw": "KRW=X",
+        "eurusd": "EURUSD=X",
+        "usdcny": "CNY=X",
+        "usdjpy": "JPY=X",
+        "sp500": "^GSPC",
+        "nasdaq": "^IXIC",
+    }
+    defaults.update({k: str(v) for k, v in tickers.items() if str(v or "").strip()})
+    korea_rows = (
+        (korea_indices or {}).get("indices")
+        if isinstance((korea_indices or {}).get("indices"), dict)
+        else {}
+    )
+    indicators: Dict[str, Any] = {
+        "kr_3y_yield": {
+            "key": "kr_3y_yield",
+            "label": "Korea 3Y government bond yield",
+            "category": "interest_rate",
+            "source": "not_configured",
+            "status": "unavailable",
+            "reason": "no_provider_configured",
+            "unit": "yield_pct",
+            "role": "korea_policy_rate_expectation",
+        },
+        "kr_10y_yield": {
+            "key": "kr_10y_yield",
+            "label": "Korea 10Y government bond yield",
+            "category": "interest_rate",
+            "source": "not_configured",
+            "status": "unavailable",
+            "reason": "no_provider_configured",
+            "unit": "yield_pct",
+            "role": "korea_inflation_and_duration_expectation",
+        },
+        "kospi": _indicator_from_korea_index("kospi", "KOSPI", korea_rows.get("KOSPI") if isinstance(korea_rows, dict) else {}),
+        "kosdaq": _indicator_from_korea_index("kosdaq", "KOSDAQ", korea_rows.get("KOSDAQ") if isinstance(korea_rows, dict) else {}),
+    }
+    overrides = {}
+    for source in (
+        state.get("macro_indicators"),
+        state.get("macro_indicator_overrides"),
+        policy.get("macro_indicators"),
+        policy.get("macro_indicator_overrides"),
+    ):
+        if isinstance(source, dict):
+            nested = source.get("indicators") if isinstance(source.get("indicators"), dict) else source
+            overrides.update({str(k): v for k, v in nested.items() if isinstance(v, dict)})
+    try:
+        from libs.market.korea_bond_yields import fetch_korea_bond_yield_overrides
+
+        for key, value in fetch_korea_bond_yield_overrides(policy).items():
+            if isinstance(value, dict) and not isinstance(overrides.get(key), dict):
+                overrides[key] = value
+    except Exception:
+        pass
+    for key in ("kr_3y_yield", "kr_10y_yield"):
+        indicators[key] = _indicator_from_override(key, indicators[key], overrides.get(key))
+
+    for key, label, category, unit, role, transform in (
+        ("us_2y_yield", "US 2Y Treasury yield", "interest_rate", "yield_pct", "us_policy_rate_expectation", "yield_delta"),
+        ("us_10y_yield", "US 10Y Treasury yield", "interest_rate", "yield_pct", "us_inflation_and_duration_expectation", "yield_delta"),
+        ("dxy", "Dollar Index", "fx", "index_point", "global_dollar_strength", "pct"),
+        ("usdkrw", "USD/KRW", "fx", "fx_rate", "won_vs_dollar_pressure", "pct"),
+        ("eurusd", "EUR/USD", "fx", "fx_rate", "euro_cross_rate", "pct"),
+        ("usdcny", "USD/CNY", "fx", "fx_rate", "yuan_cross_rate", "pct"),
+        ("usdjpy", "USD/JPY", "fx", "fx_rate", "yen_cross_rate", "pct"),
+        ("sp500", "S&P 500", "equity_index", "index_point", "us_equity_market_direction", "pct"),
+        ("nasdaq", "NASDAQ Composite", "equity_index", "index_point", "us_tech_risk_appetite", "pct"),
+    ):
+        ticker = str(defaults.get(key) or "").strip()
+        pair: Optional[Tuple[float, float]]
+        if key == "us_10y_yield" and inputs is not None:
+            pair = _fetch_last2_closes_yfinance(ticker)
+        elif key == "dxy" and inputs is not None:
+            pair = _fetch_last2_closes_yfinance(ticker)
+        elif key == "sp500" and inputs is not None:
+            pair = _fetch_last2_closes_yfinance(ticker)
+        elif key == "nasdaq" and inputs is not None:
+            pair = _fetch_last2_closes_yfinance(ticker)
+        else:
+            pair = _fetch_last2_closes_yfinance(ticker) if ticker else None
+        indicators[key] = _indicator_from_pair(
+            key=key,
+            label=label,
+            category=category,
+            source="yfinance" if ticker else "not_configured",
+            ticker=ticker,
+            pair=pair,
+            unit=unit,
+            role=role,
+            transform=transform,
+        )
+        if key == "us_2y_yield" and ticker == "^IRX":
+            indicators[key]["source_note"] = "default_yfinance_proxy; override macro_indicator_tickers.us_2y_yield for a true 2Y source"
+        indicators[key] = _indicator_from_override(key, indicators[key], overrides.get(key))
+
+    return {
+        "schema_version": "macro_indicators.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": "kiwoom.ka20009+yfinance",
+        "indicators": indicators,
+    }
+
+
+def _write_macro_indicator_log(payload: Dict[str, Any], *, policy: Dict[str, Any]) -> None:
+    enabled = policy.get("macro_indicator_log_enabled")
+    if enabled is None:
+        enabled = os.getenv("MACRO_INDICATOR_LOG_ENABLED", "true")
+    if str(enabled).strip().lower() in {"0", "false", "no", "n", "off"}:
+        return
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+    try:
+        root = Path(str(policy.get("macro_indicator_log_root") or "data/logs/macro_indicators"))
+        now = datetime.now(timezone.utc)
+        day_dir = root / now.strftime("%Y-%m-%d")
+        day_dir.mkdir(parents=True, exist_ok=True)
+        content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        (day_dir / f"{now.strftime('%H%M%S')}_macro_indicators.json").write_text(content, encoding="utf-8")
+        (day_dir / "latest.json").write_text(content, encoding="utf-8")
+    except Exception:
+        return
+
+
 def _fetch_inputs(policy: Dict[str, Any]) -> Optional[SentimentInputs]:
     tick_sp = str(policy.get("sentiment_ticker_sp500") or "^GSPC")
     tick_nq = str(policy.get("sentiment_ticker_nasdaq") or "^IXIC")
@@ -231,6 +487,7 @@ def _sentiment_evidence(
     raw: float,
     *,
     korea_indices: Optional[Dict[str, Any]] = None,
+    macro_indicators: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     korea_packet = korea_indices if isinstance(korea_indices, dict) else {}
     korea_rows = korea_packet.get("indices") if isinstance(korea_packet.get("indices"), dict) else {}
@@ -292,6 +549,7 @@ def _sentiment_evidence(
         },
         "raw_score": float(raw),
         "korea_indices": dict(korea_packet or {}),
+        "macro_indicators": dict(macro_indicators or {}),
     }
 
 
@@ -306,9 +564,36 @@ def _signal_with_evidence(
     weights: Dict[str, float],
     raw_score: float,
     korea_indices: Optional[Dict[str, Any]] = None,
+    macro_indicators: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     signal = make_signal(score=score, status=status, source=source, reason=reason, ts=ts)
-    signal.update(_sentiment_evidence(inputs, weights, raw_score, korea_indices=korea_indices))
+    signal.update(
+        _sentiment_evidence(
+            inputs,
+            weights,
+            raw_score,
+            korea_indices=korea_indices,
+            macro_indicators=macro_indicators,
+        )
+    )
+    _write_macro_indicator_log(
+        {
+            "schema_version": "global_sentiment_macro_snapshot.v1",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "global_sentiment": {
+                "score": signal.get("score"),
+                "status": signal.get("status"),
+                "source": signal.get("source"),
+                "reason": signal.get("reason"),
+                "ts": signal.get("ts"),
+            },
+            "index_moves": signal.get("index_moves"),
+            "macro_moves": signal.get("macro_moves"),
+            "korea_indices": signal.get("korea_indices"),
+            "macro_indicators": signal.get("macro_indicators"),
+        },
+        policy=weights.get("_policy", {}) if isinstance(weights.get("_policy"), dict) else {},
+    )
     return signal
 
 
@@ -351,6 +636,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
     if state.get("mock_global_sentiment") is not None:
         try:
             weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "kospi": 0.30, "kosdaq": 0.25, "vix_neutral_level": 20.0}
+            weights["_policy"] = policy
             return _signal_with_evidence(
                 score=_clamp(float(state["mock_global_sentiment"])),
                 status=SIGNAL_STATUS_OK,
@@ -363,6 +649,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
             )
         except Exception:
             weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "kospi": 0.30, "kosdaq": 0.25, "vix_neutral_level": 20.0}
+            weights["_policy"] = policy
             return _signal_with_evidence(
                 score=0.0,
                 status=SIGNAL_STATUS_FALLBACK,
@@ -377,6 +664,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
     # 2) DRY_RUN => no network
     if _is_dry_run():
         weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "kospi": 0.30, "kosdaq": 0.25, "vix_neutral_level": 20.0}
+        weights["_policy"] = policy
         return _signal_with_evidence(
             score=0.0,
             status=SIGNAL_STATUS_FALLBACK,
@@ -410,6 +698,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
         "kospi": w_kospi,
         "kosdaq": w_kosdaq,
         "vix_neutral_level": vix_neutral_level,
+        "_policy": policy,
     }
 
     norm = dict(policy.get("sentiment_norm") or {})
@@ -417,6 +706,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
 
     korea_indices = _fetch_korea_index_inputs(state, policy)
     inputs = _fetch_inputs(policy)
+    macro_indicators = _fetch_extended_macro_indicators(state, policy, inputs=inputs, korea_indices=korea_indices)
     if inputs is None:
         if korea_indices:
             korea_raw = _compute_korea_raw(korea_indices, w_kospi=w_kospi, w_kosdaq=w_kosdaq)
@@ -430,6 +720,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
                 weights=resolved_weights,
                 raw_score=korea_raw,
                 korea_indices=korea_indices,
+                macro_indicators=macro_indicators,
             )
         return _signal_with_evidence(
             score=0.0,
@@ -441,6 +732,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
             weights=resolved_weights,
             raw_score=0.0,
             korea_indices=korea_indices,
+            macro_indicators=macro_indicators,
         )
 
     raw = _compute_raw(
@@ -465,6 +757,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
         weights=resolved_weights,
         raw_score=raw,
         korea_indices=korea_indices,
+        macro_indicators=macro_indicators,
     )
 
 

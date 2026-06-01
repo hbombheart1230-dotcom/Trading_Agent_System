@@ -250,6 +250,82 @@ def test_build_quant_shadow_candidate_payload_adds_opening_largecap_watchlist_ra
     assert rows["009150"]["opening_largecap_surge_shadow"]["reason"] == "volume_ratio_below_largecap_floor"
 
 
+def test_opening_largecap_watchlist_row_reuses_same_symbol_runner_metrics() -> None:
+    state = {
+        "run_id": "run-5",
+        "trade_day": "2026-05-28",
+        "tick_ts": 1779840300,
+        "selected": {"symbol": "402340", "score_total": 0.88},
+        "ranked_candidates": [
+            {"symbol": "402340", "rank": 1, "score_total": 0.88},
+            {"symbol": "009150", "rank": 3, "score_total": 0.74},
+        ],
+        "monitor_entry": {
+            "reason": "volume_confirmation_missing",
+            "intent_submitted": False,
+            "cost_adjusted_edge_ok": False,
+        },
+        "monitor_entry_cascade": {
+            "top_pick_symbol": "402340",
+            "top_pick_triggered": False,
+            "top_pick_reason": "volume_confirmation_missing",
+            "top_pick_guard_blocked": True,
+            "final_selected_symbol": "402340",
+            "fallback_trace": [
+                {
+                    "symbol": "009150",
+                    "triggered": False,
+                    "reason": "volume_confirmation_missing",
+                    "volume_ratio": 0.86,
+                    "vwap_distance": 0.021,
+                    "breakout_ok": True,
+                }
+            ],
+        },
+    }
+
+    payload = build_quant_shadow_candidate_payload(state)
+    rows = [row for row in payload["candidates"] if row["symbol"] == "009150"]
+
+    # The evaluated runner row is already present, so no duplicate watchlist row is needed.
+    assert len(rows) == 1
+    assert rows[0]["opening_largecap_surge_shadow"]["volume_ratio"] == 0.86
+    assert rows[0]["opening_largecap_surge_shadow"]["vwap_distance_pct"] == 0.021
+    assert rows[0]["opening_largecap_surge_shadow"]["reason"].startswith("cost_edge_not_met")
+
+
+def test_opening_largecap_watchlist_marks_missing_metrics_when_no_same_symbol_metrics_exist() -> None:
+    state = {
+        "run_id": "run-6",
+        "trade_day": "2026-05-28",
+        "tick_ts": 1779840300,
+        "selected": {"symbol": "402340", "score_total": 0.88},
+        "ranked_candidates": [
+            {"symbol": "402340", "rank": 1, "score_total": 0.88},
+            {"symbol": "009150", "rank": 3, "score_total": 0.74},
+        ],
+        "monitor_entry": {
+            "reason": "volume_confirmation_missing",
+            "intent_submitted": False,
+            "cost_adjusted_edge_ok": False,
+        },
+        "monitor_entry_cascade": {
+            "top_pick_symbol": "402340",
+            "top_pick_triggered": False,
+            "top_pick_reason": "volume_confirmation_missing",
+            "top_pick_guard_blocked": True,
+            "final_selected_symbol": "402340",
+        },
+    }
+
+    payload = build_quant_shadow_candidate_payload(state)
+    row = {row["symbol"]: row for row in payload["candidates"]}["009150"]
+
+    assert row["shadow_role"] == "opening_largecap_watchlist"
+    assert row["metric_source"] == "ranked_candidates"
+    assert row["metric_missing_reason"] == "minute_metrics_not_available"
+
+
 def test_save_quant_shadow_candidate_payload_writes_day_file_and_latest(tmp_path) -> None:
     payload = {
         "schema_version": "quant_shadow_candidates.v1",

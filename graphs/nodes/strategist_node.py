@@ -1801,6 +1801,7 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "If deterministic evidence shows repeated NOOP-like blockage, you must decide whether entry conditions should be relaxed, tightened, or rebalanced. "
         "If deterministic evidence shows repeated false entries, stop-outs, or drawdown-heavy outcomes, you must tighten or rebalance policy. "
         "Use quant_context when present as deterministic observation-only evidence: it does not execute behavior by itself, but it should inform tactic fit, scorecard-aware caution, selected-symbol review, hold review, and carry review. "
+        "Use memory_packets.*.operator_summary.tactic_lane_guidance when present as deterministic Q8 feedback: if vwap_reclaim_pullback is overused and weak, do not default to it; explicitly compare breakout or volume_breakout when shadow breakout-ready evidence exists; keep cost-edge guard promoted when shadow readiness recommends it. "
         "Use selected_symbol_news_signal and candidate_news_signal_summary when present: negative selected-symbol news must block relaxation unless chart/volume evidence is exceptional; positive selected-symbol news may support relaxation only when monitor and cost evidence are also ready. "
         f"{memory_sensitive_directives}"
         "If evidence is mixed or weak, explicitly maintain conservative baseline. "
@@ -2020,6 +2021,8 @@ def _compact_global_signal_for_llm(signal: Any) -> Dict[str, Any]:
     fear_index = src.get("fear_index") if isinstance(src.get("fear_index"), dict) else {}
     korea_indices = src.get("korea_indices") if isinstance(src.get("korea_indices"), dict) else {}
     korea_rows = korea_indices.get("indices") if isinstance(korea_indices.get("indices"), dict) else {}
+    macro_indicators = src.get("macro_indicators") if isinstance(src.get("macro_indicators"), dict) else {}
+    indicator_rows = macro_indicators.get("indicators") if isinstance(macro_indicators.get("indicators"), dict) else {}
 
     def _compact_korea_index(name: str) -> Dict[str, Any]:
         row = korea_rows.get(name) if isinstance(korea_rows.get(name), dict) else {}
@@ -2066,6 +2069,37 @@ def _compact_global_signal_for_llm(signal: Any) -> Dict[str, Any]:
             "level": _round_optional(fear_index.get("level"), 2),
             "change_pct": _round_optional(fear_index.get("change_pct"), 3),
             "level_pressure": _round_optional(fear_index.get("level_pressure"), 3),
+        },
+        "macro_indicators": {
+            key: {
+                "status": str((row or {}).get("status") or ""),
+                "current": _round_optional((row or {}).get("current"), 4),
+                "previous": _round_optional((row or {}).get("previous"), 4),
+                "change_pct": _round_optional((row or {}).get("change_pct"), 4),
+                "delta": _round_optional((row or {}).get("delta"), 5),
+                "current_yield_pct": _round_optional((row or {}).get("current_yield_pct"), 5),
+                "role": str((row or {}).get("role") or ""),
+                "source": str((row or {}).get("source") or ""),
+                "ticker": str((row or {}).get("ticker") or ""),
+                "reason": str((row or {}).get("reason") or ""),
+            }
+            for key, row in indicator_rows.items()
+            if isinstance(row, dict)
+            and key
+            in {
+                "kr_3y_yield",
+                "kr_10y_yield",
+                "us_2y_yield",
+                "us_10y_yield",
+                "usdkrw",
+                "dxy",
+                "eurusd",
+                "usdcny",
+                "usdjpy",
+                "kospi",
+                "sp500",
+                "nasdaq",
+            }
         },
     }
 
@@ -2646,6 +2680,94 @@ def _operator_summary_for_llm(summary: Any) -> Dict[str, Any]:
         values = src.get(key)
         if isinstance(values, list):
             out[key] = [_clip_text_for_llm(x, max_len=120) for x in values[:4] if str(x or "").strip()]
+
+    strategist_eval = src.get("strategist_llm_evaluation") if isinstance(src.get("strategist_llm_evaluation"), dict) else {}
+    shadow_eval = (
+        src.get("quant_shadow_candidate_evaluation")
+        if isinstance(src.get("quant_shadow_candidate_evaluation"), dict)
+        else {}
+    )
+    promotion = (
+        shadow_eval.get("promotion_candidate")
+        if isinstance(shadow_eval.get("promotion_candidate"), dict)
+        else {}
+    )
+    readiness = (
+        shadow_eval.get("shadow_readiness")
+        if isinstance(shadow_eval.get("shadow_readiness"), dict)
+        else {}
+    )
+    entry_shape = (
+        shadow_eval.get("entry_shape_diagnostics")
+        if isinstance(shadow_eval.get("entry_shape_diagnostics"), dict)
+        else {}
+    )
+    lane_guidance: Dict[str, Any] = {}
+    if strategist_eval:
+        lane_guidance.update(
+            _compact_scalar_mapping_for_llm(
+                strategist_eval,
+                allowed_keys=[
+                    "lane_selection_quality",
+                    "selected_primary_tactic",
+                    "selected_primary_lane",
+                    "overused_lane_or_tactic",
+                    "underused_shadow_lane",
+                ],
+                max_text_len=100,
+            )
+        )
+    if readiness:
+        lane_guidance["shadow_readiness"] = _compact_scalar_mapping_for_llm(
+            readiness,
+            allowed_keys=["status", "action", "candidate", "confidence", "promotion_scope"],
+            max_text_len=100,
+        )
+    if promotion:
+        lane_guidance["promotion_candidate"] = _compact_scalar_mapping_for_llm(
+            promotion,
+            allowed_keys=["candidate", "confidence", "recommended_action", "reason"],
+            max_text_len=100,
+        )
+        counts = promotion.get("counts") if isinstance(promotion.get("counts"), dict) else {}
+        if counts:
+            lane_guidance["promotion_counts"] = _compact_scalar_mapping_for_llm(
+                counts,
+                allowed_keys=["cost_edge", "runner_up", "entry_guard"],
+                max_text_len=40,
+            )
+    if entry_shape:
+        lane_guidance["entry_shape_diagnostics"] = _compact_scalar_mapping_for_llm(
+            entry_shape,
+            allowed_keys=[
+                "pullback_or_vwap_blocked_count",
+                "breakout_ready_like_count",
+                "breakout_not_ready_count",
+            ],
+            max_text_len=40,
+        )
+    if lane_guidance:
+        selected = str(lane_guidance.get("selected_primary_tactic") or "").strip()
+        overused = str(lane_guidance.get("overused_lane_or_tactic") or "").strip()
+        underused = str(lane_guidance.get("underused_shadow_lane") or "").strip()
+        pullback_blocked = _to_int(
+            _nested_mapping_value(lane_guidance, "entry_shape_diagnostics", "pullback_or_vwap_blocked_count"),
+            0,
+        )
+        breakout_ready = _to_int(
+            _nested_mapping_value(lane_guidance, "entry_shape_diagnostics", "breakout_ready_like_count"),
+            0,
+        )
+        directives: List[str] = []
+        if selected == "vwap_reclaim_pullback" and overused == "vwap_reclaim_pullback":
+            directives.append("downweight_repeated_vwap_reclaim_pullback_unless_cost_volume_and_maturity_are_ready")
+        if underused == "breakout" and breakout_ready > 0:
+            directives.append("explicitly_score_breakout_or_volume_breakout_against_pullback_before_selecting_tactic")
+        if pullback_blocked >= 50 and breakout_ready > 0:
+            directives.append("do_not_default_to_late_pullback_when_shadow_breakout_ready_like_candidates_exist")
+        if directives:
+            lane_guidance["strategist_directives"] = directives[:4]
+        out["tactic_lane_guidance"] = lane_guidance
     return {k: v for k, v in out.items() if v not in ({}, [], "", None)}
 
 

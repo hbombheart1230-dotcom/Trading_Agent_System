@@ -117,3 +117,81 @@ def test_global_sentiment_signal_exposes_korea_index_context(monkeypatch):
     assert abs(float((sig.get("index_moves") or {}).get("kospi_pct") or 0.0) - 0.65) < 1e-9
     assert abs(float((sig.get("index_moves") or {}).get("kosdaq_pct") or 0.0) - 1.02) < 1e-9
     assert (sig.get("korea_indices") or {}).get("indices", {}).get("KOSPI", {}).get("previous_close") == 3080.0
+
+
+def test_global_sentiment_signal_exposes_extended_macro_indicator_slots(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "0")
+
+    class _Inputs:
+        sp500_ret = 0.01
+        nasdaq_ret = 0.02
+        dow_ret = 0.005
+        vix_ret = -0.03
+        vix_level = 16.0
+        dxy_ret = 0.002
+        tnx_delta = 0.01
+
+    korea_packet = {
+        "status": "ok",
+        "source": "kiwoom.ka20009",
+        "indices": {
+            "KOSPI": {"current": 3100.0, "previous_close": 3090.0, "change_pct": 0.32},
+            "KOSDAQ": {"current": 850.0, "previous_close": 845.0, "change_pct": 0.59},
+        },
+    }
+
+    def _fake_pair(ticker):
+        values = {
+            "^IRX": (50.0, 50.4),
+            "^TNX": (45.0, 45.2),
+            "DX-Y.NYB": (100.0, 100.5),
+            "KRW=X": (1370.0, 1380.0),
+            "EURUSD=X": (1.08, 1.09),
+            "CNY=X": (7.20, 7.22),
+            "JPY=X": (156.0, 157.0),
+            "^GSPC": (5000.0, 5050.0),
+            "^IXIC": (16000.0, 16200.0),
+        }
+        return values.get(ticker)
+
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: _Inputs())
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_korea_index_inputs", lambda _state, _policy: korea_packet)
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_last2_closes_yfinance", _fake_pair)
+
+    sig = compute_global_sentiment_signal(
+        state={
+            "macro_indicator_overrides": {
+                "kr_3y_yield": {
+                    "source": "test_override",
+                    "current_yield_pct": 2.91,
+                    "delta": -0.01,
+                    "asof": "2026-05-28",
+                }
+            }
+        },
+        policy={"korea_bond_yield_provider_enabled": False},
+    )
+    indicators = (sig.get("macro_indicators") or {}).get("indicators") or {}
+
+    for key in (
+        "kr_3y_yield",
+        "kr_10y_yield",
+        "us_2y_yield",
+        "us_10y_yield",
+        "usdkrw",
+        "dxy",
+        "eurusd",
+        "usdcny",
+        "usdjpy",
+        "kospi",
+        "sp500",
+        "nasdaq",
+    ):
+        assert key in indicators
+
+    assert indicators["kr_3y_yield"]["status"] == "ok"
+    assert indicators["kr_3y_yield"]["source"] == "test_override"
+    assert indicators["kr_10y_yield"]["status"] == "unavailable"
+    assert indicators["usdkrw"]["status"] == "ok"
+    assert abs(float(indicators["usdkrw"]["change_pct"]) - 0.729927) < 1e-4
+    assert indicators["us_2y_yield"]["source_note"].startswith("default_yfinance_proxy")
