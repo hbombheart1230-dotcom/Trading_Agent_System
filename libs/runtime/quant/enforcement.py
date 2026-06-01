@@ -10,6 +10,7 @@ DEFAULT_ENTRY_ENFORCED_BLOCKERS = (
     "directional_edge_evidence_missing",
     "volume_confirmation_missing",
     "weak_probe_tactic_suitability",
+    "vwap_pullback_promoted_quality_gate",
 )
 MANDATORY_ENTRY_ENFORCED_BLOCKERS = ("cost_edge_fail",)
 

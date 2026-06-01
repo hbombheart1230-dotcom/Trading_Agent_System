@@ -133,9 +133,32 @@ Q7 alignment note:
 
 Goal: validate Q1-Q7 only on reliable samples.
 
-Q8 is not a new tactic rollout phase. It is the validation layer that decides
+Q8 is not a passive waiting phase. It is the validation layer that decides
 which quant diagnostics are safe to promote from observation/shadow into live
-behavior.
+behavior, and it must separate deterministic pre-entry guards from realized
+PnL-dependent strategy conclusions.
+
+### Q8 Promotion Classes
+
+1. Deterministic pre-entry guards.
+   - Examples: broker restriction, same-symbol position open, cost-edge fail,
+     volume confirmation missing, and promoted weak-lane quality gates.
+   - These fields are known before an order is sent.
+   - `shadow_readiness` is enough to promote them when the shadow sample has
+     adequate coverage.
+2. Strategy allocation and lane weighting.
+   - Examples: `vwap_reclaim_pullback` downweighting, breakout versus pullback
+     preference, runner-up cascade quality.
+   - Requires either actual closed-trade evidence or forward-labeled shadow
+     outcomes.
+3. Exit and hold behavior.
+   - Examples: VWAP breakdown confirmation, `intraday_low_break` confirmation,
+     long-horizon unlock.
+   - Requires actual trade exits plus post-exit or forward-labeled evidence.
+
+Q8 must not keep reporting "sample insufficient" when the relevant evidence
+class has enough data. Low actual trade count is only a blocker for realized
+PnL claims, not for deterministic pre-entry guards.
 
 ### Q8 Priority Order
 
@@ -173,7 +196,12 @@ behavior.
    - Opening largecap surge shadow is tracked separately again so 09:00-09:20
      moves in `005930`, `000660`, and `009150` can be reviewed without opening
      live orders or weakening the normal scanner rank.
-   - Current behavior effect: `observation_only`.
+   - Shadow candidates must carry a baseline minute price when available, and
+     reporting must attach forward checkpoint outcomes when later minute data
+     exists. Without forward outcomes, shadow can validate deterministic guards
+     but cannot validate strategy expectancy.
+   - Current storage behavior effect: `observation_only`; summary forward
+     labeling behavior effect: `evaluation_only`.
 4. Behavior promotion.
    - Promote one behavior at a time only after enough valid samples exist for
      the relevant evidence type.
@@ -540,19 +568,25 @@ Validation scope:
 
 Rules:
 
-- no new behavior promotion inside Q8
-- no scanner rank replacement inside Q8
-- no long-horizon unlock inside Q8
+- Q8 may promote deterministic pre-entry guards when `shadow_readiness` is
+  ready and the fields are known before order placement.
+- Q8 may promote lane downweighting when actual trade evidence and/or
+  forward-labeled shadow outcomes identify one clear loss cluster.
+- Q8 must not promote long-horizon unlock without post-exit/forward outcome
+  evidence.
 - use focused regression plus live artifact inspection
 - document any mismatch before deciding the next behavior patch
 
 Expected effort: 1-2 turns, depending on live artifact availability.
 
-Behavior promotion candidates remain post-Q8 decisions:
+Behavior promotion candidates:
 
-- cost floor hard veto
-- runner-up cascade restriction
-- early `intraday_low_break` confirmation
+- cost floor hard veto: promoted
+- repeated weak `vwap_reclaim_pullback` quality gate: promoted after W22/W23
+  loss cluster
+- runner-up cascade restriction: pending forward-labeled shadow comparison
+- early `intraday_low_break` confirmation: active for soft exits, keep
+  monitoring
 - long-horizon unlock rules
 - news/theme confirmation strength gate
 

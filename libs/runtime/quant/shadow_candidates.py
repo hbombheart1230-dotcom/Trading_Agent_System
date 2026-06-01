@@ -113,16 +113,35 @@ def _candidate_lookup(rows: Iterable[Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _candidate_context(row: Mapping[str, Any]) -> Dict[str, Any]:
+    suitability = _as_dict(row.get("tactic_suitability"))
+    factor_snapshot = _candidate_factor_snapshot(row)
+    factors = _as_dict(factor_snapshot.get("factors"))
     return {
         "symbol": _symbol(row),
         "name": _text(row.get("name") or row.get("stock_name") or row.get("symbol_name")),
         "rank": _rank(row),
         "score_total": _score(row),
         "theme": _text(row.get("theme") or row.get("matched_theme") or row.get("theme_name")),
-        "quant_tactic_id": _text(row.get("quant_tactic_id") or row.get("tactic_id")),
-        "tactic_suitability_tier": _text(row.get("tactic_suitability_tier")),
-        "tactic_suitability_score": row.get("tactic_suitability_score"),
-        "entry_quant_cost_floor_state": _text(row.get("entry_quant_cost_floor_state")),
+        "quant_tactic_id": _text(
+            row.get("quant_tactic_id")
+            or row.get("tactic_id")
+            or factor_snapshot.get("tactic_id")
+            or row.get("tactical_strategy")
+        ),
+        "tactic_suitability_tier": _text(
+            row.get("tactic_suitability_tier")
+            or suitability.get("tier")
+        ),
+        "tactic_suitability_score": (
+            row.get("tactic_suitability_score")
+            if row.get("tactic_suitability_score") not in (None, "")
+            else suitability.get("score")
+        ),
+        "entry_quant_cost_floor_state": _text(
+            row.get("entry_quant_cost_floor_state")
+            or row.get("cost_floor_state")
+            or factors.get("cost_floor_state")
+        ),
     }
 
 
@@ -170,6 +189,93 @@ def _candidate_factor_snapshot(row: Mapping[str, Any]) -> Dict[str, Any]:
     if "vwap_distance_pct" not in factors and "vwap_distance" in factors:
         factors["vwap_distance_pct"] = factors.get("vwap_distance")
     return {"factors": factors} if factors else {}
+
+
+def _normalize_minute_rows(value: Any) -> List[Dict[str, Any]]:
+    if isinstance(value, Mapping) and isinstance(value.get("rows"), list):
+        raw_rows = list(value.get("rows") or [])
+    elif isinstance(value, list):
+        raw_rows = list(value)
+    else:
+        raw_rows = []
+    rows: List[Dict[str, Any]] = []
+    for raw in raw_rows:
+        if not isinstance(raw, Mapping):
+            continue
+        ts = _float(raw.get("ts"), None)
+        close = _float(raw.get("close") or raw.get("price"), None)
+        if ts is None or close is None or close <= 0:
+            continue
+        rows.append(
+            {
+                "ts": int(ts),
+                "open": _float(raw.get("open"), close),
+                "high": _float(raw.get("high"), close),
+                "low": _float(raw.get("low"), close),
+                "close": float(close),
+                "volume": _float(raw.get("volume"), None),
+                "raw_ts": _text(raw.get("raw_ts") or raw.get("datetime") or raw.get("time")),
+            }
+        )
+    rows.sort(key=lambda item: int(item["ts"]))
+    return rows
+
+
+def _minute_root(state: Mapping[str, Any]) -> Dict[str, Any]:
+    for key in (
+        "recent_minute_ohlcv_by_symbol",
+        "minute_ohlcv_by_symbol",
+        "monitor_minute_ohlcv_by_symbol",
+        "intraday_ohlcv_by_symbol",
+        "ohlcv_by_symbol",
+    ):
+        value = state.get(key)
+        if isinstance(value, Mapping) and value:
+            return dict(value)
+    return {}
+
+
+def _market_snapshot_for_symbol(state: Mapping[str, Any], symbol: str, *, now_epoch: int) -> Dict[str, Any]:
+    rows = _normalize_minute_rows(_minute_root(state).get(symbol))
+    if not rows:
+        return {"available": False, "reason": "minute_rows_unavailable"}
+    usable = [row for row in rows if int(row.get("ts") or 0) <= int(now_epoch)]
+    baseline = usable[-1] if usable else rows[-1]
+    return {
+        "available": True,
+        "baseline_epoch": int(baseline["ts"]),
+        "baseline_price": float(baseline["close"]),
+        "baseline_raw_ts": _text(baseline.get("raw_ts")),
+        "source": "state.minute_ohlcv_by_symbol",
+    }
+
+
+def _attach_market_snapshot(row: Dict[str, Any], state: Mapping[str, Any], *, now_epoch: int) -> Dict[str, Any]:
+    symbol = _text(row.get("symbol"))
+    if not symbol:
+        row["shadow_forward_base"] = {"available": False, "reason": "symbol_missing"}
+        return row
+    row["shadow_forward_base"] = _market_snapshot_for_symbol(state, symbol, now_epoch=now_epoch)
+    return row
+
+
+def _fill_quant_surface(row: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot = _as_dict(row.get("quant_factor_snapshot"))
+    factors = _as_dict(snapshot.get("factors"))
+    decision = _as_dict(row.get("entry_quant_decision"))
+    decision_cost = _as_dict(decision.get("cost_edge"))
+    decision_suitability = _as_dict(decision.get("tactic_suitability"))
+    if not _text(row.get("quant_tactic_id")):
+        row["quant_tactic_id"] = _text(decision.get("tactic_id") or snapshot.get("tactic_id"))
+    if not _text(row.get("tactic_suitability_tier")):
+        row["tactic_suitability_tier"] = _text(decision_suitability.get("tier"))
+    if row.get("tactic_suitability_score") in (None, ""):
+        row["tactic_suitability_score"] = decision_suitability.get("score")
+    if not _text(row.get("entry_quant_cost_floor_state")):
+        row["entry_quant_cost_floor_state"] = _text(
+            decision_cost.get("cost_floor_state") or factors.get("cost_floor_state")
+        )
+    return row
 
 
 def _float(value: Any, default: float | None = None) -> float | None:
@@ -475,29 +581,42 @@ def build_quant_shadow_candidate_payload(
     entry_info = _as_dict(state.get("monitor_entry"))
     ranked_by_symbol = _candidate_lookup(_as_list(state.get("ranked_candidates")))
     generated_at = _utc_now()
+    now_epoch = int(_kst_datetime_from_state(state).timestamp())
     opening_minutes = _opening_minutes_since_open(state)
 
     candidates: List[Dict[str, Any]] = []
     if _text(cascade.get("top_pick_symbol")) or _symbol(selected):
         candidates.append(
-            _attach_opening_probe(
-                _top_pick_row(selected=selected, cascade=cascade, entry_info=entry_info),
-                opening_minutes=opening_minutes,
+            _attach_market_snapshot(
+                _fill_quant_surface(
+                    _attach_opening_probe(
+                        _top_pick_row(selected=selected, cascade=cascade, entry_info=entry_info),
+                        opening_minutes=opening_minutes,
+                    )
+                ),
+                state,
+                now_epoch=now_epoch,
             )
         )
 
     for trace in _as_list(cascade.get("fallback_trace")):
         if isinstance(trace, Mapping) and _symbol(trace):
             candidates.append(
-                _attach_opening_probe(
-                    _runner_row(trace, ranked_by_symbol),
-                    opening_minutes=opening_minutes,
+                _attach_market_snapshot(
+                    _fill_quant_surface(
+                        _attach_opening_probe(
+                            _runner_row(trace, ranked_by_symbol),
+                            opening_minutes=opening_minutes,
+                        )
+                    ),
+                    state,
+                    now_epoch=now_epoch,
                 )
             )
 
     for skipped in _as_list(cascade.get("skipped")):
         if isinstance(skipped, Mapping) and _symbol(skipped):
-            candidates.append(_skipped_row(skipped, ranked_by_symbol))
+            candidates.append(_attach_market_snapshot(_fill_quant_surface(_skipped_row(skipped, ranked_by_symbol)), state, now_epoch=now_epoch))
 
     seen_symbols = {_text(row.get("symbol")) for row in candidates if _text(row.get("symbol"))}
     if opening_minutes is not None and opening_minutes <= 20:
@@ -509,9 +628,15 @@ def build_quant_shadow_candidate_payload(
                 continue
             metric_row = _same_symbol_metric_row(symbol, candidates)
             candidates.append(
-                _attach_opening_probe(
-                    _opening_largecap_watchlist_row(row, metric_row=metric_row),
-                    opening_minutes=opening_minutes,
+                _attach_market_snapshot(
+                    _fill_quant_surface(
+                        _attach_opening_probe(
+                            _opening_largecap_watchlist_row(row, metric_row=metric_row),
+                            opening_minutes=opening_minutes,
+                        )
+                    ),
+                    state,
+                    now_epoch=now_epoch,
                 )
             )
             seen_symbols.add(symbol)

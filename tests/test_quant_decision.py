@@ -125,6 +125,72 @@ def test_entry_quant_enforcement_ignores_non_promoted_blockers():
     assert out["matched_blockers"] == []
 
 
+def test_vwap_pullback_weak_or_watch_quality_gate_blocks_live_entry():
+    out = build_entry_quant_decision(
+        {
+            "reason": "pullback_structure_above_vwap_with_volume_confirmation",
+            "triggered": True,
+            "cost_adjusted_edge_ok": True,
+            "entry_cost_filter": {"passed": True},
+        },
+        selected={"playbook": "pullback", "tactic_suitability": {"score": 0.62, "tier": "watch"}},
+        factor_snapshot={
+            "source": "quant_monitor_entry_factor_snapshot.v1",
+            "tactic_id": "vwap_reclaim_pullback",
+            "factors": {
+                "cost_floor_state": "met",
+                "volume_ok": True,
+                "pullback_ok": False,
+                "reclaim_ok": False,
+                "breakout_ok": False,
+                "confidence_score": 0.56,
+                "confidence_threshold": 0.55,
+            },
+            "missing": [],
+        },
+        tactic_id="vwap_reclaim_pullback",
+        playbook="pullback",
+    )
+    enforcement = build_entry_quant_enforcement(out, mode="enforce")
+
+    assert out["decision"] == "block_recommended"
+    assert "vwap_pullback_promoted_quality_gate" in out["blockers"]
+    assert enforcement["blocked"] is True
+    assert enforcement["reason"] == "quant_entry_block:vwap_pullback_promoted_quality_gate"
+
+
+def test_vwap_pullback_quality_gate_allows_mature_confirmed_setup():
+    out = build_entry_quant_decision(
+        {
+            "reason": "pullback_structure_above_vwap_with_volume_confirmation",
+            "triggered": True,
+            "cost_adjusted_edge_ok": True,
+            "entry_cost_filter": {"passed": True},
+        },
+        selected={"playbook": "pullback", "tactic_suitability": {"score": 0.64, "tier": "watch"}},
+        factor_snapshot={
+            "source": "quant_monitor_entry_factor_snapshot.v1",
+            "tactic_id": "vwap_reclaim_pullback",
+            "factors": {
+                "cost_floor_state": "met",
+                "volume_ok": True,
+                "pullback_ok": True,
+                "reclaim_ok": True,
+                "breakout_ok": False,
+                "confidence_score": 0.61,
+                "confidence_threshold": 0.55,
+            },
+            "missing": [],
+        },
+        tactic_id="vwap_reclaim_pullback",
+        playbook="pullback",
+    )
+
+    assert out["decision"] == "entry_ready"
+    assert "vwap_pullback_promoted_quality_gate" not in out["blockers"]
+    assert "vwap_pullback_mature_confirmed" in out["positive_reasons"]
+
+
 def test_entry_quant_enforcement_always_enforces_cost_edge_even_if_config_omits_it():
     out = build_entry_quant_enforcement(
         {

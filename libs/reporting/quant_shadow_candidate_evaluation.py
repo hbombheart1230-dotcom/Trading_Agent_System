@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
+from libs.reporting.quant_shadow_forward_outcomes import attach_forward_outcomes
 from libs.runtime.quant.enforcement import build_entry_quant_enforcement
 
 
@@ -126,6 +127,45 @@ def _entry_quant_decision(row: Mapping[str, Any]) -> str:
     if isinstance(decision, Mapping):
         return _text(decision.get("decision"))
     return ""
+
+
+def _tactic_id(row: Mapping[str, Any]) -> str:
+    direct = _text(row.get("quant_tactic_id") or row.get("tactic_id"))
+    if direct:
+        return direct
+    decision = row.get("entry_quant_decision")
+    if isinstance(decision, Mapping):
+        tactic = _text(decision.get("tactic_id"))
+        if tactic:
+            return tactic
+    snapshot = row.get("quant_factor_snapshot")
+    if isinstance(snapshot, Mapping):
+        return _text(snapshot.get("tactic_id"))
+    return ""
+
+
+def _tactic_suitability_tier(row: Mapping[str, Any]) -> str:
+    direct = _text(row.get("tactic_suitability_tier"))
+    if direct:
+        return direct
+    decision = row.get("entry_quant_decision")
+    if isinstance(decision, Mapping):
+        suitability = decision.get("tactic_suitability")
+        if isinstance(suitability, Mapping):
+            tier = _text(suitability.get("tier"))
+            if tier:
+                return tier
+    return ""
+
+
+def _forward_base(row: Mapping[str, Any]) -> Dict[str, Any]:
+    base = row.get("shadow_forward_base")
+    return dict(base) if isinstance(base, Mapping) else {}
+
+
+def _forward_outcome(row: Mapping[str, Any]) -> Dict[str, Any]:
+    outcome = row.get("shadow_forward_outcome")
+    return dict(outcome) if isinstance(outcome, Mapping) else {}
 
 
 def _opening_probe(row: Mapping[str, Any]) -> Dict[str, Any]:
@@ -383,12 +423,15 @@ def build_quant_shadow_candidate_evaluation(
             row_symbol = _text(row.get("symbol")).upper()
             if symbol_filter and row_symbol != symbol_filter:
                 continue
-            candidates.append(dict(row))
+            enriched = dict(row)
+            enriched.setdefault("_payload_generated_at", payload.get("generated_at"))
+            candidates.append(enriched)
+    candidates = attach_forward_outcomes(candidates)
 
     roles = Counter(_text(row.get("shadow_role")) for row in candidates)
     reasons = Counter(_text(row.get("reason")) for row in candidates)
-    tactics = Counter(_text(row.get("quant_tactic_id")) for row in candidates)
-    suitability = Counter(_text(row.get("tactic_suitability_tier")) for row in candidates)
+    tactics = Counter(_tactic_id(row) for row in candidates)
+    suitability = Counter(_tactic_suitability_tier(row) for row in candidates)
     cost_floor = Counter(_cost_floor_state(row) for row in candidates)
     blockers = Counter(_text(row.get("primary_failure_axis")) for row in candidates)
     opening_probe_rows = [row for row in candidates if _opening_probe(row)]
@@ -405,6 +448,8 @@ def build_quant_shadow_candidate_evaluation(
     guard_blocked = sum(1 for row in candidates if _bool(row.get("guard_blocked")))
     actionable_guard_blocked = sum(1 for row in candidates if _actionable_entry_guard_block(row))
     evaluated = sum(1 for row in candidates if _bool(row.get("evaluated")))
+    forward_base_available = sum(1 for row in candidates if _bool(_forward_base(row).get("available")))
+    forward_outcome_available = sum(1 for row in candidates if _bool(_forward_outcome(row).get("available")))
     entry_shape = _entry_shape_payload(candidates)
     promotion = _promotion_candidate(candidates)
     shadow_readiness = _shadow_readiness(candidates, promotion)
@@ -416,6 +461,10 @@ def build_quant_shadow_candidate_evaluation(
         "payload_count": payload_count,
         "candidate_count": len(candidates),
         "evaluated_count": evaluated,
+        "forward_base_available_count": forward_base_available,
+        "forward_base_coverage": (float(forward_base_available) / float(len(candidates))) if candidates else 0.0,
+        "forward_outcome_available_count": forward_outcome_available,
+        "forward_outcome_coverage": (float(forward_outcome_available) / float(len(candidates))) if candidates else 0.0,
         "would_enter_count": would_enter,
         "opening_momentum_probe_count": len(opening_probe_rows),
         "opening_momentum_probe_would_enter_count": opening_probe_would_enter,
@@ -475,6 +524,12 @@ def render_quant_shadow_candidate_evaluation_lines(payload: Mapping[str, Any] | 
         f"largecap-surge {evaluation.get('opening_largecap_surge_would_enter_count') or 0} / "
         f"guard-blocked {evaluation.get('guard_blocked_count') or 0} "
         f"(actionable {evaluation.get('actionable_guard_blocked_count') or 0})",
+        f"- Q8 shadow forward base: {evaluation.get('forward_base_available_count') or 0}/"
+        f"{evaluation.get('candidate_count') or 0} candidates have baseline minute price "
+        f"(coverage {float(evaluation.get('forward_base_coverage') or 0.0):.1%})",
+        f"- Q8 shadow forward outcome: {evaluation.get('forward_outcome_available_count') or 0}/"
+        f"{evaluation.get('candidate_count') or 0} candidates have at least one forward checkpoint "
+        f"(coverage {float(evaluation.get('forward_outcome_coverage') or 0.0):.1%})",
         f"- Roles: {_format_rows(list(evaluation.get('by_role') or []))}",
         f"- Reasons: {_format_rows(list(evaluation.get('by_reason') or []))}",
         f"- Tactics: {_format_rows(list(evaluation.get('by_tactic_id') or []))}",

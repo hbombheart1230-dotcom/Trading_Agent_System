@@ -306,6 +306,38 @@ next strategist LLM payload must include `tactic_lane_guidance`:
 Authority owner: strategist. Commander still controls policy application,
 scanner still selects candidates, and monitor still confirms entry/exit.
 
+### Post-Q8 Candidate Behavior Patch: VWAP Pullback Quality Gate
+
+Promoted. `vwap_reclaim_pullback` is no longer allowed as a generic default
+entry lane when suitability is weak/watch/unavailable and the setup is not fully
+mature.
+
+Evidence:
+
+- 2026-W22 + 2026-W23: `vwap_reclaim_pullback` 29 quant samples, win 3.4%,
+  average -1.314%.
+- Strategist tactical `vwap_reclaim_pullback`: 31 samples, win 3.2%, average
+  -1.265%.
+- `strong` tactic suitability was the only positive bucket, while weak/watch
+  buckets were consistently negative.
+
+Live rule:
+
+- If tactic is `vwap_reclaim_pullback` and suitability is not strong, require
+  cost OK, volume OK, reclaim OK, pullback or breakout OK, and confidence above
+  threshold buffer.
+- Otherwise emit `vwap_pullback_promoted_quality_gate`.
+- The entry enforcement layer treats this as a hard monitor guard.
+
+Authority owner: monitor entry quant enforcement. Strategist still proposes the
+lane, but monitor owns whether the proposed pullback is mature enough to buy.
+
+Rollback trigger:
+
+- If forward-labeled shadow plus actual trades show blocked weak/watch pullback
+  candidates outperform accepted alternatives for at least 20 clean samples,
+  downgrade this back to advisory.
+
 ### Post-Q8 Candidate Behavior Patch: Human Chart Hard Veto
 
 Promote `human_chart_entry_score < 0.50` to hard veto except for explicitly

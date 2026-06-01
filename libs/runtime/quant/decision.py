@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 from libs.runtime.monitor_exit.reasons import is_emergency_exit_reason, is_hard_exit_reason
+from libs.runtime.quant.entry_promotion_policy import evaluate_promoted_entry_policy
 from libs.runtime.quant.tactics import normalize_tactic_id
 from libs.runtime.strategy_horizon_feedback import (
     extract_commander_horizon_policy_from_state,
@@ -118,6 +119,20 @@ def build_entry_quant_decision(
     elif suitability_tier in {"strong", "watch"}:
         _append_unique(positives, f"tactic_suitability_{suitability_tier}")
 
+    promoted_policy = evaluate_promoted_entry_policy(
+        tactic_id=tactic,
+        suitability_tier=suitability_tier,
+        suitability_score=suitability_score,
+        factors=factors,
+        cost_ok=bool(cost_ok or cost_filter_passed or cost_floor_state == "met"),
+    )
+    for item in _list(promoted_policy.get("blockers")):
+        _append_unique(blockers, str(item))
+    for item in _list(promoted_policy.get("warnings")):
+        _append_unique(warnings, str(item))
+    for item in _list(promoted_policy.get("positive_reasons")):
+        _append_unique(positives, str(item))
+
     if blockers:
         decision = "block_recommended"
     elif bool(entry.get("triggered")) or str(entry.get("legacy_entry_decision") or "").upper() == "BUY":
@@ -151,6 +166,7 @@ def build_entry_quant_decision(
             "tactic_id": _mapping(factor_snapshot).get("tactic_id"),
             "missing": list(_mapping(factor_snapshot).get("missing") or []),
         },
+        "promoted_entry_policy": dict(promoted_policy),
         "behavior_effect": "observation_only",
     }
 

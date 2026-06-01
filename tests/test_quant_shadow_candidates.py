@@ -97,6 +97,7 @@ def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() 
     assert top["guard_reason"] == "quant_entry_block"
     assert top["buy_blocked_pending_buy"] is True
     assert top["entry_quant_cost_floor_state"] == "not_met"
+    assert top["quant_tactic_id"] == "pullback_reclaim"
     runner = payload["candidates"][1]
     assert runner["symbol"] == "000660"
     assert runner["theme"] == "HBM"
@@ -105,6 +106,55 @@ def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() 
     skipped = payload["candidates"][2]
     assert skipped["symbol"] == "035420"
     assert skipped["evaluated"] is False
+
+
+def test_build_quant_shadow_candidate_payload_fills_quant_surface_and_market_snapshot() -> None:
+    state = {
+        "run_id": "run-market",
+        "trade_day": "2026-06-01",
+        "tick_ts": 1780268400,
+        "selected": {"symbol": "005930", "score_total": 0.8},
+        "recent_minute_ohlcv_by_symbol": {
+            "005930": {
+                "rows": [
+                    {"ts": 1780268340, "open": 70000, "high": 70100, "low": 69900, "close": 70050, "volume": 10},
+                    {"ts": 1780268400, "open": 70050, "high": 70200, "low": 70000, "close": 70100, "volume": 20},
+                ]
+            }
+        },
+        "monitor_entry": {
+            "reason": "pullback_not_mature",
+            "intent_submitted": False,
+            "primary_failure_axis": "pullback_structure",
+            "quant_factor_snapshot": {
+                "source": "quant_monitor_entry_factor_snapshot.v1",
+                "tactic_id": "vwap_reclaim_pullback",
+                "factors": {"cost_floor_state": "met"},
+            },
+            "entry_quant_decision": {
+                "tactic_id": "vwap_reclaim_pullback",
+                "tactic_suitability": {"tier": "watch", "score": 0.62},
+                "cost_edge": {"cost_floor_state": "met"},
+            },
+        },
+        "monitor_entry_cascade": {
+            "top_pick_symbol": "005930",
+            "top_pick_triggered": False,
+            "top_pick_reason": "pullback_not_mature",
+            "top_pick_guard_blocked": False,
+            "final_selected_symbol": "005930",
+        },
+    }
+
+    payload = build_quant_shadow_candidate_payload(state)
+    row = payload["candidates"][0]
+
+    assert row["quant_tactic_id"] == "vwap_reclaim_pullback"
+    assert row["tactic_suitability_tier"] == "watch"
+    assert row["tactic_suitability_score"] == 0.62
+    assert row["entry_quant_cost_floor_state"] == "met"
+    assert row["shadow_forward_base"]["available"] is True
+    assert row["shadow_forward_base"]["baseline_price"] == 70100.0
 
 
 def test_build_quant_shadow_candidate_payload_marks_opening_momentum_probe_shadow() -> None:
