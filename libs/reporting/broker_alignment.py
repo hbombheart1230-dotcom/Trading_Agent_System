@@ -3,14 +3,77 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
+from libs.core.symbols import normalize_symbol
 from libs.read.kiwoom_order_fill_reader import KiwoomOrderFillReader
 from libs.read.kiwoom_account_snapshot_collector import save_kiwoom_account_snapshot
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_int(value: Any) -> int:
+    if value in (None, ""):
+        return 0
+    try:
+        return int(float(str(value).replace(",", "").strip()))
+    except Exception:
+        return 0
+
+
+def _safe_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value).replace(",", "").strip())
+    except Exception:
+        return None
+
+
+def _first_call_payload(snapshot: Dict[str, Any], api_id: str) -> Dict[str, Any]:
+    calls = snapshot.get("calls") if isinstance(snapshot.get("calls"), list) else []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        if str(call.get("api_id") or "").strip() != api_id:
+            continue
+        payload = call.get("payload")
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _extract_day_trade_diary_rows(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    payload = _first_call_payload(snapshot, "ka10170")
+    rows = payload.get("tdy_trde_diary") if isinstance(payload.get("tdy_trde_diary"), list) else []
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = normalize_symbol(row.get("stk_cd") or row.get("stk_cd_1"), allow_test_symbols=True)
+        if not symbol:
+            continue
+        buy_qty = _safe_int(row.get("buy_qty"))
+        sell_qty = _safe_int(row.get("sell_qty"))
+        out.append(
+            {
+                "symbol": symbol,
+                "symbol_name": str(row.get("stk_nm") or "").strip(),
+                "buy_qty": buy_qty,
+                "sell_qty": sell_qty,
+                "buy_avg_price": _safe_float(row.get("buy_avg_pric") or row.get("buy_avg_price")),
+                "sell_avg_price": _safe_float(row.get("sel_avg_pric") or row.get("sell_avg_price")),
+                "buy_amount": _safe_float(row.get("buy_amt")),
+                "sell_amount": _safe_float(row.get("sell_amt")),
+                "realized_pnl": _safe_float(row.get("pl_amt") or row.get("realized_pnl")),
+                "pnl_pct": _safe_float(row.get("prft_rt") or row.get("pnl_ratio")),
+                "commission_tax": _safe_float(row.get("cmsn_alm_tax") or row.get("fee_tax")),
+                "closed_by_day_trade_diary": buy_qty > 0 and sell_qty >= buy_qty,
+                "source": "kiwoom.ka10170",
+            }
+        )
+    return out
 
 
 def render_broker_alignment_markdown(report: Dict[str, Any]) -> str:
@@ -35,6 +98,7 @@ def render_broker_alignment_markdown(report: Dict[str, Any]) -> str:
         lines.append(f"- Error: `{report.get('error')}`")
     snapshot = report.get("account_snapshot") if isinstance(report.get("account_snapshot"), dict) else {}
     if snapshot:
+        closed_symbols = snapshot.get("day_trade_closed_symbols") if isinstance(snapshot.get("day_trade_closed_symbols"), list) else []
         lines.extend(
             [
                 "",
@@ -43,6 +107,8 @@ def render_broker_alignment_markdown(report: Dict[str, Any]) -> str:
                 f"- Status: {snapshot.get('status')}",
                 f"- Path: `{snapshot.get('path') or '-'}`",
                 f"- Calls: {snapshot.get('ok_count') or 0}/{snapshot.get('api_call_count') or 0} ok",
+                f"- Day trade diary rows: {int(snapshot.get('day_trade_diary_count') or 0)}",
+                f"- Day trade closed symbols: {', '.join(str(x) for x in closed_symbols) if closed_symbols else '-'}",
             ]
         )
         if snapshot.get("error"):
@@ -54,6 +120,14 @@ def build_broker_alignment_report(events_path: Path, reports_root: Path, day: st
     snapshot_summary: Dict[str, Any] = {}
     try:
         snapshot = save_kiwoom_account_snapshot(day=day, trigger="report_generation")
+        day_trade_diary_rows = _extract_day_trade_diary_rows(snapshot)
+        day_trade_closed_symbols = sorted(
+            {
+                str(row.get("symbol") or "").strip()
+                for row in day_trade_diary_rows
+                if isinstance(row, dict) and bool(row.get("closed_by_day_trade_diary"))
+            }
+        )
         snapshot_summary = {
             "status": "ok",
             "path": snapshot.get("path"),
@@ -61,6 +135,9 @@ def build_broker_alignment_report(events_path: Path, reports_root: Path, day: st
             "api_call_count": (snapshot.get("summary") or {}).get("api_call_count"),
             "ok_count": (snapshot.get("summary") or {}).get("ok_count"),
             "error_count": (snapshot.get("summary") or {}).get("error_count"),
+            "day_trade_diary_count": len(day_trade_diary_rows),
+            "day_trade_closed_symbols": day_trade_closed_symbols,
+            "day_trade_diary_rows": day_trade_diary_rows,
         }
     except Exception as exc:
         snapshot_summary = {"status": "error", "error": str(exc)}

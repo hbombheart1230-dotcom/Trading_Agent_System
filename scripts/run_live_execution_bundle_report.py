@@ -1,5 +1,10 @@
 import sys
 import types
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import libs.reporting.live_execution_bundle_runner as _runner
 from libs.reporting.trade_bundle_assembly import derive_trade_recovery_metadata as _shared_derive_trade_recovery_metadata

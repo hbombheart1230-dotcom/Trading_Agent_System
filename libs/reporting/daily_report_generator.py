@@ -45,6 +45,7 @@ from libs.reporting.broker_alignment import build_broker_alignment_report as _bu
 from libs.reporting.report_source_helpers import build_policy_surface_quality_snapshot
 from libs.reporting.symbol_trade_report import build_daily_trade_index
 from libs.reporting.symbol_trade_report import collect_symbols_for_day
+from libs.core.symbols import normalize_symbol
 
 
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
@@ -92,15 +93,49 @@ def _find_trade_dir(reports_root: Path, day: str, trade_id: str) -> Path | None:
     return matches[0] if matches else None
 
 
-def _build_trade_report_integrity(reports_root: Path, day: str, trade_index: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _broker_closed_symbols_from_alignment(broker_alignment: Dict[str, Any] | None) -> set[str]:
+    if not isinstance(broker_alignment, dict):
+        return set()
+    snapshot = broker_alignment.get("account_snapshot") if isinstance(broker_alignment.get("account_snapshot"), dict) else {}
+    symbols = snapshot.get("day_trade_closed_symbols") if isinstance(snapshot.get("day_trade_closed_symbols"), list) else []
+    out = {
+        normalize_symbol(symbol, allow_test_symbols=True)
+        for symbol in symbols
+        if normalize_symbol(symbol, allow_test_symbols=True)
+    }
+    rows = snapshot.get("day_trade_diary_rows") if isinstance(snapshot.get("day_trade_diary_rows"), list) else []
+    for row in rows:
+        if not isinstance(row, dict) or not bool(row.get("closed_by_day_trade_diary")):
+            continue
+        symbol = normalize_symbol(row.get("symbol"), allow_test_symbols=True)
+        if symbol:
+            out.add(symbol)
+    return out
+
+
+def _build_trade_report_integrity(
+    reports_root: Path,
+    day: str,
+    trade_index: List[Dict[str, Any]],
+    broker_alignment: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     rows: List[Dict[str, Any]] = []
     missing: List[Dict[str, Any]] = []
+    broker_closed_symbols = _broker_closed_symbols_from_alignment(broker_alignment)
+    broker_closed_report_open: List[Dict[str, Any]] = []
     for item in trade_index:
         if not isinstance(item, dict):
             continue
         trade_id = str(item.get("trade_id") or "").strip()
         if not trade_id:
             continue
+        symbol = normalize_symbol(item.get("symbol"), allow_test_symbols=True)
+        lifecycle_status = str(
+            item.get("status")
+            or item.get("trade_lifecycle_status")
+            or item.get("lifecycle_status")
+            or ""
+        ).strip().lower()
         trade_dir = _find_trade_dir(reports_root, day, trade_id)
         reports_dir = trade_dir / "reports" if trade_dir else None
         checks = {
@@ -110,11 +145,21 @@ def _build_trade_report_integrity(reports_root: Path, day: str, trade_index: Lis
         }
         row = {
             "trade_id": trade_id,
-            "symbol": str(item.get("symbol") or ""),
+            "symbol": symbol or str(item.get("symbol") or ""),
+            "lifecycle_status": lifecycle_status,
             "trade_dir": str(trade_dir) if trade_dir else "",
             **checks,
         }
         rows.append(row)
+        if symbol and symbol in broker_closed_symbols and lifecycle_status not in ("closed", "done", "completed"):
+            broker_closed_report_open.append(
+                {
+                    "trade_id": trade_id,
+                    "symbol": symbol,
+                    "lifecycle_status": lifecycle_status or "unknown",
+                    "issue": "broker_day_trade_closed_but_report_open",
+                }
+            )
         if not all(checks.values()):
             missing.append(
                 {
@@ -123,6 +168,11 @@ def _build_trade_report_integrity(reports_root: Path, day: str, trade_index: Lis
                     "missing": [key for key, value in checks.items() if not value],
                 }
             )
+    status = "ok"
+    if missing:
+        status = "missing_reports"
+    if broker_closed_report_open:
+        status = "broker_lifecycle_mismatch" if not missing else "missing_reports_and_broker_lifecycle_mismatch"
     return {
         "schema_version": "trade_report_integrity.v1",
         "expected_trade_count": len([x for x in trade_index if isinstance(x, dict) and str(x.get("trade_id") or "").strip()]),
@@ -131,8 +181,10 @@ def _build_trade_report_integrity(reports_root: Path, day: str, trade_index: Lis
         "summary_json_count": sum(1 for row in rows if row.get("ai_trade_summary_json")),
         "summary_input_count": sum(1 for row in rows if row.get("ai_trade_summary_input_json")),
         "missing_count": len(missing),
-        "status": "ok" if not missing else "missing_reports",
+        "broker_closed_report_open_count": len(broker_closed_report_open),
+        "status": status,
         "missing": missing,
+        "broker_closed_report_open": broker_closed_report_open,
     }
 
 
@@ -231,8 +283,8 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         generated_symbol_reports = list(symbol_report_refresh.get("generated") or [])
         operator_summary_snapshot = _load_operator_summary_snapshot(events_path, out_dir, day)
         residual_positions = build_residual_positions_payload(reports_root=out_dir, day=day)
-        trade_report_integrity = _build_trade_report_integrity(out_dir, day, trade_index)
         broker_alignment = _build_broker_alignment_report(events_path, out_dir, day)
+        trade_report_integrity = _build_trade_report_integrity(out_dir, day, trade_index, broker_alignment)
         report_freshness = {
             "generated_at": _utc_now_iso(),
             "source_run_count": 0,
@@ -305,8 +357,8 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     generated_symbol_reports = list(symbol_report_refresh.get("generated") or [])
     operator_summary_snapshot = _load_operator_summary_snapshot(events_path, out_dir, day)
     residual_positions = build_residual_positions_payload(reports_root=out_dir, day=day)
-    trade_report_integrity = _build_trade_report_integrity(out_dir, day, trade_index)
     broker_alignment = _build_broker_alignment_report(events_path, out_dir, day)
+    trade_report_integrity = _build_trade_report_integrity(out_dir, day, trade_index, broker_alignment)
     operator_summary_snapshot_freshness = _build_snapshot_freshness(
         snapshot=operator_summary_snapshot,
         source_freshness=report_freshness,

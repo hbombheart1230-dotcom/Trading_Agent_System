@@ -248,6 +248,85 @@ def test_generate_daily_report_surfaces_broker_alignment(tmp_path: Path, monkeyp
     assert "missing_in_local: **1**" in text
 
 
+def test_generate_daily_report_flags_broker_closed_report_open_mismatch(tmp_path: Path, monkeypatch) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({"ts": "2026-06-02T02:20:00+00:00", "run_id": "r1", "stage": "monitor", "event": "summary", "payload": {"symbol": "061040"}}) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "reports"
+    trade_dir = out_dir / "trades" / "2026-06-02" / "1100" / "TRD_20260602_061040_01"
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    (trade_dir / "lifecycle_bundle.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "lifecycle_bundle.v1",
+                "day": "2026-06-02",
+                "trade_id": "TRD_20260602_061040_01",
+                "symbol": "061040",
+                "trade_lifecycle_status": "open",
+                "lifecycle": {
+                    "entry": {"run_id": "r1", "ts": "2026-06-02T02:20:00+00:00", "price": 7939.0},
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    reports_dir = trade_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("ai_trade_summary_input.json", "ai_trade_summary.json", "ai_trade_summary.md"):
+        (reports_dir / name).write_text("{}", encoding="utf-8")
+
+    def fake_alignment(events_path, reports_root, day):
+        return {
+            "day": day,
+            "generated_at": "2026-06-02T07:40:00+00:00",
+            "event_log_path": str(events_path),
+            "status": "ok",
+            "summary": {
+                "local_total": 2,
+                "broker_total": 2,
+                "matched_by_ord_no": 2,
+                "missing_in_local_total": 0,
+                "missing_in_broker_total": 0,
+                "missing_in_local": [],
+                "missing_in_broker": [],
+            },
+            "account_snapshot": {
+                "status": "ok",
+                "api_call_count": 19,
+                "ok_count": 19,
+                "day_trade_diary_count": 1,
+                "day_trade_closed_symbols": ["061040"],
+                "day_trade_diary_rows": [
+                    {
+                        "symbol": "061040",
+                        "buy_qty": 378,
+                        "sell_qty": 378,
+                        "closed_by_day_trade_diary": True,
+                        "source": "kiwoom.ka10170",
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr(daily_generator, "_build_broker_alignment_report", fake_alignment)
+
+    md, js = generate_daily_report(events, out_dir, day="2026-06-02")
+    data = json.loads(js.read_text(encoding="utf-8"))
+    integrity = data["trade_report_integrity"]
+
+    assert integrity["status"] == "broker_lifecycle_mismatch"
+    assert integrity["broker_closed_report_open_count"] == 1
+    assert integrity["broker_closed_report_open"][0]["trade_id"] == "TRD_20260602_061040_01"
+    text = md.read_text(encoding="utf-8")
+    assert "BROKER_LIFECYCLE_MISMATCH" in text
+    assert "broker_closed_report_open_count: **1**" in text
+    assert "day_trade_closed_symbols: `061040`" in text
+
+
 def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path, monkeypatch) -> None:
     events = tmp_path / "events.jsonl"
     events.write_text(

@@ -63,6 +63,11 @@ def render_trade_report_integrity(payload: Dict[str, Any]) -> List[str]:
     if not integrity:
         return []
     missing = integrity.get("missing") if isinstance(integrity.get("missing"), list) else []
+    broker_closed_report_open = (
+        integrity.get("broker_closed_report_open")
+        if isinstance(integrity.get("broker_closed_report_open"), list)
+        else []
+    )
     lines = [
         "",
         "## Trade Report Integrity",
@@ -73,7 +78,15 @@ def render_trade_report_integrity(payload: Dict[str, Any]) -> List[str]:
         f"- summary_json_count: **{int(integrity.get('summary_json_count') or 0)}**",
         f"- summary_input_count: **{int(integrity.get('summary_input_count') or 0)}**",
         f"- missing_count: **{int(integrity.get('missing_count') or 0)}**",
+        f"- broker_closed_report_open_count: **{int(integrity.get('broker_closed_report_open_count') or 0)}**",
     ]
+    for row in broker_closed_report_open[:10]:
+        if not isinstance(row, dict):
+            continue
+        lines.append(
+            f"- broker closed but report open `{row.get('trade_id') or '-'}` {row.get('symbol') or ''}: "
+            f"status=`{row.get('lifecycle_status') or 'unknown'}`"
+        )
     for row in missing[:10]:
         if not isinstance(row, dict):
             continue
@@ -108,6 +121,7 @@ def render_broker_alignment(payload: Dict[str, Any]) -> List[str]:
         lines.append(f"- report_json: `{alignment.get('report_json_path')}`")
     snapshot = alignment.get("account_snapshot") if isinstance(alignment.get("account_snapshot"), dict) else {}
     if snapshot:
+        closed_symbols = snapshot.get("day_trade_closed_symbols") if isinstance(snapshot.get("day_trade_closed_symbols"), list) else []
         lines.append(f"- account_snapshot_status: **{str(snapshot.get('status') or 'unknown').upper()}**")
         if snapshot.get("path"):
             lines.append(f"- account_snapshot_json: `{snapshot.get('path')}`")
@@ -116,6 +130,9 @@ def render_broker_alignment(payload: Dict[str, Any]) -> List[str]:
                 f"- account_snapshot_calls: **{int(snapshot.get('ok_count') or 0)}"
                 f"/{int(snapshot.get('api_call_count') or 0)} ok**"
             )
+        lines.append(f"- day_trade_diary_count: **{int(snapshot.get('day_trade_diary_count') or 0)}**")
+        if closed_symbols:
+            lines.append(f"- day_trade_closed_symbols: `{', '.join(str(x) for x in closed_symbols)}`")
         if snapshot.get("error"):
             lines.append(f"- account_snapshot_error: `{snapshot.get('error')}`")
     for title, key in (("missing broker-only rows", "missing_in_local"), ("missing local-only rows", "missing_in_broker")):
