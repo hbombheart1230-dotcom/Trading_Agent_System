@@ -2307,6 +2307,9 @@ def _render_q8_shadow_blocker_review_lines(payload: Dict[str, Any]) -> List[str]
         f"- behavior_effect: `{review.get('behavior_effect') or 'evaluation_only'}`",
         f"- reviewed candidates: **{int(review.get('observed_review_candidate_count') or 0)}** observed / "
         f"**{int(review.get('candidate_count') or 0)}** total",
+        f"- dedupe: raw **{int(review.get('raw_candidate_count') or review.get('candidate_count') or 0)}**, "
+        f"deduped **{int(review.get('deduped_candidate_count') or review.get('candidate_count') or 0)}**, "
+        f"duplicates **{int(review.get('duplicate_count') or 0)}**",
     ]
     for group in groups[:5]:
         if not isinstance(group, dict):

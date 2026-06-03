@@ -45,6 +45,9 @@ After each trading day, answer:
 | Metric | Meaning |
 | --- | --- |
 | Candidate count | total candidates captured in shadow |
+| Raw candidate count | total rows before duplicate collapse |
+| Deduped candidate count | rows after `symbol + reason + shadow_role + baseline_epoch + tactic_id` collapse |
+| Duplicate count | raw minus deduped rows, used to avoid overstating repeated same-window observations |
 | Evaluated count | candidates with enough fields to evaluate |
 | Would-enter count | candidates that would have entered under current evaluation |
 | Blocker count | count by blocker/reason |

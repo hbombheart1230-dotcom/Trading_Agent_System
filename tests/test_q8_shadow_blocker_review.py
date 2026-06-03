@@ -19,6 +19,18 @@ def test_q8_shadow_blocker_review_groups_forward_outcomes() -> None:
                     },
                 },
                 {
+                    "symbol": "005930",
+                    "reason": "breakout_not_ready",
+                    "shadow_role": "top_pick",
+                    "rank": 1,
+                    "quant_tactic_id": "vwap_reclaim_pullback",
+                    "shadow_forward_base": {
+                        "available": True,
+                        "baseline_epoch": 1000,
+                        "baseline_price": 100.0,
+                    },
+                },
+                {
                     "symbol": "000660",
                     "reason": "volume_confirmation_missing",
                     "shadow_role": "runner_up_evaluated",
@@ -49,7 +61,10 @@ def test_q8_shadow_blocker_review_groups_forward_outcomes() -> None:
     review = build_q8_shadow_blocker_review(payloads, minute_rows_by_symbol=minute_rows)
     groups = {group["reason"]: group for group in review["groups"]}
 
+    assert review["raw_candidate_count"] == 3
     assert review["candidate_count"] == 2
+    assert review["deduped_candidate_count"] == 2
+    assert review["duplicate_count"] == 1
     assert groups["breakout_not_ready"]["candidate_count"] == 1
     assert groups["breakout_not_ready"]["observed_count"] == 1
     assert groups["breakout_not_ready"]["missed_opportunity_count"] == 1

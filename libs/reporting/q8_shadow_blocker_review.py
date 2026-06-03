@@ -56,6 +56,34 @@ def _candidate_rows(payloads: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
     return rows
 
 
+def _dedupe_key(row: Mapping[str, Any]) -> tuple[str, str, str, int, str]:
+    base = row.get("shadow_forward_base") if isinstance(row.get("shadow_forward_base"), Mapping) else {}
+    baseline_epoch = 0
+    try:
+        baseline_epoch = int(float(base.get("baseline_epoch") or 0))
+    except Exception:
+        baseline_epoch = 0
+    return (
+        _text(row.get("symbol")).upper(),
+        _text(row.get("reason")),
+        _text(row.get("shadow_role")),
+        baseline_epoch,
+        _text(row.get("quant_tactic_id")),
+    )
+
+
+def _dedupe_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str, int, str]] = set()
+    for row in rows:
+        key = _dedupe_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(row))
+    return out
+
+
 def _checkpoint_values(outcome: Mapping[str, Any]) -> Dict[str, Any]:
     checkpoints = outcome.get("checkpoints") if isinstance(outcome.get("checkpoints"), Mapping) else {}
     observed: List[Mapping[str, Any]] = [
@@ -162,7 +190,8 @@ def build_q8_shadow_blocker_review(
     review_reasons: Sequence[str] = DEFAULT_REVIEW_REASONS,
     market_regime_rail: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    rows = attach_forward_outcomes(_candidate_rows(payloads), minute_rows_by_symbol=minute_rows_by_symbol)
+    raw_rows = attach_forward_outcomes(_candidate_rows(payloads), minute_rows_by_symbol=minute_rows_by_symbol)
+    rows = _dedupe_rows(raw_rows)
     review_reason_set = {str(reason) for reason in review_reasons}
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -175,6 +204,10 @@ def build_q8_shadow_blocker_review(
         "schema_version": "q8_shadow_blocker_review.v1",
         "behavior_effect": "evaluation_only",
         "market_regime_rail": dict(market_regime_rail or {}),
+        "raw_candidate_count": len(raw_rows),
+        "deduped_candidate_count": len(rows),
+        "duplicate_count": max(0, len(raw_rows) - len(rows)),
+        "dedupe_key": ["symbol", "reason", "shadow_role", "baseline_epoch", "quant_tactic_id"],
         "candidate_count": len(rows),
         "review_reason_count": len(groups),
         "observed_review_candidate_count": observed_total,
@@ -191,6 +224,8 @@ def render_q8_shadow_blocker_review_markdown(review: Mapping[str, Any], *, day: 
         "## Summary",
         "",
         f"- candidate_count: **{int(review.get('candidate_count') or 0)}**",
+        f"- raw_candidate_count: **{int(review.get('raw_candidate_count') or review.get('candidate_count') or 0)}**",
+        f"- duplicate_count: **{int(review.get('duplicate_count') or 0)}**",
         f"- review_reason_count: **{int(review.get('review_reason_count') or 0)}**",
         f"- observed_review_candidate_count: **{int(review.get('observed_review_candidate_count') or 0)}**",
     ]
