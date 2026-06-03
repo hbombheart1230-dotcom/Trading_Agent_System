@@ -1,6 +1,6 @@
 # Tactical Operating Baseline
 
-Last updated: 2026-05-21
+Last updated: 2026-06-02
 
 ## Purpose
 
@@ -34,6 +34,22 @@ Source: `reports/operator_summary/weekly/2026-W21/weekly_summary.json`
   034220 fixed-stop losses dominated the negative average.
 - Post-exit shadow recap refreshed 6 trades and observed all 6. EOD remains
   pending intraday. Use this as observation-only evidence.
+
+2026-06-02 Q8 close review:
+
+- Live trades: 1 closed trade, `TRD_20260602_061040_01`.
+- Realized result: -1.20%, hold 156 sec, truth-surface net.
+- Broker reconciliation: local 2, broker 2, order-number matched 2.
+- `ka10170` day trade diary: 1 row, closed symbol `061040`.
+- Trade report integrity after repair: expected 1, checked 1, missing 0,
+  `broker_closed_report_open_count=0`.
+- Q8 live-trade readiness remains `hold_sample_insufficient`.
+- Q8 shadow readiness is `ready`: 1,474 candidates, 1,454 evaluated, 1,333
+  forward outcomes available.
+- Cost-edge promotion candidate is already active as a monitor hard gate; do
+  not re-promote it.
+- Next evaluation targets are breakout readiness, pullback maturity, and human
+  chart sanity, not new behavior changes.
 
 Hold-time distribution observed from symbol trade histories:
 
@@ -224,6 +240,16 @@ Done on 2026-05-21:
 - Added `quant_tactic` to `ai_trade_summary_input.json`.
 - Regenerated 2026-05-21 post-exit recap and affected trade summaries.
 
+Done on 2026-06-02:
+
+- Added `ka10170` day trade diary normalization to broker alignment.
+- Added `account_snapshot.day_trade_closed_symbols`.
+- Added daily report cross-check for broker-closed/report-open mismatches.
+- Added `trade_report_integrity.broker_closed_report_open_count`.
+- Daily report status becomes `broker_lifecycle_mismatch` when broker truth
+  says a symbol is closed but lifecycle/report truth remains open.
+- 2026-06-02 was repaired and regenerated; current status is integrity pass.
+
 ### Immediate: Runner-Up Independent Fit Review
 
 Do not add a hard gate yet. First verify these fields exist for each runner-up
@@ -340,14 +366,47 @@ Rollback trigger:
 
 ### Post-Q8 Candidate Behavior Patch: Human Chart Hard Veto
 
-Promote `human_chart_entry_score < 0.50` to hard veto except for explicitly
-listed probe modes.
+Do not promote yet.
+
+2026-06-02 Q8 shadow showed `human_chart_sanity_guard_blocked` on 66
+candidates. This is now a promotion review target, not an immediate hard-veto
+change.
 
 Required evidence before patch:
 
 - confirm score availability on live candidate snapshots
 - confirm no conflict with lower VWAP rebound probe exception
 - confirm report shows the blocked feature
+- compare blocked candidates against forward outcomes
+- separate true bad-chart blocks from missed winners
+- document rollback trigger before any behavior change
+
+### Post-Q8 Candidate Behavior Patch: Breakout Readiness
+
+Do not promote yet.
+
+2026-06-02 Q8 shadow showed:
+
+- `breakout_not_ready`: 86 direct reason rows.
+- breakout-ready-like candidates: 129.
+- breakout-not-ready count in shape diagnostics: 213.
+- Strategist shadow contrast underused lane: `breakout`.
+
+Decision:
+
+- classify as `adjust_and_retest` candidate.
+- review forward outcomes by symbol, market regime, cost floor state, and
+  volume confirmation.
+- do not relax live breakout behavior from one day.
+
+Required evidence before patch:
+
+- enough forward-labeled shadow samples across more than one live day
+- artifact integrity pass for the reviewed days
+- opportunity-cost table for blocked breakout-like candidates
+- false-positive table for breakout candidates that later failed
+- explicit authority owner: Strategist lane guidance, Scanner ranking, or
+  Monitor entry guard
 
 ### Post-Q8 Candidate Behavior Patch: Long Horizon Unlock
 
