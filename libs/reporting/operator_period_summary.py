@@ -34,6 +34,13 @@ from libs.reporting.strategist_llm_evaluation import (
     build_strategist_llm_evaluation,
     render_strategist_llm_evaluation_lines,
 )
+from libs.reporting.market_regime_rail_review import (
+    classify_market_regime_rail,
+    load_latest_macro_snapshot,
+)
+from libs.reporting.q8_shadow_blocker_review import (
+    build_q8_shadow_blocker_review,
+)
 
 
 _WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
@@ -2088,6 +2095,12 @@ def build_operator_daily_summary_artifact_payload(
         reports_root=reports_root,
         days=[normalized_day],
     )
+    market_regime_rail = classify_market_regime_rail(
+        load_latest_macro_snapshot(
+            normalized_day,
+            root=Path(reports_root).parent / "data" / "logs" / "macro_indicators",
+        )
+    )
     if metrics["trade_count"] == 0 and trade_index:
         metrics["trade_count"] = len(trade_index)
 
@@ -2111,6 +2124,11 @@ def build_operator_daily_summary_artifact_payload(
         "pattern_performance": _pattern_performance_payload(rows),
         "quant_tactic_evaluation": build_quant_tactic_evaluation(rows),
         "quant_shadow_candidate_evaluation": build_quant_shadow_candidate_evaluation(shadow_payloads),
+        "market_regime_rail_review": market_regime_rail,
+        "q8_shadow_blocker_review": build_q8_shadow_blocker_review(
+            shadow_payloads,
+            market_regime_rail=market_regime_rail,
+        ),
         "strategist_llm_evaluation": build_strategist_llm_evaluation(rows, shadow_payloads),
         "symbol_summary": _symbol_rows(rows),
         "residual_positions": _build_residual_positions_payload(reports_root=reports_root, day=normalized_day),
@@ -2253,6 +2271,58 @@ def _render_strategist_llm_evaluation_lines(payload: Dict[str, Any]) -> List[str
     return render_strategist_llm_evaluation_lines(evaluation)
 
 
+def _render_market_regime_rail_lines(payload: Dict[str, Any]) -> List[str]:
+    rail = payload.get("market_regime_rail_review")
+    if not isinstance(rail, dict) or not rail:
+        return []
+    inputs = rail.get("market_inputs") if isinstance(rail.get("market_inputs"), dict) else {}
+    return [
+        "",
+        "## Market Regime Rail",
+        "",
+        f"- rail_id: `{rail.get('rail_id') or 'not_available'}` ({rail.get('rail_confidence') or 'none'})",
+        f"- behavior_effect: `{rail.get('behavior_effect') or 'evaluation_only'}`",
+        f"- rationale: {rail.get('rationale') or '-'}",
+        (
+            "- key inputs: "
+            f"kospi {float(inputs.get('kospi_pct') or 0.0):.2f}%, "
+            f"kosdaq {float(inputs.get('kosdaq_pct') or 0.0):.2f}%, "
+            f"breadth {float(inputs.get('breadth') or 0.0):.3f}, "
+            f"nasdaq {float(inputs.get('nasdaq_pct') or 0.0):.2f}%, "
+            f"usdkrw {float(inputs.get('usdkrw_pct') or 0.0):.2f}%"
+        ),
+        f"- q8_focus: `{', '.join(str(x) for x in list(rail.get('q8_review_focus') or [])) or '-'}`",
+    ]
+
+
+def _render_q8_shadow_blocker_review_lines(payload: Dict[str, Any]) -> List[str]:
+    review = payload.get("q8_shadow_blocker_review")
+    if not isinstance(review, dict) or not review:
+        return []
+    groups = review.get("groups") if isinstance(review.get("groups"), list) else []
+    lines = [
+        "",
+        "## Q8 Shadow Blocker Forward Review",
+        "",
+        f"- behavior_effect: `{review.get('behavior_effect') or 'evaluation_only'}`",
+        f"- reviewed candidates: **{int(review.get('observed_review_candidate_count') or 0)}** observed / "
+        f"**{int(review.get('candidate_count') or 0)}** total",
+    ]
+    for group in groups[:5]:
+        if not isinstance(group, dict):
+            continue
+        lines.append(
+            f"- `{group.get('reason') or '-'}`: "
+            f"n={int(group.get('candidate_count') or 0)}, "
+            f"obs={int(group.get('observed_count') or 0)}, "
+            f"avg_latest={float(group.get('avg_latest_return_pct') or 0.0):.4f}%, "
+            f"mfe={float(group.get('avg_max_favorable_pct') or 0.0):.4f}%, "
+            f"mae={float(group.get('avg_max_adverse_pct') or 0.0):.4f}%, "
+            f"decision=`{group.get('decision') or 'retain_under_observation'}`"
+        )
+    return lines
+
+
 def render_operator_period_summary_markdown(payload: Dict[str, Any]) -> str:
     period_type = str(payload.get("period_type") or "").strip().lower()
     period_label = "Weekly" if period_type == "weekly" else "Monthly"
@@ -2312,6 +2382,8 @@ def render_operator_period_summary_markdown(payload: Dict[str, Any]) -> str:
         lines.append(f"- {label}: {text or '없음'}")
     lines.extend(_render_pattern_performance_lines(payload))
     lines.extend(_render_quant_shadow_candidate_lines(payload))
+    lines.extend(_render_market_regime_rail_lines(payload))
+    lines.extend(_render_q8_shadow_blocker_review_lines(payload))
     lines.extend(_render_strategist_llm_evaluation_lines(payload))
 
     lines += ["", "---", "", "## 주요 종목", ""]
@@ -2503,6 +2575,8 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
         lines.append(f"- {label}: {text or '없음'}")
     lines.extend(_render_pattern_performance_lines(payload))
     lines.extend(_render_quant_shadow_candidate_lines(payload))
+    lines.extend(_render_market_regime_rail_lines(payload))
+    lines.extend(_render_q8_shadow_blocker_review_lines(payload))
     lines.extend(_render_strategist_llm_evaluation_lines(payload))
 
     lines += ["", "---", "", "## 종목별 요약", ""]

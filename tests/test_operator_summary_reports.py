@@ -311,6 +311,28 @@ def test_operator_daily_summary_surfaces_quant_shadow_candidates(tmp_path: Path)
             ],
         },
     )
+    _write_json(
+        tmp_path / "data" / "logs" / "macro_indicators" / day / "latest.json",
+        {
+            "schema_version": "global_sentiment_macro_snapshot.v1",
+            "generated_at": "2026-05-24T06:00:00+00:00",
+            "index_moves": {
+                "nasdaq_pct": 0.4,
+                "sp500_pct": 0.2,
+                "kospi_pct": -0.3,
+                "kosdaq_pct": -1.5,
+            },
+            "korea_indices": {"breadth": -0.5},
+            "macro_moves": {"dxy_pct": 0.0, "vix_level": 16.0, "vix_pct": 1.0},
+            "macro_indicators": {
+                "indicators": {
+                    "usdkrw": {"change_pct": 0.1},
+                    "us_10y_yield": {"delta": 0.01},
+                }
+            },
+            "global_sentiment": {"score": 0.0},
+        },
+    )
 
     md, _json, daily = generate_operator_daily_summary_artifact(reports_root=reports, day=day)
 
@@ -319,10 +341,14 @@ def test_operator_daily_summary_surfaces_quant_shadow_candidates(tmp_path: Path)
     assert shadow["would_enter_count"] == 1
     assert {"name": "volume_confirmation_missing", "count": 1} in shadow["by_reason"]
     assert shadow["promotion_candidate"]["candidate"] == "cost_edge"
+    assert daily["market_regime_rail_review"]["rail_id"] == "us_tech_risk_on_korea_weak"
+    assert daily["q8_shadow_blocker_review"]["market_regime_rail"]["rail_id"] == "us_tech_risk_on_korea_weak"
     markdown = md.read_text(encoding="utf-8")
     assert "Quant Shadow Candidates" in markdown
     assert "would-enter 1" in markdown
     assert "Q8 promotion candidate" in markdown
+    assert "Market Regime Rail" in markdown
+    assert "Q8 Shadow Blocker Forward Review" in markdown
 
 
 def test_operator_daily_summary_surfaces_strategist_llm_evaluation(tmp_path: Path) -> None:
