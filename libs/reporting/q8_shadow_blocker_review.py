@@ -9,6 +9,7 @@ from libs.reporting.quant_shadow_candidate_evaluation import (
     load_quant_shadow_candidate_payloads,
 )
 from libs.reporting.quant_shadow_forward_outcomes import attach_forward_outcomes
+from libs.reporting.market_regime_rail_review import classify_market_regime_rail, load_latest_macro_snapshot
 
 
 DEFAULT_REVIEW_REASONS = (
@@ -159,6 +160,7 @@ def build_q8_shadow_blocker_review(
     *,
     minute_rows_by_symbol: Mapping[str, list[Mapping[str, Any]]] | None = None,
     review_reasons: Sequence[str] = DEFAULT_REVIEW_REASONS,
+    market_regime_rail: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     rows = attach_forward_outcomes(_candidate_rows(payloads), minute_rows_by_symbol=minute_rows_by_symbol)
     review_reason_set = {str(reason) for reason in review_reasons}
@@ -172,6 +174,7 @@ def build_q8_shadow_blocker_review(
     return {
         "schema_version": "q8_shadow_blocker_review.v1",
         "behavior_effect": "evaluation_only",
+        "market_regime_rail": dict(market_regime_rail or {}),
         "candidate_count": len(rows),
         "review_reason_count": len(groups),
         "observed_review_candidate_count": observed_total,
@@ -190,6 +193,18 @@ def render_q8_shadow_blocker_review_markdown(review: Mapping[str, Any], *, day: 
         f"- candidate_count: **{int(review.get('candidate_count') or 0)}**",
         f"- review_reason_count: **{int(review.get('review_reason_count') or 0)}**",
         f"- observed_review_candidate_count: **{int(review.get('observed_review_candidate_count') or 0)}**",
+    ]
+    rail = review.get("market_regime_rail") if isinstance(review.get("market_regime_rail"), Mapping) else {}
+    if rail:
+        lines.append(
+            f"- market_regime_rail: `{rail.get('rail_id') or 'not_available'}` "
+            f"({rail.get('rail_confidence') or 'none'})"
+        )
+        lines.append(f"- market_regime_rationale: {rail.get('rationale') or '-'}")
+        focus = [str(x) for x in list(rail.get("q8_review_focus") or []) if str(x or "").strip()]
+        if focus:
+            lines.append(f"- market_regime_q8_focus: `{', '.join(focus)}`")
+    lines += [
         "",
         "## Blocker Outcomes",
         "",
@@ -234,7 +249,8 @@ def generate_q8_shadow_blocker_review(
     day: str,
 ) -> Dict[str, Any]:
     payloads = load_quant_shadow_candidate_payloads(reports_root=reports_root, days=[day])
-    review = build_q8_shadow_blocker_review(payloads)
+    market_regime_rail = classify_market_regime_rail(load_latest_macro_snapshot(day))
+    review = build_q8_shadow_blocker_review(payloads, market_regime_rail=market_regime_rail)
     out_dir = Path(reports_root) / "operator_summary" / "daily" / day
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "q8_shadow_blocker_review.json"
