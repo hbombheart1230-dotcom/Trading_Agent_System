@@ -19,10 +19,17 @@ The difference is:
 | Market data input | What is happening in the market? | indices, rates, FX, VIX, breadth, sentiment |
 | LLM Strategist | How should this market be interpreted? | scenario, thesis, themes, candidate direction |
 | Market regime rail | How should that interpretation be evaluated operationally? | measurable rail id and expected tactical behavior |
+| News event intelligence | Which event/theme/symbol relationships are worth watching? | observation-only event and watchlist evidence |
 | Q8/shadow evaluation | Did that rail improve decisions? | evidence, deltas, promotion candidate status |
 
 The rail converts Strategist interpretation into a repeatable evaluation frame.
 It does not decide trades by itself.
+
+News event intelligence is separate from the market regime rail. The market
+rail describes the broad operating environment. News event intelligence
+describes event-specific watch evidence, such as an external listing, policy,
+contract, supply-chain, or risk headline that may map to themes or symbols.
+Both layers start as `observation_only`.
 
 ## Current Market Inputs
 
@@ -30,6 +37,8 @@ The system already collects and stores:
 
 - KOSPI
 - KOSDAQ
+- KOSPI200
+- KRX KOSPI200 night futures
 - domestic market breadth
 - S&P 500
 - NASDAQ
@@ -49,6 +58,12 @@ The system already collects and stores:
 
 These inputs are already visible in Strategist artifacts and reports. The
 missing layer is a formal rail that makes the interpretation measurable.
+
+KRX KOSPI200 night futures is treated as pre-open derivatives pressure. It is
+useful when the next regular session is likely to open with a broad gap-down or
+gap-up. The first implementation status is `observation_only`; it gives the
+Strategist and Q8 review a measurable input, but it does not block trades,
+force entries, change order size, or override monitor rules.
 
 ## LLM Strategist Role
 
@@ -72,6 +87,7 @@ The rail is responsible for:
 - making Scanner/Monitor outcomes comparable across similar contexts
 - supporting shadow evaluation
 - supporting Promotion Framework decisions
+- allowing later comparison with news-event watch evidence
 
 The rail must start as `observation_only`.
 
@@ -80,6 +96,8 @@ The rail must start as `observation_only`.
 | Rail ID | Market Conditions | Strategist Meaning | Evaluation Focus |
 | --- | --- | --- | --- |
 | `risk_off_breadth_collapse` | KOSPI/KOSDAQ weak, breadth weak, FX/DXY pressure | avoid broad chase; prefer confirmed relative strength | did filters avoid losers without missing true leaders? |
+| `krx_night_futures_gap_down` | KRX KOSPI200 night futures down sharply before/near open | expect broad gap-down pressure; require confirmed relative strength | did pre-open pressure explain missed/blocked opportunities or avoided losses? |
+| `krx_night_futures_gap_up` | KRX KOSPI200 night futures up sharply before/near open | opening risk-on pressure with possible gap chase risk | did opening momentum entries outperform delayed pullback entries? |
 | `us_tech_risk_on_korea_weak` | US tech positive while Korean indices are weak | selective large-cap tech or semiconductor strength | did relative strength candidates outperform broad market? |
 | `panic_rebound_candidate` | domestic selloff with isolated reclaim/breakout strength | look for rebound only after structure confirms | did reclaim/breakout beat passive avoidance? |
 | `liquidity_leader_rotation` | market weak but liquidity concentrates in a few leaders | leader-only participation | did high-liquidity leaders justify relaxed confirmation? |
@@ -122,6 +140,8 @@ When implemented later, the rail should be recorded in shadow artifacts:
   "market_inputs": {
     "kospi_pct": null,
     "kosdaq_pct": null,
+    "kospi200_pct": null,
+    "krx_night_futures_pct": null,
     "breadth": null,
     "nasdaq_pct": null,
     "sp500_pct": null,

@@ -5,10 +5,13 @@ from datetime import UTC, datetime, time as dt_time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
+from libs.runtime.quant.entry_lane_observation import build_entry_lane_observation
+from libs.runtime.quant.market_regime_observation import latest_market_regime_observation
 from libs.runtime.quant.opening_largecap_surge_shadow import (
     OPENING_LARGECAP_SURGE_WATCHLIST,
     build_opening_largecap_surge_shadow,
 )
+from libs.runtime.quant.vwap_reclaim_observation import classify_below_vwap_reclaim_observation
 
 try:
     from zoneinfo import ZoneInfo
@@ -259,6 +262,63 @@ def _attach_market_snapshot(row: Dict[str, Any], state: Mapping[str, Any], *, no
     return row
 
 
+def _market_context_from_state(state: Mapping[str, Any]) -> Dict[str, Any]:
+    for key in (
+        "market_context",
+        "market_regime_context",
+        "market_regime_rail",
+        "market_rail",
+        "macro_market_context",
+    ):
+        value = state.get(key)
+        if isinstance(value, Mapping) and value:
+            packet = dict(value)
+            regime = _text(packet.get("market_regime") or packet.get("regime"))
+            rail = _text(packet.get("market_regime_rail") or packet.get("rail_id") or packet.get("rail"))
+            if regime and regime != "unknown" or rail and rail != "unknown":
+                if not rail or rail == "unknown":
+                    fallback = latest_market_regime_observation(day=_resolve_day(state))
+                    fallback_rail = _text(fallback.get("market_regime_rail"))
+                    if fallback_rail:
+                        packet["market_regime_rail"] = fallback_rail
+                        packet["market_regime_rail_shadow"] = fallback
+                return packet
+            continue
+        text = _text(value)
+        if text and text != "unknown":
+            return {"market_regime": text}
+    strategist = _as_dict(state.get("strategist_output") or state.get("strategist_decision"))
+    for key in ("market_regime", "market_rail", "scenario", "scenario_id"):
+        text = _text(strategist.get(key))
+        if text:
+            fallback = latest_market_regime_observation(day=_resolve_day(state))
+            return {
+                "market_regime": text,
+                "market_regime_rail": _text(fallback.get("market_regime_rail")),
+                "market_regime_rail_shadow": fallback,
+            }
+    rail = latest_market_regime_observation(day=_resolve_day(state))
+    return {
+        "market_regime": _text(rail.get("market_regime")) or "unknown",
+        "market_regime_rail": _text(rail.get("market_regime_rail")) or "macro_packet_unavailable",
+        "market_regime_rail_shadow": rail,
+    }
+
+
+def _attach_entry_lane_observation(
+    row: Dict[str, Any],
+    *,
+    state: Mapping[str, Any],
+    opening_minutes: int | None,
+) -> Dict[str, Any]:
+    row["entry_lane_observation"] = build_entry_lane_observation(
+        row,
+        opening_minutes=opening_minutes,
+        market_context=_market_context_from_state(state),
+    )
+    return row
+
+
 def _fill_quant_surface(row: Dict[str, Any]) -> Dict[str, Any]:
     snapshot = _as_dict(row.get("quant_factor_snapshot"))
     factors = _as_dict(snapshot.get("factors"))
@@ -275,6 +335,10 @@ def _fill_quant_surface(row: Dict[str, Any]) -> Dict[str, Any]:
         row["entry_quant_cost_floor_state"] = _text(
             decision_cost.get("cost_floor_state") or factors.get("cost_floor_state")
         )
+    observation = classify_below_vwap_reclaim_observation(row)
+    row["below_vwap_reclaim_observation"] = dict(observation)
+    if observation.get("applies"):
+        row["below_vwap_reclaim_subtype"] = _text(observation.get("subtype"))
     return row
 
 
@@ -588,11 +652,15 @@ def build_quant_shadow_candidate_payload(
     if _text(cascade.get("top_pick_symbol")) or _symbol(selected):
         candidates.append(
             _attach_market_snapshot(
-                _fill_quant_surface(
-                    _attach_opening_probe(
-                        _top_pick_row(selected=selected, cascade=cascade, entry_info=entry_info),
-                        opening_minutes=opening_minutes,
-                    )
+                _attach_entry_lane_observation(
+                    _fill_quant_surface(
+                        _attach_opening_probe(
+                            _top_pick_row(selected=selected, cascade=cascade, entry_info=entry_info),
+                            opening_minutes=opening_minutes,
+                        )
+                    ),
+                    state=state,
+                    opening_minutes=opening_minutes,
                 ),
                 state,
                 now_epoch=now_epoch,
@@ -603,11 +671,15 @@ def build_quant_shadow_candidate_payload(
         if isinstance(trace, Mapping) and _symbol(trace):
             candidates.append(
                 _attach_market_snapshot(
-                    _fill_quant_surface(
-                        _attach_opening_probe(
-                            _runner_row(trace, ranked_by_symbol),
-                            opening_minutes=opening_minutes,
-                        )
+                    _attach_entry_lane_observation(
+                        _fill_quant_surface(
+                            _attach_opening_probe(
+                                _runner_row(trace, ranked_by_symbol),
+                                opening_minutes=opening_minutes,
+                            )
+                        ),
+                        state=state,
+                        opening_minutes=opening_minutes,
                     ),
                     state,
                     now_epoch=now_epoch,
@@ -616,7 +688,17 @@ def build_quant_shadow_candidate_payload(
 
     for skipped in _as_list(cascade.get("skipped")):
         if isinstance(skipped, Mapping) and _symbol(skipped):
-            candidates.append(_attach_market_snapshot(_fill_quant_surface(_skipped_row(skipped, ranked_by_symbol)), state, now_epoch=now_epoch))
+            candidates.append(
+                _attach_market_snapshot(
+                    _attach_entry_lane_observation(
+                        _fill_quant_surface(_skipped_row(skipped, ranked_by_symbol)),
+                        state=state,
+                        opening_minutes=opening_minutes,
+                    ),
+                    state,
+                    now_epoch=now_epoch,
+                )
+            )
 
     seen_symbols = {_text(row.get("symbol")) for row in candidates if _text(row.get("symbol"))}
     if opening_minutes is not None and opening_minutes <= 20:
@@ -629,11 +711,15 @@ def build_quant_shadow_candidate_payload(
             metric_row = _same_symbol_metric_row(symbol, candidates)
             candidates.append(
                 _attach_market_snapshot(
-                    _fill_quant_surface(
-                        _attach_opening_probe(
-                            _opening_largecap_watchlist_row(row, metric_row=metric_row),
-                            opening_minutes=opening_minutes,
-                        )
+                    _attach_entry_lane_observation(
+                        _fill_quant_surface(
+                            _attach_opening_probe(
+                                _opening_largecap_watchlist_row(row, metric_row=metric_row),
+                                opening_minutes=opening_minutes,
+                            )
+                        ),
+                        state=state,
+                        opening_minutes=opening_minutes,
                     ),
                     state,
                     now_epoch=now_epoch,

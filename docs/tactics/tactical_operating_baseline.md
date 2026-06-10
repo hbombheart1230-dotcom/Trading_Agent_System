@@ -1,6 +1,6 @@
 # Tactical Operating Baseline
 
-Last updated: 2026-06-02
+Last updated: 2026-06-08
 
 ## Purpose
 
@@ -140,6 +140,9 @@ Hard-veto candidates:
 - `same_symbol_position_open`
 - `human_chart_entry_score < 0.50` when not explicitly covered by a narrow
   exception
+- `risk_off_defensive_observe_no_entry`: in risk-off rails, `defensive_observe`
+  is an observe/no-trade tactic and cannot be the direct reason for a live BUY
+  unless Commander records an explicit risk-off exception override.
 
 Current narrow exception:
 
@@ -152,6 +155,22 @@ Current narrow exception:
   - confidence floor met
   - still blocked by true risk signals such as swing-low break, lower-high
     failure, and high exit risk
+
+2026-06-08 promoted policy:
+
+- `risk_off_defensive_observe_no_entry_policy`
+  - Trigger: `market_regime=risk_off` or a risk-off rail such as
+    `krx_night_futures_gap_down`, while the selected quant tactic is
+    `defensive_observe`.
+  - Behavior: monitor entry hard gate blocks a triggered BUY with
+    `risk_off_defensive_observe_no_entry`.
+  - Rationale: 2026-06-08 showed `defensive_observe` acting like an entry
+    tactic in a severe risk-off rail. The result was 12 closed trades,
+    1 win / 11 losses, average -0.8821% after broker truth reconciliation.
+  - Boundary: this does not block non-defensive tactics such as
+    `vwap_reclaim_pullback`, `cost_aware_scalp`, opening momentum, or future
+    explicit exception lanes. It only prevents "observe" from becoming a BUY
+    reason by itself in risk-off conditions.
 
 Runtime status as of 2026-05-21:
 
@@ -412,6 +431,39 @@ Required evidence before patch:
 
 Do not enable yet. Keep observability-only until post-exit shadow has enough
 evidence.
+
+### Observation Layer: News Event Intelligence
+
+Current status: observation-only.
+
+Purpose:
+
+- convert collected news into event, theme, and symbol watch evidence
+- make human-like news reasoning auditable
+- let the Strategist explain whether news event evidence was used, ignored, or
+  insufficient
+
+Current fields:
+
+- `news_event_intelligence`
+- `news_event_intelligence_usage`
+
+Hard boundary:
+
+- `trading_action_allowed=false`
+- no direct BUY/SELL
+- no scanner ranking override
+- no monitor guard override
+- no Commander risk override
+- no cost or volume gate bypass
+
+Promotion requirement:
+
+- Q8 must compare linked event/theme/symbol watch candidates against raw
+  scanner candidates and forward outcomes.
+- Strategist Effectiveness Review must show that using news event evidence adds
+  measurable value beyond raw Scanner output.
+- Promotion Framework review is required before any behavior effect is allowed.
 
 ## Change Discipline
 

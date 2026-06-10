@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from libs.runtime.quant.market_regime_observation import classify_market_regime_rail
+from libs.runtime.strategist_input_quality import build_risk_off_exception_policy
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -157,15 +160,53 @@ def _canonical_strategist_path_for_response(source_path: Path) -> Path | None:
     return reports_root / "canonical" / day_dir.name / run_dir.name / "strategist.json"
 
 
+def _trade_strategist_input_path_for_response(source_path: Path) -> Path | None:
+    if source_path.parent.name != "reports":
+        return None
+    candidate = source_path.parent.parent / "strategist_input.json"
+    return candidate if candidate.exists() else None
+
+
 def _load_canonical_strategist(source_path: Path) -> Tuple[Path | None, Dict[str, Any]]:
     canonical_path = _canonical_strategist_path_for_response(source_path)
-    if canonical_path is None or not canonical_path.exists():
+    if canonical_path is not None and canonical_path.exists():
+        try:
+            raw = json.loads(canonical_path.read_text(encoding="utf-8"))
+        except Exception:
+            raw = {}
+        if isinstance(raw, dict) and raw:
+            return canonical_path, dict(raw)
+
+    input_path = _trade_strategist_input_path_for_response(source_path)
+    if input_path is None:
         return canonical_path, {}
     try:
-        raw = json.loads(canonical_path.read_text(encoding="utf-8"))
+        raw_input = json.loads(input_path.read_text(encoding="utf-8"))
     except Exception:
-        return canonical_path, {}
-    return canonical_path, dict(raw) if isinstance(raw, dict) else {}
+        return input_path, {}
+    if not isinstance(raw_input, dict):
+        return input_path, {}
+    source_input = _as_dict(raw_input.get("source_input"))
+    if not source_input:
+        return input_path, {}
+    canonical = dict(source_input)
+    canonical.setdefault("generated_at", raw_input.get("saved_at"))
+    canonical.setdefault("run_id", raw_input.get("run_id"))
+    return input_path, canonical
+
+
+def _headline_count_from_sample_map(value: Any) -> int:
+    total = 0
+    if not isinstance(value, dict):
+        return total
+    for row in value.values():
+        if not isinstance(row, dict):
+            continue
+        try:
+            total += int(row.get("count") or 0)
+        except Exception:
+            pass
+    return total
 
 
 def _directive(payload: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -224,24 +265,167 @@ def _memory_usage_from_canonical(canonical: Dict[str, Any]) -> Dict[str, Any]:
 
 def _news_usage_from_canonical(canonical: Dict[str, Any]) -> Dict[str, Any]:
     trace = _as_dict(canonical.get("news_usage_trace"))
+    context = _as_dict(canonical.get("news_context"))
     query_targets = _as_list(trace.get("query_targets")) or _as_list(canonical.get("news_query_targets"))
     market_headlines = _as_list(trace.get("market_headlines_used"))
     candidate_headlines = _as_list(trace.get("candidate_headlines_used"))
+    market_count = len(market_headlines)
+    candidate_count = len(candidate_headlines)
+    if market_count <= 0:
+        market_count = int(context.get("market_headline_count") or 0) or _headline_count_from_sample_map(canonical.get("market_news_sample"))
+    if candidate_count <= 0:
+        candidate_count = int(context.get("candidate_headline_count") or 0) or _headline_count_from_sample_map(canonical.get("candidate_news_sample"))
+    headline_count = int(context.get("headline_count") or 0)
+    if headline_count and market_count <= 0 and candidate_count <= 0:
+        market_count = int(context.get("market_signal_total") or 0)
+        candidate_count = max(0, headline_count - market_count)
     return {
-        "available": bool(trace or canonical.get("news_evidence_summary") or query_targets),
+        "available": bool(trace or context or canonical.get("news_evidence_summary") or query_targets),
         "query_targets": query_targets,
-        "human_summary": _text(trace.get("human_summary"), ""),
+        "human_summary": _text(trace.get("human_summary") or context.get("summary"), ""),
         "market_effect": _text(trace.get("market_effect"), ""),
         "playbook_effect": _text(trace.get("playbook_effect"), ""),
         "scanner_guidance_effect": _text(trace.get("scanner_guidance_effect"), ""),
         "monitor_policy_effect": _text(trace.get("monitor_policy_effect"), ""),
-        "confidence": _text(trace.get("confidence"), ""),
+        "confidence": _text(trace.get("confidence") or ("medium" if context else ""), ""),
         "news_evidence_summary": _text(canonical.get("news_evidence_summary"), ""),
         "news_query_reasoning": _text(canonical.get("news_query_reasoning"), ""),
-        "market_headline_count": len(market_headlines),
-        "candidate_headline_count": len(candidate_headlines),
+        "market_headline_count": market_count,
+        "candidate_headline_count": candidate_count,
         "market_headlines_sample": market_headlines[:3],
         "candidate_headlines_sample": candidate_headlines[:3],
+    }
+
+
+def _market_rail_from_canonical(canonical: Dict[str, Any]) -> Dict[str, Any]:
+    global_signal = _as_dict(canonical.get("global_sentiment_signal"))
+    if not global_signal:
+        global_signal = _as_dict(_as_dict(canonical.get("market_context")).get("global_signal"))
+    packet = {
+        "generated_at": _text(canonical.get("generated_at") or canonical.get("saved_at"), ""),
+        "global_sentiment": {
+            "score": global_signal.get("score"),
+            "status": global_signal.get("status"),
+            "source": global_signal.get("source"),
+        },
+        "index_moves": _as_dict(global_signal.get("index_moves")),
+        "korea_indices": _as_dict(global_signal.get("korea_indices")),
+        "macro_moves": _as_dict(global_signal.get("macro_moves")),
+    }
+    return classify_market_regime_rail(packet)
+
+
+def _news_quality_audit(canonical: Dict[str, Any], news_usage: Dict[str, Any]) -> Dict[str, Any]:
+    ranked = _as_dict(canonical.get("news_evidence_ranked"))
+    candidate_ranked = _as_list(ranked.get("candidate_news_ranked"))
+    market_ranked = _as_list(ranked.get("market_news_ranked"))
+    query_targets = _as_list(news_usage.get("query_targets"))
+    market_count = int(news_usage.get("market_headline_count") or len(market_ranked) or 0)
+    candidate_count = int(news_usage.get("candidate_headline_count") or len(candidate_ranked) or 0)
+    total = market_count + candidate_count
+    confidence = _text(news_usage.get("confidence"), "")
+    summary = _text(news_usage.get("human_summary") or news_usage.get("news_evidence_summary"), "")
+    no_effect = not any(
+        _text(news_usage.get(key), "")
+        for key in ("market_effect", "playbook_effect", "scanner_guidance_effect", "monitor_policy_effect")
+    )
+    issues: List[str] = []
+    if total <= 0:
+        issues.append("news_headlines_missing")
+    if not query_targets:
+        issues.append("news_query_targets_missing")
+    if no_effect:
+        issues.append("news_effect_trace_missing")
+    if confidence.lower() in {"", "-", "low", "none", "unknown"}:
+        issues.append("news_confidence_low_or_missing")
+    if not summary:
+        issues.append("news_summary_missing")
+    if total > 0 and candidate_count <= 0:
+        issues.append("candidate_news_missing")
+    if total > 0 and market_count <= 0:
+        issues.append("market_news_missing")
+    if not issues:
+        status = "ok"
+    elif total > 0:
+        status = "partial"
+    else:
+        status = "weak"
+    return {
+        "schema_version": "strategist_news_quality_audit.v1",
+        "status": status,
+        "headline_count": total,
+        "market_headline_count": market_count,
+        "candidate_headline_count": candidate_count,
+        "query_target_count": len(query_targets),
+        "query_targets": query_targets[:10],
+        "confidence": confidence,
+        "issues": issues,
+        "market_effect": _text(news_usage.get("market_effect"), ""),
+        "playbook_effect": _text(news_usage.get("playbook_effect"), ""),
+        "scanner_guidance_effect": _text(news_usage.get("scanner_guidance_effect"), ""),
+        "monitor_policy_effect": _text(news_usage.get("monitor_policy_effect"), ""),
+    }
+
+
+def _strategist_output_quality_audit(
+    *,
+    payload: Dict[str, Any],
+    canonical: Dict[str, Any],
+    stage_decision: Dict[str, Any],
+    strategy_detail: Dict[str, Any],
+    market_rail: Dict[str, Any],
+    news_quality: Dict[str, Any],
+) -> Dict[str, Any]:
+    candidate_watch = _as_dict(strategy_detail.get("candidate_watch_policy"))
+    memory_usage = _memory_usage_from_canonical(canonical)
+    is_stage_specific = bool(stage_decision.get("is_stage_specific"))
+    decision = _text(stage_decision.get("decision") or payload.get("decision"), "")
+    confidence = stage_decision.get("confidence")
+    if confidence in (None, ""):
+        confidence = payload.get("confidence")
+    issues: List[str] = []
+    if not decision:
+        issues.append("decision_missing")
+    if confidence in (None, ""):
+        issues.append("confidence_missing")
+    if is_stage_specific:
+        if not _as_dict(stage_decision.get("monitor_instruction")) and not _as_dict(stage_decision.get("entry_policy_delta")):
+            issues.append("stage_control_fields_missing")
+    else:
+        if not _text(strategy_detail.get("final_playbook"), ""):
+            issues.append("final_playbook_missing")
+        if not _text(strategy_detail.get("tactical_strategy"), ""):
+            issues.append("tactical_strategy_missing")
+        if not candidate_watch:
+            issues.append("candidate_watch_policy_missing")
+    if _text(market_rail.get("market_regime_rail"), "") in {"", "macro_packet_unavailable"}:
+        issues.append("market_regime_rail_missing")
+    if news_quality.get("status") != "ok":
+        issues.append("news_quality_not_ok")
+    if not bool(memory_usage.get("available")):
+        issues.append("memory_trace_missing_or_disabled")
+    elif not _as_list(memory_usage.get("active_layers")):
+        issues.append("memory_active_layers_empty")
+    if not issues:
+        status = "ok"
+    elif len(issues) <= 2:
+        status = "watch"
+    else:
+        status = "needs_review"
+    return {
+        "schema_version": "strategist_output_quality_audit.v1",
+        "status": status,
+        "issues": issues,
+        "decision": decision,
+        "confidence": confidence,
+        "final_playbook": _text(strategy_detail.get("final_playbook"), ""),
+        "tactical_strategy": _text(strategy_detail.get("tactical_strategy"), ""),
+        "market_regime": _text(market_rail.get("market_regime"), ""),
+        "market_regime_rail": _text(market_rail.get("market_regime_rail"), ""),
+        "candidate_watch_policy_present": bool(candidate_watch),
+        "memory_available": bool(memory_usage.get("available")),
+        "memory_active_layers": _as_list(memory_usage.get("active_layers")),
+        "news_quality_status": _text(news_quality.get("status"), ""),
     }
 
 
@@ -705,6 +889,21 @@ def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, 
     strategy_detail = _strategy_detail_from_sources(payload, canonical)
     stage_decision = _stage_decision_from_payload(payload, raw, sidecar_meta)
     stage_meta = _stage_meta(payload, raw, sidecar_meta)
+    news_usage = _news_usage_from_canonical(canonical)
+    market_regime_rail = _market_rail_from_canonical(canonical)
+    news_quality = _news_quality_audit(canonical, news_usage)
+    risk_off_exception_policy = _as_dict(canonical.get("risk_off_exception_policy")) or build_risk_off_exception_policy(
+        market_regime_rail=market_regime_rail,
+        news_quality=news_quality,
+    )
+    output_quality = _strategist_output_quality_audit(
+        payload=payload,
+        canonical=canonical,
+        stage_decision=stage_decision,
+        strategy_detail=strategy_detail,
+        market_rail=market_regime_rail,
+        news_quality=news_quality,
+    )
 
     return {
         "schema_version": "strategist_llm_summary.v1",
@@ -748,7 +947,16 @@ def build_strategist_llm_summary_payload(response_json_path: Path) -> Dict[str, 
         },
         "monitor_entry_policy": _as_dict(payload.get("monitor_entry_policy")),
         "memory_usage": _memory_usage_from_canonical(canonical),
-        "news_usage": _news_usage_from_canonical(canonical),
+        "news_usage": news_usage,
+        "news_event_intelligence": _as_dict(
+            payload.get("news_event_intelligence") or canonical.get("news_event_intelligence")
+        ),
+        "news_event_intelligence_usage": _as_dict(payload.get("news_event_intelligence_usage")),
+        "market_regime_rail": market_regime_rail,
+        "news_quality_audit": news_quality,
+        "risk_off_exception_policy": risk_off_exception_policy,
+        "risk_off_exception_conditions": _as_list(payload.get("risk_off_exception_conditions")),
+        "strategist_output_quality_audit": output_quality,
         "strategy_refresh_trace": {
             "summary": _text(refresh_trace.get("summary"), ""),
             "bullets": _as_list(refresh_trace.get("bullets")),
@@ -907,6 +1115,7 @@ def render_strategist_llm_summary_markdown(payload: Dict[str, Any]) -> str:
         "",
         *_news_usage_lines(news),
         "",
+        *_quality_audit_lines(payload),
         "### 정책 조정",
         "",
         _directive_line("플레이북", _as_dict(changes.get("playbook_action"))),
@@ -1051,6 +1260,7 @@ def _render_stage_specific_summary_markdown(payload: Dict[str, Any]) -> str:
         f"- playbook_flow: {_playbook_flow_label(detail)}",
         f"- candidate_watch: {_watch_scope_label_clean(watch) or '-'}",
         "",
+        *_quality_audit_lines(payload),
         "## Operator Check",
         "",
         f"- summary: **{_text(readout.get('headline'))}**",
@@ -1134,6 +1344,84 @@ def _news_usage_lines_clean(news: Dict[str, Any]) -> List[str]:
     ]
 
 
+def _quality_audit_lines(payload: Dict[str, Any]) -> List[str]:
+    rail = _as_dict(payload.get("market_regime_rail"))
+    news = _as_dict(payload.get("news_quality_audit"))
+    risk_policy = _as_dict(payload.get("risk_off_exception_policy"))
+    risk_conditions = _as_list(payload.get("risk_off_exception_conditions"))
+    news_event = _as_dict(payload.get("news_event_intelligence"))
+    news_event_usage = _as_dict(payload.get("news_event_intelligence_usage"))
+    output = _as_dict(payload.get("strategist_output_quality_audit"))
+    metrics = _as_dict(rail.get("metrics"))
+    rail_issues = _as_list(rail.get("issues"))
+    news_issues = _as_list(news.get("issues"))
+    output_issues = _as_list(output.get("issues"))
+
+    def _issue_text(items: List[Any]) -> str:
+        return ", ".join(str(x) for x in items if str(x or "").strip()) or "-"
+
+    def _watch_text(items: List[Any], key: str) -> str:
+        values: List[str] = []
+        for item in items:
+            if isinstance(item, dict):
+                text = str(item.get(key) or "").strip()
+            else:
+                text = str(item or "").strip()
+            if text:
+                values.append(text)
+        return ", ".join(values[:6]) or "-"
+
+    return [
+        "## Input/Output Quality Audit",
+        "",
+        "### Market Regime Rail",
+        "",
+        f"- market_regime: {_text(rail.get('market_regime'), '-')}",
+        f"- market_regime_rail: {_text(rail.get('market_regime_rail'), '-')}",
+        f"- risk_score: {rail.get('risk_score')}",
+        f"- kospi_pct: {metrics.get('kospi_pct')}",
+        f"- kosdaq_pct: {metrics.get('kosdaq_pct')}",
+        f"- breadth_score: {metrics.get('breadth_score')}",
+        f"- issues: {_issue_text(rail_issues)}",
+        "",
+        "### News Quality",
+        "",
+        f"- status: {_text(news.get('status'), '-')}",
+        f"- headline_count: {news.get('headline_count')}",
+        f"- market_headline_count: {news.get('market_headline_count')}",
+        f"- candidate_headline_count: {news.get('candidate_headline_count')}",
+        f"- query_target_count: {news.get('query_target_count')}",
+        f"- issues: {_issue_text(news_issues)}",
+        "",
+        "### Risk-Off Exceptions",
+        "",
+        f"- risk_off_active: {risk_policy.get('risk_off_active')}",
+        f"- allowed_exception_conditions: {_issue_text(_as_list(risk_policy.get('allowed_exception_conditions')))}",
+        f"- strategist_reported_conditions: {_issue_text(risk_conditions)}",
+        f"- instruction: {_text(risk_policy.get('instruction'), '-')}",
+        "",
+        "### News Event Intelligence",
+        "",
+        f"- behavior_effect: {_text(news_event.get('behavior_effect'), 'observation_only')}",
+        f"- trading_action_allowed: {news_event.get('trading_action_allowed', False)}",
+        f"- event_count: {_as_dict(news_event.get('input_summary')).get('event_count', 0)}",
+        f"- theme_watchlist: {_watch_text(_as_list(news_event.get('theme_watchlist')), 'theme')}",
+        f"- symbol_watchlist: {_watch_text(_as_list(news_event.get('symbol_watchlist')), 'symbol')}",
+        f"- llm_usage_status: {_text(news_event_usage.get('status'), '-')}",
+        f"- llm_usage_reason: {_text(news_event_usage.get('reason'), '-')}",
+        "",
+        "### Strategist Output Quality",
+        "",
+        f"- status: {_text(output.get('status'), '-')}",
+        f"- decision: {_text(output.get('decision'), '-')}",
+        f"- confidence: {output.get('confidence')}",
+        f"- final_playbook: {_text(output.get('final_playbook'), '-')}",
+        f"- tactical_strategy: {_text(output.get('tactical_strategy'), '-')}",
+        f"- issues: {_issue_text(output_issues)}",
+        "",
+    ]
+
+
 def _render_stage_specific_summary_markdown_clean(payload: Dict[str, Any]) -> str:
     meta = _as_dict(payload.get("llm_meta"))
     readout = _as_dict(payload.get("operator_readout"))
@@ -1203,6 +1491,7 @@ def _render_stage_specific_summary_markdown_clean(payload: Dict[str, Any]) -> st
         f"- playbook_flow: {_playbook_flow_label(detail)}",
         f"- candidate_watch: {_watch_scope_label_clean(watch) or '-'}",
         "",
+        *_quality_audit_lines(payload),
         "## 운영 점검",
         "",
         f"- 요약: **{_text(readout.get('headline'))}**",
@@ -1306,6 +1595,7 @@ def render_strategist_llm_summary_markdown(payload: Dict[str, Any]) -> str:
         "",
         *_news_usage_lines_clean(news),
         "",
+        *_quality_audit_lines(payload),
         "### 정책 조정",
         "",
         _directive_line("플레이북", _as_dict(changes.get("playbook_action"))),
@@ -1406,5 +1696,5 @@ def generate_strategist_llm_summary(response_json_path: Path) -> Tuple[Path, Pat
     md_path = source_path.with_name("strategist_summary.md")
     json_path = source_path.with_name("strategist_summary.json")
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(render_strategist_llm_summary_markdown(payload), encoding="utf-8")
+    md_path.write_text(render_strategist_llm_summary_markdown(payload), encoding="utf-8-sig", newline="\n")
     return md_path, json_path, payload

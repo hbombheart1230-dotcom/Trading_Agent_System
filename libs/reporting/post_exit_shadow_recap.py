@@ -55,7 +55,7 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    path.write_text(text.rstrip() + "\n", encoding="utf-8-sig", newline="\n")
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -158,14 +158,30 @@ def _rows_reach_epoch(rows: Iterable[Mapping[str, Any]], target_epoch: float | N
     return any((_epoch_seconds(row.get("ts")) or 0.0) >= float(target_epoch) for row in rows if isinstance(row, Mapping))
 
 
+def _rows_reach_regular_close(rows: Iterable[Mapping[str, Any]]) -> bool:
+    return any(
+        _row_kst_hhmmss(row) >= "153000"
+        for row in rows
+        if isinstance(row, Mapping) and _row_kst_hhmmss(row)
+    )
+
+
 def _post_exit_shadow_needs_fresh_minutes(shadow: Mapping[str, Any], rows: List[Dict[str, Any]]) -> bool:
     target_epoch = _shadow_latest_required_epoch(shadow)
-    if target_epoch is None:
-        return False
     now_epoch = datetime.now(timezone.utc).timestamp()
-    if now_epoch + 30.0 < target_epoch:
-        return False
-    return not _rows_reach_epoch(rows, target_epoch)
+    if target_epoch is not None:
+        if now_epoch + 30.0 < target_epoch:
+            return False
+        if not _rows_reach_epoch(rows, target_epoch):
+            return True
+
+    now_kst = datetime.now(timezone.utc).astimezone(KST)
+    checkpoints = _as_dict(shadow.get("checkpoints"))
+    eod = _as_dict(checkpoints.get("EOD"))
+    eod_pending = str(eod.get("status") or "").strip().lower() != "observed"
+    if eod_pending and now_kst.strftime("%H%M%S") >= "153500":
+        return not _rows_reach_regular_close(rows)
+    return False
 
 
 def _minute_row_key(row: Mapping[str, Any]) -> str:

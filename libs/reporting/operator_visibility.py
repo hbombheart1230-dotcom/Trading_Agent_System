@@ -44,6 +44,10 @@ _REASON_LABELS: Dict[str, str] = {
 }
 
 
+def _write_operator_markdown(path: Path, text: str) -> None:
+    path.write_text(str(text or ""), encoding="utf-8-sig", newline="\n")
+
+
 def _to_epoch(ts: Any) -> Optional[int]:
     if ts is None:
         return None
@@ -1378,7 +1382,7 @@ def generate_operator_daily_summary(
 
     js_path.parent.mkdir(parents=True, exist_ok=True)
     js_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text("\n".join(md_lines), encoding="utf-8")
+    _write_operator_markdown(md_path, "\n".join(md_lines))
     return md_path, js_path
 
 
@@ -1486,7 +1490,7 @@ def generate_decision_story_report(
             ]
 
     md_path = report_dir / f"decision_story_{target_day}.md"
-    md_path.write_text("\n".join(md_lines), encoding="utf-8")
+    _write_operator_markdown(md_path, "\n".join(md_lines))
 
     out = {
         "schema_version": "decision_story.v1",
@@ -1602,7 +1606,7 @@ def generate_run_card_report(
             ]
 
     md_path = report_dir / f"run_cards_{target_day}.md"
-    md_path.write_text("\n".join(lines), encoding="utf-8")
+    _write_operator_markdown(md_path, "\n".join(lines))
     out = {
         "schema_version": "run_cards.v1",
         "day": target_day,

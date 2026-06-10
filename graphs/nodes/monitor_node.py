@@ -74,6 +74,8 @@ from libs.runtime.monitor_entry_state import (
 from libs.runtime.quant.decision import build_entry_quant_decision, build_exit_quant_decision
 from libs.runtime.quant.enforcement import build_entry_quant_enforcement
 from libs.runtime.quant.factors import build_factor_snapshot_from_monitor_entry
+from libs.runtime.quant.market_rail_translation import evaluate_market_rail_translation
+from libs.runtime.quant.risk_off_defensive_policy import evaluate_risk_off_defensive_observe_policy
 from libs.runtime.quant.shadow_candidates import save_quant_shadow_candidates_for_state
 from libs.runtime.intraday_monitor_signals import (
     evaluate_intraday_entry_signal,
@@ -680,6 +682,68 @@ def _evaluate_monitor_entry_candidate(
     entry_info["quant_factor_snapshot"] = dict(quant_entry_factor_snapshot)
     entry_info["entry_quant_decision"] = dict(quant_entry_decision)
     entry_info["quant_entry_enforcement"] = dict(quant_entry_enforcement)
+    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    market_regime_for_entry = (
+        strategy_frame.get("market_regime")
+        or commander_context.get("market_regime")
+        or strategist_output.get("market_regime")
+        or state.get("market_regime")
+        or ""
+    )
+    commander_rail_shadow = (
+        commander_context.get("market_regime_rail_shadow")
+        if isinstance(commander_context.get("market_regime_rail_shadow"), dict)
+        else {}
+    )
+    strategist_rail_shadow = (
+        strategist_output.get("market_regime_rail_shadow")
+        if isinstance(strategist_output.get("market_regime_rail_shadow"), dict)
+        else {}
+    )
+    market_regime_rail_for_entry = (
+        strategy_frame.get("market_regime_rail")
+        or commander_context.get("market_regime_rail")
+        or commander_rail_shadow.get("market_regime_rail")
+        or commander_rail_shadow.get("rail_id")
+        or strategist_output.get("market_regime_rail")
+        or strategist_rail_shadow.get("market_regime_rail")
+        or strategist_rail_shadow.get("rail_id")
+        or state.get("market_regime_rail")
+        or ""
+    )
+    market_rail_translation = evaluate_market_rail_translation(
+        entry_info=entry_info,
+        entry_quant_decision=quant_entry_decision,
+        factor_snapshot=quant_entry_factor_snapshot,
+        market_regime=market_regime_for_entry,
+        market_regime_rail=market_regime_rail_for_entry,
+    )
+    entry_info["market_rail_translation"] = dict(market_rail_translation)
+    if isinstance(quant_entry_decision, dict):
+        quant_entry_decision["market_rail_translation"] = dict(market_rail_translation)
+        if bool(market_rail_translation.get("applied")):
+            warnings = list(quant_entry_decision.get("warnings") or [])
+            if "market_rail_translation_probe" not in warnings:
+                warnings.append("market_rail_translation_probe")
+            positives = list(quant_entry_decision.get("positive_reasons") or [])
+            if "supportive_market_rail_probe_allowed" not in positives:
+                positives.append("supportive_market_rail_probe_allowed")
+            quant_entry_decision["warnings"] = warnings[:10]
+            quant_entry_decision["positive_reasons"] = positives[:10]
+            quant_entry_decision["decision"] = "entry_probe_allowed"
+            quant_entry_decision["commander_override_required"] = False
+            quant_entry_decision["override_reason_required_for"] = []
+    quant_entry_enforcement = build_entry_quant_enforcement(quant_entry_decision)
+    entry_info["entry_quant_decision"] = dict(quant_entry_decision)
+    entry_info["quant_entry_enforcement"] = dict(quant_entry_enforcement)
+    risk_off_defensive_policy = evaluate_risk_off_defensive_observe_policy(
+        tactic_id=tactic_id_for_quant_entry,
+        market_regime=market_regime_for_entry,
+        market_regime_rail=market_regime_rail_for_entry,
+        entry_info=entry_info,
+        commander_context=commander_context,
+    )
+    entry_info["risk_off_defensive_observe_policy"] = dict(risk_off_defensive_policy)
     entry_intent_cooldown_sec = max(0, _to_int((entry_info.get("thresholds") or {}).get("intent_cooldown_sec")))
     cooldown_until = max(0, _to_int(entry_cooldown_map.get(symbol)))
     if cooldown_until > 0 and cooldown_until <= now_epoch_for_entry:
@@ -721,6 +785,24 @@ def _evaluate_monitor_entry_candidate(
     entry_info["legacy_fallback_used"] = False
     entry_info["decision"] = "WAIT"
     entry_info["cascade_candidate"] = str(plan.get("cascade_candidate") or "")
+    if bool(market_rail_translation.get("applied")):
+        if (
+            entry_guard_blocked
+            and entry_guard_reason in {"cost_adjusted_edge_not_ready", "entry_quality_gate_blocked"}
+        ):
+            entry_guard_blocked = False
+            entry_guard_reason = ""
+            entry_info["guard_blocked"] = False
+            entry_info["guard_reason"] = ""
+            entry_info["market_rail_translation_unblocked_guard"] = True
+        entry_info["triggered"] = True
+        entry_info["market_rail_translation_probe"] = True
+        probe_max_qty = max(1, _to_int(market_rail_translation.get("probe_max_qty") or 1))
+        if qty > 0:
+            qty = max(1, min(int(qty), int(probe_max_qty)))
+            sizing_info["qty"] = int(qty)
+            sizing_info["market_rail_translation_probe_max_qty"] = int(probe_max_qty)
+            sizing_info["market_rail_translation_applied"] = True
     if (
         bool(quant_entry_enforcement.get("blocked"))
         and not entry_guard_blocked
@@ -731,6 +813,17 @@ def _evaluate_monitor_entry_candidate(
         entry_info["guard_blocked"] = True
         entry_info["guard_reason"] = entry_guard_reason
         entry_info["reason"] = entry_guard_reason
+    if bool(risk_off_defensive_policy.get("blocked")) and not entry_guard_blocked:
+        entry_guard_blocked = True
+        entry_guard_reason = str(risk_off_defensive_policy.get("reason") or "risk_off_defensive_observe_no_entry")
+        failed_checks = list(entry_info.get("failed_checks") or [])
+        if entry_guard_reason not in failed_checks:
+            failed_checks.append(entry_guard_reason)
+        entry_info["failed_checks"] = failed_checks
+        entry_info["guard_blocked"] = True
+        entry_info["guard_reason"] = entry_guard_reason
+        entry_info["reason"] = entry_guard_reason
+        entry_info["primary_failure_axis"] = "risk_off_defensive_observe_policy"
 
     if symbol and qty > 0 and not entry_guard_blocked and bool(entry_info.get("triggered")):
         entry_info["intent_submitted"] = True
@@ -1311,6 +1404,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "quant_factor_snapshot": dict(entry_info.get("quant_factor_snapshot") or {}),
                     "entry_quant_decision": dict(entry_info.get("entry_quant_decision") or {}),
                     "quant_entry_enforcement": dict(entry_info.get("quant_entry_enforcement") or {}),
+                    "market_rail_translation": dict(entry_info.get("market_rail_translation") or {}),
+                    "risk_off_defensive_observe_policy": dict(
+                        entry_info.get("risk_off_defensive_observe_policy") or {}
+                    ),
                 },
             }
             if bool(sizing_info.get("enabled")):
@@ -2119,6 +2216,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "quant_factor_snapshot": dict(quant_entry_factor_snapshot),
         "entry_quant_decision": dict(quant_entry_decision),
         "quant_entry_enforcement": dict(quant_entry_enforcement),
+        "market_rail_translation": dict(entry_info.get("market_rail_translation") or {}),
+        "risk_off_defensive_observe_policy": dict(entry_info.get("risk_off_defensive_observe_policy") or {}),
         "exit_quant_decision": dict(quant_exit_decision),
     }
     state["monitor_entry"] = dict(entry_info)

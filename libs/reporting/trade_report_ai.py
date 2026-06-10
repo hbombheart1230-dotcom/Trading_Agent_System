@@ -2621,6 +2621,10 @@ def _build_entry_decision_summary(
     entry_quality_score = _num_opt(entry_scores.get("entry_quality_score"))
     entry_quality_tier = _clip(entry_scores.get("entry_quality_tier"), max_len=24)
     entry_quality_path = _entry_path_label(entry_scores.get("entry_quality_path"))
+    entry_hard_gate_passed = entry_scores.get("entry_hard_gate_passed")
+    entry_hard_gate_blockers = entry_scores.get("entry_hard_gate_blockers")
+    if not isinstance(entry_hard_gate_blockers, list):
+        entry_hard_gate_blockers = []
     fallback_ctx = _scanner_monitor_fallback_context(scanner_reason)
 
     summary_parts: List[str] = []
@@ -2665,6 +2669,16 @@ def _build_entry_decision_summary(
         if entry_quality_path:
             quality_bits.append(f"우세 경로 {entry_quality_path}")
         summary_parts.append(" / ".join(quality_bits) + "였습니다. 이 값은 관측용이며 매수 허용 기준으로 쓰지 않습니다.")
+        if entry_hard_gate_passed is False:
+            blocker_text = ", ".join(str(x or "").replace("_", " ") for x in entry_hard_gate_blockers[:4] if str(x or "").strip())
+            if blocker_text:
+                summary_parts.append(
+                    f"따라서 품질 점수가 높아도 hard gate는 미통과였으며 차단 축은 {blocker_text}였습니다."
+                )
+            else:
+                summary_parts.append("따라서 품질 점수가 높아도 hard gate는 미통과였고 매수 허가로 해석하지 않습니다.")
+        elif entry_hard_gate_passed is True:
+            summary_parts.append("hard gate도 통과해 품질 점수와 실제 진입 허가가 같은 방향이었습니다.")
     if summary_parts:
         return " ".join(summary_parts)
     scanner_summary = _build_scanner_choice_summary(scanner_reason, market_context)
@@ -3155,6 +3169,24 @@ def _build_entry_decision_bullets(
             f"진입 품질 점수는 {entry_quality_score:.4f}, 등급은 {entry_quality_tier}, 우세 경로는 {entry_quality_path}였습니다. "
             "이 점수는 관측용이며 매수 허용 여부를 직접 바꾸지 않습니다."
         )
+        entry_hard_gate_passed = entry_scores.get("entry_hard_gate_passed")
+        entry_hard_gate_blockers = entry_scores.get("entry_hard_gate_blockers")
+        if not isinstance(entry_hard_gate_blockers, list):
+            entry_hard_gate_blockers = []
+        if entry_hard_gate_passed is False:
+            blocker_text = ", ".join(
+                str(x or "").replace("_", " ")
+                for x in entry_hard_gate_blockers[:4]
+                if str(x or "").strip()
+            )
+            if blocker_text:
+                bullets.append(
+                    f"품질 점수가 높아도 hard gate는 미통과였습니다. 차단 축은 {blocker_text}였습니다."
+                )
+            else:
+                bullets.append("품질 점수가 높아도 hard gate는 미통과였으므로 매수 허가로 해석하지 않습니다.")
+        elif entry_hard_gate_passed is True:
+            bullets.append("hard gate도 통과해 품질 점수와 실제 진입 허가가 같은 방향이었습니다.")
 
     post_entry_observation = _as_dict(monitor_reason.get("post_entry_gate_observation"))
     post_grouped_trace = _as_dict(post_entry_observation.get("entry_grouped_logic_trace"))

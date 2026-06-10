@@ -96,6 +96,7 @@ Initial decision framing:
 | Pullback maturity | adjust-and-retest candidate | review after full-day data |
 | Human chart sanity guard | promotion-candidate review target | inspect blocked winners and failure modes |
 | Market regime rail | new observation layer | document and attach as shadow-only first |
+| News event intelligence | new observation layer | attach event/theme/symbol watch evidence as shadow-only first |
 
 ## Promotion Candidate Rule
 
@@ -127,6 +128,20 @@ Signals to adjust and re-test:
 New observation layers:
 Critical defects:
 Next-day observation targets:
+```
+
+News event intelligence review addendum:
+
+```text
+News event candidates:
+Theme watch candidates:
+Symbol watch candidates:
+Strategist usage status:
+Linked symbols that passed scanner:
+Linked symbols blocked by monitor/cost/volume:
+Linked symbols that became missed opportunities:
+False-positive news event links:
+Next-day news event observation targets:
 ```
 
 ## 2026-06-02 Review Focus
@@ -167,6 +182,7 @@ Q8 status:
 | Breakout readiness | review | adjust-and-retest candidate |
 | Human chart sanity | review | promotion review target |
 | Market regime rail | observation-only | attach to Q8 evidence later |
+| News event intelligence | observation-only | compare linked symbols against unlinked scanner candidates |
 | Long horizon | observation-only | no unlock |
 
 Next live validation day target:
@@ -176,6 +192,9 @@ Next live validation day target:
   sanity blocks, and pullback maturity blocks against forward outcomes.
 - Keep market regime rail as observation-only until it is attached to
   Strategist interpretation and Q8/shadow outcomes.
+- Keep news event intelligence as observation-only until event/theme/symbol
+  watch candidates can be compared against forward outcomes and raw scanner
+  candidates.
 
 ## Boundary
 

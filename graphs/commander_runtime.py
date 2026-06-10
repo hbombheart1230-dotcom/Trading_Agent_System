@@ -1111,31 +1111,31 @@ def _resolve_commander_behavior_policy(
     if memory_feedback_enabled is None:
         memory_feedback_enabled = _env_bool(
             "USE_STRATEGY_MEMORY_FEEDBACK",
-            _commander_default_bool("USE_STRATEGY_MEMORY_FEEDBACK", False),
+            _commander_default_bool("USE_STRATEGY_MEMORY_FEEDBACK", True),
         )
     performance_memory_enabled = _existing_value("strategist", "performance_memory", "enabled")
     if performance_memory_enabled is None:
         performance_memory_enabled = _env_bool(
             "USE_STRATEGY_PERFORMANCE_MEMORY",
-            _commander_default_bool("USE_STRATEGY_PERFORMANCE_MEMORY", False),
+            _commander_default_bool("USE_STRATEGY_PERFORMANCE_MEMORY", True),
         )
     strategy_memory_persist_enabled = _existing_value("strategist", "performance_memory", "persist_enabled")
     if strategy_memory_persist_enabled is None:
         strategy_memory_persist_enabled = _env_bool(
             "STRATEGY_MEMORY_PERSIST_ENABLED",
-            _commander_default_bool("STRATEGY_MEMORY_PERSIST_ENABLED", False),
+            _commander_default_bool("STRATEGY_MEMORY_PERSIST_ENABLED", True),
         )
     commander_memory_usage_disabled = _existing_value("commander", "memory_usage", "disabled")
     if commander_memory_usage_disabled is None:
         commander_memory_usage_disabled = _env_bool(
             "COMMANDER_MEMORY_USAGE_DISABLED",
-            _commander_default_bool("COMMANDER_MEMORY_USAGE_DISABLED", True),
+            _commander_default_bool("COMMANDER_MEMORY_USAGE_DISABLED", False),
         )
     strategist_memory_usage_disabled = _existing_value("strategist", "memory_usage", "disabled")
     if strategist_memory_usage_disabled is None:
         strategist_memory_usage_disabled = _env_bool(
             "STRATEGIST_MEMORY_USAGE_DISABLED",
-            _commander_default_bool("STRATEGIST_MEMORY_USAGE_DISABLED", True),
+            _commander_default_bool("STRATEGIST_MEMORY_USAGE_DISABLED", False),
         )
     post_scanner_refresh_enabled = _existing_value("commander", "route", "post_scanner_refresh_enabled")
     if post_scanner_refresh_enabled is None:
@@ -2357,7 +2357,7 @@ def _candidate_watch_rank_cap(
     if mode == "blocked":
         return 1
     if regime == "risk_off" or mode == "defensive" or bool(stress_flags) or str(resilience.get("degrade_mode") or "").strip():
-        return 3
+        return 1
     if tactical == "defensive_observe":
         return 3
     if regime == "risk_on" or mode == "offensive":
@@ -2432,6 +2432,13 @@ def _build_commander_entry_control(
         and not bool(stress_flags)
         and not str(resilience.get("degrade_mode") or "").strip()
         and not bool(preflight.get("blocked"))
+    )
+    no_entry_expansion = bool(
+        regime == "risk_off"
+        or mode in {"defensive", "blocked"}
+        or bool(stress_flags)
+        or str(resilience.get("degrade_mode") or "").strip()
+        or bool(preflight.get("blocked"))
     )
     expandable_blocker = blocker in _ENTRY_CONTROL_POOL_EXPAND_BLOCKERS
     repeated_block = bool(blocker and failure_streak >= 3)
@@ -2543,6 +2550,41 @@ def _build_commander_entry_control(
             force_disable_cascade=rank_cap <= 1,
             clamp_reason=f"market_regime={regime or str(market_regime or '')}:risk_mode={mode or str(risk_mode or '')}",
         )
+    if repeated_block and no_entry_expansion:
+        base.update(
+            {
+                "mode": "risk_off_no_entry_expansion",
+                "decision": "preserve_conservative_entry_scope",
+                "max_priority_rank": 1,
+                "max_runner_ups": 0,
+                "cascade_enabled": False,
+                "allow_dynamic_entry_band": False,
+                "reason": f"risk_off_or_defensive_repeated_blocker_no_expansion:{blocker}:streak={failure_streak}",
+                "candidate_watch_policy_effect": "commander_risk_off_no_entry_expansion",
+                "candidate_watch_policy_clamp_reason": (
+                    f"risk_off_or_defensive_repeated_blocker_no_expansion:{blocker}:streak={failure_streak}"
+                ),
+            }
+        )
+        if candidate_watch_proposal:
+            base = _apply_candidate_watch_proposal_to_entry_control(
+                base,
+                candidate_watch_proposal,
+                rank_cap=1,
+                force_disable_cascade=True,
+                clamp_reason="risk_off_or_defensive_no_entry_expansion",
+            )
+            base.update(
+                {
+                    "max_priority_rank": 1,
+                    "max_runner_ups": 0,
+                    "cascade_enabled": False,
+                    "allow_dynamic_entry_band": False,
+                    "decision": "preserve_conservative_entry_scope",
+                    "reason": f"risk_off_or_defensive_repeated_blocker_no_expansion:{blocker}:streak={failure_streak}",
+                }
+            )
+        return base
     if repeated_block and not market_supportive:
         base.update(
             {
@@ -3228,6 +3270,7 @@ def _build_commander_decision(
         "position_management_no_entry_expansion",
         "preserve_defensive_no_trade_ok",
         "preserve_guardrail_no_trade_ok",
+        "risk_off_no_entry_expansion",
     }
 
     if monitor_feedback["dominant_blocker"] and monitor_feedback["failure_streak"] >= 3 and adaptive_feedback_allowed:
@@ -3261,7 +3304,10 @@ def _build_commander_decision(
     scanner_policy = {
         "avoid_recent_symbol": False,
         "recent_symbol_penalty": round(max(0.0, 0.05 + adaptive_policy["reentry_penalty_adjustment"]), 6),
-        "diversification_bias": round(max(0.0, 0.02 + adaptive_policy["diversification_adjustment"]), 6),
+        "diversification_bias": round(
+            max(0.0, (0.02 if adaptive_feedback_allowed else 0.0) + adaptive_policy["diversification_adjustment"]),
+            6,
+        ),
         "entry_bias_cap": round(max(0.0, 0.0 + adaptive_policy["entry_bias_adjustment"]), 6),
         "scan_aggressiveness": round(max(0.0, adaptive_policy["scan_aggressiveness"]), 6),
         "allow_same_symbol_reentry": True,

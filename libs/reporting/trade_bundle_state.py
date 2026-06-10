@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional
 
 from libs.reporting.trade_execution_truth_merge import merge_preferred_execution_details
 from libs.reporting.trade_story_pipeline import build_lifecycle_bundle, safe_int
+from libs.reporting.trade_symbol_context import normalize_trade_payload_symbol_context
 
 
 def _utc_now_iso() -> str:
@@ -510,6 +511,7 @@ def build_live_trade_bundle_payloads(
         entry_execution_details,
     )
     entry_payload = _backfill_execution_fields(entry_payload, entry_payload.get("execution_details") or {})
+    entry_payload = normalize_trade_payload_symbol_context(entry_payload, executed_symbol=symbol)
     holding_payload.setdefault("hold_duration", holding_phase_observability.get("hold_duration"))
     holding_payload.setdefault("hold_duration_sec", holding_phase_observability.get("hold_duration_sec"))
     holding_payload.setdefault("holding_phase_summary", holding_phase_observability.get("holding_phase_summary"))
@@ -539,6 +541,7 @@ def build_live_trade_bundle_payloads(
         exit_execution_details,
     )
     exit_payload = _backfill_execution_fields(exit_payload, exit_payload.get("execution_details") or {})
+    exit_payload = normalize_trade_payload_symbol_context(exit_payload, executed_symbol=symbol)
 
     normalized_lifecycle = dict(lifecycle_obj)
     normalized_lifecycle["entry"] = dict(entry_payload)

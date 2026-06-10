@@ -218,7 +218,7 @@ def _render_residual_positions_markdown(residual: Dict[str, Any]) -> List[str]:
             if isinstance(row, dict) and str(row.get("symbol") or "").strip()
         )
         if symbols:
-            lines.append(f"- 장중 청산 확인: {symbols}은 당일 전량 매도 기록으로 잔여 보유에서 제외했습니다.")
+            lines.append(f"- 장중 청산 확인: {symbols}는 당일 전량 매도 기록으로 잔여 보유에서 제외했습니다.")
     for row in positions:
         if not isinstance(row, dict):
             continue
@@ -232,14 +232,14 @@ def _render_residual_positions_markdown(residual: Dict[str, Any]) -> List[str]:
         decision_label = str(row.get("overnight_decision_label") or "").strip()
         price_text = f"평균 {avg_price:,.0f}" if isinstance(avg_price, (int, float)) and avg_price else "평균 -"
         current_text = f"현재 {current_price:,.0f}" if isinstance(current_price, (int, float)) and current_price else "현재 -"
-        ratio_text = f" / 평가손익률 {float(pnl_ratio) * 100:.2f}%" if isinstance(pnl_ratio, (int, float)) else ""
+        ratio_text = f" / 평가 손익률 {float(pnl_ratio) * 100:.2f}%" if isinstance(pnl_ratio, (int, float)) else ""
         detail = f"- {symbol}: {status} / {qty}주 / {price_text} / {current_text}{ratio_text}"
         if decision_label:
             detail += f" / 오버나이트 판단: {decision_label}"
         if reason and not bool(row.get("overnight_decision_missing")):
             detail += f" / 사유 {reason}"
         if bool(row.get("weekend_carry")):
-            detail += f" / 주말보유 {int(row.get('holding_gap_days') or 3)}일"
+            detail += f" / 주말 보유 {int(row.get('holding_gap_days') or 3)}일"
         lines.append(detail)
         if bool(row.get("weekend_carry")) and not bool(row.get("allow_weekend_carry")):
             lines.append("  - 주의: 금요일 carry 승인이라 주말 갭 리스크가 포함됩니다.")
@@ -253,7 +253,6 @@ def _render_residual_positions_markdown(residual: Dict[str, Any]) -> List[str]:
         if blockers:
             lines.append(f"  - 차단/주의 근거: {', '.join(blockers[:5])}")
     return lines
-
 
 def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = None) -> Tuple[Path, Path]:
     """Generate a daily markdown + json summary from events.jsonl.
@@ -326,7 +325,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             render_residual_positions=_render_residual_positions_markdown,
         )
         md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text(md_text, encoding="utf-8")
+        md_path.write_text(md_text, encoding="utf-8-sig", newline="\n")
         js_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         paths["trade_index_json"].write_text(json.dumps(trade_index, ensure_ascii=False, indent=2), encoding="utf-8")
         generate_operator_daily_summary_artifact(
@@ -404,7 +403,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     md_path = paths["daily_report_md"]
     js_path = paths["daily_report_json"]
     md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_path.write_text(md_text, encoding="utf-8")
+    md_path.write_text(md_text, encoding="utf-8-sig", newline="\n")
     js_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     paths["trade_index_json"].write_text(json.dumps(trade_index, ensure_ascii=False, indent=2), encoding="utf-8")
     generate_operator_daily_summary_artifact(
@@ -428,3 +427,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

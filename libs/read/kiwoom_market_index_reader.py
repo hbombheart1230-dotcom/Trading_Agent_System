@@ -14,6 +14,7 @@ from libs.kiwoom.kiwoom_token_client import KiwoomTokenClient
 INDEX_CODES = {
     "KOSPI": "001",
     "KOSDAQ": "101",
+    "KOSPI200": "201",
 }
 
 
@@ -102,7 +103,7 @@ class MarketIndexSnapshot:
 
 
 class KiwoomMarketIndexReader:
-    """Read KOSPI/KOSDAQ index context from Kiwoom sector index APIs."""
+    """Read Korean index context from Kiwoom sector index APIs."""
 
     API_ID_DAILY = "ka20009"
     ENDPOINT_SECTOR = "/api/dostk/sect"
@@ -218,7 +219,7 @@ class KiwoomMarketIndexReader:
             previous_close_source=previous_source,
         )
 
-    def get_index_packet(self, names: Iterable[str] = ("KOSPI", "KOSDAQ")) -> Dict[str, Any]:
+    def get_index_packet(self, names: Iterable[str] = ("KOSPI", "KOSDAQ", "KOSPI200")) -> Dict[str, Any]:
         indices: Dict[str, Dict[str, Any]] = {}
         errors: Dict[str, str] = {}
         name_list = list(names)

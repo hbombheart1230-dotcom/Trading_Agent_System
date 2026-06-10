@@ -79,6 +79,11 @@ from libs.runtime.quant.tactics import (
     normalize_tactical_subtype as normalize_quant_tactical_subtype,
 )
 from libs.runtime.quant.context import build_strategist_quant_context
+from libs.runtime.news_event_intelligence import (
+    build_news_event_intelligence,
+    compact_news_event_intelligence_for_llm,
+)
+from libs.runtime.strategist_input_quality import build_strategist_input_quality_context
 from libs.read.kiwoom_theme_reader import build_theme_strength_packet
 
 
@@ -114,8 +119,8 @@ def _strategy_memory_usage_disabled(policy_or_payload: Any | None = None) -> boo
         else {}
     )
     return bool(
-        _env_bool("STRATEGIST_MEMORY_USAGE_DISABLED")
-        or _env_bool("COMMANDER_MEMORY_USAGE_DISABLED")
+        _env_bool("STRATEGIST_MEMORY_USAGE_DISABLED", False)
+        or _env_bool("COMMANDER_MEMORY_USAGE_DISABLED", False)
         or bool(obj.get("strategist_memory_usage_disabled"))
         or bool(obj.get("commander_memory_usage_disabled"))
         or bool(strategist_memory_usage.get("disabled"))
@@ -506,6 +511,10 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
         return {}
     contract_keys = {
         "market_regime",
+        "market_regime_rail",
+        "news_quality",
+        "news_event_intelligence_usage",
+        "risk_off_exception_conditions",
         "market_sentiment",
         "key_events",
         "themes",
@@ -665,6 +674,23 @@ def _normalize_stage2_selected_symbol_review(raw: Dict[str, Any]) -> Dict[str, A
     actionability = str(raw.get("commander_actionability") or "advisory_only").strip().lower()
     if actionability not in {"advisory_only", "policy_delta_allowed", "hard_block_recommended"}:
         actionability = "advisory_only"
+    news_event_usage = (
+        dict(raw.get("news_event_intelligence_usage") or {})
+        if isinstance(raw.get("news_event_intelligence_usage"), dict)
+        else {}
+    )
+    if news_event_usage:
+        status = str(news_event_usage.get("status") or "insufficient").strip().lower()
+        if status not in {"used", "ignored", "insufficient"}:
+            status = "insufficient"
+        news_event_usage = {
+            "status": status,
+            "used_event_ids": _stage_text_list(news_event_usage.get("used_event_ids"), limit=8),
+            "theme_watchlist": _stage_text_list(news_event_usage.get("theme_watchlist"), limit=8),
+            "symbol_watchlist": _stage_text_list(news_event_usage.get("symbol_watchlist"), limit=8, upper=True),
+            "reason": str(news_event_usage.get("reason") or "").strip(),
+            "observation_only": True,
+        }
     return {
         "schema_version": "strategist.stage2.selected_symbol_tactical_review.v1",
         "stage_name": "selected_symbol_tactical_refresh",
@@ -695,6 +721,10 @@ def _normalize_stage2_selected_symbol_review(raw: Dict[str, Any]) -> Dict[str, A
         },
         "commander_actionability": actionability,
         "confidence": _stage_float(raw.get("confidence"), 0.0),
+        "market_regime_rail": str(raw.get("market_regime_rail") or "").strip(),
+        "news_quality": dict(raw.get("news_quality") or {}) if isinstance(raw.get("news_quality"), dict) else {},
+        "news_event_intelligence_usage": dict(news_event_usage),
+        "risk_off_exception_conditions": _stage_text_list(raw.get("risk_off_exception_conditions"), limit=8),
         "reason": str(raw.get("reason") or "").strip(),
     }
 
@@ -962,7 +992,7 @@ def _stage_specific_task_requirement(call_kind: str) -> str:
     if call_kind == "selected_symbol_tactical_refresh":
         return (
             "Your role is to compare Scanner rank #1 with compressed runner-ups, use selected_symbol_memory only as bounded symbol-specific evidence when memory is enabled, "
-            "and output selected_symbol_decision, target_symbol, target_rank, runner_up_order, monitor_instruction, entry_policy_delta, memory_usage, commander_actionability, confidence, and reason. "
+            "and output selected_symbol_decision, target_symbol, target_rank, runner_up_order, monitor_instruction, entry_policy_delta, memory_usage, market_regime_rail, news_quality, risk_off_exception_conditions, news_event_intelligence_usage, commander_actionability, confidence, and reason. "
         )
     if call_kind == "stale_intraday_hold_review":
         return (
@@ -984,6 +1014,8 @@ def _stage_specific_user_requirement(call_kind: str) -> str:
         return (
             "Decision requirements: return the Stage 2 selected-symbol tactical refresh contract only. "
             "Compare rank #1 and runner-ups in one call, decide whether to watch rank #1, avoid rank #1, tighten rank #1 gates, cascade to runner-ups, or no-trade. "
+            "Always include market_regime_rail, news_quality, and risk_off_exception_conditions so Commander and reports can audit whether market/news context changed the recommendation. "
+            "If news_event_intelligence exists, include news_event_intelligence_usage as observation-only evidence usage; it must not imply direct BUY/SELL or gate bypass. "
             "Do not output a direct BUY/SELL. "
         )
     if call_kind == "stale_intraday_hold_review":
@@ -1028,6 +1060,23 @@ def _stage_specific_llm_contract(call_kind: str, base_contract: Dict[str, Any]) 
                 "data_quality": "ok|stale|insufficient",
                 "effect": "neutral|supportive|cautionary",
                 "reason": "string",
+            },
+            "market_regime_rail": "risk_off_breadth_collapse|global_risk_off_pressure|risk_on_supportive|neutral_mixed|macro_packet_unavailable",
+            "news_quality": {
+                "status": "ok|partial|weak",
+                "headline_count": 0,
+                "candidate_headline_count": 0,
+                "market_headline_count": 0,
+                "issues": ["string"],
+            },
+            "risk_off_exception_conditions": ["cost_floor_pass", "relative_strength_leader", "volume_confirmation"],
+            "news_event_intelligence_usage": {
+                "status": "used|ignored|insufficient",
+                "used_event_ids": ["news_event_001"],
+                "theme_watchlist": ["space_aerospace"],
+                "symbol_watchlist": ["005930"],
+                "reason": "string",
+                "observation_only": True,
             },
             "commander_actionability": "advisory_only|policy_delta_allowed|hard_block_recommended",
             "confidence": 0.0,
@@ -1095,6 +1144,7 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
         "strategy_refresh_trace",
         "memory_usage_trace",
         "news_usage_trace",
+        "news_event_intelligence_usage",
         "scanner_handoff",
         "monitor_handoff",
         "conflict_analysis",
@@ -1143,6 +1193,17 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
         out["selected_themes"] = _extract_theme_names_from_any(raw.get("selected_themes"))
     if isinstance(raw.get("theme_strategy"), dict):
         out["theme_strategy"] = dict(raw.get("theme_strategy") or {})
+    if raw.get("market_regime_rail") not in (None, ""):
+        out["market_regime_rail"] = str(raw.get("market_regime_rail") or "").strip()
+    if isinstance(raw.get("news_quality"), dict):
+        out["news_quality"] = dict(raw.get("news_quality") or {})
+    if isinstance(raw.get("news_event_intelligence_usage"), dict):
+        out["news_event_intelligence_usage"] = {
+            **dict(raw.get("news_event_intelligence_usage") or {}),
+            "observation_only": True,
+        }
+    if isinstance(raw.get("risk_off_exception_conditions"), list):
+        out["risk_off_exception_conditions"] = _stage_text_list(raw.get("risk_off_exception_conditions"), limit=10)
     stage2 = _normalize_stage2_selected_symbol_review(raw)
     if stage2:
         out["selected_symbol_tactical_review"] = dict(stage2)
@@ -1153,6 +1214,13 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
         out["monitor_instruction"] = dict(stage2.get("monitor_instruction") or {})
         out["entry_policy_delta"] = dict(stage2.get("entry_policy_delta") or {})
         out["memory_usage"] = dict(stage2.get("memory_usage") or {})
+        out["market_regime_rail"] = str(stage2.get("market_regime_rail") or out.get("market_regime_rail") or "")
+        out["news_quality"] = dict(stage2.get("news_quality") or out.get("news_quality") or {})
+        if isinstance(stage2.get("news_event_intelligence_usage"), dict):
+            out["news_event_intelligence_usage"] = dict(stage2.get("news_event_intelligence_usage") or {})
+        out["risk_off_exception_conditions"] = list(
+            stage2.get("risk_off_exception_conditions") or out.get("risk_off_exception_conditions") or []
+        )
         out["commander_actionability"] = str(stage2.get("commander_actionability") or "")
     stage3 = _normalize_stage3_hold_review(raw)
     if stage3:
@@ -1801,6 +1869,10 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "If deterministic evidence shows repeated NOOP-like blockage, you must decide whether entry conditions should be relaxed, tightened, or rebalanced. "
         "If deterministic evidence shows repeated false entries, stop-outs, or drawdown-heavy outcomes, you must tighten or rebalance policy. "
         "Use quant_context when present as deterministic observation-only evidence: it does not execute behavior by itself, but it should inform tactic fit, scorecard-aware caution, selected-symbol review, hold review, and carry review. "
+        "Use market_regime_rail, news_quality, and risk_off_exception_policy as explicit evaluation inputs. "
+        "You MUST echo the applicable market_regime_rail, summarize news_quality, and list risk_off_exception_conditions in the JSON output when the contract contains those fields. "
+        "Use news_event_intelligence only as observation-only watchlist evidence; it may inform themes to watch, but it must not override Scanner, Monitor, Commander, cost, or risk gates. "
+        "In risk-off rails, do not relax entry policy unless risk_off_exception_policy.allowed_exception_conditions are explicitly satisfied by scanner, monitor, cost, volume, and fresh symbol-news evidence. "
         "Use memory_packets.*.operator_summary.tactic_lane_guidance when present as deterministic Q8 feedback: if vwap_reclaim_pullback is overused and weak, do not default to it; explicitly compare breakout or volume_breakout when shadow breakout-ready evidence exists; keep cost-edge guard promoted when shadow readiness recommends it. "
         "Use selected_symbol_news_signal and candidate_news_signal_summary when present: negative selected-symbol news must block relaxation unless chart/volume evidence is exceptional; positive selected-symbol news may support relaxation only when monitor and cost evidence are also ready. "
         f"{memory_sensitive_directives}"
@@ -1817,6 +1889,24 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "Return JSON only."
     )
     base_contract = {
+        "market_regime_rail": "risk_off_breadth_collapse|global_risk_off_pressure|risk_on_supportive|neutral_mixed|macro_packet_unavailable",
+        "news_quality": {
+            "status": "ok|partial|weak",
+            "headline_count": 0,
+            "candidate_headline_count": 0,
+            "market_headline_count": 0,
+            "issues": ["string"],
+            "usage_rule": "string",
+        },
+        "risk_off_exception_conditions": ["string"],
+        "news_event_intelligence_usage": {
+            "status": "used|ignored|insufficient",
+            "used_event_ids": ["news_event_001"],
+            "theme_watchlist": ["space_aerospace"],
+            "symbol_watchlist": ["005930"],
+            "reason": "string",
+            "observation_only": True,
+        },
         "playbook": "breakout|pullback|reversal|defensive",
         "tactical_strategy": (
             "opening_gap_momentum|opening_range_breakout|vwap_reclaim_pullback|"
@@ -2021,6 +2111,9 @@ def _compact_global_signal_for_llm(signal: Any) -> Dict[str, Any]:
     fear_index = src.get("fear_index") if isinstance(src.get("fear_index"), dict) else {}
     korea_indices = src.get("korea_indices") if isinstance(src.get("korea_indices"), dict) else {}
     korea_rows = korea_indices.get("indices") if isinstance(korea_indices.get("indices"), dict) else {}
+    krx_night_futures = (
+        src.get("krx_night_futures") if isinstance(src.get("krx_night_futures"), dict) else {}
+    )
     macro_indicators = src.get("macro_indicators") if isinstance(src.get("macro_indicators"), dict) else {}
     indicator_rows = macro_indicators.get("indicators") if isinstance(macro_indicators.get("indicators"), dict) else {}
 
@@ -2047,6 +2140,8 @@ def _compact_global_signal_for_llm(signal: Any) -> Dict[str, Any]:
             "dow_pct": _round_optional(index_moves.get("dow_pct"), 3),
             "kospi_pct": _round_optional(index_moves.get("kospi_pct"), 3),
             "kosdaq_pct": _round_optional(index_moves.get("kosdaq_pct"), 3),
+            "kospi200_pct": _round_optional(index_moves.get("kospi200_pct"), 3),
+            "krx_night_futures_pct": _round_optional(index_moves.get("krx_night_futures_pct"), 3),
         },
         "korea_indices": {
             "source": str(korea_indices.get("source") or ""),
@@ -2056,7 +2151,21 @@ def _compact_global_signal_for_llm(signal: Any) -> Dict[str, Any]:
             "indices": {
                 "KOSPI": _compact_korea_index("KOSPI"),
                 "KOSDAQ": _compact_korea_index("KOSDAQ"),
+                "KOSPI200": _compact_korea_index("KOSPI200"),
             },
+        },
+        "krx_night_futures": {
+            "status": str(krx_night_futures.get("status") or ""),
+            "source": str(krx_night_futures.get("source") or ""),
+            "reason": str(krx_night_futures.get("reason") or ""),
+            "current": _round_optional(krx_night_futures.get("current"), 3),
+            "previous": _round_optional(krx_night_futures.get("previous"), 3),
+            "change": _round_optional(krx_night_futures.get("change"), 3),
+            "change_pct": _round_optional(krx_night_futures.get("change_pct"), 3),
+            "basis": _round_optional(krx_night_futures.get("basis"), 3),
+            "direction_pressure": str(krx_night_futures.get("direction_pressure") or ""),
+            "behavior_effect": str(krx_night_futures.get("behavior_effect") or "observation_only"),
+            "trading_action_allowed": bool(krx_night_futures.get("trading_action_allowed") is True),
         },
         "macro_moves": {
             "vix_pct": _round_optional(macro_moves.get("vix_pct"), 3),
@@ -2097,6 +2206,8 @@ def _compact_global_signal_for_llm(signal: Any) -> Dict[str, Any]:
                 "usdcny",
                 "usdjpy",
                 "kospi",
+                "kospi200",
+                "krx_night_futures",
                 "sp500",
                 "nasdaq",
             }
@@ -3199,6 +3310,9 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
     }
     compact["market_news_sample"] = _compact_news_sample_for_llm(compact.get("market_news_sample"), max_symbols=4, max_titles=1, max_title_len=120)
     compact["candidate_news_sample"] = _compact_news_sample_for_llm(compact.get("candidate_news_sample"), max_symbols=4, max_titles=1, max_title_len=120)
+    compact["news_event_intelligence"] = compact_news_event_intelligence_for_llm(
+        compact.get("news_event_intelligence")
+    )
     compact["candidate_symbols_hint"] = list(compact.get("candidate_symbols_hint") or [])[:5]
     compact["key_events_hint"] = [str(x or "") for x in list(compact.get("key_events_hint") or [])[:4]]
     compact["themes_hint"] = [str(x or "") for x in list(compact.get("themes_hint") or [])[:4]]
@@ -3563,6 +3677,24 @@ def _build_strategist_llm_repair_messages(payload: Dict[str, Any], raw_response:
     )
     base_contract = {
         "market_regime": "risk_on|neutral|risk_off",
+        "market_regime_rail": "risk_off_breadth_collapse|global_risk_off_pressure|risk_on_supportive|neutral_mixed|macro_packet_unavailable",
+        "news_quality": {
+            "status": "ok|partial|weak",
+            "headline_count": 0,
+            "candidate_headline_count": 0,
+            "market_headline_count": 0,
+            "issues": ["string"],
+            "usage_rule": "string",
+        },
+        "risk_off_exception_conditions": ["string"],
+        "news_event_intelligence_usage": {
+            "status": "used|ignored|insufficient",
+            "used_event_ids": ["news_event_001"],
+            "theme_watchlist": ["space_aerospace"],
+            "symbol_watchlist": ["005930"],
+            "reason": "string",
+            "observation_only": True,
+        },
         "market_sentiment": "bullish|neutral|bearish",
         "key_events": ["string"],
         "themes": ["string"],
@@ -7396,6 +7528,20 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "key_events_hint": list(key_events),
         "recent_monitor_blockers_hint": list(recent_strategy_feedback.get("recent_monitor_issues") or [])[:5],
     }
+    news_event_intelligence = build_news_event_intelligence(
+        market_news_sample=llm_payload.get("market_news_sample"),
+        candidate_news_sample=llm_payload.get("candidate_news_sample"),
+        news_query_targets=news_query_targets,
+        theme_strength=theme_strength,
+        available_themes=available_themes,
+        candidate_symbols=candidate_symbols,
+    )
+    llm_payload["news_event_intelligence"] = dict(news_event_intelligence)
+    strategist_input_quality = build_strategist_input_quality_context(llm_payload)
+    llm_payload["market_regime_rail"] = dict(strategist_input_quality.get("market_regime_rail") or {})
+    llm_payload["news_quality"] = dict(strategist_input_quality.get("news_quality") or {})
+    llm_payload["risk_off_exception_policy"] = dict(strategist_input_quality.get("risk_off_exception_policy") or {})
+    llm_payload["strategist_input_quality"] = dict(strategist_input_quality)
     candidate_news_sample = _sample_news_for_evidence(news_items_by_symbol)
     market_news_sample = _sample_news_for_evidence(market_news_items_by_target)
     try:
@@ -7407,6 +7553,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "collected_news": _merge_news_samples(market_news_sample, candidate_news_sample),
                 "collected_market_news": market_news_sample,
                 "collected_candidate_news": candidate_news_sample,
+                "news_event_intelligence": dict(news_event_intelligence),
                 "news_query_targets": list(news_query_targets),
                 "news_collection_policy": dict(news_collection_policy),
                 "global_sentiment_inputs": dict(global_signal),
@@ -7908,6 +8055,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["regime_factors"] = dict(regime_factors)
     state["theme_strength"] = dict(theme_strength)
     state["key_events"] = list(key_events)
+    state["news_event_intelligence"] = dict(news_event_intelligence)
     state["avoid_themes"] = list(avoid_themes)
     state["playbook"] = playbook
     state["scanner_bias"] = scanner_bias
@@ -7990,6 +8138,31 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["news_query_targets"] = list(news_query_targets)
     strategist_output["news_collection_policy"] = dict(news_collection_policy)
     strategist_output["news_query_reasoning"] = news_query_reasoning
+    strategist_output["news_event_intelligence"] = dict(news_event_intelligence)
+    strategist_output["news_event_intelligence_usage"] = (
+        dict(ai_overrides.get("news_event_intelligence_usage") or {})
+        if isinstance(ai_overrides.get("news_event_intelligence_usage"), dict)
+        else {"status": "insufficient", "observation_only": True, "reason": "llm_usage_not_reported"}
+    )
+    strategist_output["market_regime_rail"] = str(
+        ai_overrides.get("market_regime_rail")
+        or (strategist_input_quality.get("market_regime_rail") or {}).get("market_regime_rail")
+        or ""
+    )
+    strategist_output["news_quality"] = (
+        dict(ai_overrides.get("news_quality") or {})
+        if isinstance(ai_overrides.get("news_quality"), dict)
+        else dict(strategist_input_quality.get("news_quality") or {})
+    )
+    strategist_output["risk_off_exception_policy"] = dict(
+        strategist_input_quality.get("risk_off_exception_policy") or {}
+    )
+    strategist_output["risk_off_exception_conditions"] = list(
+        ai_overrides.get("risk_off_exception_conditions")
+        or (strategist_input_quality.get("risk_off_exception_policy") or {}).get("allowed_exception_conditions")
+        or []
+    )
+    strategist_output["strategist_input_quality"] = dict(strategist_input_quality)
     strategist_output["global_sentiment_signal"] = dict(global_signal)
     strategist_output["korea_indices"] = dict(global_signal.get("korea_indices") or {})
     strategist_output["market_context_inputs"] = dict(market_context_inputs)
@@ -8069,6 +8242,19 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         strategist_output["runner_up_order"] = list(ai_overrides.get("runner_up_order") or [])
         strategist_output["monitor_instruction"] = dict(ai_overrides.get("monitor_instruction") or {})
         strategist_output["entry_policy_delta"] = dict(ai_overrides.get("entry_policy_delta") or {})
+        strategist_output["market_regime_rail"] = str(
+            ai_overrides.get("market_regime_rail") or strategist_output.get("market_regime_rail") or ""
+        )
+        strategist_output["news_quality"] = (
+            dict(ai_overrides.get("news_quality") or {})
+            if isinstance(ai_overrides.get("news_quality"), dict)
+            else dict(strategist_output.get("news_quality") or {})
+        )
+        strategist_output["risk_off_exception_conditions"] = list(
+            ai_overrides.get("risk_off_exception_conditions")
+            or strategist_output.get("risk_off_exception_conditions")
+            or []
+        )
         strategist_output["commander_actionability"] = str(ai_overrides.get("commander_actionability") or "")
     if ai_overrides.get("hold_review_decision") not in (None, ""):
         strategist_output["hold_review_decision"] = str(ai_overrides.get("hold_review_decision") or "")

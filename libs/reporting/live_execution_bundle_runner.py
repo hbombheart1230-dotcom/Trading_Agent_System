@@ -2604,7 +2604,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     dict(trade_report),
                     trade_summary_report_payload,
                 ),
-                encoding="utf-8",
+                encoding="utf-8-sig",
+                newline="\n",
             )
             trade_summary_md_written = str(trade_summary_md_path)
             trade_summary_llm_artifact = (

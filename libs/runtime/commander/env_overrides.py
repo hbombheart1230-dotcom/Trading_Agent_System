@@ -31,15 +31,15 @@ def apply_commander_temporary_runtime_defaults(state: Dict[str, Any]) -> Dict[st
             os.environ[key] = str(value)
 
     policy = dict(state.get("policy") or {}) if isinstance(state.get("policy"), dict) else {}
-    policy.setdefault("use_strategy_memory_feedback", env_bool("USE_STRATEGY_MEMORY_FEEDBACK", False))
-    policy.setdefault("use_strategy_performance_memory", env_bool("USE_STRATEGY_PERFORMANCE_MEMORY", False))
+    policy.setdefault("use_strategy_memory_feedback", env_bool("USE_STRATEGY_MEMORY_FEEDBACK", True))
+    policy.setdefault("use_strategy_performance_memory", env_bool("USE_STRATEGY_PERFORMANCE_MEMORY", True))
     state["policy"] = policy
     state.setdefault("commander_post_scanner_refresh_enabled", env_bool("COMMANDER_POST_SCANNER_REFRESH_ENABLED", True))
     state.setdefault("memory_bias_observation_only", env_bool("MEMORY_BIAS_OBSERVATION_ONLY", True))
     state.setdefault("commander_memory_bias_observation_only", env_bool("MEMORY_BIAS_OBSERVATION_ONLY", True))
-    state.setdefault("commander_memory_usage_disabled", env_bool("COMMANDER_MEMORY_USAGE_DISABLED", True))
-    state.setdefault("strategist_memory_usage_disabled", env_bool("STRATEGIST_MEMORY_USAGE_DISABLED", True))
-    state.setdefault("strategy_memory_persist_enabled", env_bool("STRATEGY_MEMORY_PERSIST_ENABLED", False))
+    state.setdefault("commander_memory_usage_disabled", env_bool("COMMANDER_MEMORY_USAGE_DISABLED", False))
+    state.setdefault("strategist_memory_usage_disabled", env_bool("STRATEGIST_MEMORY_USAGE_DISABLED", False))
+    state.setdefault("strategy_memory_persist_enabled", env_bool("STRATEGY_MEMORY_PERSIST_ENABLED", True))
     state["commander_temporary_runtime_defaults"] = {
         "source": "commander_runtime_code_default",
         "values": dict(COMMANDER_TEMPORARY_RUNTIME_ENV_DEFAULTS),
@@ -88,5 +88,5 @@ def commander_memory_usage_disabled(state: Dict[str, Any]) -> bool:
             return is_trueish(memory_usage.get("disabled"))
     return env_bool(
         "COMMANDER_MEMORY_USAGE_DISABLED",
-        commander_default_bool("COMMANDER_MEMORY_USAGE_DISABLED", True),
+        commander_default_bool("COMMANDER_MEMORY_USAGE_DISABLED", False),
     )

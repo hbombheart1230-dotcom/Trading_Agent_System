@@ -50,6 +50,8 @@ skip validation and evaluation.
 | Hold Policies | extended hold avoids profit fade or increases drawdown | current hold/exit behavior |
 | Strategist Recommendations | scenarios, sector preferences, or recommendation types add value | raw Scanner behavior |
 | Reporter Feedback | feedback adoption improves later decisions | feedback-disabled or pre-feedback baseline |
+| Market Regime Rails | market context rails improve tactic selection or risk control | same-day current policy by market regime |
+| News Event Intelligence | event/theme/symbol watch evidence improves candidate interpretation | scanner candidates without news-event watch evidence |
 
 The category determines the evidence source, not the promotion standard.
 
@@ -65,6 +67,7 @@ Minimum eligibility requirements:
 - comparison baseline is defined before promotion
 - sample size is documented
 - live trades and shadow observations are separated
+- observation-only fields are not treated as production behavior
 - expected benefit is larger than transaction cost and operational risk
 - downside risk and opportunity cost are measured
 - no unresolved defect explains the apparent improvement
@@ -75,6 +78,7 @@ Suggested minimum evidence thresholds:
 | --- | --- |
 | Live closed trades | Prefer 20 or more comparable trades before strong promotion decisions |
 | Shadow observations | Prefer 50 or more comparable candidate observations for directional confidence |
+| News event observations | Prefer multiple event types and enough linked/unlinked candidates to compare false positives and missed opportunities |
 | Trading days | Prefer multiple market regimes or at least several live days |
 | Artifact integrity | No `BLOCKER` issues; `WATCH` issues must be documented |
 | Baseline comparison | Current policy, Scanner Top-1, or feedback-disabled baseline must be available |

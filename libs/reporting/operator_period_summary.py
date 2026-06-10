@@ -41,10 +41,15 @@ from libs.reporting.market_regime_rail_review import (
 from libs.reporting.q8_shadow_blocker_review import (
     build_q8_shadow_blocker_review,
 )
+from libs.reporting.kiwoom_day_trade_diary_truth import match_trade_diary_row
 
 
 _WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
 _MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
+
+
+def _write_operator_markdown(path: Path, text: str) -> None:
+    path.write_text(str(text or ""), encoding="utf-8-sig", newline="\n")
 
 
 def _utc_now_iso() -> str:
@@ -238,26 +243,26 @@ def _truth_surface_candidate_paths(row: Dict[str, Any], reports_root: Path) -> L
     for key in ("trade_root_path",):
         raw = str(row.get(key) or "").strip()
         if raw:
-            candidates.append(Path(raw) / "reports" / "ai_trade_summary_input.json")
             candidates.append(Path(raw) / "reports" / "ai_trade_summary.json")
+            candidates.append(Path(raw) / "reports" / "ai_trade_summary_input.json")
     report_path = str(row.get("report_path") or "").strip()
     if report_path:
         report_dir = Path(report_path).parent
-        candidates.append(report_dir / "ai_trade_summary_input.json")
         candidates.append(report_dir / "ai_trade_summary.json")
+        candidates.append(report_dir / "ai_trade_summary_input.json")
     lifecycle_path = str(row.get("lifecycle_bundle_path") or "").strip()
     if lifecycle_path:
         trade_root = Path(lifecycle_path).parent
-        candidates.append(trade_root / "reports" / "ai_trade_summary_input.json")
         candidates.append(trade_root / "reports" / "ai_trade_summary.json")
+        candidates.append(trade_root / "reports" / "ai_trade_summary_input.json")
     trade_id = str(row.get("trade_id") or "").strip()
     day = str(row.get("date") or row.get("day") or "").strip()[:10]
     if trade_id and day:
         trade_root = find_trade_dir(canonical_trade_day_root(Path(reports_root), day), trade_id)
         if trade_root is None:
             trade_root = Path(reports_root) / "trades" / day / trade_id
-        candidates.append(trade_root / "reports" / "ai_trade_summary_input.json")
         candidates.append(trade_root / "reports" / "ai_trade_summary.json")
+        candidates.append(trade_root / "reports" / "ai_trade_summary_input.json")
     out: List[Path] = []
     seen: set[str] = set()
     for path in candidates:
@@ -400,6 +405,103 @@ def _account_snapshot_closeout_reconciliation(reports_root: Path, day: str | Non
         "error_count": error_count,
         "position_symbols": sorted(positions),
         "position_count": len(positions),
+    }
+
+
+def _latest_account_snapshot(reports_root: Path, day: str | None) -> Dict[str, Any]:
+    normalized_day = str(day or "").strip()[:10]
+    path = _latest_account_snapshot_path(reports_root, normalized_day)
+    payload = _read_json(path)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _first_snapshot_call_payload(snapshot: Dict[str, Any], api_id: str) -> Dict[str, Any]:
+    for call in list(snapshot.get("calls") or []):
+        if not isinstance(call, dict):
+            continue
+        if str(call.get("api_id") or "").strip() != api_id:
+            continue
+        payload = call.get("payload")
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _snapshot_day_trade_diary_rows(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    payload = _first_snapshot_call_payload(snapshot, "ka10170")
+    rows = payload.get("tdy_trde_diary") if isinstance(payload.get("tdy_trde_diary"), list) else []
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = _normalize_symbol_code(row.get("stk_cd") or row.get("stk_cd_1"))
+        if not symbol:
+            continue
+        out.append(
+            {
+                "symbol": symbol,
+                "symbol_name": str(row.get("stk_nm") or "").strip(),
+                "buy_qty": _safe_int(row.get("buy_qty")),
+                "sell_qty": _safe_int(row.get("sell_qty")),
+                "buy_avg_price": _safe_float(row.get("buy_avg_pric") or row.get("buy_avg_price")),
+                "sell_avg_price": _safe_float(row.get("sel_avg_pric") or row.get("sell_avg_price")),
+                "realized_pnl": _safe_float(row.get("pl_amt") or row.get("realized_pnl")),
+                "pnl_ratio": _safe_float(row.get("prft_rt") or row.get("pnl_ratio")),
+                "fee_tax": _safe_int(row.get("cmsn_alm_tax") or row.get("fee_tax")),
+                "source": "kiwoom.ka10170",
+            }
+        )
+    return out
+
+
+def _entry_truth_hints(row: Dict[str, Any], reports_root: Path) -> Dict[str, Any]:
+    trade_dir = _trade_dir_for_row(row, reports_root)
+    if trade_dir is None:
+        return {}
+    lifecycle_bundle = _read_json(trade_dir / "lifecycle_bundle.json")
+    if not isinstance(lifecycle_bundle, dict):
+        return {}
+    entry = lifecycle_bundle.get("entry") if isinstance(lifecycle_bundle.get("entry"), dict) else {}
+    return {
+        "qty": entry.get("qty"),
+        "buy_price": entry.get("price") or entry.get("avg_price") or entry.get("filled_price"),
+    }
+
+
+def _broker_day_trade_diary_truth_metrics(row: Dict[str, Any], reports_root: Path) -> Dict[str, Any]:
+    day = str(row.get("date") or row.get("day") or "").strip()[:10]
+    symbol = _normalize_symbol_code(row.get("symbol"))
+    if not day or not symbol:
+        return {}
+    snapshot = _latest_account_snapshot(reports_root, day)
+    if not snapshot:
+        return {}
+    rows = _snapshot_day_trade_diary_rows(snapshot)
+    if not rows:
+        return {}
+    hints = _entry_truth_hints(row, reports_root)
+    match = match_trade_diary_row(
+        rows,
+        symbol=symbol,
+        filled_qty=hints.get("qty"),
+        buy_price=hints.get("buy_price"),
+    )
+    if not match or not bool(match.get("authoritative")):
+        return {}
+    pnl_pct = _safe_float(match.get("pnl_ratio"))
+    return {
+        "truth_surface_available": True,
+        "truth_surface_path": str(_latest_account_snapshot_path(reports_root, day)),
+        "truth_result_label": "profit" if (_safe_float(match.get("realized_pnl")) or 0.0) > 0 else "loss" if (_safe_float(match.get("realized_pnl")) or 0.0) < 0 else "flat",
+        "truth_source": str(match.get("source") or "kiwoom.ka10170"),
+        "truth_net_pnl": _safe_float(match.get("realized_pnl")),
+        "truth_net_return_pct": pnl_pct,
+        "truth_observed_return_pct": None,
+        "truth_price_move_pct": None,
+        "truth_cost_drag_pct": None,
+        "truth_breakeven_move_pct": None,
+        "broker_day_match_mode": str(match.get("match_mode") or ""),
+        "broker_day_authoritative": True,
+        "broker_day_reconciled_status": "closed",
     }
 
 
@@ -1369,6 +1471,16 @@ def _enrich_rows_with_truth_surface(rows: Iterable[Dict[str, Any]], reports_root
         row_obj = dict(row or {})
         row_obj.update(_extract_trade_decision_fields(row_obj, reports_root))
         truth_metrics = _extract_truth_surface_metrics(row_obj, reports_root)
+        broker_truth_metrics = _broker_day_trade_diary_truth_metrics(row_obj, reports_root)
+        if broker_truth_metrics and (
+            not bool(truth_metrics.get("truth_surface_available"))
+            or str(row_obj.get("last_status") or row_obj.get("status") or "").strip().lower() != "closed"
+        ):
+            truth_metrics = broker_truth_metrics
+            row_obj["status"] = "closed"
+            row_obj["last_status"] = "closed"
+            row_obj["last_action"] = "SELL"
+            row_obj.setdefault("exit_reason", "broker day trade diary closed")
         row_obj.update(truth_metrics)
         out.append(row_obj)
     return out
@@ -1482,7 +1594,18 @@ def _has_partial_lifecycle_marker(row: Dict[str, Any]) -> bool:
 
 
 def _is_closed_trade(row: Dict[str, Any]) -> bool:
-    return _trade_status(row) == "closed" and not _has_partial_lifecycle_marker(row)
+    if _has_partial_lifecycle_marker(row):
+        return False
+    if _trade_status(row) == "closed":
+        return True
+    truth_source = str(row.get("truth_source") or row.get("pnl_truth_source") or "").strip().lower()
+    if bool(row.get("truth_surface_available")) and truth_source in {
+        "kiwoom.ka10170",
+        "kiwoom.ka10077",
+        "kiwoom.order_pair_snapshot",
+    }:
+        return True
+    return False
 
 
 def _is_recovered_partial_marker(row: Dict[str, Any]) -> bool:
@@ -2287,6 +2410,9 @@ def _render_market_regime_rail_lines(payload: Dict[str, Any]) -> List[str]:
             "- key inputs: "
             f"kospi {float(inputs.get('kospi_pct') or 0.0):.2f}%, "
             f"kosdaq {float(inputs.get('kosdaq_pct') or 0.0):.2f}%, "
+            f"kospi200 {float(inputs.get('kospi200_pct') or 0.0):.2f}%, "
+            f"krx_night {float(inputs.get('krx_night_futures_pct') or 0.0):.2f}% "
+            f"({inputs.get('krx_night_futures_pressure') or '-'}), "
             f"breadth {float(inputs.get('breadth') or 0.0):.3f}, "
             f"nasdaq {float(inputs.get('nasdaq_pct') or 0.0):.2f}%, "
             f"usdkrw {float(inputs.get('usdkrw_pct') or 0.0):.2f}%"
@@ -2713,7 +2839,7 @@ def generate_operator_period_summary(
 
     md_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(render_operator_period_summary_markdown(payload), encoding="utf-8")
+    _write_operator_markdown(md_path, render_operator_period_summary_markdown(payload))
     return md_path, json_path, payload
 
 
@@ -2742,7 +2868,7 @@ def generate_operator_daily_summary_artifact(
         source="operator_daily_summary",
     )
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(render_operator_daily_summary_markdown(payload), encoding="utf-8")
+    _write_operator_markdown(md_path, render_operator_daily_summary_markdown(payload))
     return md_path, json_path, payload
 
 
@@ -2764,5 +2890,5 @@ def generate_operator_symbol_summary_artifact(
     md_path = paths["symbol_summary_md"]
     md_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(render_operator_symbol_summary_markdown(payload), encoding="utf-8")
+    _write_operator_markdown(md_path, render_operator_symbol_summary_markdown(payload))
     return md_path, json_path, payload

@@ -2807,8 +2807,21 @@ def _resolve_entry_signal_snapshot(report: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "volume_ratio": _first_present_value(
             entry_metrics.get("volume_ratio"),
+            entry_metrics.get("volume_ratio_effective"),
             focus_context.get("volume_ratio"),
             monitor.get("entry_volume_ratio"),
+        ),
+        "volume_ratio_raw": _first_present_value(
+            entry_metrics.get("volume_ratio_raw"),
+            focus_context.get("volume_ratio_raw"),
+        ),
+        "volume_adjusted": _first_present_value(
+            entry_metrics.get("volume_adjusted"),
+            focus_context.get("volume_adjusted"),
+        ),
+        "volume_adjustment_reason": _first_present_value(
+            entry_metrics.get("volume_adjustment_reason"),
+            focus_context.get("volume_adjustment_reason"),
         ),
         "volume_ratio_min": _first_present_value(
             entry_thresholds.get("volume_ratio_min"),
@@ -2831,6 +2844,32 @@ def _resolve_entry_signal_snapshot(report: Dict[str, Any]) -> Dict[str, Any]:
         "confidence_threshold": _first_present_value(
             entry_metrics.get("confidence_threshold"),
             focus_context.get("confidence_threshold"),
+        ),
+        "entry_quality_score": _first_present_value(
+            entry_metrics.get("entry_quality_score"),
+            focus_context.get("entry_quality_score"),
+        ),
+        "entry_quality_tier": _first_present_value(
+            entry_metrics.get("entry_quality_tier"),
+            focus_context.get("entry_quality_tier"),
+        ),
+        "entry_hard_gate_passed": _first_present_value(
+            entry_metrics.get("entry_hard_gate_passed"),
+            focus_context.get("entry_hard_gate_passed"),
+        ),
+        "entry_hard_gate_blockers": _first_present_value(
+            entry_metrics.get("entry_hard_gate_blockers"),
+            focus_context.get("entry_hard_gate_blockers"),
+        ),
+        "entry_quality_vs_gate_summary": _first_present_value(
+            entry_metrics.get("entry_quality_vs_gate_summary"),
+            focus_context.get("entry_quality_vs_gate_summary"),
+        ),
+        "breakout_proximity_score": _first_present_value(
+            entry_metrics.get("breakout_proximity_score"),
+            focus_context.get("breakout_proximity_score"),
+            entry_metrics.get("breakout_score"),
+            focus_context.get("breakout_score"),
         ),
         "human_candle_quality_score": _first_present_value(
             entry_metrics.get("human_candle_quality_score"),
@@ -2891,6 +2930,10 @@ def _entry_signal_metric_summary_lines(snapshot: Dict[str, Any], *, prefix: str 
         volume_text = f"거래량 비율 {_fmt_multiple(row.get('volume_ratio'))}"
         if row.get("volume_ratio_min") not in (None, ""):
             volume_text += f" (기준 {_fmt_multiple(row.get('volume_ratio_min'))})"
+        if row.get("volume_ratio_raw") not in (None, "") and row.get("volume_ratio_raw") != row.get("volume_ratio"):
+            volume_text += f" / 원비율 {_fmt_multiple(row.get('volume_ratio_raw'))}"
+        if row.get("volume_adjusted") is True and row.get("volume_adjustment_reason"):
+            volume_text += f" / 보정 {row.get('volume_adjustment_reason')}"
         parts.append(volume_text)
     if row.get("recent_high") not in (None, ""):
         parts.append(f"최근 고점 {_summary_money(row.get('recent_high'))}")
@@ -2901,7 +2944,28 @@ def _entry_signal_metric_summary_lines(snapshot: Dict[str, Any], *, prefix: str 
         if row.get("confidence_threshold") not in (None, ""):
             confidence_text += f" (기준 {_summary_money(row.get('confidence_threshold'))})"
         parts.append(confidence_text)
+    if row.get("breakout_proximity_score") not in (None, ""):
+        parts.append(f"돌파 근접 점수 {_summary_money(row.get('breakout_proximity_score'))}")
     lines = [f"{prefix}: " + " / ".join(parts)] if parts else []
+
+    gate_parts: List[str] = []
+    if row.get("entry_quality_score") not in (None, ""):
+        quality_text = f"진입 품질 {_summary_money(row.get('entry_quality_score'))}"
+        if row.get("entry_quality_tier") not in (None, ""):
+            quality_text += f" ({row.get('entry_quality_tier')})"
+        gate_parts.append(quality_text)
+    if row.get("entry_hard_gate_passed") is True:
+        gate_parts.append("hard gate 통과")
+    elif row.get("entry_hard_gate_passed") is False:
+        blockers = row.get("entry_hard_gate_blockers")
+        blocker_text = ""
+        if isinstance(blockers, list):
+            blocker_text = ", ".join(str(x or "").replace("_", " ") for x in blockers[:4] if str(x or "").strip())
+        gate_parts.append(f"hard gate 미통과{f' ({blocker_text})' if blocker_text else ''}")
+    if row.get("entry_quality_vs_gate_summary") not in (None, ""):
+        gate_parts.append(str(row.get("entry_quality_vs_gate_summary")).replace("_", " "))
+    if gate_parts:
+        lines.append("진입 품질 vs 허가: " + " / ".join(gate_parts))
 
     setup_parts: List[str] = []
     if row.get("human_candle_quality_score") not in (None, ""):

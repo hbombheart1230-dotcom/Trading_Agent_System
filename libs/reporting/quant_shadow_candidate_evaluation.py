@@ -8,6 +8,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from libs.reporting.quant_shadow_forward_outcomes import attach_forward_outcomes
 from libs.runtime.quant.enforcement import build_entry_quant_enforcement
+from libs.runtime.quant.entry_lane_observation import build_entry_lane_observation
+from libs.runtime.quant.vwap_reclaim_observation import classify_below_vwap_reclaim_observation
 
 
 def _text(value: Any) -> str:
@@ -296,6 +298,172 @@ def _entry_shape_payload(candidates: Sequence[Mapping[str, Any]]) -> Dict[str, A
     }
 
 
+def _below_vwap_reclaim_observation(row: Mapping[str, Any]) -> Dict[str, Any]:
+    payload = row.get("below_vwap_reclaim_observation")
+    if isinstance(payload, Mapping):
+        return dict(payload)
+    return classify_below_vwap_reclaim_observation(row)
+
+
+def _below_vwap_reclaim_observation_payload(candidates: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    subtype_counter: Counter[str] = Counter()
+    subtype_v2_counter: Counter[str] = Counter()
+    total = 0
+    for row in candidates:
+        observation = _below_vwap_reclaim_observation(row)
+        if not _bool(observation.get("applies")):
+            continue
+        total += 1
+        subtype_counter[_text(observation.get("subtype"))] += 1
+        subtype_v2_counter[_text(observation.get("subtype_v2"))] += 1
+    return {
+        "behavior_effect": "observation_only",
+        "candidate_count": int(total),
+        "by_subtype": _top_counter(subtype_counter, limit=8),
+        "by_subtype_v2": _top_counter(subtype_v2_counter, limit=10),
+    }
+
+
+def _entry_lane_observation(row: Mapping[str, Any]) -> Dict[str, Any]:
+    payload = row.get("entry_lane_observation")
+    if isinstance(payload, Mapping):
+        return dict(payload)
+    return build_entry_lane_observation(row)
+
+
+def _entry_lane_observation_payload(candidates: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    lane_counter: Counter[str] = Counter()
+    subtype_counter: Counter[str] = Counter()
+    subtype_v2_counter: Counter[str] = Counter()
+    lane_subtype_counter: Counter[str] = Counter()
+    lane_subtype_v2_counter: Counter[str] = Counter()
+    time_bucket_counter: Counter[str] = Counter()
+    market_regime_counter: Counter[str] = Counter()
+    market_rail_counter: Counter[str] = Counter()
+    total = 0
+    for row in candidates:
+        observation = _entry_lane_observation(row)
+        lane = _text(observation.get("primary_lane")) or "unknown"
+        subtype = _text(observation.get("subtype")) or "unknown"
+        subtype_v2 = _text(observation.get("subtype_v2")) or subtype
+        time_bucket = _text(observation.get("time_bucket")) or "unknown"
+        market_regime = _text(observation.get("market_regime")) or "unknown"
+        market_rail = _text(observation.get("market_regime_rail")) or "unknown"
+        total += 1
+        lane_counter[lane] += 1
+        subtype_counter[subtype] += 1
+        subtype_v2_counter[subtype_v2] += 1
+        lane_subtype_counter[f"{lane}:{subtype}"] += 1
+        lane_subtype_v2_counter[f"{lane}:{subtype_v2}"] += 1
+        time_bucket_counter[time_bucket] += 1
+        market_regime_counter[market_regime] += 1
+        market_rail_counter[market_rail] += 1
+    return {
+        "behavior_effect": "observation_only",
+        "candidate_count": int(total),
+        "by_primary_lane": _top_counter(lane_counter, limit=10),
+        "by_subtype": _top_counter(subtype_counter, limit=10),
+        "by_subtype_v2": _top_counter(subtype_v2_counter, limit=10),
+        "by_lane_subtype": _top_counter(lane_subtype_counter, limit=12),
+        "by_lane_subtype_v2": _top_counter(lane_subtype_v2_counter, limit=12),
+        "by_time_bucket": _top_counter(time_bucket_counter, limit=8),
+        "by_market_regime": _top_counter(market_regime_counter, limit=8),
+        "by_market_regime_rail": _top_counter(market_rail_counter, limit=8),
+    }
+
+
+def _mean(values: Sequence[float]) -> float | None:
+    clean = [float(value) for value in values if value is not None]
+    if not clean:
+        return None
+    return round(sum(clean) / float(len(clean)), 4)
+
+
+def _checkpoint_value(row: Mapping[str, Any], checkpoint: str, metric: str) -> float | None:
+    outcome = _forward_outcome(row)
+    checkpoints = outcome.get("checkpoints")
+    if not isinstance(checkpoints, Mapping):
+        return None
+    payload = checkpoints.get(checkpoint)
+    if not isinstance(payload, Mapping) or _text(payload.get("status")) != "observed":
+        return None
+    value = payload.get(metric)
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _forward_outcome_summary(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    observed_rows = [row for row in rows if _bool(_forward_outcome(row).get("available"))]
+    return {
+        "candidate_count": len(rows),
+        "observed_count": len(observed_rows),
+        "avg_return_3m_pct": _mean([_checkpoint_value(row, "+3m", "return_pct") for row in rows]),
+        "avg_return_5m_pct": _mean([_checkpoint_value(row, "+5m", "return_pct") for row in rows]),
+        "avg_return_15m_pct": _mean([_checkpoint_value(row, "+15m", "return_pct") for row in rows]),
+        "avg_return_30m_pct": _mean([_checkpoint_value(row, "+30m", "return_pct") for row in rows]),
+        "avg_return_60m_pct": _mean([_checkpoint_value(row, "+60m", "return_pct") for row in rows]),
+        "avg_mfe_5m_pct": _mean([_checkpoint_value(row, "+5m", "mfe_pct") for row in rows]),
+        "avg_mae_5m_pct": _mean([_checkpoint_value(row, "+5m", "mae_pct") for row in rows]),
+        "coverage": (float(len(observed_rows)) / float(len(rows))) if rows else 0.0,
+    }
+
+
+def _top_forward_groups(groups: Mapping[str, List[Mapping[str, Any]]], *, limit: int = 10) -> List[Dict[str, Any]]:
+    summaries: List[Dict[str, Any]] = []
+    for name, rows in groups.items():
+        summary = _forward_outcome_summary(rows)
+        if int(summary.get("observed_count") or 0) <= 0:
+            continue
+        summary["name"] = name
+        summaries.append(summary)
+    summaries.sort(
+        key=lambda item: (
+            float(item.get("avg_return_5m_pct") or item.get("avg_return_3m_pct") or -999.0),
+            int(item.get("observed_count") or 0),
+        ),
+        reverse=True,
+    )
+    return summaries[:limit]
+
+
+def _entry_lane_forward_outcomes(candidates: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    by_lane: Dict[str, List[Mapping[str, Any]]] = {}
+    by_subtype: Dict[str, List[Mapping[str, Any]]] = {}
+    by_subtype_v2: Dict[str, List[Mapping[str, Any]]] = {}
+    by_lane_subtype: Dict[str, List[Mapping[str, Any]]] = {}
+    by_lane_subtype_v2: Dict[str, List[Mapping[str, Any]]] = {}
+    by_time_bucket: Dict[str, List[Mapping[str, Any]]] = {}
+    by_market_rail: Dict[str, List[Mapping[str, Any]]] = {}
+    for row in candidates:
+        observation = _entry_lane_observation(row)
+        lane = _text(observation.get("primary_lane")) or "unknown"
+        subtype = _text(observation.get("subtype")) or "unknown"
+        subtype_v2 = _text(observation.get("subtype_v2")) or subtype
+        time_bucket = _text(observation.get("time_bucket")) or "unknown"
+        market_rail = _text(observation.get("market_regime_rail")) or "unknown"
+        by_lane.setdefault(lane, []).append(row)
+        by_subtype.setdefault(subtype, []).append(row)
+        by_subtype_v2.setdefault(subtype_v2, []).append(row)
+        by_lane_subtype.setdefault(f"{lane}:{subtype}", []).append(row)
+        by_lane_subtype_v2.setdefault(f"{lane}:{subtype_v2}", []).append(row)
+        by_time_bucket.setdefault(time_bucket, []).append(row)
+        by_market_rail.setdefault(market_rail, []).append(row)
+    return {
+        "behavior_effect": "evaluation_only",
+        "by_primary_lane": _top_forward_groups(by_lane, limit=10),
+        "by_subtype": _top_forward_groups(by_subtype, limit=10),
+        "by_subtype_v2": _top_forward_groups(by_subtype_v2, limit=10),
+        "by_lane_subtype": _top_forward_groups(by_lane_subtype, limit=12),
+        "by_lane_subtype_v2": _top_forward_groups(by_lane_subtype_v2, limit=12),
+        "by_time_bucket": _top_forward_groups(by_time_bucket, limit=8),
+        "by_market_regime_rail": _top_forward_groups(by_market_rail, limit=8),
+    }
+
+
 def _promotion_candidate(candidates: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     if not candidates:
         return {
@@ -451,6 +619,9 @@ def build_quant_shadow_candidate_evaluation(
     forward_base_available = sum(1 for row in candidates if _bool(_forward_base(row).get("available")))
     forward_outcome_available = sum(1 for row in candidates if _bool(_forward_outcome(row).get("available")))
     entry_shape = _entry_shape_payload(candidates)
+    below_vwap_reclaim = _below_vwap_reclaim_observation_payload(candidates)
+    entry_lane_observation = _entry_lane_observation_payload(candidates)
+    entry_lane_forward_outcomes = _entry_lane_forward_outcomes(candidates)
     promotion = _promotion_candidate(candidates)
     shadow_readiness = _shadow_readiness(candidates, promotion)
 
@@ -493,6 +664,9 @@ def build_quant_shadow_candidate_evaluation(
             "by_would_enter_symbol": _top_counter(largecap_probe_symbols),
         },
         "entry_shape_diagnostics": entry_shape,
+        "below_vwap_reclaim_observation": below_vwap_reclaim,
+        "entry_lane_observation": entry_lane_observation,
+        "entry_lane_forward_outcomes": entry_lane_forward_outcomes,
         "promotion_candidate": promotion,
     }
 
@@ -505,6 +679,36 @@ def _format_rows(rows: Sequence[Mapping[str, Any]], *, limit: int = 4) -> str:
             continue
         parts.append(f"{name} ({row.get('count') or 0})")
     return ", ".join(parts) if parts else "none"
+
+
+def _format_forward_rows(rows: Sequence[Mapping[str, Any]], *, limit: int = 4) -> str:
+    parts: List[str] = []
+    for row in list(rows)[:limit]:
+        name = _text(row.get("name"))
+        if not name:
+            continue
+        observed = int(row.get("observed_count") or 0)
+        count = int(row.get("candidate_count") or 0)
+        ret5 = row.get("avg_return_5m_pct")
+        ret15 = row.get("avg_return_15m_pct")
+        mfe5 = row.get("avg_mfe_5m_pct")
+        mae5 = row.get("avg_mae_5m_pct")
+        parts.append(
+            f"{name} ({observed}/{count}, "
+            f"+5m {float(ret5):.4f}%"
+            if ret5 is not None
+            else f"{name} ({observed}/{count}, +5m n/a"
+        )
+        if parts:
+            last = parts[-1]
+            if ret15 is not None:
+                last += f", +15m {float(ret15):.4f}%"
+            if mfe5 is not None:
+                last += f", mfe5 {float(mfe5):.4f}%"
+            if mae5 is not None:
+                last += f", mae5 {float(mae5):.4f}%"
+            parts[-1] = last + ")"
+    return "; ".join(parts) if parts else "none"
 
 
 def render_quant_shadow_candidate_evaluation_lines(payload: Mapping[str, Any] | None) -> List[str]:
@@ -600,4 +804,43 @@ def render_quant_shadow_candidate_evaluation_lines(payload: Mapping[str, Any] | 
             f"breakout not-ready {entry_shape.get('breakout_not_ready_count') or 0}",
             f"- Entry shapes: {_format_rows(list(entry_shape.get('by_shape') or []))}",
         ]
+    entry_lane = (
+        evaluation.get("entry_lane_observation")
+        if isinstance(evaluation.get("entry_lane_observation"), Mapping)
+        else {}
+    )
+    if entry_lane and int(entry_lane.get("candidate_count") or 0) > 0:
+        lines += [
+            "- Entry lane observation: "
+            f"{entry_lane.get('candidate_count') or 0} candidates / "
+            f"{_format_rows(list(entry_lane.get('by_primary_lane') or []), limit=8)}",
+            f"- Entry lane subtypes: {_format_rows(list(entry_lane.get('by_lane_subtype') or []), limit=8)}",
+            f"- Entry lane time buckets: {_format_rows(list(entry_lane.get('by_time_bucket') or []), limit=6)}",
+            f"- Entry lane market rails: {_format_rows(list(entry_lane.get('by_market_regime_rail') or []), limit=6)}",
+        ]
+    lane_forward = (
+        evaluation.get("entry_lane_forward_outcomes")
+        if isinstance(evaluation.get("entry_lane_forward_outcomes"), Mapping)
+        else {}
+    )
+    if lane_forward:
+        lines += [
+            "- Entry lane forward outcomes: "
+            f"{_format_forward_rows(list(lane_forward.get('by_primary_lane') or []), limit=5)}",
+            "- Entry lane subtype forward outcomes: "
+            f"{_format_forward_rows(list(lane_forward.get('by_lane_subtype') or []), limit=5)}",
+            "- Entry lane market-rail forward outcomes: "
+            f"{_format_forward_rows(list(lane_forward.get('by_market_regime_rail') or []), limit=5)}",
+        ]
+    below_vwap = (
+        evaluation.get("below_vwap_reclaim_observation")
+        if isinstance(evaluation.get("below_vwap_reclaim_observation"), Mapping)
+        else {}
+    )
+    if below_vwap and int(below_vwap.get("candidate_count") or 0) > 0:
+        lines.append(
+            "- Below-VWAP reclaim observation: "
+            f"{below_vwap.get('candidate_count') or 0} candidates / "
+            f"{_format_rows(list(below_vwap.get('by_subtype') or []), limit=8)}"
+        )
     return lines

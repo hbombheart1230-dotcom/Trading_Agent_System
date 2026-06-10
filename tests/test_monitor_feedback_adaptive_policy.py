@@ -98,10 +98,13 @@ def test_commander_preserves_defensive_no_trade_when_market_is_risk_off():
     )
 
     entry_control = decision["entry_control"]
-    assert entry_control["mode"] == "preserve_defensive_no_trade_ok"
+    assert entry_control["mode"] == "risk_off_no_entry_expansion"
+    assert entry_control["decision"] == "preserve_conservative_entry_scope"
     assert entry_control["allow_dynamic_entry_band"] is False
-    assert entry_control["max_priority_rank"] == 10
-    assert decision["scanner_policy"]["max_priority_rank"] == 10
+    assert entry_control["max_priority_rank"] == 1
+    assert entry_control["max_runner_ups"] == 0
+    assert entry_control["cascade_enabled"] is False
+    assert decision["scanner_policy"]["max_priority_rank"] == 1
     assert decision["scanner_policy"]["scan_aggressiveness"] == 0.0
 
 
@@ -211,12 +214,13 @@ def test_commander_clamps_defensive_candidate_watch_policy_in_risk_off():
 
     entry_control = decision["entry_control"]
     assert entry_control["candidate_watch_policy_applied"] is True
-    assert entry_control["max_priority_rank"] == 3
-    assert entry_control["max_runner_ups"] == 2
-    assert decision["scanner_policy"]["max_priority_rank"] == 3
+    assert entry_control["max_priority_rank"] == 1
+    assert entry_control["max_runner_ups"] == 0
+    assert entry_control["cascade_enabled"] is False
+    assert decision["scanner_policy"]["max_priority_rank"] == 1
 
 
-def test_commander_opens_defensive_top3_when_rank1_repeatedly_blocked_with_capacity():
+def test_commander_keeps_rank1_when_defensive_repeatedly_blocked_in_risk_off():
     state = {
         "global_signal": {"score": -0.22, "fear_index": {"level": 31.0}},
         "strategist_output": {
@@ -251,10 +255,10 @@ def test_commander_opens_defensive_top3_when_rank1_repeatedly_blocked_with_capac
     )
 
     entry_control = decision["entry_control"]
-    assert entry_control["mode"] == "preserve_defensive_no_trade_ok"
-    assert entry_control["decision"] == "defensive_top3_candidate_cascade"
-    assert entry_control["max_priority_rank"] == 3
-    assert entry_control["max_runner_ups"] == 2
-    assert entry_control["cascade_enabled"] is True
-    assert decision["scanner_policy"]["max_priority_rank"] == 3
-    assert decision["scanner_policy"]["max_runner_ups"] == 2
+    assert entry_control["mode"] == "risk_off_no_entry_expansion"
+    assert entry_control["decision"] == "preserve_conservative_entry_scope"
+    assert entry_control["max_priority_rank"] == 1
+    assert entry_control["max_runner_ups"] == 0
+    assert entry_control["cascade_enabled"] is False
+    assert decision["scanner_policy"]["max_priority_rank"] == 1
+    assert decision["scanner_policy"]["max_runner_ups"] == 0

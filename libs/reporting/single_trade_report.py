@@ -802,7 +802,8 @@ def generate_single_trade_report(
     write_json(trade_paths["ai_trade_summary_json"], summary_report)
     trade_paths["ai_trade_summary_md"].write_text(
         render_trade_summary_markdown_with_evaluation(report, summary_report),
-        encoding="utf-8",
+        encoding="utf-8-sig",
+        newline="\n",
     )
     summary_llm_artifact = (
         summary_report.get("llm_response_artifact")

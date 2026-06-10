@@ -22,7 +22,7 @@ import os
 import time
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -118,7 +118,7 @@ def _normalize_korea_index_packet(raw: Any) -> Optional[Dict[str, Any]]:
     out_indices: Dict[str, Dict[str, Any]] = {}
     change_values = []
     rising = falling = unchanged = 0
-    for name in ("KOSPI", "KOSDAQ"):
+    for name in ("KOSPI", "KOSDAQ", "KOSPI200"):
         row = indices.get(name) if isinstance(indices.get(name), dict) else {}
         if not row:
             continue
@@ -311,6 +311,7 @@ def _fetch_extended_macro_indicators(
     *,
     inputs: Optional[SentimentInputs],
     korea_indices: Optional[Dict[str, Any]],
+    krx_night_futures: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     tickers = dict(policy.get("macro_indicator_tickers") or {})
     defaults = {
@@ -353,6 +354,26 @@ def _fetch_extended_macro_indicators(
         },
         "kospi": _indicator_from_korea_index("kospi", "KOSPI", korea_rows.get("KOSPI") if isinstance(korea_rows, dict) else {}),
         "kosdaq": _indicator_from_korea_index("kosdaq", "KOSDAQ", korea_rows.get("KOSDAQ") if isinstance(korea_rows, dict) else {}),
+        "kospi200": _indicator_from_korea_index("kospi200", "KOSPI200", korea_rows.get("KOSPI200") if isinstance(korea_rows, dict) else {}),
+    }
+    night = krx_night_futures if isinstance(krx_night_futures, dict) else {}
+    indicators["krx_night_futures"] = {
+        "key": "krx_night_futures",
+        "label": "KRX KOSPI200 night futures",
+        "category": "derivatives",
+        "source": str(night.get("source") or "not_configured"),
+        "status": str(night.get("status") or "unavailable"),
+        "reason": str(night.get("reason") or ""),
+        "current": night.get("current"),
+        "previous": night.get("previous"),
+        "change": night.get("change"),
+        "change_pct": night.get("change_pct"),
+        "basis": night.get("basis"),
+        "direction_pressure": str(night.get("direction_pressure") or ""),
+        "unit": "index_point",
+        "role": "preopen_korea_derivatives_pressure",
+        "behavior_effect": "observation_only",
+        "trading_action_allowed": False,
     }
     overrides = {}
     for source in (
@@ -431,7 +452,7 @@ def _write_macro_indicator_log(payload: Dict[str, Any], *, policy: Dict[str, Any
         return
     try:
         root = Path(str(policy.get("macro_indicator_log_root") or "data/logs/macro_indicators"))
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone(timedelta(hours=9)))
         day_dir = root / now.strftime("%Y-%m-%d")
         day_dir.mkdir(parents=True, exist_ok=True)
         content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
@@ -488,11 +509,14 @@ def _sentiment_evidence(
     *,
     korea_indices: Optional[Dict[str, Any]] = None,
     macro_indicators: Optional[Dict[str, Any]] = None,
+    krx_night_futures: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     korea_packet = korea_indices if isinstance(korea_indices, dict) else {}
     korea_rows = korea_packet.get("indices") if isinstance(korea_packet.get("indices"), dict) else {}
     kospi = korea_rows.get("KOSPI") if isinstance(korea_rows.get("KOSPI"), dict) else {}
     kosdaq = korea_rows.get("KOSDAQ") if isinstance(korea_rows.get("KOSDAQ"), dict) else {}
+    kospi200 = korea_rows.get("KOSPI200") if isinstance(korea_rows.get("KOSPI200"), dict) else {}
+    night = krx_night_futures if isinstance(krx_night_futures, dict) else {}
     components = {
         "sp500_ret": float(inputs.sp500_ret) if inputs is not None else 0.0,
         "nasdaq_ret": float(inputs.nasdaq_ret) if inputs is not None else 0.0,
@@ -503,6 +527,8 @@ def _sentiment_evidence(
         "tnx_delta": float(inputs.tnx_delta) if inputs is not None else 0.0,
         "kospi_ret": _as_float(kospi.get("change_pct"), 0.0) / 100.0 if kospi else 0.0,
         "kosdaq_ret": _as_float(kosdaq.get("change_pct"), 0.0) / 100.0 if kosdaq else 0.0,
+        "kospi200_ret": _as_float(kospi200.get("change_pct"), 0.0) / 100.0 if kospi200 else 0.0,
+        "krx_night_futures_ret": _as_float(night.get("change_pct"), 0.0) / 100.0 if night else 0.0,
     }
     equity_avg = (components["sp500_ret"] + components["nasdaq_ret"] + components["dow_ret"]) / 3.0
     neutral_vix = max(1.0, float(weights.get("vix_neutral_level", 20.0) or 20.0))
@@ -527,6 +553,8 @@ def _sentiment_evidence(
             "dow_pct": float(components["dow_ret"] * 100.0),
             "kospi_pct": float(components["kospi_ret"] * 100.0),
             "kosdaq_pct": float(components["kosdaq_ret"] * 100.0),
+            "kospi200_pct": float(components["kospi200_ret"] * 100.0),
+            "krx_night_futures_pct": float(components["krx_night_futures_ret"] * 100.0),
         },
         "macro_moves": {
             "vix_pct": float(components["vix_ret"] * 100.0),
@@ -549,6 +577,7 @@ def _sentiment_evidence(
         },
         "raw_score": float(raw),
         "korea_indices": dict(korea_packet or {}),
+        "krx_night_futures": dict(night or {}),
         "macro_indicators": dict(macro_indicators or {}),
     }
 
@@ -565,6 +594,7 @@ def _signal_with_evidence(
     raw_score: float,
     korea_indices: Optional[Dict[str, Any]] = None,
     macro_indicators: Optional[Dict[str, Any]] = None,
+    krx_night_futures: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     signal = make_signal(score=score, status=status, source=source, reason=reason, ts=ts)
     signal.update(
@@ -574,6 +604,7 @@ def _signal_with_evidence(
             raw_score,
             korea_indices=korea_indices,
             macro_indicators=macro_indicators,
+            krx_night_futures=krx_night_futures,
         )
     )
     _write_macro_indicator_log(
@@ -590,6 +621,7 @@ def _signal_with_evidence(
             "index_moves": signal.get("index_moves"),
             "macro_moves": signal.get("macro_moves"),
             "korea_indices": signal.get("korea_indices"),
+            "krx_night_futures": signal.get("krx_night_futures"),
             "macro_indicators": signal.get("macro_indicators"),
         },
         policy=weights.get("_policy", {}) if isinstance(weights.get("_policy"), dict) else {},
@@ -706,7 +738,26 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
 
     korea_indices = _fetch_korea_index_inputs(state, policy)
     inputs = _fetch_inputs(policy)
-    macro_indicators = _fetch_extended_macro_indicators(state, policy, inputs=inputs, korea_indices=korea_indices)
+    try:
+        from libs.read.krx_night_futures_reader import fetch_krx_night_futures_packet
+
+        krx_night_futures = fetch_krx_night_futures_packet()
+    except Exception as exc:
+        krx_night_futures = {
+            "schema_version": "krx_night_futures.v1",
+            "behavior_effect": "observation_only",
+            "status": "unavailable",
+            "source": "exception",
+            "reason": str(exc),
+            "trading_action_allowed": False,
+        }
+    macro_indicators = _fetch_extended_macro_indicators(
+        state,
+        policy,
+        inputs=inputs,
+        korea_indices=korea_indices,
+        krx_night_futures=krx_night_futures,
+    )
     if inputs is None:
         if korea_indices:
             korea_raw = _compute_korea_raw(korea_indices, w_kospi=w_kospi, w_kosdaq=w_kosdaq)
@@ -721,6 +772,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
                 raw_score=korea_raw,
                 korea_indices=korea_indices,
                 macro_indicators=macro_indicators,
+                krx_night_futures=krx_night_futures,
             )
         return _signal_with_evidence(
             score=0.0,
@@ -733,6 +785,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
             raw_score=0.0,
             korea_indices=korea_indices,
             macro_indicators=macro_indicators,
+            krx_night_futures=krx_night_futures,
         )
 
     raw = _compute_raw(
@@ -758,6 +811,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
         raw_score=raw,
         korea_indices=korea_indices,
         macro_indicators=macro_indicators,
+        krx_night_futures=krx_night_futures,
     )
 
 

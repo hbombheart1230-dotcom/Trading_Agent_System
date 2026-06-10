@@ -30,6 +30,18 @@ def optional_report_step(step_id: str, *, report_name: str, reason: str) -> Dict
     }
 
 
+def noncritical_report_step(step: Dict[str, Any], *, reason: str) -> Dict[str, Any]:
+    out = dict(step)
+    original_ok = bool(out.get("ok"))
+    out["required"] = False
+    out["original_ok"] = original_ok
+    if not original_ok:
+        out["ok"] = True
+        out["noncritical_failure"] = True
+        out["noncritical_reason"] = str(reason)
+    return out
+
+
 def run_closeout_phase(
     args: Any,
     common: Dict[str, Any],
@@ -185,6 +197,7 @@ def run_closeout_phase(
             )
         )
 
+    critical_report_timeout_sec = max(180, min(int(timeout_sec), 600))
     daily_env = os.environ.copy()
     daily_env["EVENT_LOG_PATH"] = event_log_path
     daily_env["REPORT_DIR"] = str(canonical_reports_root)
@@ -195,59 +208,7 @@ def run_closeout_phase(
             command=[py, str(root / "scripts" / "generate_daily_report.py")],
             cwd=root,
             env=daily_env,
-            timeout_sec=timeout_sec,
-        )
-    )
-
-    steps.append(
-        run_subprocess(
-            step_id="closeout.reporter_analysis",
-            command=[
-                py,
-                str(root / "scripts" / "run_reporter_analysis_report.py"),
-                "--env-path",
-                str(common["env_path"]),
-                "--event-log-path",
-                event_log_path,
-                "--intents-path",
-                intents_path,
-                "--reports-root",
-                str(canonical_reports_root),
-                "--report-dir",
-                str(canonical_reports_root / "dev" / "analysis" / "reporter_analysis"),
-                "--day",
-                day,
-                "--json",
-            ],
-            cwd=root,
-            timeout_sec=timeout_sec,
-        )
-    )
-
-    steps.append(
-        run_subprocess(
-            step_id="closeout.live_execution_bundles",
-            command=[
-                py,
-                str(root / "scripts" / "run_live_execution_bundle_report.py"),
-                "--env-path",
-                str(common["env_path"]),
-                "--event-log-path",
-                event_log_path,
-                "--evidence-log-path",
-                evidence_log_path,
-                "--reports-root",
-                str(canonical_reports_root),
-                "--report-dir",
-                str(canonical_reports_root / "dev" / "analysis" / "live_execution_bundles"),
-                "--intents-path",
-                intents_path,
-                "--day",
-                day,
-                "--json",
-            ],
-            cwd=root,
-            timeout_sec=timeout_sec,
+            timeout_sec=critical_report_timeout_sec,
         )
     )
 
@@ -273,22 +234,84 @@ def run_closeout_phase(
         )
     )
 
+    diagnostic_timeout_sec = min(int(timeout_sec), 300)
     steps.append(
-        run_subprocess(
-            step_id="closeout.report_inventory",
-            command=[
-                py,
-                str(root / "scripts" / "run_report_maintenance.py"),
-                "--report-root",
-                str(canonical_reports_root),
-                "--event-log-path",
-                event_log_path,
-                "--apply",
-                "--include-legacy-root-daily",
-                "--json",
-            ],
-            cwd=root,
-            timeout_sec=timeout_sec,
+        noncritical_report_step(
+            run_subprocess(
+                step_id="closeout.reporter_analysis",
+                command=[
+                    py,
+                    str(root / "scripts" / "run_reporter_analysis_report.py"),
+                    "--env-path",
+                    str(common["env_path"]),
+                    "--event-log-path",
+                    event_log_path,
+                    "--intents-path",
+                    intents_path,
+                    "--reports-root",
+                    str(canonical_reports_root),
+                    "--report-dir",
+                    str(canonical_reports_root / "dev" / "analysis" / "reporter_analysis"),
+                    "--day",
+                    day,
+                    "--json",
+                ],
+                cwd=root,
+                timeout_sec=diagnostic_timeout_sec,
+            ),
+            reason="diagnostic_report_optional_after_critical_closeout",
+        )
+    )
+
+    steps.append(
+        noncritical_report_step(
+            run_subprocess(
+                step_id="closeout.live_execution_bundles",
+                command=[
+                    py,
+                    str(root / "scripts" / "run_live_execution_bundle_report.py"),
+                    "--env-path",
+                    str(common["env_path"]),
+                    "--event-log-path",
+                    event_log_path,
+                    "--evidence-log-path",
+                    evidence_log_path,
+                    "--reports-root",
+                    str(canonical_reports_root),
+                    "--report-dir",
+                    str(canonical_reports_root / "dev" / "analysis" / "live_execution_bundles"),
+                    "--intents-path",
+                    intents_path,
+                    "--day",
+                    day,
+                    "--json",
+                ],
+                cwd=root,
+                timeout_sec=diagnostic_timeout_sec,
+            ),
+            reason="diagnostic_report_optional_after_critical_closeout",
+        )
+    )
+
+    steps.append(
+        noncritical_report_step(
+            run_subprocess(
+                step_id="closeout.report_inventory",
+                command=[
+                    py,
+                    str(root / "scripts" / "run_report_maintenance.py"),
+                    "--report-root",
+                    str(canonical_reports_root),
+                    "--event-log-path",
+                    event_log_path,
+                    "--apply",
+                    "--include-legacy-root-daily",
+                    "--json",
+                ],
+                cwd=root,
+                timeout_sec=diagnostic_timeout_sec,
+            ),
+            reason="report_inventory_optional_after_critical_closeout",
         )
     )
 

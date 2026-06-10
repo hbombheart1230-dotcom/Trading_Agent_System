@@ -20,6 +20,7 @@ from libs.runtime.monitor_policy import (
     normalize_monitor_entry_policy_schema,
     normalize_policy_check_spec,
 )
+from libs.runtime.volume_confirmation import evaluate_intraday_volume_confirmation
 
 
 _RECLAIM_TUNING_VERSION = "small_relaxation_v1"
@@ -218,6 +219,7 @@ def _build_monitor_signal_evidence(
             "volume_score": round(_clamp_score(volume_score), 4),
             "pullback_score": round(_clamp_score(pullback_score), 4),
             "breakout_score": round(_clamp_score(breakout_score), 4),
+            "breakout_proximity_score": round(_clamp_score(breakout_score), 4),
             "confidence_score": round(_clamp_score(confidence_score), 4),
             "entry_quality_score": round(_clamp_score(entry_quality_score), 4),
             "breakout_quality_score": round(_clamp_score(breakout_quality_score), 4),
@@ -2534,10 +2536,6 @@ def evaluate_intraday_entry_signal(
     current_high = _to_float(last.get("high"))
     current_low = _to_float(last.get("low"))
     current_volume = max(0.0, _to_float(last.get("volume")))
-    average_volume = 0.0
-    if volume_window:
-        average_volume = sum(max(0.0, _to_float(row.get("volume"))) for row in volume_window) / float(len(volume_window))
-    volume_ratio = (current_volume / average_volume) if average_volume > 0.0 else 0.0
 
     current_vwap = _to_float(last.get("vwap"))
     if current_vwap <= 0.0:
@@ -2565,7 +2563,21 @@ def evaluate_intraday_entry_signal(
     pullback_floor = min([px for px in pullback_lows if px > 0.0], default=0.0)
     pullback_depth_pct = ((recent_high - pullback_floor) / recent_high) if recent_high > 0.0 and pullback_floor > 0.0 else 0.0
     rebound_ok = current_close > prior_bar_high and current_close >= prior_close
-    volume_ok = volume_ratio >= _to_float(resolved_policy.volume_ratio_min)
+    session_gap_context = _session_gap_context(candles, current_close)
+    minutes_since_session_open = session_gap_context.get("minutes_since_session_open")
+    open_gap_pct = session_gap_context.get("open_gap_pct")
+    prev_close_distance_pct = session_gap_context.get("prev_close_distance_pct")
+    volume_confirmation = evaluate_intraday_volume_confirmation(
+        current_volume=current_volume,
+        reference_candles=volume_window,
+        threshold=_to_float(resolved_policy.volume_ratio_min),
+        minutes_since_session_open=minutes_since_session_open,
+    )
+    volume_ratio_raw = float(volume_confirmation.raw_ratio)
+    volume_ratio = float(volume_confirmation.effective_ratio)
+    average_volume = float(volume_confirmation.average_volume)
+    median_volume = float(volume_confirmation.median_volume)
+    volume_ok = bool(volume_confirmation.passed)
     min_extended_from_vwap_pct = _to_float(resolved_policy.min_extended_from_vwap_pct)
     max_extended_from_vwap_pct = _to_float(resolved_policy.max_extended_from_vwap_pct)
     extension_ok = min_extended_from_vwap_pct <= extended_from_vwap_pct <= max_extended_from_vwap_pct
@@ -2579,10 +2591,6 @@ def evaluate_intraday_entry_signal(
     reclaim_gate_ok = bool(vwap_structure_ok) if bool(resolved_policy.require_vwap_reclaim) else True
     breakout_path_ok = bool(breakout_ok)
     pullback_volume_path_ok = bool(pullback_ok and volume_ok)
-    session_gap_context = _session_gap_context(candles, current_close)
-    minutes_since_session_open = session_gap_context.get("minutes_since_session_open")
-    open_gap_pct = session_gap_context.get("open_gap_pct")
-    prev_close_distance_pct = session_gap_context.get("prev_close_distance_pct")
     opening_gap_chase_observed = bool(
         breakout_path_ok
         and not pullback_volume_path_ok
@@ -2742,6 +2750,12 @@ def evaluate_intraday_entry_signal(
             "vwap": current_vwap if current_vwap > 0.0 else None,
             "vwap_distance": extended_from_vwap_pct if current_vwap > 0.0 and current_close > 0.0 else None,
             "volume_ratio": volume_ratio if volume_ratio > 0.0 else None,
+            "volume_ratio_raw": volume_ratio_raw if volume_ratio_raw > 0.0 else None,
+            "volume_ratio_effective": volume_ratio if volume_ratio > 0.0 else None,
+            "average_volume": average_volume if average_volume > 0.0 else None,
+            "median_volume": median_volume if median_volume > 0.0 else None,
+            "volume_adjusted": bool(volume_confirmation.adjusted),
+            "volume_adjustment_reason": volume_confirmation.adjustment_reason,
             "recent_high": recent_high if recent_high > 0.0 else None,
             "pullback_pct": pullback_depth_pct,
             "inferred_spacing_minutes": series_quality.get("inferred_spacing_minutes"),
@@ -2877,8 +2891,16 @@ def evaluate_intraday_entry_signal(
     threshold_margins = {
         "volume_ratio": {
             "actual": volume_ratio,
+            "raw": volume_ratio_raw,
+            "effective": volume_ratio,
             "min": _to_float(resolved_policy.volume_ratio_min),
             "distance_to_min": volume_ratio - _to_float(resolved_policy.volume_ratio_min),
+            "adjusted": bool(volume_confirmation.adjusted),
+            "adjustment_reason": volume_confirmation.adjustment_reason,
+            "average_volume": average_volume,
+            "median_volume": median_volume,
+            "max_reference_volume": float(volume_confirmation.max_reference_volume),
+            "spike_skew_ratio": float(volume_confirmation.spike_skew_ratio),
         },
         "extended_from_vwap_pct": {
             "actual": extended_from_vwap_pct,
@@ -2973,6 +2995,7 @@ def evaluate_intraday_entry_signal(
         "opening_gap_chase_window_minutes": _OPENING_GAP_CHASE_WINDOW_MINUTES,
         "opening_gap_chase_min_pct": _OPENING_GAP_CHASE_MIN_PCT,
         "breakout_chase_volume_gate_min_extended_from_vwap_pct": _BREAKOUT_CHASE_VOLUME_GATE_MIN_EXTENDED_PCT,
+        "volume_confirmation": volume_confirmation.to_metrics(),
         "extension_required": True,
         "extension_ok": bool(extension_ok),
         "breakout_path_ok": bool(breakout_path_ok),
@@ -3119,6 +3142,18 @@ def evaluate_intraday_entry_signal(
 
     if triggered and not primary_failure_axis:
         primary_failure_axis = "confirmed_entry"
+
+    entry_hard_gate_blockers = [name for name in failed_checks if name in relevant_checks]
+    entry_quality_tier = _entry_quality_tier(entry_quality_score)
+    entry_hard_gate_passed = bool(triggered)
+    entry_quality_vs_gate_summary = ""
+    if entry_quality_tier in {"strong", "watch"} and not entry_hard_gate_passed:
+        blocker_text = ", ".join(entry_hard_gate_blockers[:4]) or reason or primary_failure_axis or "hard_gate_not_passed"
+        entry_quality_vs_gate_summary = (
+            f"entry_quality_{entry_quality_tier}_but_hard_gate_failed:{blocker_text}"
+        )
+    elif entry_hard_gate_passed:
+        entry_quality_vs_gate_summary = f"hard_gate_passed:{entry_condition_path or reason or 'entry_confirmed'}"
     grouped_logic_trace["triggered_path"] = entry_condition_path
     legacy_triggered = bool(triggered)
     legacy_decision = "BUY" if legacy_triggered else "WAIT"
@@ -3320,6 +3355,19 @@ def evaluate_intraday_entry_signal(
         "vwap": current_vwap if current_vwap > 0.0 else None,
         "vwap_distance": extended_from_vwap_pct,
         "volume_ratio": volume_ratio if volume_ratio > 0.0 else None,
+        "volume_ratio_raw": volume_ratio_raw if volume_ratio_raw > 0.0 else None,
+        "volume_ratio_effective": volume_ratio if volume_ratio > 0.0 else None,
+        "current_volume": current_volume if current_volume > 0.0 else None,
+        "average_volume": average_volume if average_volume > 0.0 else None,
+        "median_volume": median_volume if median_volume > 0.0 else None,
+        "max_reference_volume": (
+            float(volume_confirmation.max_reference_volume)
+            if float(volume_confirmation.max_reference_volume) > 0.0
+            else None
+        ),
+        "volume_adjusted": bool(volume_confirmation.adjusted),
+        "volume_adjustment_reason": volume_confirmation.adjustment_reason,
+        "volume_spike_skew_ratio": float(volume_confirmation.spike_skew_ratio),
         "pullback_pct": pullback_depth_pct,
         "pullback_depth_pct": pullback_depth_pct,
         "extended_from_vwap_pct": extended_from_vwap_pct,
@@ -3342,9 +3390,12 @@ def evaluate_intraday_entry_signal(
         "breakout_volume_gate_ok": bool(breakout_volume_gate_ok),
         "transition_readiness_score": transition_readiness_score,
         "entry_quality_score": entry_quality_score,
-        "entry_quality_tier": _entry_quality_tier(entry_quality_score),
+        "entry_quality_tier": entry_quality_tier,
         "entry_quality_path": entry_quality_path,
         "entry_quality_observability_only": True,
+        "entry_hard_gate_passed": bool(entry_hard_gate_passed),
+        "entry_hard_gate_blockers": list(entry_hard_gate_blockers),
+        "entry_quality_vs_gate_summary": entry_quality_vs_gate_summary,
         "breakout_quality_score": breakout_quality_score,
         "pullback_quality_score": pullback_quality_score,
         "extension_score": round(_clamp_score(extension_score), 4),
@@ -3365,6 +3416,7 @@ def evaluate_intraday_entry_signal(
         "breakout_path_ok": bool(breakout_path_ok),
         "pullback_volume_path_ok": bool(pullback_volume_path_ok),
         "breakout_score": breakout_score,
+        "breakout_proximity_score": breakout_score,
         "volume_score": volume_score,
         "pullback_score": pullback_score,
         "breakout_path_score": breakout_path_score,
@@ -3466,9 +3518,13 @@ def evaluate_intraday_entry_signal(
     grouped_logic_trace["late_entry_risk"] = str(chart_human_context.get("late_entry_risk") or "")
     grouped_logic_trace["chart_structure_scoring_consumed"] = bool(chart_human_context.get("available"))
     grouped_logic_trace["entry_quality_score"] = entry_quality_score
-    grouped_logic_trace["entry_quality_tier"] = _entry_quality_tier(entry_quality_score)
+    grouped_logic_trace["entry_quality_tier"] = entry_quality_tier
     grouped_logic_trace["entry_quality_path"] = entry_quality_path
     grouped_logic_trace["entry_quality_observability_only"] = True
+    grouped_logic_trace["entry_hard_gate_passed"] = bool(entry_hard_gate_passed)
+    grouped_logic_trace["entry_hard_gate_blockers"] = list(entry_hard_gate_blockers)
+    grouped_logic_trace["entry_quality_vs_gate_summary"] = entry_quality_vs_gate_summary
+    grouped_logic_trace["breakout_proximity_score"] = breakout_score
     grouped_logic_trace["etf_deviation_entry_score"] = round(float(etf_deviation_entry_score), 4)
     _apply_monitor_scoring_fields(
         out,
@@ -3497,6 +3553,7 @@ def evaluate_intraday_entry_signal(
             "entry_condition_paths_passed": entry_condition_paths_passed,
             "condition_scores": {
                 "breakout_score": breakout_score,
+                "breakout_proximity_score": breakout_score,
                 "volume_score": volume_score,
                 "pullback_score": pullback_score,
                 "breakout_path_score": breakout_path_score,
@@ -3506,9 +3563,12 @@ def evaluate_intraday_entry_signal(
                 "confidence_gate_ok": bool(confidence_gate_ok),
                 "transition_readiness_score": transition_readiness_score,
                 "entry_quality_score": entry_quality_score,
-                "entry_quality_tier": _entry_quality_tier(entry_quality_score),
+                "entry_quality_tier": entry_quality_tier,
                 "entry_quality_path": entry_quality_path,
                 "entry_quality_observability_only": True,
+                "entry_hard_gate_passed": bool(entry_hard_gate_passed),
+                "entry_hard_gate_blockers": list(entry_hard_gate_blockers),
+                "entry_quality_vs_gate_summary": entry_quality_vs_gate_summary,
                 "breakout_quality_score": breakout_quality_score,
                 "pullback_quality_score": pullback_quality_score,
                 "etf_deviation_entry_score": round(float(etf_deviation_entry_score), 4),

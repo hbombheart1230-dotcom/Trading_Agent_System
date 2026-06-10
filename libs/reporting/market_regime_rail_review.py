@@ -59,6 +59,8 @@ def classify_market_regime_rail(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
     inputs = {
         "kospi_pct": _change_pct(snapshot, "kospi"),
         "kosdaq_pct": _change_pct(snapshot, "kosdaq"),
+        "kospi200_pct": _change_pct(snapshot, "kospi200"),
+        "krx_night_futures_pct": _change_pct(snapshot, "krx_night_futures"),
         "breadth": _to_float(korea.get("breadth"), 0.0),
         "nasdaq_pct": _change_pct(snapshot, "nasdaq"),
         "sp500_pct": _change_pct(snapshot, "sp500"),
@@ -69,13 +71,41 @@ def classify_market_regime_rail(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
         "us_10y_delta": _to_float(_indicator(snapshot, "us_10y_yield").get("delta"), 0.0),
         "global_sentiment_score": _to_float(global_sentiment.get("score"), 0.0),
     }
+    night = snapshot.get("krx_night_futures") if isinstance(snapshot.get("krx_night_futures"), Mapping) else {}
+    inputs["krx_night_futures_status"] = str(night.get("status") or _indicator(snapshot, "krx_night_futures").get("status") or "")
+    inputs["krx_night_futures_pressure"] = str(
+        night.get("direction_pressure") or _indicator(snapshot, "krx_night_futures").get("direction_pressure") or ""
+    )
 
     korea_weak = inputs["kosdaq_pct"] <= -1.0 or inputs["kospi_pct"] <= -0.7 or inputs["breadth"] <= -0.35
+    night_gap_down = inputs["krx_night_futures_pct"] <= -1.0
+    night_gap_up = inputs["krx_night_futures_pct"] >= 1.0
     us_tech_positive = inputs["nasdaq_pct"] >= 0.2 and inputs["sp500_pct"] >= 0.0
     fx_pressure = inputs["usdkrw_pct"] >= 0.4 or inputs["dxy_pct"] >= 0.2
     vix_pressure = inputs["vix_level"] >= 20.0 or inputs["vix_pct"] >= 8.0
 
-    if us_tech_positive and korea_weak:
+    if night_gap_down:
+        rail_id = "krx_night_futures_gap_down"
+        confidence = "high" if inputs["krx_night_futures_pct"] <= -2.0 else "medium"
+        behavior = [
+            "treat pre-open derivatives pressure as broad gap-down risk",
+            "require confirmed relative strength before entry",
+            "keep cost-edge and volume confirmation strict",
+            "compare blocked breakouts and reclaim setups against forward shadow outcomes",
+        ]
+        focus = ["breakout_not_ready", "below_vwap_reclaim_not_ready", "volume_confirmation_missing"]
+        rationale = "KRX KOSPI200 night futures showed sharp negative pressure before or near the regular session."
+    elif night_gap_up and not korea_weak:
+        rail_id = "krx_night_futures_gap_up"
+        confidence = "medium"
+        behavior = [
+            "watch opening momentum but avoid unconfirmed gap chase",
+            "compare opening momentum probes against delayed pullback entries",
+            "keep cost-edge active unless promoted policy says otherwise",
+        ]
+        focus = ["opening_momentum_probe", "breakout_not_ready", "pullback_not_mature"]
+        rationale = "KRX KOSPI200 night futures showed positive pre-open derivatives pressure."
+    elif us_tech_positive and korea_weak:
         rail_id = "us_tech_risk_on_korea_weak"
         confidence = "high" if inputs["breadth"] <= -0.45 or inputs["kosdaq_pct"] <= -1.5 else "medium"
         behavior = [
@@ -139,6 +169,8 @@ def classify_market_regime_rail(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
         "q8_review_focus": focus,
         "secondary_flags": {
             "korea_weak": korea_weak,
+            "night_gap_down": night_gap_down,
+            "night_gap_up": night_gap_up,
             "us_tech_positive": us_tech_positive,
             "fx_pressure": fx_pressure,
             "vix_pressure": vix_pressure,
@@ -167,6 +199,8 @@ def render_market_regime_rail_markdown(rail: Mapping[str, Any], *, day: str) -> 
     for key in (
         "kospi_pct",
         "kosdaq_pct",
+        "kospi200_pct",
+        "krx_night_futures_pct",
         "breadth",
         "nasdaq_pct",
         "sp500_pct",
@@ -177,6 +211,9 @@ def render_market_regime_rail_markdown(rail: Mapping[str, Any], *, day: str) -> 
         "global_sentiment_score",
     ):
         lines.append(f"- {key}: **{float(inputs.get(key) or 0.0):.4f}**")
+    if inputs.get("krx_night_futures_status") or inputs.get("krx_night_futures_pressure"):
+        lines.append(f"- krx_night_futures_status: `{inputs.get('krx_night_futures_status') or '-'}`")
+        lines.append(f"- krx_night_futures_pressure: `{inputs.get('krx_night_futures_pressure') or '-'}`")
     lines += ["", "## Expected Tactical Behavior", ""]
     for item in list(rail.get("expected_tactical_behavior") or []):
         lines.append(f"- {item}")
