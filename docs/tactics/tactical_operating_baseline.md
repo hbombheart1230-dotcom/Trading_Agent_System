@@ -172,6 +172,28 @@ Current narrow exception:
     explicit exception lanes. It only prevents "observe" from becoming a BUY
     reason by itself in risk-off conditions.
 
+2026-06-10 promoted safety rule:
+
+- `risk_off_no_entry_expansion`
+  - Trigger: repeated monitor blockers such as `below_vwap_reclaim_not_ready`
+    while market regime is `risk_off`, risk mode is `defensive`, stress flags
+    are active, or runtime/preflight blocks are active.
+  - Behavior: Commander must preserve rank1-only scope:
+    `max_priority_rank=1`, `max_runner_ups=0`, `cascade_enabled=false`,
+    `scan_aggressiveness=0`, and `diversification_bias=0`.
+  - Rejected behavior: `expand_candidate_pool` and
+    `defensive_top3_candidate_cascade` are not allowed in risk-off/defensive
+    repeated-blocker contexts.
+  - Rationale: 2026-06-10 produced 5 closed losses, 0 wins, average -1.594%.
+    All five entries came after repeated blocker expansion or defensive top3
+    cascade. The day was `krx_night_futures_gap_down` with high confidence,
+    so repeated blockers were evidence to stay selective, not evidence to
+    widen the candidate pool.
+  - Required audit fields for future trades: `entry_quant_decision`,
+    `quant_entry_enforcement`, `market_rail_translation`, and
+    `risk_off_defensive_observe_policy`.
+  - Review document: `docs/tactics/q8_daily_review_2026-06-10.md`.
+
 Runtime status as of 2026-05-21:
 
 - Some entry guard behavior is already live-affecting through commander/monitor
