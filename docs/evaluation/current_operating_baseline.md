@@ -29,8 +29,8 @@ reopen a completed evaluation window or authorize a behavior change.
 | Q8 tactical validation | CLOSED | The trusted Q8 window was finalized. Do not restart it because Q9 evidence is incomplete. |
 | Q8 shadow collection | CONTINUING AS EVIDENCE | Existing collectors may keep producing tactical counterfactual evidence for Q9. This is not a new Q8 promotion window. |
 | Q9 system evaluation | ACTIVE | Q9 evaluates whether the complete decision chain adds value. It remains read-only. |
-| Q9 attribution linkage | INCOMPLETE | The report surfaces exist, but historical A/B/C candidate outcomes are not yet linked sufficiently to measure Strategist or Commander value. |
-| Q9 fixed forward window | NOT STARTED | The five-day window starts only after the full-chain Start Gate passes. |
+| Q9 attribution linkage | ACTIVE | New decision windows persist pre-Strategist universe P, Scanner A, Strategist B, and Commander C with forward outcomes. Older windows remain historical context only. |
+| Q9 fixed forward window | READY TO START | 2026-06-23 is excluded as the instrumentation/application day. The next full regular-session trading day is Day 1 of the fixed five-valid-day window. |
 | Runtime behavior change | PROHIBITED | A separate promotion review is required. |
 
 ## Fixed System Scope

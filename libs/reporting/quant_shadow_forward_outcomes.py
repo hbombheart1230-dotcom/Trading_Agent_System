@@ -10,6 +10,7 @@ from libs.reporting.q8_evaluation_contract import FORWARD_MAX_OBSERVATION_DELAY_
 
 CHECKPOINT_MINUTES = (3, 5, 15, 30, 60)
 KST = timezone(timedelta(hours=9))
+EOD_READY_TIME = (15, 20)
 
 
 def _to_float(value: Any, default: float | None = None) -> float | None:
@@ -77,6 +78,14 @@ def _row_day(row: Mapping[str, Any]) -> str:
     if len(raw_ts) >= 8 and raw_ts[:8].isdigit():
         return raw_ts[:8]
     return _kst_day_from_epoch(row.get("ts"))
+
+
+def _kst_time_tuple(row: Mapping[str, Any]) -> tuple[int, int]:
+    epoch = _parse_raw_ts_epoch(row.get("raw_ts")) or _to_int(row.get("ts"), 0)
+    if epoch <= 0:
+        return (0, 0)
+    dt = datetime.fromtimestamp(epoch, tz=KST)
+    return (dt.hour, dt.minute)
 
 
 def _normalize_rows(value: Any) -> list[Dict[str, Any]]:
@@ -223,6 +232,39 @@ def attach_forward_outcomes(
                 "observed_ts": target_row.get("raw_ts") or target_row.get("ts"),
             }
             observed += 1
+        eod_rows = [
+            row
+            for row in same_day_rows
+            if int(row.get("ts") or 0) >= base_epoch
+            and _kst_time_tuple(row) >= EOD_READY_TIME
+        ]
+        if eod_rows:
+            eod_row = eod_rows[-1]
+            eod_close = _to_float(eod_row.get("close"), base_price) or base_price
+            eod_window = [
+                row
+                for row in same_day_rows
+                if base_epoch <= int(row.get("ts") or 0) <= int(eod_row.get("ts") or 0)
+            ] or [eod_row]
+            checkpoints["EOD"] = {
+                "status": "observed",
+                "return_pct": round(((eod_close / base_price) - 1.0) * 100.0, 4),
+                "mfe_pct": round(
+                    ((max(_to_float(r.get("high"), base_price) or base_price for r in eod_window) / base_price) - 1.0)
+                    * 100.0,
+                    4,
+                ),
+                "mae_pct": round(
+                    ((min(_to_float(r.get("low"), base_price) or base_price for r in eod_window) / base_price) - 1.0)
+                    * 100.0,
+                    4,
+                ),
+                "price": eod_close,
+                "observed_ts": eod_row.get("raw_ts") or eod_row.get("ts"),
+            }
+            observed += 1
+        else:
+            checkpoints["EOD"] = {"status": "pending"}
         row["shadow_forward_outcome"] = {
             "available": observed > 0,
             "observed_checkpoint_count": observed,

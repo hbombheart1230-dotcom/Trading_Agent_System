@@ -304,6 +304,11 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         if isinstance(q9_snapshot.get("scanner_control"), dict)
         else {}
     )
+    pre_strategist_universe = (
+        q9_snapshot.get("scanner_pre_strategist_universe")
+        if isinstance(q9_snapshot.get("scanner_pre_strategist_universe"), dict)
+        else {}
+    )
     strategist_selection = (
         q9_snapshot.get("strategist_selection")
         if isinstance(q9_snapshot.get("strategist_selection"), dict)
@@ -373,6 +378,12 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
             "post_strategist_top10": post_strategist_top10,
             "reconstructed_pre_adjust_top10": scanner_evidence.get("reconstructed_pre_adjust_top10") or [],
             "raw_scanner_top10": raw_scanner_top10,
+            "pre_strategist_full_universe_top20": list(
+                pre_strategist_universe.get("intrinsic_ranked_top20") or []
+            )[:20],
+            "pre_strategist_source_universe": dict(
+                pre_strategist_universe.get("source_universe_before_filters") or {}
+            ),
             "raw_scanner_snapshot_source": (
                 scanner_control.get("source")
                 or scanner_context.get("raw_scanner_snapshot_source")

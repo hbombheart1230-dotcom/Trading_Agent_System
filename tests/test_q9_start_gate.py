@@ -53,6 +53,38 @@ def test_start_gate_rejects_reconstructed_scanner_baseline() -> None:
     assert gate["checks"]["raw_scanner_control_snapshot"] is False
     assert gate["trade_checks"][0]["reconstructed_scanner_snapshot_available"] is True
     assert "decision_window_inventory" in gate["missing"]
+    assert "missing_artifact" in gate["reason_categories"]
+    assert "insufficient_decision_window" in gate["reason_categories"]
+    assert "missing_forward_price" in gate["reason_categories"]
+
+
+def test_start_gate_reports_specific_q9_not_ready_reasons() -> None:
+    gate = build_full_chain_start_gate(
+        models=[],
+        inventory={
+            "daily_artifacts": {
+                "q9_decision_windows": {
+                    "exists": True,
+                    "schema_version": "q9_decision_windows.v0",
+                    "expected_schema_version": "q9_decision_windows.v1",
+                    "schema_match": False,
+                    "complete_abc_window_count": 3,
+                    "pre_strategist_forward_candidate_count": 10,
+                    "forward_missing_candidate_count": 4,
+                    "missing_selected_candidate_count": 2,
+                }
+            }
+        },
+        baseline_hash="",
+    )
+
+    assert gate["status"] == "NOT_READY"
+    assert gate["reason_categories"] == [
+        "insufficient_decision_window",
+        "missing_forward_price",
+        "missing_selected_candidate",
+        "schema_mismatch",
+    ]
 
 
 def test_scanner_payload_labels_pre_adjust_ranking_as_reconstructed() -> None:
@@ -82,4 +114,9 @@ def test_scanner_payload_labels_pre_adjust_ranking_as_reconstructed() -> None:
     assert payload["reconstructed_pre_adjust_evidence_class"] == "RECONSTRUCTED"
     assert "not a raw Scanner control" in payload["reconstructed_pre_adjust_limitation"]
     assert payload["scanner_intrinsic_control_top10"][0]["symbol"] == "000660"
+    assert payload["scanner_intrinsic_control_top20"][0]["symbol"] == "000660"
     assert payload["scanner_intrinsic_control_source"] == "same_candidate_universe_ranking_only"
+    assert (
+        payload["pre_strategist_full_universe_snapshot"]["intrinsic_ranked_top20"][0]["symbol"]
+        == "000660"
+    )

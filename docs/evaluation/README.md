@@ -6,14 +6,16 @@ This folder owns the post-Q8 evaluation layer.
 
 Read `current_operating_baseline.md` first.
 
-Current status as of 2026-06-22:
+Current status as of 2026-06-23:
 
 - Q8 tactical validation is closed.
 - Existing Q8 shadow collectors may continue as Q9 evidence providers.
 - Q9 read-only system evaluation is active.
-- Q9 decision-window attribution linkage is incomplete.
-- The formal five-day Q9 forward window has not started because the full-chain
-  Start Gate does not yet pass.
+- Q9 P/A/B/C decision-window instrumentation is implemented.
+- 2026-06-23 is an instrumentation/application day and is excluded from the
+  formal sample.
+- The next full regular-session trading day is Day 1 of the fixed five-valid-
+  trading-day forward window.
 - No runtime behavior change is authorized.
 
 Q8 answers:
@@ -34,6 +36,11 @@ does not replace Q8.
   - current Q8/Q9 authority and status
   - fixed meaning of Q8 shadow vs Q9 counterfactual evidence
   - bounded next work and observation windows
+- `q9_fixed_forward_window_protocol_2026-06-23.md`
+  - fixed five-trading-day freeze boundary
+  - permitted measurement-only fixes
+  - mandatory daily post-close checks
+  - valid-day and sample-count rules
 - `q9_full_chain_evaluation_matrix.md`
   - fixed Strategist, Scanner, Commander, Monitor-entry, and Monitor-exit scope
   - Top-10 evaluation boundary and rank-bucket comparisons
@@ -149,12 +156,18 @@ As of 2026-06-19:
 - Strategist and feedback effectiveness surfaces are implemented
 - the latest 10 artifact-bearing trading days were backfilled
 
-The following comparisons remain explicitly unavailable until their canonical
-links exist:
+The current Q9 instrumentation persists:
 
-- raw Scanner Top-1 forward outcome before Strategist influence
-- Commander alternative outcome when it changes or vetoes selection
-- feedback ID to later decision adoption linkage
+- Scanner pre-Strategist source universe and intrinsic Top-20
+- Scanner control A
+- Strategist-ranked B
+- Commander final C
+- Top-1/3/5/10 forward outcomes
+- source-level forward outcomes
+
+Historical days without these additive fields remain unavailable rather than
+being inferred. Feedback ID to later decision adoption linkage is still a
+future comparison.
 
 Unavailable comparisons must remain unavailable. They must not be inferred
 from current rank or narrative text.
@@ -167,9 +180,8 @@ Q9 is designed to combine:
 - post-exit outcomes
 - integrity confidence
 
-The first, second, and fourth evidence sources exist. Scanner/Strategist/
-Commander alternative outcomes remain unavailable until canonical A/B/C
-decision-window records are linked to later outcomes.
+New forward windows link P/A/B/C records to later outcomes. Older records that
+predate the instrumentation remain historical context only.
 
 Every result must state whether it is:
 

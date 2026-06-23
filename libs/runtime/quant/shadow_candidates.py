@@ -645,10 +645,20 @@ def _q9_decision_candidate_rows(
     scanner_control = _as_dict(snapshot.get("scanner_control"))
     strategist = _as_dict(snapshot.get("strategist_selection"))
     commander = _as_dict(snapshot.get("commander_final"))
+    pre_strategist_universe = _as_dict(snapshot.get("scanner_pre_strategist_universe"))
     specifications = [
         ("A_SCANNER_CONTROL", _as_list(scanner_control.get("top10"))),
         ("B_STRATEGIST_RANKED", _as_list(strategist.get("post_strategist_top10"))),
     ]
+    pre_strategist_rows = _as_list(
+        pre_strategist_universe.get("intrinsic_ranked_top20")
+        or pre_strategist_universe.get("source_universe_top20")
+    )
+    if pre_strategist_rows:
+        specifications.insert(
+            0,
+            ("P_SCANNER_PRE_STRATEGIST_UNIVERSE", pre_strategist_rows),
+        )
     commander_symbol = _text(
         commander.get("selected_symbol") or commander.get("candidate_symbol")
     )
@@ -661,7 +671,8 @@ def _q9_decision_candidate_rows(
         )
     rows: List[Dict[str, Any]] = []
     for role, candidates in specifications:
-        for index, candidate in enumerate(candidates[:10], start=1):
+        role_limit = 20 if role == "P_SCANNER_PRE_STRATEGIST_UNIVERSE" else 10
+        for index, candidate in enumerate(candidates[:role_limit], start=1):
             if not isinstance(candidate, Mapping) or not _symbol(candidate):
                 continue
             row = _candidate_context(candidate)
@@ -675,6 +686,8 @@ def _q9_decision_candidate_rows(
                         role == "B_STRATEGIST_RANKED"
                         and _symbol(candidate) == _text(strategist.get("selected_symbol"))
                     ),
+                    "q9_candidate_sources": list(candidate.get("sources") or [])[:8],
+                    "q9_candidate_source_scores": dict(candidate.get("source_scores") or {}),
                     "q9_commander_decision": (
                         _text(commander.get("decision"))
                         if role == "C_COMMANDER_FINAL"

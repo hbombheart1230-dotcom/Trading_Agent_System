@@ -33,6 +33,25 @@ def build_candidate_ranking_table_payload(ranking_table: List[Dict[str, Any]]) -
     )
     for index, row in enumerate(intrinsic_control, start=1):
         row["rank"] = index
+    source_universe = [
+        {
+            "rank": index,
+            "symbol": str(row.get("symbol") or ""),
+            "sources": list(row.get("sources") or [])[:8],
+            "source_scores": dict(row.get("source_scores") or {}),
+            "rank_score": _to_float(row.get("rank_score")),
+            "universe_score": _to_float(row.get("universe_score")),
+            "why": str(row.get("why") or ""),
+        }
+        for index, row in enumerate(
+            [
+                dict(row)
+                for row in ranking_table
+                if isinstance(row, dict) and str(row.get("symbol") or "")
+            ],
+            start=1,
+        )
+    ]
     return {
         "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
         "rows": ranking_table,
@@ -44,11 +63,26 @@ def build_candidate_ranking_table_payload(ranking_table: List[Dict[str, Any]]) -
             "contain Strategist influence and is not a raw Scanner control"
         ),
         "scanner_intrinsic_control_top10": intrinsic_control[:10],
+        "scanner_intrinsic_control_top20": intrinsic_control[:20],
         "scanner_intrinsic_control_source": "same_candidate_universe_ranking_only",
         "scanner_intrinsic_control_evidence_class": "TRUSTED_SHADOW",
         "scanner_intrinsic_control_limitation": (
             "candidate sourcing may already reflect Strategist guidance; ranking weights are isolated"
         ),
+        "pre_strategist_full_universe_snapshot": {
+            "schema_version": "q9_scanner_pre_strategist_universe.v1",
+            "behavior_effect": "evaluation_only",
+            "source": "scanner_source_universe_before_strategy_weighting",
+            "scope": "source_universe_plus_intrinsic_ranking",
+            "candidate_count": len(ranking_table),
+            "source_universe_top20": source_universe[:20],
+            "intrinsic_ranked_top20": intrinsic_control[:20],
+            "limitation": (
+                "The runtime graph invokes Strategist before Scanner. This snapshot removes "
+                "Strategist ranking weights but candidate-source availability may still reflect "
+                "the current Strategist-provided source policy."
+            ),
+        },
     }
 
 

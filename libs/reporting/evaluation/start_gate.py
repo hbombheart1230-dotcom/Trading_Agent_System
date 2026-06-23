@@ -23,6 +23,7 @@ REQUIRED_BASELINE_KEYS = (
     "cost_model",
     "strategy_policy",
 )
+MIN_DECISION_WINDOWS = 20
 
 
 def _selection(model: dict[str, Any]) -> dict[str, Any]:
@@ -149,15 +150,88 @@ def build_full_chain_start_gate(
     if not aggregate["decision_window_inventory"]:
         missing_counts["decision_window_inventory"] += 1
     missing = [key for key in REQUIRED_GATE_KEYS if not aggregate.get(key)]
+    not_ready_reasons: list[dict[str, Any]] = []
+    if not decision_inventory.get("exists"):
+        not_ready_reasons.append(
+            {
+                "category": "missing_artifact",
+                "artifact": "q9_decision_windows",
+                "detail": "daily Q9 decision-window artifact is missing",
+                "count": 1,
+            }
+        )
+    if decision_inventory.get("exists") and not bool(decision_inventory.get("schema_match", True)):
+        not_ready_reasons.append(
+            {
+                "category": "schema_mismatch",
+                "artifact": "q9_decision_windows",
+                "detail": (
+                    f"expected={decision_inventory.get('expected_schema_version')} "
+                    f"actual={decision_inventory.get('schema_version')}"
+                ),
+                "count": 1,
+            }
+        )
+    decision_window_count = int(decision_inventory.get("complete_abc_window_count") or 0)
+    if decision_window_count < MIN_DECISION_WINDOWS:
+        not_ready_reasons.append(
+            {
+                "category": "insufficient_decision_window",
+                "artifact": "q9_decision_windows",
+                "detail": f"complete A/B/C windows {decision_window_count}/{MIN_DECISION_WINDOWS}",
+                "count": max(0, MIN_DECISION_WINDOWS - decision_window_count),
+            }
+        )
+    missing_forward = int(decision_inventory.get("forward_missing_candidate_count") or 0)
+    forward_total = int(decision_inventory.get("pre_strategist_forward_candidate_count") or 0)
+    if forward_total == 0 or missing_forward > 0:
+        not_ready_reasons.append(
+            {
+                "category": "missing_forward_price",
+                "artifact": "quant_shadow_candidates",
+                "detail": f"observed={forward_total - missing_forward} total={forward_total}",
+                "count": missing_forward if forward_total else 1,
+            }
+        )
+    missing_selected = int(decision_inventory.get("missing_selected_candidate_count") or 0)
+    if missing_selected > 0:
+        not_ready_reasons.append(
+            {
+                "category": "missing_selected_candidate",
+                "artifact": "q9_decision_windows",
+                "detail": "Strategist selected_symbol is absent",
+                "count": missing_selected,
+            }
+        )
+    for row in trade_rows:
+        for missing_key in row.get("missing") or []:
+            if missing_key in {"raw_scanner_control_snapshot", "strategist_snapshot", "commander_final_snapshot"}:
+                not_ready_reasons.append(
+                    {
+                        "category": "missing_artifact",
+                        "artifact": missing_key,
+                        "detail": f"trade_id={row.get('trade_id')}",
+                        "count": 1,
+                    }
+                )
+    ready = bool(not missing and not not_ready_reasons and coverage >= 0.95)
     return {
         "schema_version": "q9_full_chain_start_gate.v1",
-        "status": "READY" if not missing and coverage >= 0.95 else "NOT_READY",
+        "status": "READY" if ready else "NOT_READY",
         "forward_window_started": False,
         "required_coverage": 0.95,
         "coverage": round(coverage, 4),
         "checks": aggregate,
         "missing": missing,
         "missing_counts": dict(sorted(missing_counts.items())),
+        "not_ready_reasons": not_ready_reasons,
+        "reason_categories": sorted(
+            {str(row.get("category") or "") for row in not_ready_reasons if row.get("category")}
+        ),
+        "decision_window_requirement": {
+            "minimum_complete_abc_windows": MIN_DECISION_WINDOWS,
+            "current_complete_abc_windows": decision_window_count,
+        },
         "trade_count": len(trade_rows),
         "trade_checks": trade_rows,
         "reconstructed_evidence_note": (

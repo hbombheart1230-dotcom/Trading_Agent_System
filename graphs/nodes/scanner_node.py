@@ -2255,6 +2255,34 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         candidates, live_symbol_meta = _filter_live_equity_candidates(list(candidates or []))
         pool_meta = dict(pool_meta)
         pool_meta.update(dict(live_symbol_meta))
+    state["scanner_source_universe_before_strategy_weighting"] = {
+        "schema_version": "q9_scanner_source_universe.v1",
+        "behavior_effect": "evaluation_only",
+        "candidate_count": len(candidates),
+        "rows": [
+            {
+                "rank": index,
+                "symbol": _norm_symbol(item.get("symbol")) if isinstance(item, dict) else _norm_symbol(item),
+                "sources": list(item.get("sources") or [])[:8] if isinstance(item, dict) else [],
+                "source_scores": dict(item.get("source_scores") or {}) if isinstance(item, dict) else {},
+                "rank_score": _to_float(item.get("rank_score")) if isinstance(item, dict) else 0.0,
+                "universe_score": _to_float(item.get("universe_score")) if isinstance(item, dict) else 0.0,
+                "why": str(item.get("why") or "") if isinstance(item, dict) else "",
+            }
+            for index, item in enumerate(list(candidates)[:50], start=1)
+            if (
+                _norm_symbol(item.get("symbol"))
+                if isinstance(item, dict)
+                else _norm_symbol(item)
+            )
+        ],
+        "candidate_source": str(pool_meta.get("candidate_source") or ""),
+        "scanner_candidate_source": str(pool_meta.get("scanner_candidate_source") or ""),
+        "limitation": (
+            "Captured before Scanner asset/practical filters and score overlays; source inclusion "
+            "may still reflect the current Strategist-provided source policy."
+        ),
+    }
     run_id = str(state.get("run_id") or "").strip() or "scanner-unknown"
 
     mock: Optional[Mapping[str, Any]] = state.get("mock_scan_results")  # for tests
@@ -3520,7 +3548,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "fallback_reasons": list(feature_errors),
         "error_count": len(feature_errors),
     }
-    ranking_table = _ranking_table_rows(scan_results_sorted, max_rows=candidate_visibility_limit)
+    ranking_table = _ranking_table_rows(
+        scan_results_sorted,
+        max_rows=max(20, candidate_visibility_limit),
+    )
     selected_snapshot = _compact_selected_snapshot(selected if isinstance(selected, dict) else None)
     selected_symbol = str((selected or {}).get("symbol") or "") if isinstance(selected, dict) else ""
     selected_rank = 0
@@ -3865,6 +3896,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["scanner_candidate_ranking_table"] = dict(candidate_ranking_table_payload)
     state["scanner_output"]["scanner_intrinsic_control_top10"] = list(
         candidate_ranking_table_payload.get("scanner_intrinsic_control_top10") or []
+    )
+    state["scanner_output"]["scanner_intrinsic_control_top20"] = list(
+        candidate_ranking_table_payload.get("scanner_intrinsic_control_top20") or []
+    )
+    state["scanner_output"]["pre_strategist_full_universe_snapshot"] = dict(
+        candidate_ranking_table_payload.get("pre_strategist_full_universe_snapshot") or {}
     )
     _emit_scanner_event(
         state,

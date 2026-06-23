@@ -22,7 +22,19 @@ def test_q9_snapshot_upserts_scanner_and_commander_under_one_id(tmp_path) -> Non
         },
         "scanner_candidate_ranking_table": {
             "scanner_intrinsic_control_top10": [{"symbol": "000660", "rank": 1}],
+            "scanner_intrinsic_control_top20": [
+                {"symbol": "000660", "rank": 1, "sources": ["top_value"]},
+                {"symbol": "035420", "rank": 2, "sources": ["top_volume"]},
+            ],
             "post_strategist_top10": [{"symbol": "005930", "rank": 1}],
+            "pre_strategist_full_universe_snapshot": {
+                "schema_version": "q9_scanner_pre_strategist_universe.v1",
+                "candidate_count": 2,
+                "intrinsic_ranked_top20": [
+                    {"symbol": "000660", "rank": 1, "sources": ["top_value"]},
+                    {"symbol": "035420", "rank": 2, "sources": ["top_volume"]},
+                ],
+            },
         },
         "strategist_output": {
             "run_id": "strategist-1",
@@ -45,6 +57,10 @@ def test_q9_snapshot_upserts_scanner_and_commander_under_one_id(tmp_path) -> Non
     window = payload["windows"][0]
     assert window["window_type"] == "scanner_selection"
     assert window["scanner_control"]["top1_symbol"] == "000660"
+    assert [
+        row["symbol"]
+        for row in window["scanner_pre_strategist_universe"]["intrinsic_ranked_top20"]
+    ] == ["000660", "035420"]
     assert window["strategist_selection"]["selected_symbol"] == "005930"
     assert window["commander_final"]["decision"] == "approve"
     assert state["scanner_output"]["q9_decision_snapshot"]["commander_final"]["decision"] == "approve"

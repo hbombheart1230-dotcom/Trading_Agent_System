@@ -83,3 +83,27 @@ def test_attach_forward_outcomes_accepts_near_target_same_day_row() -> None:
     assert out[0]["shadow_forward_outcome"]["available"] is True
     assert checkpoint["status"] == "observed"
     assert checkpoint["observed_ts"] == "20260608090800"
+
+
+def test_attach_forward_outcomes_adds_eod_checkpoint() -> None:
+    candidates = [{
+        "symbol": "005930",
+        "shadow_forward_base": {
+            "available": True,
+            "baseline_epoch": 1782172800,
+            "baseline_price": 100.0,
+            "baseline_raw_ts": "20260623090000",
+        },
+    }]
+    minute_rows = {
+        "005930": [
+            {"ts": 1782172800, "close": 100.0, "high": 100.0, "low": 100.0, "raw_ts": "20260623090000"},
+            {"ts": 1782195600, "close": 102.0, "high": 103.0, "low": 99.0, "raw_ts": "20260623152000"},
+        ]
+    }
+
+    out = attach_forward_outcomes(candidates, minute_rows_by_symbol=minute_rows)
+    eod = out[0]["shadow_forward_outcome"]["checkpoints"]["EOD"]
+
+    assert eod["status"] == "observed"
+    assert eod["return_pct"] == 2.0

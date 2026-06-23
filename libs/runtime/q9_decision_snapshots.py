@@ -146,8 +146,12 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     ranking_payload = _mapping(state.get("scanner_candidate_ranking_table"))
     strategist = _mapping(state.get("strategist_output"))
     intrinsic = _rows(
-        ranking_payload.get("scanner_intrinsic_control_top10")
+        ranking_payload.get("scanner_intrinsic_control_top20")
+        or scanner.get("scanner_intrinsic_control_top20")
+        or ranking_payload.get("scanner_intrinsic_control_top10")
         or scanner.get("scanner_intrinsic_control_top10")
+        ,
+        limit=20,
     )
     post = _rows(
         ranking_payload.get("post_strategist_top10")
@@ -155,6 +159,16 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         or state.get("ranked_candidates")
     )
     selected = _mapping(state.get("selected"))
+    pre_strategist_universe = _mapping(
+        ranking_payload.get("pre_strategist_full_universe_snapshot")
+        or scanner.get("pre_strategist_full_universe_snapshot")
+    )
+    source_universe = _mapping(state.get("scanner_source_universe_before_strategy_weighting"))
+    if source_universe:
+        pre_strategist_universe = {
+            **pre_strategist_universe,
+            "source_universe_before_filters": source_universe,
+        }
     return _upsert(
         state,
         {
@@ -164,12 +178,25 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
                 "scope": "same_candidate_universe_ranking_only",
                 "source": "scanner_intrinsic_control_snapshot",
                 "evidence_class": "TRUSTED_SHADOW",
-                "top10": intrinsic,
+                "top10": intrinsic[:10],
+                "top20": intrinsic[:20],
                 "top1_symbol": str((intrinsic[0] if intrinsic else {}).get("symbol") or ""),
                 "universe_control_available": False,
                 "limitation": (
                     "Candidate sourcing may already reflect Strategist guidance; this control isolates "
                     "ranking weights within the same candidate universe."
+                ),
+            },
+            "scanner_pre_strategist_universe": {
+                **pre_strategist_universe,
+                "schema_version": str(
+                    pre_strategist_universe.get("schema_version")
+                    or "q9_scanner_pre_strategist_universe.v1"
+                ),
+                "behavior_effect": "evaluation_only",
+                "intrinsic_ranked_top20": (
+                    _rows(pre_strategist_universe.get("intrinsic_ranked_top20"), limit=20)
+                    or intrinsic[:20]
                 ),
             },
             "strategist_selection": {
