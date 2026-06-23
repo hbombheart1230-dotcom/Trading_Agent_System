@@ -682,6 +682,54 @@ def test_intraday_trade_reports_queues_background_job_after_timeout(tmp_path: Pa
     assert "--role intraday_trade_report_bundle" in flat_cmd
 
 
+def test_intraday_trade_reports_uses_latest_market_status_day_for_stale_quote_timestamp(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path
+    monkeypatch.setenv("INTRADAY_TRADE_REPORTS_ENABLED", "true")
+    monkeypatch.setattr("libs.reporting.intraday_trade_reports._root_dir", lambda: root)
+    monkeypatch.setattr(
+        "libs.reporting.intraday_trade_reports._active_bundle_job",
+        lambda _path: {},
+    )
+    monkeypatch.setattr(
+        "libs.reporting.intraday_trade_reports._active_bundle_process",
+        lambda _root: {},
+    )
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(_root, argv, **_kwargs):  # type: ignore[no-untyped-def]
+        captured["argv"] = list(argv)
+        return None, "", 43210
+
+    monkeypatch.setattr(
+        "libs.reporting.intraday_trade_reports._run_bundle_with_timeout",
+        fake_run,
+    )
+
+    out = generate_intraday_trade_artifacts(
+        {
+            "run_id": "run-rollover",
+            "ts": "2026-06-19T02:54:00+00:00",
+            "kiwoom_market_status": {
+                "received_at": "2026-06-22T00:00:30+00:00",
+            },
+            "execution": {
+                "ok": True,
+                "allowed": True,
+                "order": {"action": "SELL", "symbol": "009150"},
+            },
+        }
+    )
+
+    assert out["status"] == "queued"
+    assert "--day" in captured["argv"]
+    day_index = captured["argv"].index("--day")
+    assert captured["argv"][day_index + 1] == "2026-06-22"
+
+
 def test_intraday_trade_reports_dedupes_when_background_job_is_already_running(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path
     monkeypatch.setenv("INTRADAY_TRADE_REPORTS_ENABLED", "true")

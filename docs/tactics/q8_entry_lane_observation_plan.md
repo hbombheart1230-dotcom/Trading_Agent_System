@@ -1,5 +1,14 @@
 # Q8 Entry Lane Observation Plan
 
+Status: COMPLETED / SUPERSEDED FOR ACTIVE SCHEDULING
+
+The lane definitions remain valid historical Q8 evidence definitions. The
+Q8 evaluation window was closed by
+`../evaluation/q8_final_comprehensive_review_2026-06-20.md`.
+The "next 3 to 5 live sessions" language below describes the original review
+plan and is not a current instruction. Continued lane artifacts feed Q9
+through `../evaluation/current_operating_baseline.md`.
+
 Purpose: collect enough observation-only evidence to decide whether the current
 entry blocks are correctly filtering weak setups or over-blocking tradable
 setups.
@@ -51,7 +60,8 @@ This means:
 
 ## Evaluation Window
 
-Use the next 3 to 5 live sessions as the first review window.
+Historical Q8 plan: use the next 3 to 5 live sessions as the first review
+window. This window has completed.
 
 Daily review should answer:
 

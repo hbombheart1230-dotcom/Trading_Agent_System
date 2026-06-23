@@ -8,6 +8,8 @@ from typing import Any, Dict, Mapping
 
 
 DEFAULT_PROFILE_PATH = Path("data/state/broker_cost_profile.json")
+MAX_VALID_ROUND_TRIP_COST_PCT = 0.02
+CONSERVATIVE_COST_MARGIN = 1.10
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
@@ -82,6 +84,8 @@ def build_broker_cost_profile_from_execution_details(
 
     total_cost = float(fee) + float(tax or 0.0)
     round_trip_cost_pct = total_cost / buy_notional if total_cost >= 0.0 else 0.0
+    if round_trip_cost_pct > MAX_VALID_ROUND_TRIP_COST_PCT:
+        return {}
     fee_rate_gross = float(fee) / gross_notional if fee >= 0.0 else 0.0
     tax_rate_sell = float(tax or 0.0) / sell_notional if float(tax or 0.0) >= 0.0 else 0.0
 
@@ -90,10 +94,9 @@ def build_broker_cost_profile_from_execution_details(
     prev_ema = _safe_float(prev.get("ema_round_trip_cost_pct"))
     alpha = 0.35
     ema = round_trip_cost_pct if prev_ema is None else (alpha * round_trip_cost_pct) + ((1.0 - alpha) * float(prev_ema))
-    conservative = max(
-        round_trip_cost_pct,
-        float(ema),
-        _safe_float(prev.get("conservative_round_trip_cost_pct"), 0.0) or 0.0,
+    conservative = min(
+        MAX_VALID_ROUND_TRIP_COST_PCT,
+        max(round_trip_cost_pct, float(ema)) * CONSERVATIVE_COST_MARGIN,
     )
 
     return {
@@ -146,16 +149,18 @@ def apply_broker_cost_profile_to_exit_policy(
     observed = _safe_float(profile_obj.get("conservative_round_trip_cost_pct"))
     if observed is None or observed <= 0.0:
         return out
+    observed = min(float(observed), MAX_VALID_ROUND_TRIP_COST_PCT)
 
     current = _safe_float(out.get("round_trip_cost_floor_pct"), 0.0) or 0.0
-    if observed > current:
+    invalid_current_floor = current > MAX_VALID_ROUND_TRIP_COST_PCT
+    if invalid_current_floor or observed > current:
         out["round_trip_cost_floor_pct"] = float(observed)
     out["cost_aware_profit_floor_enabled"] = True
 
     buffer_pct = _safe_float(out.get("min_net_profit_buffer_pct"), 0.0) or 0.0
     current_floor = _safe_float(out.get("cost_aware_profit_floor_pct"), 0.0) or 0.0
     observed_floor = float(out.get("round_trip_cost_floor_pct") or observed) + float(buffer_pct)
-    if observed_floor > current_floor:
+    if invalid_current_floor or current_floor > MAX_VALID_ROUND_TRIP_COST_PCT + buffer_pct or observed_floor > current_floor:
         out["cost_aware_profit_floor_pct"] = float(observed_floor)
 
     out["broker_cost_profile_source"] = str(profile_obj.get("source") or "")
@@ -165,6 +170,8 @@ def apply_broker_cost_profile_to_exit_policy(
 
 
 __all__ = [
+    "CONSERVATIVE_COST_MARGIN",
+    "MAX_VALID_ROUND_TRIP_COST_PCT",
     "apply_broker_cost_profile_to_exit_policy",
     "build_broker_cost_profile_from_execution_details",
     "load_broker_cost_profile",

@@ -5,7 +5,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
+from libs.reporting.q8_evaluation_contract import (
+    CANONICAL_DEDUPE_KEY_FIELDS,
+    build_q8_trust_gate,
+    dedupe_q8_candidates,
+)
 from libs.reporting.quant_shadow_candidate_evaluation import (
+    build_quant_shadow_candidate_evaluation,
     load_quant_shadow_candidate_payloads,
 )
 from libs.reporting.quant_shadow_forward_outcomes import attach_forward_outcomes
@@ -56,32 +62,8 @@ def _candidate_rows(payloads: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
     return rows
 
 
-def _dedupe_key(row: Mapping[str, Any]) -> tuple[str, str, str, int, str]:
-    base = row.get("shadow_forward_base") if isinstance(row.get("shadow_forward_base"), Mapping) else {}
-    baseline_epoch = 0
-    try:
-        baseline_epoch = int(float(base.get("baseline_epoch") or 0))
-    except Exception:
-        baseline_epoch = 0
-    return (
-        _text(row.get("symbol")).upper(),
-        _text(row.get("reason")),
-        _text(row.get("shadow_role")),
-        baseline_epoch,
-        _text(row.get("quant_tactic_id")),
-    )
-
-
 def _dedupe_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    seen: set[tuple[str, str, str, int, str]] = set()
-    for row in rows:
-        key = _dedupe_key(row)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(dict(row))
-    return out
+    return dedupe_q8_candidates(rows)
 
 
 def _checkpoint_values(outcome: Mapping[str, Any]) -> Dict[str, Any]:
@@ -123,7 +105,12 @@ def _decision_for_row(row: Mapping[str, Any]) -> str:
     return "retain_under_observation"
 
 
-def _summarize_group(reason: str, rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+def _summarize_group(
+    reason: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    promotion_allowed: bool,
+) -> Dict[str, Any]:
     observed_rows: List[Dict[str, Any]] = []
     for row in rows:
         outcome = row.get("shadow_forward_outcome") if isinstance(row.get("shadow_forward_outcome"), Mapping) else {}
@@ -153,6 +140,8 @@ def _summarize_group(reason: str, rows: Sequence[Mapping[str, Any]]) -> Dict[str
         key=lambda row: float(row["_q8_forward"].get("max_favorable_pct") or 0.0),
         reverse=True,
     )[:5]
+    raw_decision = _decision_for_row(rows[0]) if rows else "retain_under_observation"
+    decision = raw_decision if promotion_allowed else "retain_under_observation"
     return {
         "reason": reason,
         "candidate_count": len(rows),
@@ -167,7 +156,9 @@ def _summarize_group(reason: str, rows: Sequence[Mapping[str, Any]]) -> Dict[str
         "missed_opportunity_rate": round(float(missed_opportunity_count) / float(len(mfes)), 4) if mfes else 0.0,
         "adverse_count": adverse_count,
         "adverse_rate": round(float(adverse_count) / float(len(maes)), 4) if maes else 0.0,
-        "decision": _decision_for_row(rows[0]) if rows else "retain_under_observation",
+        "raw_decision": raw_decision,
+        "decision": decision,
+        "decision_blocked_by_trust_gate": bool(raw_decision != decision),
         "examples": [
             {
                 "symbol": _text(row.get("symbol")),
@@ -189,16 +180,44 @@ def build_q8_shadow_blocker_review(
     minute_rows_by_symbol: Mapping[str, list[Mapping[str, Any]]] | None = None,
     review_reasons: Sequence[str] = DEFAULT_REVIEW_REASONS,
     market_regime_rail: Mapping[str, Any] | None = None,
+    quant_shadow_evaluation: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     raw_rows = attach_forward_outcomes(_candidate_rows(payloads), minute_rows_by_symbol=minute_rows_by_symbol)
     rows = _dedupe_rows(raw_rows)
+    trusted_forward_count = 0
+    for row in rows:
+        outcome = row.get("shadow_forward_outcome") if isinstance(row.get("shadow_forward_outcome"), Mapping) else {}
+        if _bool(_checkpoint_values(outcome).get("available")):
+            trusted_forward_count += 1
+    trusted_forward_coverage = round(float(trusted_forward_count) / float(len(rows)), 4) if rows else 0.0
+    evaluation_gate = (
+        quant_shadow_evaluation.get("evaluation_trust_gate")
+        if isinstance(quant_shadow_evaluation, Mapping)
+        and isinstance(quant_shadow_evaluation.get("evaluation_trust_gate"), Mapping)
+        else {}
+    )
+    trust_gate = (
+        dict(evaluation_gate)
+        if evaluation_gate
+        else build_q8_trust_gate(
+            raw_candidate_count=len(raw_rows),
+            deduped_candidate_count=len(rows),
+            trusted_forward_count=trusted_forward_count,
+            trusted_forward_coverage=trusted_forward_coverage,
+            candidate_watchlist=[],
+        )
+    )
+    promotion_allowed = bool(trust_gate.get("promotion_allowed"))
     review_reason_set = {str(reason) for reason in review_reasons}
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
         reason = _text(row.get("reason"))
         if reason in review_reason_set:
             grouped[reason].append(row)
-    groups = [_summarize_group(reason, grouped.get(reason, [])) for reason in review_reasons]
+    groups = [
+        _summarize_group(reason, grouped.get(reason, []), promotion_allowed=promotion_allowed)
+        for reason in review_reasons
+    ]
     observed_total = sum(int(group.get("observed_count") or 0) for group in groups)
     return {
         "schema_version": "q8_shadow_blocker_review.v1",
@@ -207,7 +226,9 @@ def build_q8_shadow_blocker_review(
         "raw_candidate_count": len(raw_rows),
         "deduped_candidate_count": len(rows),
         "duplicate_count": max(0, len(raw_rows) - len(rows)),
-        "dedupe_key": ["symbol", "reason", "shadow_role", "baseline_epoch", "quant_tactic_id"],
+        "dedupe_key": list(CANONICAL_DEDUPE_KEY_FIELDS),
+        "evaluation_trust_gate": trust_gate,
+        "promotion_allowed": promotion_allowed,
         "candidate_count": len(rows),
         "review_reason_count": len(groups),
         "observed_review_candidate_count": observed_total,
@@ -226,9 +247,19 @@ def render_q8_shadow_blocker_review_markdown(review: Mapping[str, Any], *, day: 
         f"- candidate_count: **{int(review.get('candidate_count') or 0)}**",
         f"- raw_candidate_count: **{int(review.get('raw_candidate_count') or review.get('candidate_count') or 0)}**",
         f"- duplicate_count: **{int(review.get('duplicate_count') or 0)}**",
+        f"- dedupe_key: `{', '.join(list(review.get('dedupe_key') or []))}`",
         f"- review_reason_count: **{int(review.get('review_reason_count') or 0)}**",
         f"- observed_review_candidate_count: **{int(review.get('observed_review_candidate_count') or 0)}**",
     ]
+    gate = review.get("evaluation_trust_gate") if isinstance(review.get("evaluation_trust_gate"), Mapping) else {}
+    if gate:
+        lines.extend(
+            [
+                f"- trust_gate: `{gate.get('status') or '-'}`",
+                f"- promotion_allowed: `{bool(gate.get('promotion_allowed'))}`",
+                f"- trust_block_reasons: `{', '.join(list(gate.get('block_reasons') or gate.get('reasons') or [])) or '-'}`",
+            ]
+        )
     rail = review.get("market_regime_rail") if isinstance(review.get("market_regime_rail"), Mapping) else {}
     if rail:
         lines.append(
@@ -285,7 +316,12 @@ def generate_q8_shadow_blocker_review(
 ) -> Dict[str, Any]:
     payloads = load_quant_shadow_candidate_payloads(reports_root=reports_root, days=[day])
     market_regime_rail = classify_market_regime_rail(load_latest_macro_snapshot(day))
-    review = build_q8_shadow_blocker_review(payloads, market_regime_rail=market_regime_rail)
+    quant_shadow_evaluation = build_quant_shadow_candidate_evaluation(payloads)
+    review = build_q8_shadow_blocker_review(
+        payloads,
+        market_regime_rail=market_regime_rail,
+        quant_shadow_evaluation=quant_shadow_evaluation,
+    )
     out_dir = Path(reports_root) / "operator_summary" / "daily" / day
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "q8_shadow_blocker_review.json"

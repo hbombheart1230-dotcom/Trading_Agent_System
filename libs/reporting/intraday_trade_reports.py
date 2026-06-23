@@ -60,6 +60,12 @@ def _trade_day_from_trade_id(trade_id: str) -> str:
 def _runtime_trade_day(state: Dict[str, Any]) -> str:
     execution = state.get("execution") if isinstance(state.get("execution"), dict) else {}
     payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
+    market_status = (
+        state.get("kiwoom_market_status")
+        if isinstance(state.get("kiwoom_market_status"), dict)
+        else {}
+    )
+    parsed_values: List[datetime] = []
     for value in (
         state.get("ts"),
         state.get("timestamp"),
@@ -67,6 +73,7 @@ def _runtime_trade_day(state: Dict[str, Any]) -> str:
         execution.get("timestamp"),
         payload.get("ts"),
         payload.get("timestamp"),
+        market_status.get("received_at"),
     ):
         text = str(value or "").strip()
         if not text:
@@ -78,8 +85,10 @@ def _runtime_trade_day(state: Dict[str, Any]) -> str:
             continue
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d")
-    return ""
+        parsed_values.append(parsed.astimezone(timezone.utc))
+    if not parsed_values:
+        return ""
+    return max(parsed_values).strftime("%Y-%m-%d")
 
 
 def _root_dir() -> Path:

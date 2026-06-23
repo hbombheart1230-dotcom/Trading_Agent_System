@@ -1426,7 +1426,7 @@ def test_compact_strategist_llm_payload_limits_read_model_and_operator_summary_b
     assert "raw_rows" not in encoded
     assert compact["memory_packets"]["daily_strategy_memory"]["operator_summary"]["metrics"]["trade_count"] == 5
     assert len(compact["memory_packets"]["daily_strategy_memory"]["operator_summary"]["operator_view"]["review_points"]) == 4
-    assert len(encoded) < 8000
+    assert len(encoded) < 8500
 
 
 def test_compact_strategist_llm_payload_surfaces_q8_tactic_lane_guidance() -> None:

@@ -2,46 +2,13 @@
 setlocal
 
 set "ROOT=%~dp0.."
-set "PY=%ROOT%\venv\Scripts\python.exe"
-set "SESSION_EXTRA="
+set "RESTART_BAT=%ROOT%\scripts\restart_live_session.bat"
 
-rem Optional off-hours probe mode (env-driven):
-rem   set MOCK_EXAM_OFFHOURS_PROBE=1
-if /I "%MOCK_EXAM_OFFHOURS_PROBE%"=="1" (
-  set "SESSION_EXTRA=%SESSION_EXTRA% --probe"
-)
-rem Optional off-hours continuous simulated session:
-rem   set MOCK_EXAM_OFFHOURS_SIMULATED=1
-if /I "%MOCK_EXAM_OFFHOURS_SIMULATED%"=="1" (
-  set "SESSION_EXTRA=%SESSION_EXTRA% --simulated"
-)
-if not "%MOCK_EXAM_PROBE_SYMBOL%"=="" (
-  set "SESSION_EXTRA=%SESSION_EXTRA% --probe-symbol %MOCK_EXAM_PROBE_SYMBOL%"
-)
-if not "%MOCK_EXAM_PROBE_PRICE%"=="" (
-  set "SESSION_EXTRA=%SESSION_EXTRA% --probe-price %MOCK_EXAM_PROBE_PRICE%"
-)
-if not "%MOCK_EXAM_PROBE_CASH%"=="" (
-  set "SESSION_EXTRA=%SESSION_EXTRA% --probe-cash %MOCK_EXAM_PROBE_CASH%"
-)
-if not "%MOCK_EXAM_STATE_PATH%"=="" (
-  set "SESSION_EXTRA=%SESSION_EXTRA% --state-path %MOCK_EXAM_STATE_PATH%"
-)
-
-if not exist "%PY%" (
-  echo python_not_found path=%PY%
+if not exist "%RESTART_BAT%" (
+  echo restart_wrapper_not_found path=%RESTART_BAT%
   exit /b 3
 )
 
-rem Compatibility wrapper. Official trading runtime entrypoint is scripts/run_session.py
-"%PY%" "%ROOT%\scripts\run_session.py" ^
-  --mode mock ^
-  --phase intraday ^
-  --env-path "%ROOT%\.env" ^
-  --report-dir "%ROOT%\reports\dev\exam\mock_exam_day" ^
-  --event-log-path "%ROOT%\data\logs\events.jsonl" ^
-  --sleep-sec 60 ^
-  %SESSION_EXTRA% ^
-  %*
-
+rem Scheduled session startup must use the same clean restart path as manual operation.
+call "%RESTART_BAT%" --log-tag scheduled_start %*
 exit /b %ERRORLEVEL%

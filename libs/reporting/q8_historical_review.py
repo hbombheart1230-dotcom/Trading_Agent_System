@@ -317,6 +317,7 @@ def _daily_summary_rows(reports_root: Path, *, start: str, end: str) -> List[Dic
             if isinstance(payload.get("quant_shadow_candidate_evaluation"), dict)
             else {}
         )
+        gate = q.get("evaluation_trust_gate") if isinstance(q.get("evaluation_trust_gate"), dict) else {}
         rail = payload.get("market_regime_rail_review") if isinstance(payload.get("market_regime_rail_review"), dict) else {}
         rows.append(
             {
@@ -329,9 +330,16 @@ def _daily_summary_rows(reports_root: Path, *, start: str, end: str) -> List[Dic
                 "avg_return_pct": _float(metrics.get("avg_return_pct")) or 0.0,
                 "truth_surface_count": _int(metrics.get("truth_surface_count")),
                 "shadow_candidate_count": _int(q.get("candidate_count")),
+                "shadow_deduped_candidate_count": _int(q.get("deduped_candidate_count")),
+                "shadow_duplicate_candidate_count": _int(q.get("duplicate_candidate_count")),
                 "shadow_evaluated_count": _int(q.get("evaluated_count")),
                 "shadow_would_enter_count": _int(q.get("would_enter_count")),
                 "shadow_forward_outcome_coverage": _float(q.get("forward_outcome_coverage")),
+                "q8_trust_gate_status": _text(gate.get("status")),
+                "q8_promotion_allowed": bool(gate.get("promotion_allowed")),
+                "q8_trusted_forward_count": _int(gate.get("trusted_forward_count")),
+                "q8_trusted_forward_coverage": _float(gate.get("trusted_forward_coverage")),
+                "q8_duplicate_rate": _float(gate.get("duplicate_rate")),
                 "market_regime_rail": _text(rail.get("rail_id") or rail.get("market_regime_rail")),
             }
         )
@@ -604,6 +612,16 @@ def build_q8_historical_review_payload(
         "end": str(end)[:10],
         "daily_count": len(daily_rows),
         "daily_rows": daily_rows,
+        "q8_promotion_eligibility": {
+            "promotion_allowed_day_count": sum(1 for row in daily_rows if bool(row.get("q8_promotion_allowed"))),
+            "trusted_gate_day_count": sum(1 for row in daily_rows if _text(row.get("q8_trust_gate_status"))),
+            "status": (
+                "promotion_review_possible"
+                if any(bool(row.get("q8_promotion_allowed")) for row in daily_rows)
+                else "promotion_blocked_by_trust_gate_or_legacy_data"
+            ),
+            "rule": "Historical conclusions require daily evaluation_trust_gate.promotion_allowed=true. Legacy daily summaries without trust gate are observation-only.",
+        },
         "trade_summary": {
             "trade_report_count": len(trade_rows),
             "return_sample_count": len(return_rows),
@@ -621,7 +639,17 @@ def build_q8_historical_review_payload(
         "trade_by_exit_reason": pattern_by_exit or _aggregate_return_rows(return_rows, "exit_reason"),
         **shadow,
     }
-    payload["promotion_recommendations"] = _promotion_recommendations(payload)
+    eligibility = payload.get("q8_promotion_eligibility") if isinstance(payload.get("q8_promotion_eligibility"), Mapping) else {}
+    if int(eligibility.get("promotion_allowed_day_count") or 0) <= 0:
+        payload["promotion_recommendations"] = [
+            {
+                "candidate": "all_q8_candidates",
+                "decision": "retain_under_observation",
+                "reason": "no historical day passed the Q8 evaluation trust gate",
+            }
+        ]
+    else:
+        payload["promotion_recommendations"] = _promotion_recommendations(payload)
     return payload
 
 
@@ -660,7 +688,7 @@ def render_q8_historical_review_markdown(payload: Mapping[str, Any]) -> str:
     if daily_rows:
         lines.extend(
             _md_table(
-                ["Day", "Trades", "Closed", "Returns", "Missing", "Win", "Avg", "Shadow", "Rail"],
+                ["Day", "Trades", "Closed", "Returns", "Missing", "Win", "Avg", "Raw", "Deduped", "Trusted", "Gate", "Allowed", "Rail"],
                 [
                     [
                         row.get("day"),
@@ -671,6 +699,10 @@ def render_q8_historical_review_markdown(payload: Mapping[str, Any]) -> str:
                         f"{float(row.get('win_rate') or 0.0) * 100:.1f}%",
                         f"{float(row.get('avg_return_pct') or 0.0):.2f}%",
                         row.get("shadow_candidate_count") or 0,
+                        row.get("shadow_deduped_candidate_count") or 0,
+                        row.get("q8_trusted_forward_count") or 0,
+                        row.get("q8_trust_gate_status") or "legacy/no_gate",
+                        bool(row.get("q8_promotion_allowed")),
                         row.get("market_regime_rail") or "-",
                     ]
                     for row in daily_rows
@@ -678,6 +710,18 @@ def render_q8_historical_review_markdown(payload: Mapping[str, Any]) -> str:
             )
         )
         lines.append("")
+    eligibility = payload.get("q8_promotion_eligibility") if isinstance(payload.get("q8_promotion_eligibility"), Mapping) else {}
+    lines.extend(
+        [
+            "## Q8 Promotion Eligibility",
+            "",
+            f"- status: `{eligibility.get('status') or 'unknown'}`",
+            f"- trusted gate days: **{eligibility.get('trusted_gate_day_count') or 0}**",
+            f"- promotion allowed days: **{eligibility.get('promotion_allowed_day_count') or 0}**",
+            f"- rule: {eligibility.get('rule') or '-'}",
+            "",
+        ]
+    )
     lines.extend(["## Trade Pattern Evidence", ""])
     for title, key in (
         ("By Tactic", "trade_by_tactic"),
@@ -816,8 +860,9 @@ def render_q8_historical_review_markdown(payload: Mapping[str, Any]) -> str:
             "",
             "- Prior data is useful, but it must be sliced by artifact era.",
             "- Live trade PnL already shows persistent negative expectancy in stop/trend-break/low-break exits.",
-            "- Q8 shadow sample is not too small; the missing piece is disciplined promotion review by blocker, lane, and market rail.",
-            "- Continue using 2026-05-26 onward for shadow blocker evidence, and 2026-06-02 onward for rail-aware evaluation.",
+            "- Q8 shadow raw sample size alone is not promotion evidence.",
+            "- Promotion review requires trusted same-day forward outcomes, canonical dedupe, and evaluation_trust_gate.promotion_allowed=true.",
+            "- Historical reports generated before the trust gate are legacy observation material, not policy-promotion evidence.",
             "",
         ]
     )

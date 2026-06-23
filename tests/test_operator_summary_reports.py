@@ -626,7 +626,7 @@ def test_operator_daily_summary_counts_recovered_partial_sell_as_realized_exit(t
     assert metrics["return_sample_count"] == 0
     assert metrics["realized_exit_count"] == 1
     assert metrics["recovered_partial_exit_count"] == 1
-    assert metrics["carryover_exit_count"] == 1
+    assert metrics["carryover_exit_count"] == 0
     assert metrics["realized_exit_return_sample_count"] == 1
     assert metrics["realized_exit_win_count"] == 1
     assert metrics["realized_exit_loss_count"] == 0

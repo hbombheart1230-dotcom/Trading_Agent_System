@@ -67,6 +67,10 @@ Minimum eligibility requirements:
 - comparison baseline is defined before promotion
 - sample size is documented
 - live trades and shadow observations are separated
+- shadow forward outcomes are trusted same-day observations, not stale
+  cross-day or delayed checkpoint matches
+- duplicated shadow candidates are collapsed before performance averages are
+  used
 - observation-only fields are not treated as production behavior
 - expected benefit is larger than transaction cost and operational risk
 - downside risk and opportunity cost are measured
@@ -78,6 +82,8 @@ Suggested minimum evidence thresholds:
 | --- | --- |
 | Live closed trades | Prefer 20 or more comparable trades before strong promotion decisions |
 | Shadow observations | Prefer 50 or more comparable candidate observations for directional confidence |
+| Trusted forward observations | Prefer 100 or more deduped same-day forward observations for promotion review |
+| Candidate repeatability | Require at least 2 observed trading days before promotion |
 | News event observations | Prefer multiple event types and enough linked/unlinked candidates to compare false positives and missed opportunities |
 | Trading days | Prefer multiple market regimes or at least several live days |
 | Artifact integrity | No `BLOCKER` issues; `WATCH` issues must be documented |
@@ -133,6 +139,10 @@ Comparison rules:
 - Treat shadow results as evidence, not as final proof.
 - Compare against the actual policy active at the time.
 - Include opportunity cost when a filter blocks trades.
+- Exclude `stale_cross_day_observation` and `stale_forward_gap` checkpoints
+  from promotion calculations.
+- Use deduped candidate rows for averages; raw candidate rows can be reported
+  only for volume and duplicate-rate diagnostics.
 
 ## Section 4: Promotion Decision Classes
 

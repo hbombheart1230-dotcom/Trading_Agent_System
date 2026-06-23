@@ -35,7 +35,7 @@ Source: `reports/operator_summary/weekly/2026-W21/weekly_summary.json`
 - Post-exit shadow recap refreshed 6 trades and observed all 6. EOD remains
   pending intraday. Use this as observation-only evidence.
 
-2026-06-02 Q8 close review:
+2026-06-02 Q8 close review (legacy evidence note):
 
 - Live trades: 1 closed trade, `TRD_20260602_061040_01`.
 - Realized result: -1.20%, hold 156 sec, truth-surface net.
@@ -43,9 +43,12 @@ Source: `reports/operator_summary/weekly/2026-W21/weekly_summary.json`
 - `ka10170` day trade diary: 1 row, closed symbol `061040`.
 - Trade report integrity after repair: expected 1, checked 1, missing 0,
   `broker_closed_report_open_count=0`.
-- Q8 live-trade readiness remains `hold_sample_insufficient`.
-- Q8 shadow readiness is `ready`: 1,474 candidates, 1,454 evaluated, 1,333
-  forward outcomes available.
+- Q8 live-trade readiness remained `hold_sample_insufficient`.
+- The original daily review marked Q8 shadow readiness as `ready`: 1,474
+  candidates, 1,454 evaluated, 1,333 forward outcomes available.
+- Under the 2026-06-16 Q8 Evaluation Contract, this is legacy observation
+  material unless regenerated with canonical dedupe, trusted same-day forward
+  filtering, and the Evaluation Trust Gate.
 - Cost-edge promotion candidate is already active as a monitor hard gate; do
   not re-promote it.
 - Next evaluation targets are breakout readiness, pullback maturity, and human

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from libs.reporting.quant_shadow_candidate_evaluation import (
+    _augment_missing_q9_commander_candidate,
     build_quant_shadow_candidate_evaluation,
     load_quant_shadow_candidate_payloads,
     render_quant_shadow_candidate_evaluation_lines,
@@ -13,6 +14,35 @@ from libs.reporting.quant_shadow_candidate_evaluation import (
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def test_q9_loader_backfills_missing_commander_row_from_daily_window() -> None:
+    payload = {
+        "q9_decision_id": "D1",
+        "q9_decision_candidates": [
+            {
+                "symbol": "005930",
+                "q9_decision_role": "B_STRATEGIST_RANKED",
+                "shadow_forward_base": {"baseline_price": 70000},
+            }
+        ],
+    }
+    windows = {
+        "D1": {
+            "commander_final": {
+                "candidate_symbol": "005930",
+                "decision": "reject",
+                "no_trade": True,
+            }
+        }
+    }
+
+    result = _augment_missing_q9_commander_candidate(payload, windows_by_id=windows)
+    commander = result["q9_decision_candidates"][-1]
+
+    assert commander["q9_decision_role"] == "C_COMMANDER_FINAL"
+    assert commander["q9_commander_no_trade"] is True
+    assert commander["shadow_forward_base"]["baseline_price"] == 70000
 
 
 def test_quant_shadow_candidate_evaluation_counts_roles_and_blockers() -> None:
@@ -310,3 +340,31 @@ def test_load_quant_shadow_candidate_payloads_uses_reports_sibling_data_logs(tmp
 
     assert len(payloads) == 1
     assert payloads[0]["candidates"][0]["symbol"] == "005930"
+
+
+def test_quant_shadow_candidate_evaluation_reports_deduped_candidate_count() -> None:
+    row = {
+        "symbol": "005930",
+        "shadow_role": "top_pick",
+        "reason": "volume_confirmation_missing",
+        "shadow_forward_base": {
+            "available": True,
+            "baseline_epoch": 1780876980,
+            "baseline_price": 298500,
+            "baseline_raw_ts": "20260608090300",
+        },
+        "entry_lane_observation": {
+            "primary_lane": "volume_confirmation",
+            "subtype": "dead_volume",
+        },
+    }
+    payload = {"generated_at": "2026-06-08T00:03:00+00:00", "candidates": [dict(row), dict(row)]}
+
+    evaluation = build_quant_shadow_candidate_evaluation([payload])
+    lines = "\n".join(render_quant_shadow_candidate_evaluation_lines(evaluation))
+
+    assert evaluation["candidate_count"] == 2
+    assert evaluation["deduped_candidate_count"] == 1
+    assert evaluation["duplicate_candidate_count"] == 1
+    assert "deduped 1" in lines
+    assert "duplicates 1" in lines

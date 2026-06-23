@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
+import time
+from pathlib import Path
 
 from libs.core.symbols import normalize_symbol
 from libs.read.portfolio_reader import PortfolioReader
@@ -222,6 +225,62 @@ def _reader_positions_authoritative(*, mock_mode: bool, execution_mode: str, rea
     return str(execution_mode or "").strip().lower() == "real"
 
 
+def _recent_buy_guard_path() -> Path:
+    return Path(
+        str(
+            os.getenv(
+                "EXECUTION_RECENT_BUY_GUARD_PATH",
+                "data/state/execution_recent_buy_guard.json",
+            )
+            or "data/state/execution_recent_buy_guard.json"
+        )
+    )
+
+
+def _active_recent_buy_symbols(*, now_epoch: int | None = None) -> set[str]:
+    path = _recent_buy_guard_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    orders = payload.get("orders") if isinstance(payload, dict) else {}
+    if not isinstance(orders, dict):
+        return set()
+    now_value = int(now_epoch if now_epoch is not None else time.time())
+    grace_sec = max(
+        0,
+        _safe_int(os.getenv("BROKER_POSITION_SETTLEMENT_GRACE_SEC", "180"), 180),
+    )
+    symbols: set[str] = set()
+    for key, raw in orders.items():
+        row = raw if isinstance(raw, dict) else {}
+        symbol = normalize_symbol(row.get("symbol") or key)
+        last_buy_epoch = _safe_int(row.get("last_buy_epoch"), 0)
+        if (
+            symbol
+            and grace_sec > 0
+            and last_buy_epoch > 0
+            and 0 <= now_value - last_buy_epoch <= grace_sec
+        ):
+            symbols.add(symbol)
+    return symbols
+
+
+def _should_hold_recent_buy_settlement(
+    *,
+    snapshot_positions: list[dict],
+    persisted_positions: list[dict],
+) -> bool:
+    if snapshot_positions or not persisted_positions:
+        return False
+    persisted_symbols = {
+        normalize_symbol(row.get("symbol"))
+        for row in persisted_positions
+        if isinstance(row, dict) and normalize_symbol(row.get("symbol"))
+    }
+    return bool(persisted_symbols & _active_recent_buy_symbols())
+
+
 def _resolve_execution_mode() -> str:
     mode = str(os.getenv("EXECUTION_MODE", "") or "").strip().lower()
     if mode in ("mock", "real"):
@@ -311,10 +370,19 @@ def build_portfolio_snapshot(state: dict) -> dict:
         # authoritative even when empty. This keeps local state aligned when an
         # operator manually exits or when local mock ledger drifts.
         if reader_authoritative:
+            settlement_grace = _should_hold_recent_buy_settlement(
+                snapshot_positions=snapshot_positions,
+                persisted_positions=persisted_positions,
+            )
+            health["recent_buy_settlement_grace_applied"] = bool(settlement_grace)
+            if settlement_grace:
+                snapshot_positions = list(persisted_positions)
             snapshot_positions = _merge_position_metadata(snapshot_positions, persisted_positions)
             snapshot["positions"] = snapshot_positions
             health["positions_source"] = (
-                "reader_positions_authoritative"
+                "persisted_recent_buy_settlement_grace"
+                if settlement_grace
+                else "reader_positions_authoritative"
                 if snapshot_positions
                 else "reader_positions_authoritative_empty"
             )
@@ -323,9 +391,17 @@ def build_portfolio_snapshot(state: dict) -> dict:
                     persisted["mock_positions"] = list(snapshot_positions)
                     persisted["open_positions"] = len(snapshot_positions)
                     persisted["mock_position_desync_reconciled"] = True
-                    persisted["portfolio_reconcile_reason"] = "reader_positions_authoritative"
+                    persisted["portfolio_reconcile_reason"] = (
+                        "recent_buy_settlement_grace"
+                        if settlement_grace
+                        else "reader_positions_authoritative"
+                    )
                 health["reconciliation_applied"] = True
-                health["reconciliation_status"] = "reconciled_to_reader"
+                health["reconciliation_status"] = (
+                    "recent_buy_settlement_grace"
+                    if settlement_grace
+                    else "reconciled_to_reader"
+                )
             else:
                 health["reconciliation_status"] = "reader_aligned"
             if isinstance(persisted, dict):

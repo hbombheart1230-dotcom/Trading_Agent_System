@@ -4,6 +4,11 @@ Purpose: record the end-of-day Q8 evidence review for 2026-06-04, including
 live trade scarcity, shadow candidate evidence, post-exit tracking, and closeout
 artifact reliability.
 
+> Legacy evidence warning: this report predates the 2026-06-16 Q8 Evaluation
+> Contract. Treat ready/review labels here as observation history only unless
+> regenerated with canonical dedupe, trusted same-day forward outcomes, and the
+> Evaluation Trust Gate.
+
 This review is documentation only. It does not change entry logic, exit logic,
 scanner ranking, monitor guards, Strategist prompts, or execution behavior.
 

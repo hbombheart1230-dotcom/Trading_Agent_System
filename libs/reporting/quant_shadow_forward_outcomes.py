@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 
+from libs.reporting.q8_evaluation_contract import FORWARD_MAX_OBSERVATION_DELAY_SEC
+
 
 CHECKPOINT_MINUTES = (3, 5, 15, 30, 60)
+KST = timezone(timedelta(hours=9))
 
 
 def _to_float(value: Any, default: float | None = None) -> float | None:
@@ -47,6 +50,33 @@ def _parse_epoch(value: Any) -> int:
         return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
     except Exception:
         return 0
+
+
+def _parse_raw_ts_epoch(value: Any) -> int:
+    text = _text(value)
+    if len(text) >= 14 and text[:14].isdigit():
+        try:
+            return int(datetime.strptime(text[:14], "%Y%m%d%H%M%S").replace(tzinfo=KST).timestamp())
+        except Exception:
+            return 0
+    return _parse_epoch(text)
+
+
+def _kst_day_from_epoch(value: Any) -> str:
+    epoch = _to_int(value, 0)
+    if epoch <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(epoch, tz=KST).strftime("%Y%m%d")
+    except Exception:
+        return ""
+
+
+def _row_day(row: Mapping[str, Any]) -> str:
+    raw_ts = _text(row.get("raw_ts"))
+    if len(raw_ts) >= 8 and raw_ts[:8].isdigit():
+        return raw_ts[:8]
+    return _kst_day_from_epoch(row.get("ts"))
 
 
 def _normalize_rows(value: Any) -> list[Dict[str, Any]]:
@@ -138,12 +168,45 @@ def attach_forward_outcomes(
             continue
         checkpoints: Dict[str, Any] = {}
         observed = 0
+        base_day = _row_day({"ts": base_epoch, "raw_ts": base.get("baseline_raw_ts") if isinstance(base, Mapping) else ""})
+        same_day_rows = [r for r in minute_rows if not base_day or _row_day(r) == base_day]
         for minutes in CHECKPOINT_MINUTES:
             target = int(base_epoch + minutes * 60)
-            future = [r for r in minute_rows if int(r.get("ts") or 0) >= base_epoch and int(r.get("ts") or 0) <= target]
-            target_row = next((r for r in minute_rows if int(r.get("ts") or 0) >= target), None)
+            future = [
+                r
+                for r in same_day_rows
+                if int(r.get("ts") or 0) >= base_epoch and int(r.get("ts") or 0) <= target
+            ]
+            target_row = next((r for r in same_day_rows if int(r.get("ts") or 0) >= target), None)
             if target_row is None:
-                checkpoints[f"+{minutes}m"] = {"status": "pending"}
+                stale_row = next((r for r in minute_rows if int(r.get("ts") or 0) >= target), None)
+                stale_day = _row_day(stale_row) if isinstance(stale_row, Mapping) else ""
+                if stale_row is not None and base_day and stale_day and stale_day != base_day:
+                    checkpoints[f"+{minutes}m"] = {
+                        "status": "stale",
+                        "reason": "stale_cross_day_observation",
+                        "base_day": base_day,
+                        "observed_day": stale_day,
+                        "target_epoch": target,
+                        "observed_epoch": _parse_raw_ts_epoch(stale_row.get("raw_ts"))
+                        or _to_int(stale_row.get("ts"), 0),
+                        "observed_ts": stale_row.get("raw_ts") or stale_row.get("ts"),
+                    }
+                else:
+                    checkpoints[f"+{minutes}m"] = {"status": "pending"}
+                continue
+            observed_epoch = _parse_raw_ts_epoch(target_row.get("raw_ts")) or _to_int(target_row.get("ts"), 0)
+            delay_sec = int(observed_epoch - target) if observed_epoch > 0 else 0
+            if observed_epoch <= 0 or delay_sec > FORWARD_MAX_OBSERVATION_DELAY_SEC:
+                checkpoints[f"+{minutes}m"] = {
+                    "status": "stale",
+                    "reason": "stale_forward_gap",
+                    "target_epoch": target,
+                    "observed_epoch": observed_epoch,
+                    "delay_sec": delay_sec,
+                    "max_delay_sec": FORWARD_MAX_OBSERVATION_DELAY_SEC,
+                    "observed_ts": target_row.get("raw_ts") or target_row.get("ts"),
+                }
                 continue
             window = future or [target_row]
             close = _to_float(target_row.get("close"), base_price) or base_price

@@ -40,6 +40,11 @@ _PER_RUN_TRANSIENT_KEYS = (
     "monitor_entry_decision_detail",
     "monitor_exit_decision_detail",
     "monitor_action_decision",
+    "q9_decision_id",
+    "q9_decision_snapshot",
+    "q9_decision_snapshot_path",
+    "q9_scanner_snapshot_result",
+    "q9_commander_snapshot_result",
     # Reporting/debug mirrors should reflect the current cycle only.
     "intraday_trade_report",
     "reasoning_trace",
@@ -53,10 +58,24 @@ def _clear_per_run_transient_state(state: Dict[str, Any]) -> None:
 
 
 def _resolve_report_day(state: Dict[str, Any]) -> str:
-    for key in ("started_at", "ts", "now_iso", "tick_ts"):
-        value = str(state.get(key) or "").strip()
-        if len(value) >= 10 and value[4:5] == "-" and value[7:8] == "-":
-            return value[:10]
+    market_status = (
+        state.get("kiwoom_market_status")
+        if isinstance(state.get("kiwoom_market_status"), dict)
+        else {}
+    )
+    days = []
+    for value in (
+        state.get("started_at"),
+        state.get("ts"),
+        state.get("now_iso"),
+        state.get("tick_ts"),
+        market_status.get("received_at"),
+    ):
+        text = str(value or "").strip()
+        if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+            days.append(text[:10])
+    if days:
+        return max(days)
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
@@ -125,6 +144,12 @@ def run_m13_once(
 
     # Load persisted state first (state_store_path is read from env by node)
     state = load_state_fn(state)
+    try:
+        from libs.runtime.market_status_closeout import apply_market_status_closeout_events
+
+        state = apply_market_status_closeout_events(state)
+    except Exception as exc:
+        state["market_status_closeout_error"] = f"{type(exc).__name__}: {exc}"[:300]
     # Each tick should produce a fresh runtime/decision/report trace.
     # Keep durable config + persisted_state, but drop cycle-scoped artifacts.
     _clear_per_run_transient_state(state)

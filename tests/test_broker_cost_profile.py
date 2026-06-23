@@ -8,6 +8,7 @@ import pytest
 from libs.read.kiwoom_day_pnl_reader import _normalize_percent
 from libs.runtime.broker_cost_profile import (
     apply_broker_cost_profile_to_exit_policy,
+    build_broker_cost_profile_from_execution_details,
     update_broker_cost_profile_from_execution_details,
 )
 
@@ -77,3 +78,56 @@ def test_apply_broker_cost_profile_keeps_more_conservative_policy() -> None:
 
     assert out["round_trip_cost_floor_pct"] == pytest.approx(0.012)
     assert out["cost_aware_profit_floor_pct"] == pytest.approx(0.016)
+
+
+def test_broker_cost_profile_rejects_implausible_cumulative_fee_sample() -> None:
+    profile = build_broker_cost_profile_from_execution_details(
+        {
+            "symbol": "002870",
+            "filled_qty": 274,
+            "filled_price": 1003,
+            "broker_buy_price": 1014,
+            "broker_fee": 18209,
+            "broker_tax": 0,
+            "pnl_truth_source": "kiwoom.ka10170",
+        },
+        previous={"conservative_round_trip_cost_pct": 0.009},
+    )
+
+    assert profile == {}
+
+
+def test_broker_cost_profile_does_not_keep_stale_historical_maximum() -> None:
+    profile = build_broker_cost_profile_from_execution_details(
+        {
+            "symbol": "097780",
+            "filled_qty": 1000,
+            "filled_price": 1320,
+            "broker_buy_price": 1334,
+            "broker_fee": 11907,
+            "broker_tax": 0,
+            "pnl_truth_source": "kiwoom.ka10170",
+        },
+        previous={
+            "sample_count": 120,
+            "ema_round_trip_cost_pct": 0.008325,
+            "conservative_round_trip_cost_pct": 0.06553866309621503,
+        },
+    )
+
+    assert profile["conservative_round_trip_cost_pct"] < 0.011
+    assert profile["conservative_round_trip_cost_pct"] > profile["last_round_trip_cost_pct"]
+
+
+def test_apply_broker_cost_profile_replaces_invalid_stale_policy_floor() -> None:
+    out = apply_broker_cost_profile_to_exit_policy(
+        {
+            "round_trip_cost_floor_pct": 0.06553866309621503,
+            "min_net_profit_buffer_pct": 0.003,
+            "cost_aware_profit_floor_pct": 0.06853866309621503,
+        },
+        profile={"conservative_round_trip_cost_pct": 0.0098},
+    )
+
+    assert out["round_trip_cost_floor_pct"] == pytest.approx(0.0098)
+    assert out["cost_aware_profit_floor_pct"] == pytest.approx(0.0128)

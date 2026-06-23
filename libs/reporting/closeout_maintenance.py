@@ -8,6 +8,8 @@ from libs.agent.reporter import Reporter
 from libs.performance.strategy_memory import sync_strategy_memory_artifacts
 from libs.read.kiwoom_account_snapshot_collector import save_kiwoom_account_snapshot
 from libs.reporting.broker_closed_trade_reconciler import reconcile_broker_closed_trade_reports
+from libs.reporting.carryover_exit_reconciler import reconcile_carryover_exit_reports
+from libs.reporting.closeout_residual_positions import reconcile_closeout_residual_positions
 from libs.reporting.operator_period_summary import generate_operator_daily_summary_artifact
 from libs.reporting.post_exit_shadow_recap import generate_post_exit_shadow_recap, resolve_post_exit_state_path
 from libs.reporting.q8_shadow_blocker_review import generate_q8_shadow_blocker_review
@@ -53,13 +55,63 @@ def run_closeout_maintenance(
                 "latest_path": snapshot.get("latest_path"),
                 "summary": dict(snapshot.get("summary") or {}),
             }
+            try:
+                carryover = reconcile_carryover_exit_reports(
+                    reports_root=reports_root,
+                    day=normalized_day,
+                    snapshot=snapshot,
+                )
+                out["steps"]["carryover_exit_reconciliation"] = {
+                    "ok": bool(carryover.get("ok")),
+                    "patched_count": carryover.get("patched_count"),
+                    "patched": list(carryover.get("patched") or [])[:20],
+                    "skipped": list(carryover.get("skipped") or [])[:20],
+                }
+            except Exception as carryover_exc:
+                out["steps"]["carryover_exit_reconciliation"] = {
+                    "ok": False,
+                    "error": str(carryover_exc),
+                }
+            try:
+                residual_state_path = state_path or Path("data/state.json")
+                residual = reconcile_closeout_residual_positions(
+                    reports_root=reports_root,
+                    day=normalized_day,
+                    snapshot=snapshot,
+                    state_path=residual_state_path,
+                    trigger=str(trigger or "closeout_maintenance"),
+                )
+                out["steps"]["closeout_residual_position_reconciliation"] = {
+                    "ok": bool(residual.get("ok")),
+                    "position_count": residual.get("position_count"),
+                    "unresolved_symbols": list(residual.get("unresolved_symbols") or []),
+                    "requires_next_open_flatten": bool(residual.get("requires_next_open_flatten")),
+                    "snapshot_path": residual.get("snapshot_path"),
+                    "lifecycle_backfill": dict(residual.get("lifecycle_backfill") or {}),
+                    "state_reconciliation": dict(residual.get("state_reconciliation") or {}),
+                }
+            except Exception as residual_exc:
+                out["steps"]["closeout_residual_position_reconciliation"] = {
+                    "ok": False,
+                    "error": str(residual_exc),
+                }
         except Exception as exc:
             out["steps"]["account_snapshot"] = {
                 "ok": False,
                 "error": str(exc),
             }
+            out["steps"]["closeout_residual_position_reconciliation"] = {
+                "ok": False,
+                "error": "account_snapshot_failed",
+            }
+            out["steps"]["carryover_exit_reconciliation"] = {
+                "ok": False,
+                "error": "account_snapshot_failed",
+            }
     else:
         out["steps"]["account_snapshot"] = {"ok": True, "skipped": True}
+        out["steps"]["closeout_residual_position_reconciliation"] = {"ok": True, "skipped": True}
+        out["steps"]["carryover_exit_reconciliation"] = {"ok": True, "skipped": True}
 
     try:
         reconciliation = reconcile_broker_closed_trade_reports(reports_root=reports_root, day=normalized_day)

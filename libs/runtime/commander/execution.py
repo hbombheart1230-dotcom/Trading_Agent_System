@@ -78,6 +78,17 @@ def run_monitor_decision_path(
     state = monitor_node_fn(state)
     shadow_runtime["monitor_decision"] = str(((state.get("monitor_output") or {}).get("intent_side") or "NOOP"))
     state = decision_node_fn(state)
+    try:
+        from libs.runtime.q9_decision_snapshots import capture_commander_decision_snapshot
+        from libs.runtime.quant.shadow_candidates import sync_q9_decision_candidates_for_state
+
+        state["q9_commander_snapshot_result"] = capture_commander_decision_snapshot(state)
+        state["q9_shadow_sync_result"] = sync_q9_decision_candidates_for_state(state)
+    except Exception as exc:
+        state["q9_commander_snapshot_result"] = {
+            "status": "error",
+            "reason": f"{type(exc).__name__}: {exc}"[:300],
+        }
     state, execution_meta = execute_approved_monitor_decision(
         state,
         execute_fn=execute_fn,

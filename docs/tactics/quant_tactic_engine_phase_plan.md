@@ -101,11 +101,14 @@ Last updated: 2026-05-27
   - Operator daily/weekly/monthly/symbol summaries now surface Q8 shadow
     candidate counts, roles, reasons, tactic IDs, suitability tiers, cost-floor
     states, and failure axes.
-  - Operator summaries expose a Q8 promotion candidate among cost-edge,
-    runner-up, and entry-guard based on shadow candidate blocker counts.
-    If the candidate is already enforced in live runtime, the summary must
-    show `already_promoted_monitor_hard_gate` instead of recommending a
-    duplicate promotion.
+  - Operator summaries expose Q8 shadow candidate counts, but blocker counts
+    alone are not promotion evidence.
+  - Promotion review requires the Q8 Evaluation Contract:
+    canonical dedupe, trusted same-day forward outcomes, and
+    `evaluation_trust_gate.promotion_allowed=true`.
+  - If a candidate is already enforced in live runtime, the summary must show
+    `already_promoted_monitor_hard_gate` instead of recommending a duplicate
+    promotion.
   - Added observation-only `opening_momentum_probe_shadow` so strong opening
     momentum opportunities can be evaluated without changing live buy behavior.
   - Added observation-only `opening_largecap_surge_shadow` for the 09:00-09:20
@@ -568,8 +571,9 @@ Validation scope:
 
 Rules:
 
-- Q8 may promote deterministic pre-entry guards when `shadow_readiness` is
-  ready and the fields are known before order placement.
+- Q8 may promote deterministic pre-entry guards only when the Q8 Evaluation
+  Contract passes: trusted same-day forward outcomes, canonical dedupe, and
+  `evaluation_trust_gate.promotion_allowed=true`.
 - Q8 may promote lane downweighting when actual trade evidence and/or
   forward-labeled shadow outcomes identify one clear loss cluster.
 - Q8 must not promote long-horizon unlock without post-exit/forward outcome

@@ -13,9 +13,42 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 
 
 def build_candidate_ranking_table_payload(ranking_table: List[Dict[str, Any]]) -> Dict[str, Any]:
+    reconstructed_pre_adjust = sorted(
+        [dict(row) for row in ranking_table if isinstance(row, dict)],
+        key=lambda row: (
+            -_to_float(row.get("pre_adjust_score_total")),
+            -_to_float(row.get("confidence")),
+            _to_float(row.get("risk_score")),
+        ),
+    )
+    for index, row in enumerate(reconstructed_pre_adjust, start=1):
+        row["rank"] = index
+    intrinsic_control = sorted(
+        [dict(row) for row in ranking_table if isinstance(row, dict)],
+        key=lambda row: (
+            -_to_float(row.get("scanner_intrinsic_control_score_total")),
+            -_to_float(row.get("confidence")),
+            _to_float(row.get("risk_score")),
+        ),
+    )
+    for index, row in enumerate(intrinsic_control, start=1):
+        row["rank"] = index
     return {
         "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
         "rows": ranking_table,
+        "post_strategist_top10": list(ranking_table[:10]),
+        "reconstructed_pre_adjust_top10": reconstructed_pre_adjust[:10],
+        "reconstructed_pre_adjust_evidence_class": "RECONSTRUCTED",
+        "reconstructed_pre_adjust_limitation": (
+            "same candidate universe with score overlays removed; candidate sourcing may already "
+            "contain Strategist influence and is not a raw Scanner control"
+        ),
+        "scanner_intrinsic_control_top10": intrinsic_control[:10],
+        "scanner_intrinsic_control_source": "same_candidate_universe_ranking_only",
+        "scanner_intrinsic_control_evidence_class": "TRUSTED_SHADOW",
+        "scanner_intrinsic_control_limitation": (
+            "candidate sourcing may already reflect Strategist guidance; ranking weights are isolated"
+        ),
     }
 
 

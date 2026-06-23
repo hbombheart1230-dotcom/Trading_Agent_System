@@ -2,6 +2,19 @@
 
 This folder is the operator-facing baseline for tactical trading changes.
 
+## Evaluation Status
+
+Q8 tactical validation is closed. The current evaluation authority is:
+
+```text
+docs/evaluation/current_operating_baseline.md
+docs/evaluation/q8_closure_lock.md
+```
+
+Documents in this folder remain authoritative for tactic definitions,
+historical rationale, and Q8 evidence interpretation. They do not reopen Q8 or
+define the active Q9 work queue.
+
 Use it before changing runtime strategy, scanner selection, monitor entry/exit,
 cache routing, or reporting rules. Daily patch notes record what changed; this
 folder records what the system is trying to optimize and which rules are
@@ -38,6 +51,9 @@ allowed to change behavior.
 - `q8_shadow_evaluation_operating_plan.md`: daily operating plan for reviewing
   Q8 shadow data, blocked candidates, missed opportunities, and promotion
   candidates.
+- `q8_evaluation_contract.md`: canonical Q8 evaluation contract. It fixes the
+  dedupe key, trusted forward outcome definition, trust gate thresholds, and
+  change-control rule for Q8 promotion evidence.
 - `q8_entry_lane_observation_plan.md`: observation-only plan for splitting all
   major entry lanes into measurable subtypes before any additional behavior
   promotion.
@@ -75,7 +91,12 @@ Q8 Tactical Validation
 - Q8 validates tactical behavior: cost floor, pullback quality, runner-up
   review, shadow candidates, and quant tactic selection.
 - Q8 Shadow Evaluation determines whether blocked candidates were correctly
-  blocked or became missed opportunities.
+  blocked or became missed opportunities. Promotion review must use trusted
+  same-day forward outcomes and deduped candidates only; stale cross-day
+  checkpoints are evidence defects, not performance data.
+- Q8 Evaluation Contract is the authority for dedupe, trusted forward, trust
+  gate, and promotion eligibility. If another Q8 document conflicts with the
+  contract, the contract wins.
 - Market Regime Rail Observation connects global/domestic market context to
   measurable Strategist-selected rails without replacing the LLM Strategist.
   KOSPI200 and KRX KOSPI200 night futures are pre-open/regular-session context
@@ -101,6 +122,7 @@ In short:
 - Validation determines whether observations are trustworthy.
 - Evaluation determines whether observations are useful.
 - Promotion determines whether observations become policy.
+- Trust Gate determines whether Q8 evidence is eligible for promotion review.
 
 ## Update Rule
 
@@ -120,42 +142,24 @@ Do not use this folder for broad refactor notes. Keep refactor progress in
 
 Latest completed review:
 
-- 2026-06-08 post-close reconciliation and risk-off review
+- `docs/evaluation/q8_final_comprehensive_review_2026-06-20.md`
 
 Current conclusions:
 
-- Artifact integrity is now the first gate. Broker truth, lifecycle truth, and
-  report truth must align before tactic conclusions are considered.
-- `broker_closed_report_open_count` must remain 0 after close. Any non-zero
-  value is a Q8 blocker until repaired.
-- Cost-edge/cost-floor is already promoted as a monitor hard gate. Do not
-  re-promote it.
-- VWAP pullback quality gate remains promoted and should continue to be
-  measured for missed opportunity cost.
-- `risk_off_defensive_observe_no_entry_policy` is promoted as a narrow monitor
-  hard gate: when the market rail is risk-off and the selected tactic is
-  `defensive_observe`, a triggered BUY is blocked unless Commander records an
-  explicit risk-off exception override. This prevents observe/no-trade posture
-  from becoming a live entry tactic.
-- `below_vwap_reclaim_not_ready` is the next over-blocking review target.
-  The blocker is retained, but Q8 now separates true below-VWAP failures from
-  near-reclaim, reclaim-in-progress, and post-reclaim pullback candidates.
-- `below_vwap_reclaim_classifier_v2` is observation-only and further splits
-  below-VWAP cases into deep failure, ordinary failure, shallow rebound,
-  index/large-cap rebound, near-reclaim, and confirmed post-reclaim pullback.
-- Pullback maturity, volume confirmation, breakout readiness, opening momentum,
-  largecap surge, runner-up selection, human chart sanity, and cost-edge states
-  are now split into observation-only `entry_lane_observation` lanes. This is
-  evidence collection only, not a new entry rule.
-- The next 3 to 5 live sessions should be reviewed by lane/subtype/time bucket
-  before promoting another behavior change.
-- Post-exit EOD tracking must remain complete after closeout; the 2026-06-04
-  recap repaired EOD from pending to observed through fresh minute fetch.
-- Market regime rails remain observation-only until their evidence is attached
-  to Q8/shadow outcomes.
-- News event intelligence is observation-only. It may help the Strategist
-  explain event/theme/symbol watch relationships, but it must not bypass
-  scanner, monitor, Commander, cost, volume, or risk gates.
+- Q8 is closed with no new tactic promoted.
+- Q8 must not be reopened for opening overshoot, isolated winners, weak live
+  performance, or missing Q9 attribution. Similar future research requires a
+  new contract and does not alter the historical Q8 decision.
+- Broad VWAP reclaim, pullback-quality, and opening-momentum relaxations were
+  rejected.
+- Automatic runner-up substitution remains prohibited.
+- Existing Q8 shadow collection may continue only as an evidence source for
+  Q9.
+- Q9 must complete Scanner A -> Strategist B -> Commander C decision-window
+  linkage before claiming Strategist or Commander value.
+- There is no active instruction to restart a generic 3-to-5-day Q8
+  observation window.
+- No behavior change is authorized without a separate promotion review.
 
 ## Validation Boundary
 

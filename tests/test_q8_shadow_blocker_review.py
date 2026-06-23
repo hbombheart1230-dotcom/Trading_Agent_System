@@ -68,7 +68,11 @@ def test_q8_shadow_blocker_review_groups_forward_outcomes() -> None:
     assert groups["breakout_not_ready"]["candidate_count"] == 1
     assert groups["breakout_not_ready"]["observed_count"] == 1
     assert groups["breakout_not_ready"]["missed_opportunity_count"] == 1
-    assert groups["breakout_not_ready"]["decision"] == "adjust_and_retest"
+    assert review["dedupe_key"] == ["day", "symbol", "baseline_epoch", "entry_lane_subtype"]
+    assert review["promotion_allowed"] is False
+    assert groups["breakout_not_ready"]["raw_decision"] == "adjust_and_retest"
+    assert groups["breakout_not_ready"]["decision"] == "retain_under_observation"
+    assert groups["breakout_not_ready"]["decision_blocked_by_trust_gate"] is True
     assert groups["volume_confirmation_missing"]["candidate_count"] == 1
     assert groups["volume_confirmation_missing"]["adverse_count"] == 1
     assert groups["volume_confirmation_missing"]["decision"] == "retain_under_observation"

@@ -979,6 +979,14 @@ def build_daily_trade_index(reports_root: Path, day: str) -> List[Dict[str, Any]
                 "exit_reason": _clean_symbol_reason(summary.get("exit_reason_human"), axis="exit"),
             }
         )
+    carryover_index = _read_json(resolve_trade_day_root(reports_root, target_day) / "carryover_exit_index.json")
+    for item in list(carryover_index.get("rows") or []):
+        if not isinstance(item, dict):
+            continue
+        trade_id = str(item.get("trade_id") or "").strip()
+        if trade_id and any(str(row.get("trade_id") or "") == trade_id for row in out):
+            continue
+        out.append(dict(item))
     out.sort(key=lambda row: (str(row.get("symbol") or ""), str(row.get("trade_id") or "")))
     return out
 

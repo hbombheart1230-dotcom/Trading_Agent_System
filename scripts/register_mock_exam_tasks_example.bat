@@ -27,7 +27,7 @@ if not exist "%CLOSEOUT_BAT%" (
 set "TASK_PREFIX=TradingAgent-MockExamDay"
 set "DAYS=MON,TUE,WED,THU,FRI"
 
-schtasks /Create /TN "%TASK_PREFIX%-Preopen" /SC WEEKLY /D %DAYS% /ST 08:55 /TR "\"%PREOPEN_BAT%\"" /RL LIMITED /F
+schtasks /Create /TN "%TASK_PREFIX%-Preopen" /SC WEEKLY /D %DAYS% /ST 08:50 /TR "\"%PREOPEN_BAT%\"" /RL LIMITED /F
 if errorlevel 1 exit /b %errorlevel%
 
 schtasks /Create /TN "%TASK_PREFIX%-Session" /SC WEEKLY /D %DAYS% /ST 09:00 /TR "\"%SESSION_BAT%\"" /RL LIMITED /F

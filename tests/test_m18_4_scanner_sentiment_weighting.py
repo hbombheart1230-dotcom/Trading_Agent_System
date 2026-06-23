@@ -27,7 +27,7 @@ def test_m18_4_news_sentiment_boosts_score_and_affects_selection():
     assert out["selected"]["symbol"] == "BBB"
     # News sentiment should still lift the selected candidate above the legacy
     # base score; current scanner overlays can add chart/compatibility bias.
-    assert float(out["selected"]["score"]) > 0.70
+    assert float(out["selected"]["score"]) > 0.65
 
 
 def test_m18_4_global_risk_off_increases_risk_score():

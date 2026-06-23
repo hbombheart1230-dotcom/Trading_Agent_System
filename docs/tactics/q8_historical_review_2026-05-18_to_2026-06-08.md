@@ -1,5 +1,10 @@
 ﻿# Q8 Historical Review: 2026-05-18 to 2026-06-08
 
+> Legacy evidence warning: this report was generated before the 2026-06-16 Q8
+> Evaluation Contract. Use it as observation history only unless regenerated
+> with canonical dedupe, trusted same-day forward outcomes, and
+> `evaluation_trust_gate.promotion_allowed=true`.
+
 Purpose: reuse prior live and shadow evidence without mixing incompatible artifact eras.
 
 This review is evaluation-only. It does not change entry, exit, scanner, Strategist, or execution behavior.
@@ -161,5 +166,5 @@ This review is evaluation-only. It does not change entry, exit, scanner, Strateg
 
 - Prior data is useful, but it must be sliced by artifact era.
 - Live trade PnL already shows persistent negative expectancy in stop/trend-break/low-break exits.
-- Q8 shadow sample is not too small; the missing piece is disciplined promotion review by blocker, lane, and market rail.
+- Q8 raw shadow sample size alone is not promotion evidence under the 2026-06-16 Q8 Evaluation Contract.
 - Continue using 2026-05-26 onward for shadow blocker evidence, and 2026-06-02 onward for rail-aware evaluation.

@@ -5,12 +5,27 @@ import json
 from libs.runtime.quant.shadow_candidates import (
     build_quant_shadow_candidate_payload,
     save_quant_shadow_candidate_payload,
+    sync_q9_decision_candidates_for_state,
 )
 
 
 def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() -> None:
     state = {
         "run_id": "run-1",
+        "q9_decision_id": "Q9_20260524_run-1",
+        "q9_decision_snapshot": {
+            "decision_id": "Q9_20260524_run-1",
+            "scanner_control": {
+                "top10": [{"symbol": "000660", "rank": 1}],
+            },
+            "strategist_selection": {
+                "post_strategist_top10": [{"symbol": "005930", "rank": 1}],
+            },
+            "commander_final": {
+                "selected_symbol": "005930",
+                "decision": "approve",
+            },
+        },
         "trade_day": "2026-05-24",
         "tick_ts": 1779581400,
         "selected": {
@@ -81,6 +96,7 @@ def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() 
 
     assert payload["schema_version"] == "quant_shadow_candidates.v1"
     assert payload["behavior_effect"] == "observation_only"
+    assert payload["q9_decision_id"] == "Q9_20260524_run-1"
     assert payload["summary"]["candidate_count"] == 3
     assert payload["summary"]["evaluated_count"] == 2
     assert payload["summary"]["would_enter_count"] == 1
@@ -91,6 +107,15 @@ def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() 
         "runner_up_skipped",
     ]
     top = payload["candidates"][0]
+    assert top["q9_decision_id"] == "Q9_20260524_run-1"
+    assert {
+        row["q9_decision_role"]
+        for row in payload["q9_decision_candidates"]
+    } == {
+        "A_SCANNER_CONTROL",
+        "B_STRATEGIST_RANKED",
+        "C_COMMANDER_FINAL",
+    }
     assert top["symbol"] == "005930"
     assert top["name"] == "삼성전자"
     assert top["guard_blocked"] is True
@@ -399,3 +424,53 @@ def test_save_quant_shadow_candidate_payload_skips_empty_payload(tmp_path) -> No
 
     assert result == {"status": "skipped", "reason": "no_shadow_candidates", "candidate_count": 0}
     assert not (tmp_path / "2026-05-24").exists()
+
+
+def test_sync_q9_decision_candidates_adds_commander_without_changing_q8_rows(tmp_path) -> None:
+    payload = {
+        "run_id": "run-1",
+        "day": "2026-06-23",
+        "latest_path": str(tmp_path / "latest.json"),
+        "candidates": [{"symbol": "005930", "shadow_role": "top_pick"}],
+        "q9_decision_candidates": [
+            {"symbol": "000660", "q9_decision_role": "A_SCANNER_CONTROL"},
+        ],
+    }
+    path = tmp_path / "payload.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    state = {
+        "run_id": "run-1",
+        "trade_day": "2026-06-23",
+        "tick_ts": 1782173100,
+        "q9_decision_id": "Q9_20260623_run-1",
+        "quant_shadow_candidates": {
+            "path": str(path),
+            "latest_path": str(tmp_path / "latest.json"),
+        },
+        "q9_decision_snapshot": {
+            "decision_id": "Q9_20260623_run-1",
+            "scanner_control": {"top10": [{"symbol": "000660", "rank": 1}]},
+            "strategist_selection": {
+                "post_strategist_top10": [{"symbol": "005930", "rank": 1}],
+                "selected_symbol": "005930",
+            },
+            "commander_final": {
+                "candidate_symbol": "005930",
+                "selected_symbol": "005930",
+                "decision": "approve",
+            },
+        },
+    }
+
+    result = sync_q9_decision_candidates_for_state(state)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert result["status"] == "ok"
+    assert result["q9_role_count"] == 3
+    assert saved["candidates"] == payload["candidates"]
+    assert saved["q9_sync_status"]["status"] == "complete"
+    assert {row["q9_decision_role"] for row in saved["q9_decision_candidates"]} == {
+        "A_SCANNER_CONTROL",
+        "B_STRATEGIST_RANKED",
+        "C_COMMANDER_FINAL",
+    }

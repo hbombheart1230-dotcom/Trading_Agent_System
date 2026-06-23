@@ -1978,6 +1978,11 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         "scanner_macro_chart_fit": dict(scanner_macro_chart_fit or {}),
         "news_scanner_contribution": dict(news_scanner_contribution),
         "scanner_selection_trace": dict(scanner_selection_trace or {}),
+        "q9_decision_id": str(scanner.get("q9_decision_id") or ""),
+        "q9_decision_snapshot": dict(scanner.get("q9_decision_snapshot") or {})
+        if isinstance(scanner.get("q9_decision_snapshot"), dict)
+        else {},
+        "q9_decision_snapshot_path": str(scanner.get("q9_decision_snapshot_path") or ""),
         "summary": (
             f"Scanner selected {selected_symbol or '-'} as rank #{selected_rank or 1} out of {universe_size or 0} candidates "
             f"with score {safe_float(selected_score, 0.0):.3f} because it led on {', '.join(basis[:3])}."

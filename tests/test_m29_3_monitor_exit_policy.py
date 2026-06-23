@@ -195,7 +195,10 @@ def test_m29_3_monitor_exit_policy_cost_aware_floor_blocks_small_profit():
     assert out["monitor"]["exit_triggered"] is False
     assert out["monitor"]["exit_reason"] == "hold"
     assert out["monitor"]["cost_aware_profit_floor_blocked"] is True
-    assert out["monitor_exit"]["cost_aware_profit_floor_pct"] == pytest.approx(0.01206207723263978)
+    assert out["monitor_exit"]["cost_aware_profit_floor_pct"] == pytest.approx(
+        out["monitor_exit"]["round_trip_cost_floor_pct"]
+        + out["monitor_exit"]["min_net_profit_buffer_pct"]
+    )
     assert out["monitor_exit"]["hold_block_reason"] == "cost_aware_profit_floor_not_met"
 
 

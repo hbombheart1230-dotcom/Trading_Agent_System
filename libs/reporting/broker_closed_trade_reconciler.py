@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
+from zoneinfo import ZoneInfo
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -49,6 +51,19 @@ def _norm_symbol(value: Any) -> str:
 
 def _order_time_value(row: Mapping[str, Any]) -> str:
     return str(row.get("cntr_tm") or row.get("ord_tm") or "").strip()
+
+
+def _order_time_to_utc(day: str, value: Any) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) < 6:
+        return ""
+    try:
+        local = datetime.strptime(f"{day[:10]} {digits[:6]}", "%Y-%m-%d %H%M%S").replace(
+            tzinfo=ZoneInfo("Asia/Seoul")
+        )
+    except ValueError:
+        return ""
+    return local.astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds")
 
 
 def _side(row: Mapping[str, Any]) -> str:
@@ -196,7 +211,7 @@ def _build_truth_payload_from_day_diary(row: Mapping[str, Any], *, symbol: str) 
 
 def _find_closed_day_diary_row(rows: List[Dict[str, Any]], *, symbol: str, entry: Mapping[str, Any]) -> Dict[str, Any]:
     qty = _to_int(entry.get("qty") or entry.get("filled_qty"))
-    buy_price = _to_float(entry.get("price") or entry.get("avg_price") or entry.get("filled_price"))
+    buy_price = _to_float(entry.get("filled_price") or entry.get("avg_price") or entry.get("price"))
     matches: List[Dict[str, Any]] = []
     for row in rows:
         if _norm_symbol(row.get("stk_cd") or row.get("stk_cd_1")) != symbol:
@@ -281,7 +296,6 @@ def _patch_summary_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) ->
     out = dict(payload or {})
     trade = dict(out.get("trade") or {})
     trade.update({"status": "종결", "action": "매도"})
-    trade.update({"status": "종결", "action": "매도"})
     out["trade"] = trade
     out["truth_surface"] = {
         **dict(out.get("truth_surface") or {}),
@@ -324,6 +338,10 @@ def _patch_exit_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> Di
             "price": truth.get("sell_price"),
             "qty": truth.get("qty"),
             "filled_qty": truth.get("qty"),
+            "ts": truth.get("exit_ts"),
+            "timestamp": truth.get("exit_ts"),
+            "order_id": truth.get("sell_order_no"),
+            "summary": "Position closed using authoritative Kiwoom broker truth.",
             "reason_human": "SELL reconciled from Kiwoom day trade diary.",
             "broker_day_authoritative": True,
             "broker_realized_pnl": truth.get("pnl"),
@@ -387,7 +405,29 @@ def _patch_lifecycle_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) 
             "price_truth_source": truth.get("source"),
         }
     )
+    data_source = dict(shared.get("data_source") or {})
+    data_source.update(
+        {
+            "action": truth.get("source"),
+            "status": truth.get("source"),
+            "exit_reason": truth.get("source"),
+            "pnl": truth.get("source"),
+            "pnl_pct": truth.get("source"),
+        }
+    )
+    shared["data_source"] = data_source
     out["shared_facts"] = shared
+    nested_lifecycle = dict(out.get("lifecycle") or {})
+    nested_lifecycle.update(
+        {
+            "entry": dict(entry),
+            "exit": dict(out["exit"]),
+            "status": "closed",
+        }
+    )
+    out["lifecycle"] = nested_lifecycle
+    if isinstance(out.get("trade_lifecycle"), dict):
+        out["trade_lifecycle"] = dict(nested_lifecycle)
     out["broker_reconciliation"] = {
         "status": "closed_by_broker_day_trade_diary",
         "source": truth.get("source"),
@@ -416,13 +456,21 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
         return {"ok": False, "reason": "account_snapshot_missing", "patched_count": 0}
     orders = list(_iter_snapshot_rows(snapshot, "acnt_ord_cntr_prst_array"))
     fee_rows = list(_iter_snapshot_rows(snapshot, "cntr"))
+    fill_orders = fee_rows + orders
     day_diary_rows = _day_trade_diary_rows(snapshot)
     patched: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     day_root = reports_root / "trades" / normalized_day
-    for trade_dir in sorted(day_root.glob("*/*")):
-        if not trade_dir.is_dir() or not trade_dir.name.startswith("TRD_"):
-            continue
+    trade_dirs = [
+        path
+        for path in sorted(day_root.glob("*/*"))
+        if path.is_dir() and path.name.startswith("TRD_")
+    ]
+    symbol_trade_counts: Dict[str, int] = {}
+    for path in trade_dirs:
+        symbol = _symbol_from_trade_id(path.name)
+        symbol_trade_counts[symbol] = symbol_trade_counts.get(symbol, 0) + 1
+    for trade_dir in trade_dirs:
         report_path = trade_dir / "reports" / "ai_trade_report.json"
         summary_path = trade_dir / "reports" / "ai_trade_summary.json"
         lifecycle_path = trade_dir / "lifecycle_bundle.json"
@@ -433,14 +481,48 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             continue
         report = _read_json(report_path) if report_path.exists() else {}
         lifecycle = _read_json(lifecycle_path)
-        if str(report.get("status") or lifecycle.get("trade_lifecycle_status") or lifecycle.get("status") or "").lower() == "closed":
+        broker_reconciliation = (
+            lifecycle.get("broker_reconciliation")
+            if isinstance(lifecycle.get("broker_reconciliation"), dict)
+            else {}
+        )
+        nested_lifecycle = (
+            lifecycle.get("lifecycle")
+            if isinstance(lifecycle.get("lifecycle"), dict)
+            else {}
+        )
+        lifecycle_exit = (
+            lifecycle.get("exit")
+            if isinstance(lifecycle.get("exit"), dict)
+            else {}
+        )
+        already_authoritative_and_consistent = bool(
+            str(broker_reconciliation.get("source") or "") == "kiwoom.ka10170"
+            and str(nested_lifecycle.get("status") or "").lower() == "closed"
+            and str(lifecycle_exit.get("broker_day_truth_source") or "") == "kiwoom.ka10170"
+            and lifecycle_exit.get("timestamp")
+        )
+        if (
+            str(
+                report.get("status")
+                or lifecycle.get("trade_lifecycle_status")
+                or lifecycle.get("status")
+                or ""
+            ).lower()
+            == "closed"
+            and already_authoritative_and_consistent
+        ):
             continue
         trade_id = trade_dir.name
         symbol = _symbol_from_trade_id(trade_id)
         entry = _read_json(entry_path)
-        buy = _find_buy_order(orders, order_id=str(entry.get("order_id") or ""), symbol=symbol)
-        sell = _find_sell_after_buy(orders, buy=buy, symbol=symbol) if buy else {}
-        day_diary_row = _find_closed_day_diary_row(day_diary_rows, symbol=symbol, entry=entry)
+        buy = _find_buy_order(fill_orders, order_id=str(entry.get("order_id") or ""), symbol=symbol)
+        sell = _find_sell_after_buy(fill_orders, buy=buy, symbol=symbol) if buy else {}
+        day_diary_row = (
+            _find_closed_day_diary_row(day_diary_rows, symbol=symbol, entry=entry)
+            if symbol_trade_counts.get(symbol) == 1
+            else {}
+        )
         if day_diary_row:
             truth = _build_truth_payload_from_day_diary(day_diary_row, symbol=symbol)
             if buy and sell:
@@ -455,6 +537,7 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             if not day_diary_row:
                 skipped.append({"trade_id": trade_id, "symbol": symbol, "reason": "order_pair_or_day_diary_row_not_found"})
                 continue
+        truth["exit_ts"] = _order_time_to_utc(normalized_day, truth.get("sell_time"))
         if report_path.exists():
             _write_json(report_path, _patch_report_payload(report, truth))
         if summary_path.exists():

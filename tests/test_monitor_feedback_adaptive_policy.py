@@ -150,6 +150,53 @@ def test_commander_ignores_inactive_macro_stress_for_candidate_expansion():
     assert decision["scanner_policy"]["max_priority_rank"] == 10
 
 
+def test_commander_treats_gap_down_rail_as_risk_off_even_when_regime_neutral():
+    state = {
+        "global_signal": {"score": 0.18, "fear_index": {"level": 18.0}},
+        "strategist_output": {
+            "market_regime": "neutral",
+            "risk_mode": "balanced",
+            "market_regime_rail": "krx_night_futures_gap_down",
+            "playbook": "breakout",
+            "final_playbook": "breakout",
+            "tactical_strategy": "opening_range_breakout",
+            "candidate_watch_policy": {
+                "max_priority_rank": 10,
+                "max_runner_ups": 9,
+                "cascade_enabled": True,
+                "reason": "watch broad leaders",
+            },
+        },
+        "mock_monitor_feedback": {
+            "dominant_blocker": "too_extended_from_vwap",
+            "failure_streak": 6,
+            "near_ready_flag": True,
+            "avg_distance_to_ready": 0.82,
+        },
+    }
+
+    decision = _build_commander_decision(
+        state,
+        mode_value="integrated",
+        phase_value="session",
+        status_value="ok",
+        path_value="",
+    )
+
+    entry_control = decision["entry_control"]
+    assert decision["market_regime"] == "risk_off"
+    assert decision["market_regime_rail"] == "krx_night_futures_gap_down"
+    assert decision["market_regime_forced_by_rail"] is True
+    assert decision["risk_mode"] == "defensive"
+    assert entry_control["market_supportive"] is False
+    assert entry_control["mode"] == "risk_off_no_entry_expansion"
+    assert entry_control["max_priority_rank"] == 1
+    assert entry_control["max_runner_ups"] == 0
+    assert entry_control["cascade_enabled"] is False
+    assert decision["scanner_policy"]["max_priority_rank"] == 1
+    assert decision["scanner_policy"]["max_runner_ups"] == 0
+
+
 def test_commander_applies_strategist_candidate_watch_policy_when_present():
     state = {
         "global_signal": {"score": 0.18, "fear_index": {"level": 18.0}},

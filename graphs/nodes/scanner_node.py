@@ -2265,6 +2265,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     w = _get_scanner_weights(policy)
     practical_w = _resolve_scanner_score_weights(policy)
+    intrinsic_control_w = dict(practical_w)
     scanner_guidance = _extract_scanner_guidance(state)
     playbook = str(scanner_guidance.get("playbook") or "").strip().lower()
     scanner_bias = str(scanner_guidance.get("scanner_bias") or "").strip().lower()
@@ -2676,6 +2677,22 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             - (0.03 * open_order_penalty)
         )
         rank_bonus = 0.01 * max(0.0, candidate_rank_score)
+        intrinsic_control_positive = (
+            intrinsic_control_w["trading_value"] * trading_value_component
+            + intrinsic_control_w["momentum"] * momentum_component
+            + intrinsic_control_w["trend"] * trend_component
+            + intrinsic_control_w["volume_surge"] * volume_surge_component
+            + intrinsic_control_w["intraday_strength"] * intraday_strength_component
+            + intrinsic_control_w["sentiment"] * sentiment_component
+            + (0.06 * max(0.0, candidate_rank_score))
+            + (0.02 * _norm01(candidate_universe_score, 0.0, 10.0))
+            + (0.05 * cross_section_rank_component)
+        ) * practical_scale
+        intrinsic_control_risk = (
+            intrinsic_control_w["volatility_penalty"] * volatility_penalty
+            + intrinsic_control_w["gap_penalty"] * gap_penalty
+            + intrinsic_control_w["open_order_penalty"] * open_order_penalty
+        ) * practical_scale
         bias_result = _compute_structured_scanner_bias(
             symbol=symbol,
             feature_row=feature_row,
@@ -2758,6 +2775,18 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             current_day=_resolve_canonical_day(state),
         )
         symbol_prior_adjustment = float(symbol_prior_result.get("adjustment") or 0.0)
+        scanner_intrinsic_control_score_total = (
+            base_score
+            + intrinsic_control_positive
+            + legacy_adjust
+            - intrinsic_control_risk
+            + rank_bonus
+            - repeat_symbol_penalty
+            - repeat_blocker_penalty
+            + scanner_memory_bias_adjustment
+            + symbol_prior_adjustment
+            + etf_deviation_bias
+        )
         pre_adjust_score_total = (
             base_score
             + positive_score
@@ -2890,6 +2919,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["compatibility_trace"] = dict(compatibility_result)
         row["pre_adjust_score_total"] = float(pre_adjust_score_total)
         row["post_adjust_score_total"] = float(score_total)
+        row["scanner_intrinsic_control_score_total"] = float(
+            scanner_intrinsic_control_score_total
+        )
         row["risk_score"] = float(_clamp(adj_risk, 0.0, 1.0))
         row["confidence"] = float(adj_conf)
         row["why"] = str(candidate_meta.get("why") or row.get("why") or "")
@@ -3263,6 +3295,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "compatibility_trace": dict(r.get("compatibility_trace") or {}),
             "pre_adjust_score_total": float(_to_float(r.get("pre_adjust_score_total"))),
             "post_adjust_score_total": float(_to_float(r.get("post_adjust_score_total") or r.get("score_total") or r.get("score"))),
+            "scanner_intrinsic_control_score_total": float(
+                _to_float(r.get("scanner_intrinsic_control_score_total"))
+            ),
             "market_representative_guard_applied": bool(r.get("market_representative_guard_applied")),
             "market_representative_guard_penalty": float(_to_float(r.get("market_representative_guard_penalty"))),
             "market_representative_guard_reason": str(r.get("market_representative_guard_reason") or ""),
@@ -3828,12 +3863,24 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     candidate_ranking_table_payload = _build_candidate_ranking_table_payload(ranking_table)
     state["scanner_candidate_ranking_table"] = dict(candidate_ranking_table_payload)
+    state["scanner_output"]["scanner_intrinsic_control_top10"] = list(
+        candidate_ranking_table_payload.get("scanner_intrinsic_control_top10") or []
+    )
     _emit_scanner_event(
         state,
         name="candidate_ranking_table",
         payload=candidate_ranking_table_payload,
         symbol=str((selected or {}).get("symbol") or ""),
     )
+    try:
+        from libs.runtime.q9_decision_snapshots import capture_scanner_decision_snapshot
+
+        state["q9_scanner_snapshot_result"] = capture_scanner_decision_snapshot(state)
+    except Exception as exc:
+        state["q9_scanner_snapshot_result"] = {
+            "status": "error",
+            "reason": f"{type(exc).__name__}: {exc}"[:300],
+        }
     candidate_selection_reason_payload = _build_candidate_selection_reason_payload(
         selected=selected if isinstance(selected, dict) else None,
         selected_symbol=selected_symbol,

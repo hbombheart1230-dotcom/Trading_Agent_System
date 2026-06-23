@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from libs.core.symbols import normalize_symbol
 from libs.read.kiwoom_order_fill_reader import KiwoomOrderFillReader
 from libs.read.kiwoom_account_snapshot_collector import save_kiwoom_account_snapshot
+from libs.reporting.carryover_exit_reconciler import reconcile_carryover_exit_reports
 
 
 def _utc_now_iso() -> str:
@@ -118,6 +119,7 @@ def render_broker_alignment_markdown(report: Dict[str, Any]) -> str:
 
 def build_broker_alignment_report(events_path: Path, reports_root: Path, day: str) -> Dict[str, Any]:
     snapshot_summary: Dict[str, Any] = {}
+    snapshot: Dict[str, Any] = {}
     try:
         snapshot = save_kiwoom_account_snapshot(day=day, trigger="report_generation")
         day_trade_diary_rows = _extract_day_trade_diary_rows(snapshot)
@@ -141,6 +143,18 @@ def build_broker_alignment_report(events_path: Path, reports_root: Path, day: st
         }
     except Exception as exc:
         snapshot_summary = {"status": "error", "error": str(exc)}
+    if snapshot:
+        try:
+            snapshot_summary["carryover_exit_reconciliation"] = reconcile_carryover_exit_reports(
+                reports_root=reports_root,
+                day=day,
+                snapshot=snapshot,
+            )
+        except Exception as exc:
+            snapshot_summary["carryover_exit_reconciliation"] = {
+                "ok": False,
+                "error": str(exc),
+            }
     try:
         reader = KiwoomOrderFillReader.from_env()
         report = reader.get_daily_reconciliation_report(day=day, event_log_path=events_path)

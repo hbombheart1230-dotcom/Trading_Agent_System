@@ -1237,6 +1237,7 @@ def test_monitor_waits_when_ohlcv_series_is_daily_seed_not_minute_data(monkeypat
 def test_monitor_allows_pullback_entry_when_reclaim_structure_is_valid(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("QUANT_ENTRY_DECISION_MODE", "observe")
 
     state = {
         "plan": {"thesis": "test"},
@@ -1314,6 +1315,7 @@ def test_monitor_pullback_wait_records_failure_breakdown(monkeypatch):
 def test_monitor_pullback_with_defensive_guidance_can_still_buy_on_clean_reclaim(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("QUANT_ENTRY_DECISION_MODE", "observe")
 
     state = {
         "plan": {"thesis": "test"},
@@ -2935,6 +2937,7 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
 def test_monitor_records_wait_to_buy_transition_trace_for_reclaim_recovery(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("QUANT_ENTRY_DECISION_MODE", "observe")
 
     wait_state = {
         "plan": {"thesis": "test"},
@@ -4621,7 +4624,7 @@ def test_monitor_intraday_low_break_exit_uses_ohlcv_structure(monkeypatch):
         "cash": 2_000_000.0,
         "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
     }
-    state["ohlcv_by_symbol"] = {"005930": candles}
+    state["minute_ohlcv_by_symbol"] = {"005930": candles}
     state["policy"] = {
         "use_exit_policy": True,
         "intraday_low_break_pct": 0.001,
@@ -4631,10 +4634,10 @@ def test_monitor_intraday_low_break_exit_uses_ohlcv_structure(monkeypatch):
 
     out = monitor_node(state)
     intents = out.get("intents") or []
-    assert len(intents) == 1
-    assert intents[0]["side"] == "SELL"
+    assert intents == []
     exit_info = out.get("monitor_exit") or {}
-    assert str(exit_info.get("reason") or "") == "intraday_low_break"
+    assert str(exit_info.get("reason") or "") == "hold"
+    assert exit_info.get("vwap_breakdown_low_break_confirmed") is False
 
 
 def test_monitor_trend_breakdown_exit_uses_feature_signal(monkeypatch):

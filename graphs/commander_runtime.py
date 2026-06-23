@@ -1999,6 +1999,16 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         {
             "source": str(commander_context.get("source") or "commander_decision"),
             "market_regime": str(commander_decision.get("market_regime") or commander_context.get("market_regime") or ""),
+            "market_regime_rail": str(
+                commander_decision.get("market_regime_rail")
+                or commander_context.get("market_regime_rail")
+                or ""
+            ),
+            "market_regime_forced_by_rail": bool(
+                commander_decision.get("market_regime_forced_by_rail")
+                if commander_decision.get("market_regime_forced_by_rail") is not None
+                else commander_context.get("market_regime_forced_by_rail")
+            ),
             "session_bias": str(commander_decision.get("session_bias") or commander_context.get("session_bias") or ""),
             "risk_mode": str(commander_decision.get("risk_mode") or commander_context.get("risk_mode") or ""),
             "allowed_playbooks": list(commander_decision.get("allowed_playbooks") or commander_context.get("allowed_playbooks") or []),
@@ -2202,6 +2212,8 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "source": str(commander_context.get("source") or ""),
         "market_regime": str(commander_context.get("market_regime") or ""),
+        "market_regime_rail": str(commander_context.get("market_regime_rail") or ""),
+        "market_regime_forced_by_rail": bool(commander_context.get("market_regime_forced_by_rail")),
         "session_bias": str(commander_context.get("session_bias") or ""),
         "risk_mode": str(commander_context.get("risk_mode") or ""),
         "command_intent": str(commander_context.get("command_intent") or ""),
@@ -2347,16 +2359,26 @@ def _candidate_watch_rank_cap(
     *,
     proposal: Dict[str, Any],
     market_regime: str,
+    market_regime_rail: str = "",
     risk_mode: str,
     stress_flags: list[Any],
     resilience: Dict[str, Any],
 ) -> int:
     tactical = str(proposal.get("tactical_strategy") or "").strip().lower()
     regime = str(market_regime or "").strip().lower()
+    rail = str(market_regime_rail or "").strip().lower()
     mode = str(risk_mode or "").strip().lower()
     if mode == "blocked":
         return 1
-    if regime == "risk_off" or mode == "defensive" or bool(stress_flags) or str(resilience.get("degrade_mode") or "").strip():
+    if (
+        regime == "risk_off"
+        or "risk_off" in rail
+        or "gap_down" in rail
+        or "breadth_collapse" in rail
+        or mode == "defensive"
+        or bool(stress_flags)
+        or str(resilience.get("degrade_mode") or "").strip()
+    ):
         return 1
     if tactical == "defensive_observe":
         return 3
@@ -2409,6 +2431,7 @@ def _apply_candidate_watch_proposal_to_entry_control(
 def _build_commander_entry_control(
     *,
     market_regime: str,
+    market_regime_rail: str = "",
     risk_mode: str,
     open_position_count: int,
     preflight: Dict[str, Any],
@@ -2425,16 +2448,20 @@ def _build_commander_entry_control(
     near_ready = bool(monitor_feedback.get("near_ready_flag"))
     avg_distance = _runtime_float(monitor_feedback.get("avg_distance_to_ready"), 0.0)
     regime = str(market_regime or "").strip().lower()
+    rail = str(market_regime_rail or "").strip().lower()
     mode = str(risk_mode or "").strip().lower()
+    rail_risk_off = bool("risk_off" in rail or "gap_down" in rail or "breadth_collapse" in rail)
     market_supportive = (
         mode in {"balanced", "offensive"}
         and regime in {"", "neutral", "risk_on"}
+        and not rail_risk_off
         and not bool(stress_flags)
         and not str(resilience.get("degrade_mode") or "").strip()
         and not bool(preflight.get("blocked"))
     )
     no_entry_expansion = bool(
         regime == "risk_off"
+        or rail_risk_off
         or mode in {"defensive", "blocked"}
         or bool(stress_flags)
         or str(resilience.get("degrade_mode") or "").strip()
@@ -2458,6 +2485,7 @@ def _build_commander_entry_control(
         "mode": "baseline",
         "decision": "preserve_default_entry_scope",
         "market_regime": regime or str(market_regime or ""),
+        "market_regime_rail": rail or str(market_regime_rail or ""),
         "risk_mode": mode or str(risk_mode or ""),
         "market_supportive": bool(market_supportive),
         "dominant_blocker": blocker,
@@ -2539,6 +2567,7 @@ def _build_commander_entry_control(
         rank_cap = _candidate_watch_rank_cap(
             proposal=candidate_watch_proposal,
             market_regime=regime or str(market_regime or ""),
+            market_regime_rail=rail or str(market_regime_rail or ""),
             risk_mode=mode or str(risk_mode or ""),
             stress_flags=list(stress_flags or []),
             resilience=dict(resilience or {}),
@@ -2706,6 +2735,50 @@ def _build_commander_decision(
     max_positions = _resolve_risk_max_positions(state)
     entry_capacity_available = open_position_count < max_positions
     market_regime, strategist_fallback_used = _derive_commander_market_regime(state, shadow_assessment=shadow_assessment)
+    strategist_rail_raw = strategist_output.get("market_regime_rail")
+    strategist_rail_shadow = (
+        strategist_output.get("market_regime_rail_shadow")
+        if isinstance(strategist_output.get("market_regime_rail_shadow"), dict)
+        else {}
+    )
+    strategist_input_quality = (
+        strategist_output.get("strategist_input_quality")
+        if isinstance(strategist_output.get("strategist_input_quality"), dict)
+        else {}
+    )
+    input_quality_rail = (
+        strategist_input_quality.get("market_regime_rail")
+        if isinstance(strategist_input_quality.get("market_regime_rail"), dict)
+        else {}
+    )
+    risk_off_policy = (
+        strategist_output.get("risk_off_exception_policy")
+        if isinstance(strategist_output.get("risk_off_exception_policy"), dict)
+        else {}
+    )
+    if isinstance(strategist_rail_raw, dict):
+        market_regime_rail = str(
+            strategist_rail_raw.get("market_regime_rail")
+            or strategist_rail_raw.get("rail_id")
+            or strategist_rail_raw.get("rail")
+            or ""
+        )
+    else:
+        market_regime_rail = str(strategist_rail_raw or "")
+    market_regime_rail = str(
+        market_regime_rail
+        or strategist_rail_shadow.get("market_regime_rail")
+        or strategist_rail_shadow.get("rail_id")
+        or input_quality_rail.get("market_regime_rail")
+        or input_quality_rail.get("rail_id")
+        or risk_off_policy.get("market_regime_rail")
+        or state.get("market_regime_rail")
+        or ""
+    ).strip()
+    rail_l = market_regime_rail.lower()
+    rail_risk_off = bool("risk_off" in rail_l or "gap_down" in rail_l or "breadth_collapse" in rail_l)
+    if rail_risk_off and market_regime != "risk_off":
+        market_regime = "risk_off"
     macro_stress_overlay = (
         strategist_output.get("macro_stress_overlay")
         if isinstance(strategist_output.get("macro_stress_overlay"), dict)
@@ -2733,7 +2806,7 @@ def _build_commander_decision(
     )
     if hard_runtime_blocked:
         risk_mode = "blocked"
-    elif market_regime == "risk_off" or bool(stress_flags) or str(resilience.get("degrade_mode") or "").strip():
+    elif market_regime == "risk_off" or rail_risk_off or bool(stress_flags) or str(resilience.get("degrade_mode") or "").strip():
         risk_mode = "defensive"
     elif market_regime == "risk_on":
         risk_mode = "offensive"
@@ -3029,6 +3102,8 @@ def _build_commander_decision(
         commander_context={
             "runtime_phase": str(phase_value or ""),
             "market_regime": market_regime,
+            "market_regime_rail": market_regime_rail,
+            "market_regime_forced_by_rail": rail_risk_off,
             "session_bias": session_bias,
             "risk_mode": risk_mode,
             "strategist_refresh_requested": strategist_refresh_requested,
@@ -3246,6 +3321,7 @@ def _build_commander_decision(
     }
     entry_control = _build_commander_entry_control(
         market_regime=market_regime,
+        market_regime_rail=market_regime_rail,
         risk_mode=risk_mode,
         open_position_count=open_position_count,
         preflight=preflight,
@@ -3404,6 +3480,8 @@ def _build_commander_decision(
 
     return {
         "market_regime": market_regime,
+        "market_regime_rail": market_regime_rail,
+        "market_regime_forced_by_rail": rail_risk_off,
         "session_bias": session_bias,
         "risk_mode": risk_mode,
         "allowed_playbooks": list(allowed_playbooks),
@@ -4256,6 +4334,29 @@ def _portfolio_open_position_symbols(state: Dict[str, Any]) -> list[str]:
         seen.add(symbol)
         symbols.append(symbol)
     return symbols
+
+
+def _portfolio_open_position_row(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    target = str(symbol or "").strip().upper()
+    if not target:
+        return {}
+    snapshot = state.get("portfolio_snapshot") if isinstance(state.get("portfolio_snapshot"), dict) else {}
+    positions = snapshot.get("positions")
+    if isinstance(positions, dict):
+        rows = list(positions.values())
+    elif isinstance(positions, list):
+        rows = positions
+    else:
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("symbol") or "").strip().upper() != target:
+            continue
+        if _coerce_int(row.get("qty"), 0) <= 0:
+            continue
+        return dict(row)
+    return {}
 
 
 def _open_position_focus_sort_key(item: Dict[str, Any]) -> tuple[int, int, int, int, float, float, int, int, str]:
@@ -5121,6 +5222,39 @@ def _run_pre_entry_exit_sweep(
     decision = str(state.get("decision") or "").strip().lower()
     intent = _intent_from_monitor_state(state)
     action = str(intent.get("action") or "").strip().upper()
+    forced_closeout_exit = bool(_is_closeout_unresolved_flatten_symbol(state, focus_symbol))
+    if forced_closeout_exit and action != "SELL":
+        position_row = _portfolio_open_position_row(state, focus_symbol)
+        forced_qty = max(0, _coerce_int(position_row.get("qty"), 0))
+        market_snapshot = state.get("market_snapshot") if isinstance(state.get("market_snapshot"), dict) else {}
+        forced_price = (
+            position_row.get("current_price")
+            or position_row.get("price")
+            or position_row.get("last_price")
+            or market_snapshot.get("price")
+        )
+        if forced_qty > 0:
+            intent = {
+                "action": "SELL",
+                "side": "SELL",
+                "symbol": str(focus_symbol),
+                "qty": forced_qty,
+                "price": forced_price,
+                "order_type": "market",
+                "reason": "closeout_unresolved_flatten_required",
+                "meta": {
+                    "source": "commander_pre_entry_exit_sweep",
+                    "forced_by": "closeout_unresolved_flatten_required",
+                    "monitor_decision": monitor_decision,
+                    "decision_before_override": decision,
+                },
+            }
+            state["intents"] = [dict(intent)]
+            state["decision"] = "approve"
+            decision = "approve"
+            action = "SELL"
+            shadow_runtime["pre_entry_exit_sweep_forced_closeout_exit"] = True
+            shadow_runtime["pre_entry_exit_sweep_forced_closeout_reason"] = "closeout_unresolved_flatten_required"
     _mark_pre_entry_exit_sweep_checked(state, focus_symbol)
 
     state["commander_pre_entry_exit_sweep"] = {
@@ -5128,6 +5262,7 @@ def _run_pre_entry_exit_sweep(
         "monitor_decision": monitor_decision,
         "decision": str(decision or ""),
         "intent_action": action,
+        "forced_closeout_exit": bool(forced_closeout_exit and action == "SELL"),
     }
     if decision == "approve" and action == "SELL":
         state["decision_packet"] = _build_packet_from_state(state, intent=intent)
@@ -5213,13 +5348,38 @@ def _should_use_session_closeout_fast_path(state: Dict[str, Any]) -> Tuple[bool,
         buy_cutoff_min = max(_DEFAULT_BUY_CLOSEOUT_CUTOFF_MIN, eod_cutoff_int)
     buy_cutoff_min = max(eod_cutoff_int, buy_cutoff_min)
     market_context = _ensure_market_context_clock_fields(state)
+    market_status = (
+        state.get("kiwoom_market_status")
+        if isinstance(state.get("kiwoom_market_status"), dict)
+        else {}
+    )
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    market_status_code = str(
+        market_status.get("code")
+        or (
+            (persisted.get("kiwoom_market_status") or {}).get("code")
+            if isinstance(persisted.get("kiwoom_market_status"), dict)
+            else ""
+        )
+        or ""
+    )
+    market_closeout_notice = bool(
+        market_status_code == "2"
+        or state.get("kiwoom_closeout_notice_active")
+        or persisted.get("kiwoom_closeout_notice_active")
+    )
     raw_minutes_to_close = market_context.get("minutes_to_close")
     minutes_to_close = None if raw_minutes_to_close in (None, "") else float(_runtime_float(raw_minutes_to_close, 0.0))
     active = bool(
         _is_trueish(use_eod_flat if use_eod_flat is not None else True)
-        and minutes_to_close is not None
-        and minutes_to_close >= 0.0
-        and minutes_to_close <= float(buy_cutoff_min)
+        and (
+            market_closeout_notice
+            or (
+                minutes_to_close is not None
+                and minutes_to_close >= 0.0
+                and minutes_to_close <= float(buy_cutoff_min)
+            )
+        )
     )
     payload = {
         "active": bool(active),
@@ -5228,11 +5388,13 @@ def _should_use_session_closeout_fast_path(state: Dict[str, Any]) -> Tuple[bool,
         "buy_cutoff_min": int(buy_cutoff_min),
         "use_eod_flat": bool(_is_trueish(use_eod_flat if use_eod_flat is not None else True)),
         "open_position_count": int(_portfolio_open_position_count(state)),
-        "reason": "session_closeout_window" if active else (
+        "market_status_code": market_status_code,
+        "market_status_triggered": market_closeout_notice,
+        "reason": "kiwoom_market_closeout_notice" if market_closeout_notice else ("session_closeout_window" if active else (
             "minutes_to_close_unavailable"
             if minutes_to_close is None
             else "outside_closeout_window"
-        ),
+        )),
     }
     return bool(active), payload
 

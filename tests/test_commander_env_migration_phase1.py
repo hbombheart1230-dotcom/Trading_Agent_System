@@ -178,11 +178,11 @@ def test_commander_injects_behavior_policy_defaults_into_applied_policy(monkeypa
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("strict_mode")) is True
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("allow_legacy_rule")) is False
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("allow_legacy_strategy_v1")) is False
-    assert (((applied.get("strategist") or {}).get("memory_feedback") or {}).get("enabled")) is False
-    assert (((applied.get("strategist") or {}).get("performance_memory") or {}).get("enabled")) is False
-    assert (((applied.get("strategist") or {}).get("performance_memory") or {}).get("persist_enabled")) is False
-    assert (((applied.get("strategist") or {}).get("memory_usage") or {}).get("disabled")) is True
-    assert (((applied.get("commander") or {}).get("memory_usage") or {}).get("disabled")) is True
+    assert (((applied.get("strategist") or {}).get("memory_feedback") or {}).get("enabled")) is True
+    assert (((applied.get("strategist") or {}).get("performance_memory") or {}).get("enabled")) is True
+    assert (((applied.get("strategist") or {}).get("performance_memory") or {}).get("persist_enabled")) is True
+    assert (((applied.get("strategist") or {}).get("memory_usage") or {}).get("disabled")) is False
+    assert (((applied.get("commander") or {}).get("memory_usage") or {}).get("disabled")) is False
     assert (((applied.get("scanner") or {}).get("memory_bias") or {}).get("observation_only")) is True
     assert (((applied.get("monitor") or {}).get("memory_bias") or {}).get("observation_only")) is True
     assert (((applied.get("commander") or {}).get("route") or {}).get("post_scanner_refresh_enabled")) is True

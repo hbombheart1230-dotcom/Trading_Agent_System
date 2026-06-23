@@ -632,6 +632,78 @@ def _opening_largecap_watchlist_row(row: Mapping[str, Any], *, metric_row: Mappi
     return base
 
 
+def _q9_decision_candidate_rows(
+    state: Mapping[str, Any],
+    *,
+    now_epoch: int,
+    opening_minutes: int | None,
+) -> List[Dict[str, Any]]:
+    snapshot = _as_dict(state.get("q9_decision_snapshot"))
+    decision_id = _text(snapshot.get("decision_id") or state.get("q9_decision_id"))
+    if not decision_id:
+        return []
+    scanner_control = _as_dict(snapshot.get("scanner_control"))
+    strategist = _as_dict(snapshot.get("strategist_selection"))
+    commander = _as_dict(snapshot.get("commander_final"))
+    specifications = [
+        ("A_SCANNER_CONTROL", _as_list(scanner_control.get("top10"))),
+        ("B_STRATEGIST_RANKED", _as_list(strategist.get("post_strategist_top10"))),
+    ]
+    commander_symbol = _text(
+        commander.get("selected_symbol") or commander.get("candidate_symbol")
+    )
+    if commander_symbol:
+        specifications.append(
+            (
+                "C_COMMANDER_FINAL",
+                [{"symbol": commander_symbol, "rank": 1}],
+            )
+        )
+    rows: List[Dict[str, Any]] = []
+    for role, candidates in specifications:
+        for index, candidate in enumerate(candidates[:10], start=1):
+            if not isinstance(candidate, Mapping) or not _symbol(candidate):
+                continue
+            row = _candidate_context(candidate)
+            row.update(
+                {
+                    "symbol": _symbol(candidate),
+                    "rank": candidate.get("rank") or index,
+                    "q9_decision_id": decision_id,
+                    "q9_decision_role": role,
+                    "q9_selected": bool(
+                        role == "B_STRATEGIST_RANKED"
+                        and _symbol(candidate) == _text(strategist.get("selected_symbol"))
+                    ),
+                    "q9_commander_decision": (
+                        _text(commander.get("decision"))
+                        if role == "C_COMMANDER_FINAL"
+                        else ""
+                    ),
+                    "q9_commander_no_trade": bool(
+                        role == "C_COMMANDER_FINAL" and commander.get("no_trade")
+                    ),
+                    "shadow_role": "q9_decision_attribution",
+                    "evaluated": False,
+                    "would_enter": False,
+                    "reason": "q9_decision_window_forward_observation",
+                    "behavior_effect": "observation_only",
+                }
+            )
+            rows.append(
+                _attach_market_snapshot(
+                    _attach_entry_lane_observation(
+                        _fill_quant_surface(row),
+                        state=state,
+                        opening_minutes=opening_minutes,
+                    ),
+                    state,
+                    now_epoch=now_epoch,
+                )
+            )
+    return rows
+
+
 def build_quant_shadow_candidate_payload(
     state: Mapping[str, Any],
     *,
@@ -732,6 +804,7 @@ def build_quant_shadow_candidate_payload(
         "behavior_effect": "observation_only",
         "trigger": str(trigger or "monitor_cycle"),
         "run_id": _text(state.get("run_id")),
+        "q9_decision_id": _text(state.get("q9_decision_id")),
         "day": _resolve_day(state),
         "generated_at": generated_at.isoformat(timespec="seconds"),
         "opening_momentum_probe_shadow": {
@@ -763,7 +836,15 @@ def build_quant_shadow_candidate_payload(
                 1 for row in candidates if _bool(row.get("opening_largecap_surge_would_enter"))
             ),
         },
-        "candidates": candidates,
+        "q9_decision_candidates": _q9_decision_candidate_rows(
+            state,
+            now_epoch=now_epoch,
+            opening_minutes=opening_minutes,
+        ),
+        "candidates": [
+            {**row, "q9_decision_id": _text(state.get("q9_decision_id"))}
+            for row in candidates
+        ],
     }
 
 
@@ -806,3 +887,57 @@ def save_quant_shadow_candidates_for_state(
 ) -> Dict[str, Any]:
     payload = build_quant_shadow_candidate_payload(state, trigger=trigger)
     return save_quant_shadow_candidate_payload(payload, root=root)
+
+
+def sync_q9_decision_candidates_for_state(state: Mapping[str, Any]) -> Dict[str, Any]:
+    save_result = _as_dict(state.get("quant_shadow_candidates"))
+    path_text = _text(save_result.get("path"))
+    if not path_text:
+        return {"status": "skipped", "reason": "quant_shadow_payload_path_missing"}
+    path = Path(path_text)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": f"quant_shadow_payload_read_failed:{type(exc).__name__}",
+            "path": str(path),
+        }
+    if not isinstance(payload, dict):
+        return {"status": "error", "reason": "quant_shadow_payload_invalid", "path": str(path)}
+
+    rows = _q9_decision_candidate_rows(
+        state,
+        now_epoch=int(_kst_datetime_from_state(state).timestamp()),
+        opening_minutes=_opening_minutes_since_open(state),
+    )
+    payload["q9_decision_id"] = _text(state.get("q9_decision_id"))
+    payload["q9_decision_candidates"] = rows
+    roles = {
+        _text(row.get("q9_decision_role"))
+        for row in rows
+        if _text(row.get("q9_decision_role"))
+    }
+    payload["q9_sync_status"] = {
+        "status": "complete" if "C_COMMANDER_FINAL" in roles else "partial",
+        "synced_at": _utc_now().isoformat(timespec="seconds"),
+        "role_count": len(roles),
+    }
+    text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(text, encoding="utf-8")
+    temp.replace(path)
+
+    latest_text = _text(payload.get("latest_path") or save_result.get("latest_path"))
+    if latest_text:
+        latest_path = Path(latest_text)
+        latest_path.parent.mkdir(parents=True, exist_ok=True)
+        latest_temp = latest_path.with_suffix(latest_path.suffix + ".tmp")
+        latest_temp.write_text(text, encoding="utf-8")
+        latest_temp.replace(latest_path)
+    return {
+        "status": "ok",
+        "path": str(path),
+        "q9_candidate_count": len(rows),
+        "q9_role_count": len(roles),
+    }

@@ -1,5 +1,13 @@
 # Q8 Shadow Evaluation Operating Plan
 
+Status: Q8 PROMOTION WINDOW CLOSED / COLLECTOR RETAINED
+
+This methodology remains valid for interpreting Q8 shadow artifacts, but it
+does not reopen Q8. Existing shadow data now serves as a lower-layer evidence
+source for Q9. Q9 decision-window comparisons must reuse this evidence rather
+than create a duplicate generic shadow engine. See
+`../evaluation/current_operating_baseline.md`.
+
 Purpose: define how to evaluate Q8 shadow data after each live trading day and
 how to decide what becomes a promotion candidate.
 
@@ -46,8 +54,10 @@ After each trading day, answer:
 | --- | --- |
 | Candidate count | total candidates captured in shadow |
 | Raw candidate count | total rows before duplicate collapse |
-| Deduped candidate count | rows after `symbol + reason + shadow_role + baseline_epoch + tactic_id` collapse |
+| Deduped candidate count | rows after `day + symbol + baseline_epoch + entry_lane_subtype` collapse |
 | Duplicate count | raw minus deduped rows, used to avoid overstating repeated same-window observations |
+| Trusted forward count | deduped candidates with same-day, near-target forward checkpoints |
+| Trusted forward coverage | trusted forward count divided by deduped candidate count |
 | Evaluated count | candidates with enough fields to evaluate |
 | Would-enter count | candidates that would have entered under current evaluation |
 | Blocker count | count by blocker/reason |
@@ -57,6 +67,42 @@ After each trading day, answer:
 | Missed opportunity count | blocked candidates with meaningful later upside |
 | Correct block count | blocked candidates that later declined or failed |
 | Opportunity cost | aggregate upside missed by blocked candidates |
+
+## Trusted Forward Gate
+
+Q8 promotion decisions must use trusted forward outcomes only.
+
+Trusted forward requirements:
+
+- the forward checkpoint must be from the same trading day as the baseline
+- the observed row must be close to the requested checkpoint target
+- cross-day observations are marked `stale_cross_day_observation`
+- same-day but delayed observations are marked `stale_forward_gap`
+- stale checkpoints are not counted as observed outcomes
+- repeated rows are deduped before averaging performance
+
+Daily summaries should expose:
+
+```text
+Q8 Evaluation Trust Gate
+- raw candidate count
+- deduped candidate count
+- duplicate rate
+- trusted forward count
+- trusted forward coverage
+- promotion_allowed
+- block reasons
+```
+
+Promotion is blocked according to `q8_evaluation_contract.md` when:
+
+- trusted forward count is below 100
+- trusted forward coverage is below 70%
+- duplicate rate is above 75%
+- no candidate has repeatable evidence across at least 2 observed days
+
+This gate exists to prevent stale or duplicated shadow evidence from creating
+false promotion candidates.
 
 ## Blocker Review Template
 
@@ -104,6 +150,9 @@ A Q8 signal becomes a promotion candidate only if:
 
 - artifact integrity is acceptable
 - sample size is sufficient
+- trusted forward gate allows promotion review
+- candidate evidence is deduped
+- candidate evidence appears across at least 2 observed days
 - baseline comparison is available
 - benefit or harm is measurable
 - opportunity cost is documented
@@ -169,18 +218,18 @@ Artifact status:
 - `ka10170` day trade diary shows `061040` fully closed.
 - Daily report integrity shows `broker_closed_report_open_count=0`.
 
-Q8 status:
+Q8 status under the original 2026-06-02 review:
 
 | Surface | Status | Decision |
 | --- | --- | --- |
 | Live closed-trade sample | `hold_sample_insufficient` | no strategy promotion |
-| Shadow dataset | `ready` | valid for pre-entry guard and missed-opportunity review |
+| Shadow dataset | `legacy_ready` | observation-only unless regenerated under `q8_evaluation_contract.md` |
 | Cost edge | active hard gate | retain official policy |
 | VWAP pullback quality gate | active hard gate | retain and monitor opportunity cost |
 | Volume confirmation | observation | retain under observation |
-| Pullback maturity | review | adjust-and-retest candidate |
-| Breakout readiness | review | adjust-and-retest candidate |
-| Human chart sanity | review | promotion review target |
+| Pullback maturity | review | legacy review target, not promotion evidence |
+| Breakout readiness | review | legacy review target, not promotion evidence |
+| Human chart sanity | review | legacy review target, not promotion evidence |
 | Market regime rail | observation-only | attach to Q8 evidence later |
 | News event intelligence | observation-only | compare linked symbols against unlinked scanner candidates |
 | Long horizon | observation-only | no unlock |

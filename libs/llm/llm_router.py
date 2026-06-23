@@ -25,7 +25,7 @@ from libs.llm.openrouter_client import OpenRouterClient
 
 ROLE_DEFAULT_MODELS: Dict[str, str] = {
     "strategist": "deepseek/deepseek-v3.2",
-    "trade_report": "minimax/minimax-m2.5",
+    "trade_report": "nvidia/nemotron-3-ultra-550b-a55b:free",
     "operator_ui": "minimax/minimax-m2.5",
     "reporter_intraday": "minimax/minimax-m2.5",
     "reporter_final": "moonshotai/kimi-k2.5",

@@ -206,6 +206,54 @@ def test_build_portfolio_snapshot_uses_reader_positions_as_authoritative_in_mock
     assert persisted.get("portfolio_reconcile_reason") == "reader_positions_authoritative"
 
 
+def test_build_portfolio_snapshot_keeps_recent_buy_during_broker_settlement_grace(
+    monkeypatch,
+    tmp_path,
+):
+    import json
+
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("BROKER_POSITION_SETTLEMENT_GRACE_SEC", "180")
+    guard_path = tmp_path / "recent_buy_guard.json"
+    monkeypatch.setenv("EXECUTION_RECENT_BUY_GUARD_PATH", str(guard_path))
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.time.time", lambda: 1_000)
+    guard_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "execution_recent_buy_guard.v1",
+                "orders": {
+                    "097780": {
+                        "symbol": "097780",
+                        "last_buy_epoch": 950,
+                        "expires_epoch": 1_550,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = {
+        "portfolio_reader": MockPortfolioReader(cash=1500000, positions=[]),
+        "persisted_state": {
+            "mock_positions": [
+                {"symbol": "097780", "qty": 1000, "avg_price": 1390.0},
+            ],
+            "mock_cash": 110000.0,
+        },
+    }
+
+    out = build_portfolio_snapshot(state)
+    snapshot = out["portfolio_snapshot"]
+    health = snapshot["_health"]
+
+    assert snapshot["open_positions"] == 1
+    assert snapshot["positions"][0]["symbol"] == "097780"
+    assert health["positions_source"] == "persisted_recent_buy_settlement_grace"
+    assert health["recent_buy_settlement_grace_applied"] is True
+    assert out["persisted_state"]["portfolio_reconcile_reason"] == "recent_buy_settlement_grace"
+
+
 def test_build_portfolio_snapshot_syncs_reader_current_price_into_persisted_positions_in_mock_real_mode(monkeypatch):
     monkeypatch.setenv("KIWOOM_MODE", "mock")
     monkeypatch.setenv("EXECUTION_MODE", "real")

@@ -98,7 +98,7 @@ def test_kiwoom_market_index_reader_builds_packet_breadth(monkeypatch):
     }
     reader = KiwoomMarketIndexReader(Settings.from_env(), StubHttp([kospi, kosdaq]), StubToken())
 
-    packet = reader.get_index_packet()
+    packet = reader.get_index_packet(names=("KOSPI", "KOSDAQ"))
 
     assert packet["status"] == "ok"
     assert packet["indices"]["KOSPI"]["previous_close"] == 2985.0

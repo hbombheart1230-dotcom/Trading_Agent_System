@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict
 
 from libs.runtime.live_loop_lock import acquire_live_loop_lock, refresh_live_loop_lock, release_live_loop_lock
 from libs.runtime.market_hours import MarketHours, now_kst
+from libs.runtime.kiwoom_market_status import KiwoomMarketStatusListener
 
 
 def run_live_loop(
@@ -37,6 +38,8 @@ def run_live_loop(
         print(f"live_loop lock not acquired: {reason} lock_path={lock_path}")
         return 4
 
+    market_status_listener = KiwoomMarketStatusListener()
+    market_status_listener.start()
     try:
         while True:
             refresh_live_loop_lock(lock_path)
@@ -47,6 +50,7 @@ def run_live_loop(
                 break
             sleep_fn(max(1, int(sleep_sec)))
     finally:
+        market_status_listener.stop()
         release_live_loop_lock(lock_path)
 
     return 0

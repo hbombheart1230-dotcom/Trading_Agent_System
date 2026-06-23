@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .artifact_inventory import build_artifact_inventory, iter_trade_dirs, read_json
+from .counterfactuals import build_selection_attribution
+from .daily_scorecard import build_daily_scorecard
+from .feedback_effectiveness import build_feedback_effectiveness
+from .markdown import render_daily_scorecard, render_trade_evaluation
+from .rolling_scorecard import build_rolling_scorecard
+from .start_gate import build_full_chain_start_gate
+from .strategist_effectiveness import build_strategist_effectiveness
+from .trade_evaluator import evaluate_trade
+from .trade_read_model import build_q9_trade_read_model
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _baseline_hash(models: list[dict[str, Any]]) -> str:
+    basis = [
+        {
+            "trade_id": model.get("trade_id"),
+            "playbook": (model.get("selection") or {}).get("strategist_playbook"),
+            "source": ((model.get("provenance") or {}).get("field_sources") or {}).get("strategy_policy_source"),
+        }
+        for model in models
+    ]
+    return hashlib.sha256(json.dumps(basis, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+
+
+def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[int, ...] = (5, 10, 20)) -> dict[str, Any]:
+    reports_root = Path(reports_root)
+    evaluation_root = reports_root / "evaluation"
+    inventory = build_artifact_inventory(reports_root, day)
+    models = [build_q9_trade_read_model(path) for path in iter_trade_dirs(reports_root, day)]
+    evaluations = [evaluate_trade(model) for model in models]
+    attributions = [build_selection_attribution(model) for model in models]
+    q8_path = reports_root / "operator_summary" / "daily" / day / "q8_shadow_blocker_review.json"
+    q8_review = read_json(q8_path)
+    baseline_hash = _baseline_hash(models)
+    start_gate = build_full_chain_start_gate(
+        models=models,
+        inventory=inventory,
+        baseline_hash=baseline_hash,
+    )
+    scorecard = build_daily_scorecard(
+        day=day,
+        inventory=inventory,
+        trade_evaluations=evaluations,
+        attributions=attributions,
+        q8_review=q8_review,
+        start_gate=start_gate,
+    )
+    scorecard["generated_at"] = datetime.now(timezone.utc).isoformat()
+    scorecard["baseline_hash"] = baseline_hash
+
+    for trade_dir, model, evaluation, attribution in zip(
+        iter_trade_dirs(reports_root, day),
+        models,
+        evaluations,
+        attributions,
+    ):
+        trade_out = evaluation_root / "trades" / day / str(evaluation.get("trade_id") or trade_dir.name)
+        _write_json(trade_out / "trade_read_model.json", model)
+        _write_json(trade_out / "selection_attribution.json", attribution)
+        _write_json(trade_out / "trade_evaluation.json", evaluation)
+        _write_text(trade_out / "trade_evaluation.md", render_trade_evaluation(evaluation))
+
+    daily_out = evaluation_root / "daily" / day
+    _write_json(daily_out / "artifact_inventory.json", inventory)
+    _write_json(daily_out / "full_chain_start_gate.json", start_gate)
+    _write_json(daily_out / "daily_scorecard.json", scorecard)
+    _write_text(daily_out / "daily_scorecard.md", render_daily_scorecard(scorecard))
+
+    daily_scorecards: list[dict[str, Any]] = []
+    for path in sorted((evaluation_root / "daily").glob("*/daily_scorecard.json")):
+        payload = read_json(path)
+        if payload:
+            daily_scorecards.append(payload)
+    rolling_outputs: list[str] = []
+    for window in rolling_windows:
+        rolling = build_rolling_scorecard(daily_scorecards, window_days=window)
+        rolling_out = evaluation_root / "rolling" / day
+        path = rolling_out / f"scorecard_{window}d.json"
+        _write_json(path, rolling)
+        rolling_outputs.append(str(path))
+
+    evaluation_days = sorted(
+        path.name
+        for path in (evaluation_root / "trades").iterdir()
+        if path.is_dir() and path.name <= day
+    )[-20:] if (evaluation_root / "trades").exists() else []
+    all_evaluations: list[dict[str, Any]] = []
+    all_attributions: list[dict[str, Any]] = []
+    all_models: list[dict[str, Any]] = []
+    for evaluation_day in evaluation_days:
+        for trade_path in sorted((evaluation_root / "trades" / evaluation_day).iterdir()):
+            if not trade_path.is_dir():
+                continue
+            evaluation_payload = read_json(trade_path / "trade_evaluation.json")
+            attribution_payload = read_json(trade_path / "selection_attribution.json")
+            model_payload = read_json(trade_path / "trade_read_model.json")
+            if evaluation_payload:
+                all_evaluations.append(evaluation_payload)
+            if attribution_payload:
+                all_attributions.append(attribution_payload)
+            if model_payload:
+                all_models.append(model_payload)
+
+    strategist = build_strategist_effectiveness(all_evaluations, all_attributions)
+    strategist["source_days"] = evaluation_days
+    feedback = build_feedback_effectiveness(all_models)
+    feedback["source_days"] = evaluation_days
+    _write_json(evaluation_root / "strategist" / day / "strategist_effectiveness.json", strategist)
+    _write_json(evaluation_root / "feedback" / day / "feedback_effectiveness.json", feedback)
+    return {
+        "day": day,
+        "trade_count": len(models),
+        "daily_scorecard": str(daily_out / "daily_scorecard.json"),
+        "full_chain_start_gate": str(daily_out / "full_chain_start_gate.json"),
+        "rolling_scorecards": rolling_outputs,
+        "strategist_effectiveness": str(evaluation_root / "strategist" / day / "strategist_effectiveness.json"),
+        "feedback_effectiveness": str(evaluation_root / "feedback" / day / "feedback_effectiveness.json"),
+    }

@@ -73,5 +73,6 @@ def test_reporter_node_forces_bundle_even_when_single_trade_requested(monkeypatc
 
 def test_commander_runtime_uses_reporter_node_and_keeps_intraday_bundle_reference() -> None:
     source = Path("graphs/commander_runtime.py").read_text(encoding="utf-8")
-    assert "from graphs.nodes.reporter_node import reporter_node" in source
-    assert "state = _emit_intraday_trade_report(state)" in source
+    assert "emit_intraday_trade_report" in source
+    assert "reporter_node=nodes.reporter_node" in source
+    assert "emit_trade_report_fn=_emit_intraday_trade_report" in source

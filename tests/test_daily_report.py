@@ -66,7 +66,6 @@ def test_generate_daily_report(tmp_path: Path):
 
 
 def test_generate_daily_report_surfaces_residual_positions(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("STATE_STORE_PATH", raising=False)
     events = tmp_path / "events.jsonl"
     events.write_text("", encoding="utf-8")
     out_dir = tmp_path / "reports"
@@ -99,6 +98,7 @@ def test_generate_daily_report_surfaces_residual_positions(tmp_path: Path, monke
         ),
         encoding="utf-8",
     )
+    monkeypatch.setenv("STATE_STORE_PATH", str(state_path))
 
     md, js = generate_daily_report(events, out_dir, day="2026-05-08")
     data = json.loads(js.read_text(encoding="utf-8"))
@@ -107,7 +107,7 @@ def test_generate_daily_report_surfaces_residual_positions(tmp_path: Path, monke
     assert data["residual_positions"]["position_count"] == 2
     assert "## 장마감 잔여 보유 종목" in text
     assert "005930: 주말 오버나이트 승인(주의)" in text
-    assert "주말보유 3일" in text
+    assert "주말 보유 3일" in text
     assert "078890: 정리 필요" in text
     assert "오버나이트 판단: 미수행(모니터 상태 기록 없음)" in text
     assert "판단 기록 근거: 모니터 상태 기록 없음; EOD 전체 보유 종목 재점검 필요" in text

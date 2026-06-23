@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
+from libs.reporting.q8_evaluation_contract import TRUSTED_FORWARD_MIN_COVERAGE
 from libs.reporting.quant_shadow_candidate_evaluation import (
     build_quant_shadow_candidate_evaluation,
     load_quant_shadow_candidate_payloads,
@@ -61,8 +62,7 @@ def _reason_summary(evaluation: Mapping[str, Any], *, limit: int = 6) -> str:
     return ", ".join(parts) if parts else "-"
 
 
-def _verdict(row: Mapping[str, Any]) -> Dict[str, str]:
-    n = _int(row.get("candidate_count"))
+def _verdict(row: Mapping[str, Any], *, promotion_allowed: bool) -> Dict[str, str]:
     observed = _int(row.get("observed_count"))
     coverage = _float(row.get("coverage"))
     ret5 = _float(row.get("avg_return_5m_pct"))
@@ -71,35 +71,41 @@ def _verdict(row: Mapping[str, Any]) -> Dict[str, str]:
     mae5 = _float(row.get("avg_mae_5m_pct"))
     lane = _text(row.get("name"))
 
-    if observed < 10 or coverage < 0.65:
+    if not promotion_allowed:
+        return {
+            "verdict": "TRUST_GATE_BLOCKED",
+            "decision": "retain under observation",
+            "rationale": "Q8 trust gate blocked promotion review; lane signal is diagnostic only.",
+        }
+    if observed < 10 or coverage < TRUSTED_FORWARD_MIN_COVERAGE:
         return {
             "verdict": "DATA_INCOMPLETE",
-            "decision": "관찰 유지",
-            "rationale": "표본 또는 forward coverage 부족",
+            "decision": "observe",
+            "rationale": "sample or trusted forward coverage is insufficient.",
         }
     if lane == "vwap_reclaim" and ret5 < 0.0 and ret15 < 0.0:
         return {
             "verdict": "GOOD_BLOCK",
-            "decision": "차단 유지",
-            "rationale": "VWAP 미회복 차단 후 단기/중기 수익률이 음수",
+            "decision": "keep blocked",
+            "rationale": "VWAP reclaim lane showed weak short/mid forward returns.",
         }
     if ret5 >= 0.50 or ret15 >= 0.80 or mfe5 >= 1.50:
-        risk_note = " 단, MAE가 커서 소액 probe 또는 기준 재검토만 허용." if mae5 <= -1.50 else ""
+        risk_note = " MAE is high, so only small probe or rule review is allowed." if mae5 <= -1.50 else ""
         return {
             "verdict": "MISSED_OPPORTUNITY",
-            "decision": "완화 후보",
-            "rationale": f"차단 후보의 forward 상승 여지가 관측됨.{risk_note}".strip(),
+            "decision": "relaxation candidate",
+            "rationale": f"Blocked candidates showed positive forward potential.{risk_note}".strip(),
         }
     if ret5 <= 0.0 and ret15 <= 0.0:
         return {
             "verdict": "GOOD_BLOCK",
-            "decision": "차단 유지",
-            "rationale": "차단 후 forward 수익률이 부진",
+            "decision": "keep blocked",
+            "rationale": "Blocked candidates showed weak forward returns.",
         }
     return {
         "verdict": "DATA_INCOMPLETE",
-        "decision": "혼합 관찰",
-        "rationale": "방향성은 있으나 즉시 정책화할 정도로 선명하지 않음",
+        "decision": "observe",
+        "rationale": "Signal direction is not decisive enough for a policy review.",
     }
 
 
@@ -110,10 +116,15 @@ def build_q8_lane_decision_table(
 ) -> Dict[str, Any]:
     payloads = load_quant_shadow_candidate_payloads(reports_root=reports_root, days=[str(day)[:10]])
     evaluation = build_quant_shadow_candidate_evaluation(payloads)
-    lane_counts = _counts_by_name(_rows(evaluation.get("entry_lane_observation", {}).get("by_primary_lane") if isinstance(evaluation.get("entry_lane_observation"), Mapping) else []))
+    trust_gate = evaluation.get("evaluation_trust_gate") if isinstance(evaluation.get("evaluation_trust_gate"), Mapping) else {}
+    promotion_allowed = bool(trust_gate.get("promotion_allowed"))
+    lane_observation = evaluation.get("entry_lane_observation")
+    lane_counts = _counts_by_name(
+        _rows(lane_observation.get("by_primary_lane") if isinstance(lane_observation, Mapping) else [])
+    )
     rows: List[Dict[str, Any]] = []
     for row in _forward_rows(evaluation):
-        verdict = _verdict(row)
+        verdict = _verdict(row, promotion_allowed=promotion_allowed)
         lane = _text(row.get("name"))
         rows.append(
             {
@@ -133,10 +144,11 @@ def build_q8_lane_decision_table(
             }
         )
     order = {
-        "MISSED_OPPORTUNITY": 0,
-        "BAD_ENTRY": 1,
-        "GOOD_BLOCK": 2,
-        "DATA_INCOMPLETE": 3,
+        "TRUST_GATE_BLOCKED": 0,
+        "MISSED_OPPORTUNITY": 1,
+        "BAD_ENTRY": 2,
+        "GOOD_BLOCK": 3,
+        "DATA_INCOMPLETE": 4,
     }
     rows.sort(key=lambda item: (order.get(str(item.get("verdict")), 9), -_int(item.get("observed_count"))))
     return {
@@ -144,9 +156,14 @@ def build_q8_lane_decision_table(
         "day": str(day)[:10],
         "payload_count": _int(evaluation.get("payload_count")),
         "candidate_count": _int(evaluation.get("candidate_count")),
+        "deduped_candidate_count": _int(evaluation.get("deduped_candidate_count")),
+        "duplicate_candidate_count": _int(evaluation.get("duplicate_candidate_count")),
+        "dedupe_key": list(evaluation.get("dedupe_key") or []),
         "evaluated_count": _int(evaluation.get("evaluated_count")),
         "forward_outcome_available_count": _int(evaluation.get("forward_outcome_available_count")),
         "forward_outcome_coverage": round(_float(evaluation.get("forward_outcome_coverage")), 4),
+        "evaluation_trust_gate": dict(trust_gate),
+        "promotion_allowed": promotion_allowed,
         "would_enter_count": _int(evaluation.get("would_enter_count")),
         "reason_summary": _reason_summary(evaluation),
         "rows": rows,
@@ -160,6 +177,7 @@ def _fmt_pct(value: Any) -> str:
 
 
 def render_q8_lane_decision_table_markdown(payload: Mapping[str, Any]) -> str:
+    gate = payload.get("evaluation_trust_gate") if isinstance(payload.get("evaluation_trust_gate"), Mapping) else {}
     lines = [
         f"# Q8 Lane Decision Table - {payload.get('day')}",
         "",
@@ -167,9 +185,15 @@ def render_q8_lane_decision_table_markdown(payload: Mapping[str, Any]) -> str:
         "",
         f"- payloads: {payload.get('payload_count')}",
         f"- candidates: {payload.get('candidate_count')}",
+        f"- deduped candidates: {payload.get('deduped_candidate_count')}",
+        f"- duplicates: {payload.get('duplicate_candidate_count')}",
+        f"- dedupe_key: `{', '.join(list(payload.get('dedupe_key') or []))}`",
         f"- evaluated: {payload.get('evaluated_count')}",
         f"- forward observed: {payload.get('forward_outcome_available_count')} "
         f"({float(payload.get('forward_outcome_coverage') or 0.0):.1%})",
+        f"- trust_gate: `{gate.get('status') or '-'}`",
+        f"- promotion_allowed: `{bool(gate.get('promotion_allowed'))}`",
+        f"- trust_block_reasons: `{', '.join(list(gate.get('block_reasons') or gate.get('reasons') or [])) or '-'}`",
         f"- would-enter: {payload.get('would_enter_count')}",
         f"- top reasons: {payload.get('reason_summary') or '-'}",
         "",
@@ -202,13 +226,14 @@ def render_q8_lane_decision_table_markdown(payload: Mapping[str, Any]) -> str:
         "",
         "## Operating Interpretation",
         "",
-        "- `MISSED_OPPORTUNITY`: 차단 후보가 이후 의미 있게 상승했습니다. 즉시 무조건 진입이 아니라 완화 후보입니다.",
-        "- `GOOD_BLOCK`: 차단 후 forward 성과가 부진했습니다. 해당 gate는 유지합니다.",
-        "- `DATA_INCOMPLETE`: 표본 또는 coverage가 부족하거나 변동성이 커서 정책 변경 대상이 아닙니다.",
+        "- `TRUST_GATE_BLOCKED`: lane signal is visible, but Q8 evidence is not eligible for policy promotion.",
+        "- `MISSED_OPPORTUNITY`: blocked candidates rose afterward. This is a review target, not direct permission to buy.",
+        "- `GOOD_BLOCK`: blocked candidates underperformed after the block. Keep the gate under observation.",
+        "- `DATA_INCOMPLETE`: sample or coverage is insufficient for a policy conclusion.",
         "",
         "## Current Action",
         "",
-        "오늘 장중에는 이 표를 기준으로 추가 행동 패치를 하지 않습니다. 장후 같은 표를 재생성해서 판정이 유지되는지 확인합니다.",
+        "No new behavior patch is implied by this table unless the Q8 trust gate allows promotion review.",
         "",
     ]
     return "\n".join(lines)

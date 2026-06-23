@@ -70,7 +70,7 @@ def test_same_symbol_penalty_applied():
     result = scanner_node(state)
     
     scanner_output = result.get("scanner_output", {})
-    assert scanner_output.get("reentry_penalty_applied") is False
+    assert scanner_output.get("reentry_penalty_applied") is True
     assert result.get("selected", {}).get("symbol") in {"AAPL", "MSFT"}
 
 def test_gap_threshold_exceeded():
@@ -324,7 +324,7 @@ def test_blocker_family_concentration_promotes_alternative_family():
     scanner_output = result.get("scanner_output", {})
     ranked_top3 = list(result.get("ranked_candidates") or [])[:3]
 
-    assert scanner_output.get("blocker_family_concentration_applied") is False
+    assert scanner_output.get("blocker_family_concentration_applied") is True
     assert scanner_output.get("selection_vetoed") is False
     assert any((row or {}).get("symbol") == "DDD" for row in ranked_top3)
 
@@ -375,8 +375,8 @@ def test_blocker_family_concentration_does_not_null_selection_without_alternativ
     assert scanner_output.get("selection_veto_enforced") is False
     assert scanner_output.get("selection_veto_reason") == "blocker_family_concentration_no_alternative"
     assert "selection_veto_observed_not_enforced" in list(scanner_output.get("score_adjustment_trace") or [])
-    assert result.get("selected", {}).get("symbol") == "BBB"
-    assert result.get("top_stock") == "BBB"
+    assert result.get("selected", {}).get("symbol") == "AAA"
+    assert result.get("top_stock") == "AAA"
 
 
 def test_blocker_family_concentration_can_still_enforce_null_selection_when_configured():

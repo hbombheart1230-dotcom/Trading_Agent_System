@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from collections import Counter
+from typing import Any
+
+from .contracts import CONTRACT_VERSION, DecisionClass, IntegrityStatus, contract_metadata
+from .metrics import performance_metrics
+
+
+def build_daily_scorecard(
+    *,
+    day: str,
+    inventory: dict[str, Any],
+    trade_evaluations: list[dict[str, Any]],
+    attributions: list[dict[str, Any]],
+    q8_review: dict[str, Any],
+    start_gate: dict[str, Any],
+) -> dict[str, Any]:
+    eligible = [
+        row for row in trade_evaluations
+        if bool((row.get("integrity") or {}).get("promotion_metric_eligible"))
+    ]
+    returns = [
+        float((row.get("realized_outcome") or {}).get("net_return_pct"))
+        for row in eligible
+        if (row.get("realized_outcome") or {}).get("net_return_pct") is not None
+    ]
+    integrity_counts = Counter(
+        str((row.get("integrity") or {}).get("status") or IntegrityStatus.FAIL.value)
+        for row in trade_evaluations
+    )
+    strategist_deltas = [
+        row["deltas"]["strategist_delta_pct"]
+        for row in attributions
+        if (row.get("deltas") or {}).get("strategist_delta_pct") is not None
+    ]
+    q8_gate = q8_review.get("evaluation_trust_gate") if isinstance(q8_review.get("evaluation_trust_gate"), dict) else {}
+    if str(start_gate.get("status") or "") != "READY":
+        decision = DecisionClass.INSUFFICIENT_EVIDENCE.value
+    elif not returns:
+        decision = DecisionClass.INSUFFICIENT_EVIDENCE.value
+    elif sum(returns) / len(returns) < 0:
+        decision = DecisionClass.ADJUST_AND_RETEST.value
+    else:
+        decision = DecisionClass.RETAIN.value
+    realized_performance = performance_metrics(returns)
+    realized_performance["return_samples_pct"] = returns
+    return {
+        "schema_version": "daily_scorecard.v1",
+        "contract_version": CONTRACT_VERSION,
+        "day": day,
+        "decision_class": decision,
+        "evaluation_phase": {
+            "q8_status": "CLOSED",
+            "q9_status": "READINESS" if str(start_gate.get("status") or "") != "READY" else "FORWARD_WINDOW_ELIGIBLE",
+            "full_chain_start_gate": start_gate,
+        },
+        "artifact_integrity": {
+            "required_coverage": inventory.get("required_coverage"),
+            "status_counts": dict(integrity_counts),
+            "trade_count": len(trade_evaluations),
+            "eligible_trade_count": len(eligible),
+        },
+        "realized_performance": realized_performance,
+        "selection_attribution": {
+            "comparison_count": len(strategist_deltas),
+            "average_strategist_delta_pct": round(sum(strategist_deltas) / len(strategist_deltas), 4) if strategist_deltas else None,
+            "unavailable_count": len(attributions) - len(strategist_deltas),
+        },
+        "q8_shadow_evidence": {
+            "candidate_count": q8_review.get("candidate_count"),
+            "trusted_forward_count": q8_gate.get("trusted_forward_count"),
+            "trusted_forward_coverage": q8_gate.get("trusted_forward_coverage"),
+            "promotion_allowed": q8_gate.get("promotion_allowed"),
+            "trust_gate_status": q8_gate.get("status"),
+        },
+        "contract": contract_metadata(),
+    }

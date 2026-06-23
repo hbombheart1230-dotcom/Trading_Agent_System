@@ -2,20 +2,13 @@
 setlocal
 
 set "ROOT=%~dp0.."
-set "PY=%ROOT%\venv\Scripts\python.exe"
+set "CLOSEOUT_BAT=%ROOT%\scripts\run_closeout_maintenance.bat"
 
-if not exist "%PY%" (
-  echo python_not_found path=%PY%
+if not exist "%CLOSEOUT_BAT%" (
+  echo closeout_wrapper_not_found path=%CLOSEOUT_BAT%
   exit /b 3
 )
 
-rem Compatibility wrapper. Official trading runtime entrypoint is scripts/run_session.py
-"%PY%" "%ROOT%\scripts\run_session.py" ^
-  --mode mock ^
-  --phase closeout ^
-  --env-path "%ROOT%\.env" ^
-  --report-dir "%ROOT%\reports\dev\exam\mock_exam_day" ^
-  --event-log-path "%ROOT%\data\logs\events.jsonl" ^
-  %*
-
+rem Time-based fallback. Kiwoom market-status events are the primary closeout trigger.
+call "%CLOSEOUT_BAT%" --trigger scheduled_closeout_fallback %*
 exit /b %ERRORLEVEL%

@@ -9,6 +9,97 @@ from libs.runtime.commander.shadow_runtime import mark_strategist_executed, mark
 StateFn = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        if value in (None, ""):
+            return int(default)
+        return int(float(str(value).replace(",", "")))
+    except Exception:
+        return int(default)
+
+
+def _open_position_row(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    target = str(symbol or "").strip().upper()
+    snapshot = state.get("portfolio_snapshot") if isinstance(state.get("portfolio_snapshot"), dict) else {}
+    positions = snapshot.get("positions")
+    if isinstance(positions, dict):
+        rows = list(positions.values())
+    elif isinstance(positions, list):
+        rows = positions
+    else:
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("symbol") or "").strip().upper() != target:
+            continue
+        if _coerce_int(row.get("qty"), 0) <= 0:
+            continue
+        return dict(row)
+    return {}
+
+
+def _force_closeout_unresolved_sell_if_needed(
+    state: Dict[str, Any],
+    *,
+    shadow_runtime: Dict[str, Any],
+    fast_path_payload: Dict[str, Any],
+    focus_symbol: str,
+    execute_fn: StateFn,
+    emit_trade_report_fn: StateFn,
+    update_state_after_execution_fn: StateFn,
+    build_packet_from_state_fn: Callable[..., Dict[str, Any]],
+) -> Tuple[Dict[str, Any], bool]:
+    if str(fast_path_payload.get("override_reason") or "") != "closeout_unresolved_flatten_required":
+        return state, False
+    current_order = (state.get("execution") or {}).get("order") if isinstance(state.get("execution"), dict) else {}
+    if isinstance(current_order, dict) and str(current_order.get("action") or "").strip().upper() == "SELL":
+        return state, False
+    symbol = str(focus_symbol or (state.get("selected") or {}).get("symbol") or "").strip().upper()
+    if not symbol:
+        return state, False
+    position = _open_position_row(state, symbol)
+    qty = max(0, _coerce_int(position.get("qty"), 0))
+    if qty <= 0:
+        return state, False
+    market_snapshot = state.get("market_snapshot") if isinstance(state.get("market_snapshot"), dict) else {}
+    intent = {
+        "action": "SELL",
+        "side": "SELL",
+        "symbol": symbol,
+        "qty": qty,
+        "price": position.get("current_price") or position.get("price") or position.get("last_price") or market_snapshot.get("price"),
+        "order_type": "market",
+        "reason": "closeout_unresolved_flatten_required",
+        "meta": {
+            "source": "commander_monitor_only_fast_path",
+            "forced_by": "closeout_unresolved_flatten_required",
+            "monitor_decision": str((state.get("monitor_output") or {}).get("intent_side") or "NOOP")
+            if isinstance(state.get("monitor_output"), dict)
+            else "NOOP",
+            "decision_before_override": str(state.get("decision") or ""),
+        },
+    }
+    state["intents"] = [dict(intent)]
+    state["decision"] = "approve"
+    state["decision_reason"] = "closeout_unresolved_flatten_required"
+    state["decision_packet"] = build_packet_from_state_fn(state, intent=intent)
+    state = execute_fn(state)
+    shadow_runtime["monitor_only_forced_closeout_exit"] = True
+    shadow_runtime["monitor_only_forced_closeout_reason"] = "closeout_unresolved_flatten_required"
+    shadow_runtime["executor_action"] = str((((state.get("execution") or {}).get("order") or {}).get("action") or "SELL"))
+    shadow_runtime["executor_status"] = str((state.get("execution") or {}).get("reason") or "")
+    state = emit_trade_report_fn(state)
+    state = update_state_after_execution_fn(state)
+    state["commander_monitor_only_forced_closeout_exit"] = {
+        "executed": True,
+        "symbol": symbol,
+        "qty": qty,
+        "reason": "closeout_unresolved_flatten_required",
+    }
+    return state, True
+
+
 def run_monitor_only_fast_path(
     state: Dict[str, Any],
     *,
@@ -66,6 +157,22 @@ def run_monitor_only_fast_path(
         intent_from_monitor_state_fn=intent_from_monitor_state_fn,
         build_packet_from_state_fn=build_packet_from_state_fn,
     )
+    state, forced_closeout = _force_closeout_unresolved_sell_if_needed(
+        state,
+        shadow_runtime=shadow_runtime,
+        fast_path_payload=fast_path_payload,
+        focus_symbol=focus_symbol,
+        execute_fn=execute_fn,
+        emit_trade_report_fn=emit_trade_report_fn,
+        update_state_after_execution_fn=update_state_after_execution_fn,
+        build_packet_from_state_fn=build_packet_from_state_fn,
+    )
+    if forced_closeout:
+        state["runtime_fast_path"] = {
+            **dict(state.get("runtime_fast_path") or {}),
+            "forced_closeout_exit": True,
+            "forced_closeout_reason": "closeout_unresolved_flatten_required",
+        }
     state["path"] = "integrated_chain_monitor_only"
     return state
 

@@ -52,6 +52,13 @@ def _write_operator_markdown(path: Path, text: str) -> None:
     path.write_text(str(text or ""), encoding="utf-8-sig", newline="\n")
 
 
+def _write_validated_json(path: Path, payload: Dict[str, Any]) -> None:
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    json.loads(text)
+    path.write_text(text, encoding="utf-8")
+    json.loads(path.read_text(encoding="utf-8"))
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -486,6 +493,8 @@ def _broker_day_trade_diary_truth_metrics(row: Dict[str, Any], reports_root: Pat
         buy_price=hints.get("buy_price"),
     )
     if not match or not bool(match.get("authoritative")):
+        return {}
+    if _safe_int(match.get("filled_qty")) <= 0:
         return {}
     pnl_pct = _safe_float(match.get("pnl_ratio"))
     return {
@@ -940,6 +949,28 @@ def _build_residual_positions_payload(*, reports_root: Path, day: str | None = N
         if str(item or "").strip().upper() not in reconciled_symbols
     ]
     closeout_meta = _closeout_state_metadata(closeout, day)
+    unresolved_symbols = [
+        row["symbol"]
+        for row in positions
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    ]
+    closeout_operational_risk = {
+        "severity": "critical" if unresolved_symbols else "ok",
+        "reason": (
+            "broker_truth_unclosed_positions_after_closeout"
+            if unresolved_symbols and account_snapshot_fresh
+            else "state_unclosed_positions_after_closeout"
+            if unresolved_symbols
+            else ""
+        ),
+        "unresolved_symbols": list(unresolved_symbols),
+        "requires_next_open_flatten": bool(unresolved_symbols),
+        "operator_action": (
+            "next_open_market_flatten_required"
+            if unresolved_symbols
+            else ""
+        ),
+    }
 
     return {
         "available": True,
@@ -949,6 +980,7 @@ def _build_residual_positions_payload(*, reports_root: Path, day: str | None = N
         "positions": positions,
         "reconciled_closed_positions": reconciled_closed,
         "account_snapshot_reconciliation": account_snapshot_reconciliation,
+        "closeout_operational_risk": closeout_operational_risk,
         "closeout_state": {
             "mode": str(closeout.get("mode") or ""),
             "reason": str(closeout.get("reason") or ""),
@@ -1596,7 +1628,11 @@ def _has_partial_lifecycle_marker(row: Dict[str, Any]) -> bool:
 def _is_closed_trade(row: Dict[str, Any]) -> bool:
     if _has_partial_lifecycle_marker(row):
         return False
-    if _trade_status(row) == "closed":
+    status = _trade_status(row)
+    lifecycle_status = str(row.get("trade_lifecycle_status") or "").strip().lower()
+    if status in {"open", "holding"} or lifecycle_status in {"open", "holding"}:
+        return False
+    if status == "closed":
         return True
     truth_source = str(row.get("truth_source") or row.get("pnl_truth_source") or "").strip().lower()
     if bool(row.get("truth_surface_available")) and truth_source in {
@@ -1610,6 +1646,38 @@ def _is_closed_trade(row: Dict[str, Any]) -> bool:
 
 def _is_recovered_partial_marker(row: Dict[str, Any]) -> bool:
     return _has_partial_lifecycle_marker(row)
+
+
+def _trade_id_day(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.match(r"^TRD_(\d{8})_", text)
+    if not match:
+        return ""
+    raw = match.group(1)
+    return f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+
+
+def _row_report_day(row: Dict[str, Any]) -> str:
+    return str(row.get("date") or row.get("day") or "").strip()[:10]
+
+
+def _is_carryover_exit_marker(row: Dict[str, Any]) -> bool:
+    if _trade_action(row) != "SELL" and not _is_closed_trade(row):
+        return False
+    report_day = _row_report_day(row)
+    trade_day = _trade_id_day(row.get("trade_id"))
+    if report_day and trade_day and report_day != trade_day:
+        return True
+    for key in ("entry_ts", "entry_time", "entry_timestamp"):
+        entry_day = str(row.get(key) or "").strip()[:10]
+        if report_day and entry_day and entry_day != report_day:
+            return True
+    reason = f"{row.get('entry_reason') or ''} {row.get('exit_reason') or ''}".lower()
+    return "carryover" in reason or "overnight" in reason or "recovered open position" in reason
+
+
+def _same_day_new_trade_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [row for row in rows if not _is_carryover_exit_marker(row)]
 
 
 def _is_realized_nonclosed_exit(row: Dict[str, Any]) -> bool:
@@ -1691,16 +1759,29 @@ def _symbol_rows(rows: List[Dict[str, Any]], limit: int = 8) -> List[Dict[str, A
 def _trade_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     closed_rows = [row for row in rows if _is_closed_trade(row)]
     realized_rows = [row for row in rows if _is_realized_nonclosed_exit(row)]
+    carryover_rows = [row for row in closed_rows if _is_carryover_exit_marker(row)]
+    same_day_rows = _same_day_new_trade_rows(rows)
+    same_day_closed_rows = [row for row in same_day_rows if _is_closed_trade(row)]
     closed_stats = _return_count_payload(closed_rows)
+    same_day_closed_stats = _return_count_payload(same_day_closed_rows)
     realized_stats = _return_count_payload(realized_rows)
     return {
         "trade_count": len(rows),
         "closed_trade_count": len(closed_rows),
         **closed_stats,
+        "same_day_new_trade_count": len(same_day_rows),
+        "same_day_new_closed_trade_count": len(same_day_closed_rows),
+        "same_day_new_return_sample_count": same_day_closed_stats["return_sample_count"],
+        "same_day_new_win_count": same_day_closed_stats["win_count"],
+        "same_day_new_loss_count": same_day_closed_stats["loss_count"],
+        "same_day_new_flat_count": same_day_closed_stats["flat_count"],
+        "same_day_new_win_rate": same_day_closed_stats["win_rate"],
+        "same_day_new_avg_return_pct": same_day_closed_stats["avg_return_pct"],
+        "carryover_closed_trade_count": len(carryover_rows),
         "return_basis": "truth_surface_net" if closed_stats["truth_surface_count"] else "operator_symbol_result_pct",
         "realized_exit_count": len(realized_rows),
         "recovered_partial_exit_count": sum(1 for row in realized_rows if _is_recovered_partial_marker(row)),
-        "carryover_exit_count": sum(1 for row in realized_rows if _is_recovered_partial_marker(row)),
+        "carryover_exit_count": len(carryover_rows),
         "realized_exit_return_sample_count": realized_stats["return_sample_count"],
         "realized_exit_unavailable_return_count": realized_stats["unavailable_return_count"],
         "realized_exit_observed_return_sample_count": realized_stats["observed_return_sample_count"],
@@ -1908,6 +1989,11 @@ def _pattern_performance_payload(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _trade_dir_for_row(row: Dict[str, Any], reports_root: Path) -> Path | None:
+    explicit_path = str(row.get("trade_root_path") or "").strip()
+    if explicit_path:
+        explicit = Path(explicit_path)
+        if explicit.exists() and explicit.is_dir():
+            return explicit
     trade_id = str(row.get("trade_id") or "").strip()
     day = str(row.get("date") or row.get("day") or "").strip()[:10]
     if not trade_id or not day:
@@ -2203,6 +2289,15 @@ def build_operator_daily_summary_artifact_payload(
     normalized_day = str(day or "").strip()
     source_payload = dict(daily_report_payload or {})
     trade_index = source_payload.get("trade_index") if isinstance(source_payload.get("trade_index"), list) else []
+    if not trade_index:
+        carryover_index = _read_json(
+            canonical_trade_day_root(reports_root, normalized_day) / "carryover_exit_index.json"
+        ) or {}
+        trade_index = [
+            dict(row)
+            for row in list(carryover_index.get("rows") or [])
+            if isinstance(row, dict)
+        ]
     history_rows = _daily_symbol_history_rows(reports_root, normalized_day)
     if trade_index:
         rows = _merge_daily_trade_index_with_symbol_history(
@@ -2224,6 +2319,7 @@ def build_operator_daily_summary_artifact_payload(
             root=Path(reports_root).parent / "data" / "logs" / "macro_indicators",
         )
     )
+    quant_shadow_evaluation = build_quant_shadow_candidate_evaluation(shadow_payloads)
     if metrics["trade_count"] == 0 and trade_index:
         metrics["trade_count"] = len(trade_index)
 
@@ -2246,11 +2342,12 @@ def build_operator_daily_summary_artifact_payload(
         "patterns": _pattern_payload(counters),
         "pattern_performance": _pattern_performance_payload(rows),
         "quant_tactic_evaluation": build_quant_tactic_evaluation(rows),
-        "quant_shadow_candidate_evaluation": build_quant_shadow_candidate_evaluation(shadow_payloads),
+        "quant_shadow_candidate_evaluation": quant_shadow_evaluation,
         "market_regime_rail_review": market_regime_rail,
         "q8_shadow_blocker_review": build_q8_shadow_blocker_review(
             shadow_payloads,
             market_regime_rail=market_regime_rail,
+            quant_shadow_evaluation=quant_shadow_evaluation,
         ),
         "strategist_llm_evaluation": build_strategist_llm_evaluation(rows, shadow_payloads),
         "symbol_summary": _symbol_rows(rows),
@@ -2263,6 +2360,23 @@ def build_operator_daily_summary_artifact_payload(
         exit_counts=counters.get("exit_reasons") or Counter(),
         entry_counts=counters.get("entry_reasons") or Counter(),
     )
+    residual_risk = (
+        summary.get("residual_positions", {}).get("closeout_operational_risk")
+        if isinstance(summary.get("residual_positions"), dict)
+        else {}
+    )
+    if isinstance(residual_risk, dict) and str(residual_risk.get("severity") or "").lower() == "critical":
+        readout = summary["operator_readout"]
+        symbols_text = ", ".join(str(x) for x in list(residual_risk.get("unresolved_symbols") or []) if str(x).strip())
+        readout["issues"] = [
+            f"CRITICAL closeout issue: broker truth still has unclosed position(s): {symbols_text or '-'}",
+            *list(readout.get("issues") or []),
+        ]
+        readout["recommended_actions"] = [
+            "Next open: flatten unresolved position(s) at market before new BUY evaluation.",
+            *list(readout.get("recommended_actions") or []),
+        ]
+        readout["root_cause"] = "장마감 청산/검증 루프가 broker truth 잔여 포지션을 완전히 닫지 못했습니다."
     return summary
 
 
@@ -2567,6 +2681,18 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
         f"- 완료 거래: {_safe_int(metrics.get('closed_trade_count'))}건",
         f"- 성과: **승률 {float(metrics.get('win_rate') or 0.0) * 100:.2f}% / 평균 {float(metrics.get('avg_return_pct') or 0.0):.2f}%**",
         (
+            f"- 당일 신규 진입 성과: {_safe_int(metrics.get('same_day_new_closed_trade_count'))}건 / "
+            f"승률 {float(metrics.get('same_day_new_win_rate') or 0.0) * 100:.2f}% / "
+            f"평균 {float(metrics.get('same_day_new_avg_return_pct') or 0.0):.2f}%"
+            if _safe_int(metrics.get("carryover_closed_trade_count")) > 0
+            else ""
+        ),
+        (
+            f"- 이월/정리 청산 제외: {_safe_int(metrics.get('carryover_closed_trade_count'))}건"
+            if _safe_int(metrics.get("carryover_closed_trade_count")) > 0
+            else ""
+        ),
+        (
             "- 런타임 이벤트: 미집계"
             if str(runtime.get("source") or "") == "not_available"
             else f"- 런타임 이벤트: {runtime.get('events') or 0}건"
@@ -2602,6 +2728,22 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
         lines.append(f"{idx}. {item}")
 
     lines += ["", "---", "", "## 장마감 잔여 보유 종목", ""]
+    closeout_risk = (
+        residual.get("closeout_operational_risk")
+        if isinstance(residual.get("closeout_operational_risk"), dict)
+        else {}
+    )
+    if str(closeout_risk.get("severity") or "").strip().lower() == "critical":
+        symbols_text = ", ".join(
+            str(item or "").strip()
+            for item in list(closeout_risk.get("unresolved_symbols") or [])
+            if str(item or "").strip()
+        )
+        lines += [
+            "- CRITICAL: broker truth shows unclosed position(s) after closeout.",
+            f"- required_action: `{closeout_risk.get('operator_action') or 'next_open_market_flatten_required'}`",
+            f"- unresolved_symbols: `{symbols_text or '-'}`",
+        ]
     account_snapshot = (
         residual.get("account_snapshot_reconciliation")
         if isinstance(residual.get("account_snapshot_reconciliation"), dict)
@@ -2838,7 +2980,7 @@ def generate_operator_period_summary(
         md_path = paths["monthly_summary_md"]
 
     md_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_validated_json(json_path, payload)
     _write_operator_markdown(md_path, render_operator_period_summary_markdown(payload))
     return md_path, json_path, payload
 
@@ -2867,7 +3009,7 @@ def generate_operator_daily_summary_artifact(
         day=payload["day"],
         source="operator_daily_summary",
     )
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_validated_json(json_path, payload)
     _write_operator_markdown(md_path, render_operator_daily_summary_markdown(payload))
     return md_path, json_path, payload
 
@@ -2889,6 +3031,6 @@ def generate_operator_symbol_summary_artifact(
     json_path = paths["symbol_summary_json"]
     md_path = paths["symbol_summary_md"]
     md_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_validated_json(json_path, payload)
     _write_operator_markdown(md_path, render_operator_symbol_summary_markdown(payload))
     return md_path, json_path, payload

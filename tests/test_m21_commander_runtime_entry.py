@@ -413,13 +413,15 @@ def test_m31_runtime_entry_surfaces_commander_memory_policy_and_packets() -> Non
     assert packets["daily_strategy_memory"]["active"] is False
     assert packets["symbol_memory_packet"]["symbol"] == "000660"
     assert packets["symbol_memory_packet"]["override_eligible"] is True
-    assert policy["application_mode"] == "disabled"
-    assert policy["disabled_reason"] == "memory_usage_disabled_by_commander"
-    assert policy["active_layers"] == []
-    assert policy["symbol_memory_override_enabled"] is False
-    assert captured["scanner_memory_bias"]["enabled"] is False
-    assert captured["monitor_memory_bias"]["enabled"] is False
-    assert captured["monitor_memory_bias_summary"]["entry_delta_keys"] == []
+    assert policy["application_mode"] == "surface_only"
+    assert policy["active_layers"] == ["symbol"]
+    assert policy["symbol_memory_override_enabled"] is True
+    assert captured["scanner_memory_bias"]["enabled"] is True
+    assert captured["monitor_memory_bias"]["enabled"] is True
+    assert captured["monitor_memory_bias_summary"]["entry_delta_keys"] == [
+        "breakout_buffer_pct",
+        "max_extended_from_vwap_pct",
+    ]
 
 
 def test_attach_commander_applied_policy_recomputes_memory_bias_instead_of_using_stale_commander_decision():
@@ -2146,6 +2148,14 @@ def test_m31_integrated_chain_force_exit_review_stays_monitor_only_with_open_pos
         state["decision"] = "hold"
         return state
 
+    def fake_execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("execute")
+        state["execution"] = {
+            "order": dict((state.get("decision_packet") or {}).get("intent") or {}),
+            "reason": "mock_executed",
+        }
+        return state
+
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
     monkeypatch.setattr("graphs.commander_runtime._hydrate_monitor_symbol_features", fake_hydrate_monitor_symbol_features)
@@ -2551,6 +2561,14 @@ def test_m31_integrated_chain_monitor_only_keeps_fast_path_when_refresh_cooldown
         state["decision"] = "hold"
         return state
 
+    def fake_execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("execute")
+        state["execution"] = {
+            "order": dict((state.get("decision_packet") or {}).get("intent") or {}),
+            "reason": "mock_executed",
+        }
+        return state
+
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
     monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
@@ -2569,7 +2587,7 @@ def test_m31_integrated_chain_monitor_only_keeps_fast_path_when_refresh_cooldown
             "monitor_block_buy_when_open_position": True,
             "applied_policy": {"commander": {"route": {"monitor_only_when_holding": True}}},
         },
-        execute_fn=lambda state: state,
+        execute_fn=fake_execute,
     )
 
     assert out["path"] == "integrated_chain_monitor_only"
@@ -2716,6 +2734,14 @@ def test_m31_integrated_chain_monitor_only_selects_unresolved_closeout_symbol(mo
         state["decision"] = "hold"
         return state
 
+    def fake_execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("execute")
+        state["execution"] = {
+            "order": dict((state.get("decision_packet") or {}).get("intent") or {}),
+            "reason": "mock_executed",
+        }
+        return state
+
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
     monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
@@ -2739,17 +2765,23 @@ def test_m31_integrated_chain_monitor_only_selects_unresolved_closeout_symbol(mo
                 },
             },
         },
-        execute_fn=lambda state: state,
+        execute_fn=fake_execute,
     )
 
     assert out["path"] == "integrated_chain_monitor_only"
-    assert out["runtime_fast_path"]["reason"] == "holding_position_force_exit_review_monitor_only"
-    assert out["runtime_fast_path"]["override_reason"] == "closeout_unresolved_flatten_required"
+    assert out["runtime_fast_path"]["forced_closeout_exit"] is True
+    assert out["runtime_fast_path"]["forced_closeout_reason"] == "closeout_unresolved_flatten_required"
+    assert out["commander_monitor_only_forced_closeout_exit"]["executed"] is True
+    assert out["execution"]["order"]["action"] == "SELL"
+    assert out["execution"]["order"]["symbol"] == "078890"
+    assert out["execution"]["order"]["qty"] == 338
+    assert out["execution"]["order"]["reason"] == "closeout_unresolved_flatten_required"
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
         "monitor",
         "decision",
+        "execute",
     ]
 
 

@@ -195,9 +195,9 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
         "closeout.metrics",
         "closeout.operator_summary",
         "closeout.daily",
+        "closeout.post_exit_shadow_recap",
         "closeout.reporter_analysis",
         "closeout.live_execution_bundles",
-        "closeout.post_exit_shadow_recap",
         "closeout.report_inventory",
     ]
     canonical_reports_root = str(mod.ROOT / "reports")
