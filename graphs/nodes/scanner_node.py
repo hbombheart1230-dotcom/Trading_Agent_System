@@ -74,6 +74,7 @@ from libs.runtime.scanner.practical_filters import (
     resolve_min_trading_value as _resolve_min_trading_value,
     resolve_min_volume as _resolve_min_volume,
 )
+from libs.runtime.scanner.candidate_risk import resolve_candidate_base_risk
 from libs.runtime.scanner.output_snapshots import (
     compact_feature_snapshot as _compact_feature_snapshot,
     compact_selected_snapshot as _compact_selected_snapshot,
@@ -2551,12 +2552,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             base = _stable_unit_hash(symbol)
             # Simple deterministic defaults (placeholder)
             score = 1.0 - base  # higher is better
-            risk_score = base  # higher is riskier
             confidence = max(0.0, min(1.0, 0.9 - base * 0.4))
             row = {
                 "symbol": symbol,
                 "score": float(score),
-                "risk_score": float(risk_score),
                 "confidence": float(confidence),
                 "features": {
                     "unit_hash": float(base),
@@ -2565,7 +2564,6 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         # ---- Practical scoring model (additive, deterministic) ----
         base_score = _to_float(row.get("score") or 0.0)
-        base_risk = _to_float(row.get("risk_score") or 0.35)
         base_conf = _to_float(row.get("confidence") or 0.55)
         row["raw_score"] = float(base_score)
         row["base_score"] = float(base_score)
@@ -2630,6 +2628,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         vwap_distance = _to_float(feature_row.get("vwap_distance"))
         cross_section_rank = _to_float(feature_row.get("cross_section_rank"))
         gap_pct = abs(_to_float(feature_row.get("gap_pct")))
+        base_risk_result = resolve_candidate_base_risk(
+            candidate=candidate_meta,
+            scanner_row=row,
+            features=feature_row,
+            quote_metrics=metrics,
+        )
+        base_risk = float(base_risk_result.get("risk_score") or 0.0)
 
         trading_value_component = _norm01(_to_float(source_scores.get("top_value")), 0.0, 2.0)
         momentum_raw = (0.65 * _signed01(return20, 0.10)) + (0.35 * _signed01(ma20_gap, 0.03))
@@ -2951,6 +2956,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             scanner_intrinsic_control_score_total
         )
         row["risk_score"] = float(_clamp(adj_risk, 0.0, 1.0))
+        row["base_risk_source"] = str(base_risk_result.get("source") or "")
+        row["base_risk_components"] = dict(base_risk_result.get("components") or {})
+        row["base_risk_missing_inputs"] = list(base_risk_result.get("missing_inputs") or [])
         row["confidence"] = float(adj_conf)
         row["why"] = str(candidate_meta.get("why") or row.get("why") or "")
         row["asset_class_detected"] = str(candidate_meta.get("asset_class_detected") or "")
@@ -2992,6 +3000,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         or ""
                     ),
                     "engine_rsi14": feature_row.get("rsi14"),
+                    "engine_close_last": feature_row.get("close_last"),
                     "engine_ma20_gap": feature_row.get("ma20_gap"),
                     "engine_ma60": feature_row.get("ma60"),
                     "engine_ma120": feature_row.get("ma120"),
@@ -3036,6 +3045,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "base_score": base_score,
                     "base_risk": base_risk,
+                    "base_risk_source": str(base_risk_result.get("source") or ""),
+                    "base_risk_components": dict(base_risk_result.get("components") or {}),
+                    "base_risk_missing_inputs": list(base_risk_result.get("missing_inputs") or []),
                     "base_confidence": base_conf,
                     "news_sentiment": news_s,
                     "global_sentiment": gs,

@@ -3,7 +3,14 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
-from libs.runtime.scanner_feature_hydration import hydrate_scanner_feature_map
+from libs.runtime.scanner_feature_hydration import (
+    _resolve_yf_ticker,
+    hydrate_scanner_feature_map,
+)
+
+
+def test_yfinance_ticker_strips_quote_prefix() -> None:
+    assert _resolve_yf_ticker("$477850") == "477850.KS"
 
 
 def test_hydrate_scanner_feature_map_refreshes_existing_symbol_with_live_quote():
@@ -29,7 +36,7 @@ def test_hydrate_scanner_feature_map_refreshes_existing_symbol_with_live_quote()
     out, source, errors = hydrate_scanner_feature_map(
         state=state,
         candidates=[{"symbol": "AAA"}],
-        skill_quotes={"AAA": {"symbol": "AAA", "price": 95.0}},
+        skill_quotes={"AAA": {"symbol": "AAA", "price": 95.0, "volume": 1200.0}},
         policy={
             "scanner_feature_min_rows": 2,
             "scanner_feature_series_max_rows": 10,
@@ -43,7 +50,92 @@ def test_hydrate_scanner_feature_map_refreshes_existing_symbol_with_live_quote()
     assert "AAA" in out
     rows = state["ohlcv_by_symbol"]["AAA"]
     assert rows[-1]["close"] == 95.0
+    assert rows[-1]["volume"] == 1200.0
     assert state["feature_engine"]["source"] == "scanner_candidate_hydration"
+
+
+def test_hydration_coalesces_repeated_live_updates_into_one_daily_row():
+    day_start = 1_782_259_200
+    state = {
+        "ohlcv_by_symbol": {
+            "005930": [
+                {
+                    "ts": day_start - 86_400,
+                    "open": 300000.0,
+                    "high": 305000.0,
+                    "low": 295000.0,
+                    "close": 302000.0,
+                    "volume": 50_000_000.0,
+                }
+            ]
+        },
+        "now_epoch": day_start + 300,
+    }
+    policy = {
+        "scanner_feature_min_rows": 1,
+        "scanner_feature_series_max_rows": 10,
+        "scanner_feature_seed_with_yf": False,
+    }
+
+    hydrate_scanner_feature_map(
+        state=state,
+        candidates=[{"symbol": "005930"}],
+        skill_quotes={"005930": {"symbol": "005930", "price": 320000.0, "volume": 2_000_000.0}},
+        policy=policy,
+        refresh_existing=True,
+    )
+    state["now_epoch"] = day_start + 360
+    hydrate_scanner_feature_map(
+        state=state,
+        candidates=[{"symbol": "005930"}],
+        skill_quotes={"005930": {"symbol": "005930", "price": 324000.0, "volume": 2_500_000.0}},
+        policy=policy,
+        refresh_existing=True,
+    )
+
+    rows = state["ohlcv_by_symbol"]["005930"]
+    assert len(rows) == 2
+    assert rows[-1]["open"] == 320000.0
+    assert rows[-1]["close"] == 324000.0
+    assert rows[-1]["volume"] == 2_500_000.0
+
+
+def test_hydration_uses_raw_kiwoom_cumulative_volume():
+    state = {
+        "ohlcv_by_symbol": {
+            "000660": [
+                {
+                    "ts": 1_782_172_800,
+                    "open": 2500000.0,
+                    "high": 2550000.0,
+                    "low": 2450000.0,
+                    "close": 2520000.0,
+                    "volume": 800_000.0,
+                }
+            ]
+        },
+        "now_epoch": 1_782_259_500,
+    }
+
+    hydrate_scanner_feature_map(
+        state=state,
+        candidates=[{"symbol": "000660"}],
+        skill_quotes={
+            "000660": {
+                "symbol": "000660",
+                "price": 2636000.0,
+                "raw": {"cntr_infr": [{"acc_trde_qty": "576711"}]},
+            }
+        },
+        policy={
+            "scanner_feature_min_rows": 1,
+            "scanner_feature_series_max_rows": 10,
+            "scanner_feature_seed_with_yf": False,
+        },
+        refresh_existing=True,
+    )
+
+    assert state["ohlcv_by_symbol"]["000660"][-1]["volume"] == 576711.0
 
 
 def test_hydrate_scanner_feature_map_keeps_existing_fast_path_without_refresh():

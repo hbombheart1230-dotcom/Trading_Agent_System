@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 from libs.core.symbols import is_live_equity_symbol, normalize_symbol
@@ -76,17 +77,48 @@ def _normalize_ohlcv_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, A
     return out
 
 
-def _append_live_price(rows: List[Dict[str, Any]], *, price: float, now_epoch: int) -> List[Dict[str, Any]]:
+KST = timezone(timedelta(hours=9))
+
+
+def _kst_day(epoch: int) -> str:
+    if epoch <= 0:
+        return ""
+    return datetime.fromtimestamp(int(epoch), tz=KST).strftime("%Y-%m-%d")
+
+
+def _quote_cumulative_volume(quote: Mapping[str, Any]) -> float:
+    for key in ("volume", "vol", "trading_volume"):
+        value = _to_num(quote.get(key))
+        if value is not None and value > 0.0:
+            return float(value)
+    raw = quote.get("raw") if isinstance(quote.get("raw"), Mapping) else {}
+    rows = raw.get("cntr_infr") if isinstance(raw.get("cntr_infr"), list) else []
+    first = rows[0] if rows and isinstance(rows[0], Mapping) else {}
+    value = _to_num(first.get("acc_trde_qty"))
+    return float(value) if value is not None and value > 0.0 else 0.0
+
+
+def _append_live_price(
+    rows: List[Dict[str, Any]],
+    *,
+    price: float,
+    cumulative_volume: float,
+    now_epoch: int,
+) -> List[Dict[str, Any]]:
     if price <= 0.0:
         return rows
     copied = list(rows)
     if copied:
         last = dict(copied[-1] or {})
-        if _to_int(last.get("ts"), 0) == int(now_epoch):
+        last_epoch = _to_int(last.get("ts"), 0)
+        if last_epoch == int(now_epoch) or (
+            last_epoch > 0 and _kst_day(last_epoch) == _kst_day(int(now_epoch))
+        ):
             open_p = _to_float(last.get("open"), price)
             high = _to_float(last.get("high"), price)
             low = _to_float(last.get("low"), price)
-            volume = _to_float(last.get("volume"), 1.0)
+            prior_volume = _to_float(last.get("volume"), 0.0)
+            volume = cumulative_volume if cumulative_volume > 0.0 else prior_volume
             copied[-1] = {
                 "ts": int(now_epoch),
                 "open": float(open_p),
@@ -103,16 +135,17 @@ def _append_live_price(rows: List[Dict[str, Any]], *, price: float, now_epoch: i
             "high": float(price),
             "low": float(price),
             "close": float(price),
-            "volume": 1.0,
+            "volume": float(max(cumulative_volume, 1.0)),
         }
     )
     return copied
 
 
 def _resolve_yf_ticker(symbol: str) -> str:
-    if is_live_equity_symbol(symbol):
-        return f"{symbol}.KS"
-    return symbol
+    normalized = normalize_symbol(str(symbol or "").lstrip("$"))
+    if is_live_equity_symbol(normalized):
+        return f"{normalized}.KS"
+    return normalized
 
 
 def _fetch_seed_rows(symbol: str, *, policy: Dict[str, Any], state: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
@@ -160,6 +193,8 @@ def _fetch_seed_rows(symbol: str, *, policy: Dict[str, Any], state: Dict[str, An
         _to_int(policy.get("scanner_feature_seed_max_rows") or os.getenv("SCANNER_FEATURE_SEED_MAX_ROWS", "120"), 120),
     )
     ticker = _resolve_yf_ticker(symbol)
+    if not ticker:
+        return [], "invalid_symbol"
     try:
         hist = yf.Ticker(ticker).history(period=period, interval=interval)
     except Exception:
@@ -293,7 +328,12 @@ def hydrate_scanner_feature_map(
         if live_price is None:
             live_price = quote.get("cur")
         live_price_num = _to_num(live_price) or 0.0
-        rows = _append_live_price(rows, price=float(live_price_num), now_epoch=now_epoch)
+        rows = _append_live_price(
+            rows,
+            price=float(live_price_num),
+            cumulative_volume=_quote_cumulative_volume(quote),
+            now_epoch=now_epoch,
+        )
         if len(rows) > max_rows:
             rows = rows[-max_rows:]
         if rows:

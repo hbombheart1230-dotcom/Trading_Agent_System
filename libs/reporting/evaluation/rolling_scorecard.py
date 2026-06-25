@@ -11,7 +11,18 @@ def build_rolling_scorecard(scorecards: list[dict[str, Any]], *, window_days: in
     selected = sorted(scorecards, key=lambda row: str(row.get("day") or ""))[-window_days:]
     eligible_days = [
         row for row in selected
-        if str((((row.get("evaluation_phase") or {}).get("full_chain_start_gate") or {}).get("status")) or "") == "READY"
+        if (
+            str((((row.get("evaluation_phase") or {}).get("q9_day_validity") or {}).get("status")) or "")
+            == "VALID"
+            or (
+                not ((row.get("evaluation_phase") or {}).get("q9_day_validity"))
+                and str(
+                    (((row.get("evaluation_phase") or {}).get("full_chain_start_gate") or {}).get("status"))
+                    or ""
+                )
+                == "READY"
+            )
+        )
     ]
     returns: list[float] = []
     status_counts: Counter[str] = Counter()
@@ -21,7 +32,7 @@ def build_rolling_scorecard(scorecards: list[dict[str, Any]], *, window_days: in
         if isinstance(samples, list):
             returns.extend(float(value) for value in samples)
         status_counts.update((row.get("artifact_integrity") or {}).get("status_counts") or {})
-    valid_days = sum(1 for row in eligible_days if int((row.get("realized_performance") or {}).get("count") or 0) > 0)
+    valid_days = len(eligible_days)
     if len(returns) < DIRECTIONAL_MIN_OBSERVATIONS or valid_days < DIRECTIONAL_MIN_DAYS:
         decision = DecisionClass.INSUFFICIENT_EVIDENCE.value
     elif sum(returns) / len(returns) < 0:

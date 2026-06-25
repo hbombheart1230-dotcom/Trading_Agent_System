@@ -228,6 +228,10 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         else ""
     )
     exit_details = exit_row.get("execution_details") if isinstance(exit_row.get("execution_details"), dict) else {}
+    broker_exit_authoritative = bool(
+        exit_row.get("broker_day_authoritative")
+        or exit_details.get("broker_day_authoritative")
+    )
     broker_pnl_pct = (
         exit_details.get("broker_realized_pnl_pct")
         if exit_details.get("broker_realized_pnl_pct") is not None
@@ -248,7 +252,10 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
     if not entry:
         defects.append("entry_missing")
     if realized_exit and not _parse_ts(exit_ts):
-        defects.append("exit_timestamp_invalid")
+        if broker_exit_authoritative:
+            watch_items.append("broker_exit_timestamp_unavailable")
+        else:
+            defects.append("exit_timestamp_invalid")
     if _parse_ts(entry_ts) and _parse_ts(exit_ts) and _parse_ts(exit_ts) < _parse_ts(entry_ts):
         defects.append("exit_before_entry")
     if realized_exit and not str(pnl_source or "").startswith(("lifecycle", "broker", "ai_trade_report", "exit.")):
@@ -350,6 +357,12 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
             "price": exit_row.get("price"),
             "quantity": exit_row.get("qty") or exit_row.get("quantity"),
             "reason": facts.get("exit_reason"),
+            "broker_authoritative": broker_exit_authoritative,
+            "broker_truth_source": str(
+                exit_row.get("broker_day_truth_source")
+                or exit_details.get("broker_day_truth_source")
+                or ""
+            ),
         },
         "outcome": {
             "net_return_pct": round(float(pnl_ratio) * 100.0, 6) if realized_exit and pnl_ratio is not None else None,

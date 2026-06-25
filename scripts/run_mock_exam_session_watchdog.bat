@@ -23,5 +23,5 @@ if /I "%LIVE_STATUS%"=="running" (
 )
 
 echo watchdog_restart session_loop_missing
-call "%SESSION_BAT%" %*
+call "%SESSION_BAT%" --no-allow-offhours --session-hard-gate %*
 exit /b %ERRORLEVEL%

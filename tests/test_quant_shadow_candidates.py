@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from libs.runtime.quant.shadow_candidates import (
+    _market_snapshot_for_symbol,
     build_quant_shadow_candidate_payload,
     save_quant_shadow_candidate_payload,
     sync_q9_decision_candidates_for_state,
@@ -474,3 +475,57 @@ def test_sync_q9_decision_candidates_adds_commander_without_changing_q8_rows(tmp
         "B_STRATEGIST_RANKED",
         "C_COMMANDER_FINAL",
     }
+
+
+def test_market_snapshot_rejects_prior_day_minute_cache() -> None:
+    result = _market_snapshot_for_symbol(
+        {
+            "recent_minute_ohlcv_by_symbol": {
+                "005930": [{
+                    "ts": 1782108120,
+                    "close": 2640,
+                    "raw_ts": "20260622150200",
+                }]
+            }
+        },
+        "005930",
+        now_epoch=1782193411,
+    )
+
+    assert result["available"] is False
+    assert result["reason"] == "same_day_minute_rows_unavailable"
+
+
+def test_q9_candidate_uses_scanner_feature_price_when_minute_baseline_is_missing() -> None:
+    payload = build_quant_shadow_candidate_payload(
+        {
+            "run_id": "run-q9",
+            "trade_day": "2026-06-24",
+            "tick_ts": 1782259500,
+            "q9_decision_id": "Q9_20260624_run-q9",
+            "q9_decision_snapshot": {
+                "decision_id": "Q9_20260624_run-q9",
+                "scanner_pre_strategist_universe": {
+                    "intrinsic_ranked_top20": [
+                        {
+                            "symbol": "005930",
+                            "rank": 1,
+                            "compact_feature_snapshot": {
+                                "engine_close_last": 85000,
+                            },
+                        }
+                    ]
+                },
+                "scanner_control": {"top10": []},
+                "strategist_selection": {"post_strategist_top10": []},
+                "commander_final": {},
+            },
+            "selected": {"symbol": "005930"},
+        }
+    )
+
+    row = payload["q9_decision_candidates"][0]
+    assert row["q9_decision_role"] == "P_SCANNER_PRE_STRATEGIST_UNIVERSE"
+    assert row["shadow_forward_base"]["available"] is True
+    assert row["shadow_forward_base"]["baseline_price"] == 85000
+    assert row["shadow_forward_base"]["source"] == "scanner_feature_snapshot"

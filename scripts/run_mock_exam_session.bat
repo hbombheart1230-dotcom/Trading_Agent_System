@@ -9,6 +9,6 @@ if not exist "%RESTART_BAT%" (
   exit /b 3
 )
 
-rem Scheduled session startup must use the same clean restart path as manual operation.
-call "%RESTART_BAT%" --log-tag scheduled_start %*
+rem Scheduled regular-session startup must never inherit off-hours operation.
+call "%RESTART_BAT%" --log-tag scheduled_start --no-allow-offhours --session-hard-gate %*
 exit /b %ERRORLEVEL%

@@ -15,6 +15,7 @@ def build_daily_scorecard(
     attributions: list[dict[str, Any]],
     q8_review: dict[str, Any],
     start_gate: dict[str, Any],
+    day_validity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     eligible = [
         row for row in trade_evaluations
@@ -54,6 +55,7 @@ def build_daily_scorecard(
             "q8_status": "CLOSED",
             "q9_status": "READINESS" if str(start_gate.get("status") or "") != "READY" else "FORWARD_WINDOW_ELIGIBLE",
             "full_chain_start_gate": start_gate,
+            "q9_day_validity": day_validity or {},
         },
         "artifact_integrity": {
             "required_coverage": inventory.get("required_coverage"),

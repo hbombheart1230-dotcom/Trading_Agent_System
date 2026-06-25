@@ -7,6 +7,8 @@ from libs.reporting.evaluation.contracts import EvidenceClass, validate_contract
 from libs.reporting.evaluation.metrics import performance_metrics
 from libs.reporting.evaluation.pipeline import build_q9_evaluation
 from libs.reporting.evaluation.trade_read_model import build_q9_trade_read_model
+from libs.reporting.evaluation.pipeline import _baseline_hash
+from libs.reporting.evaluation.start_gate import build_full_chain_start_gate
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -247,3 +249,68 @@ def test_trade_read_model_recovers_q9_snapshot_from_daily_window(tmp_path) -> No
     assert model["selection"]["q9_decision_id"] == "Q9_20260623_run-entry"
     assert model["selection"]["raw_scanner_top1"]["symbol"] == "000660"
     assert model["selection"]["commander_final_explicit"] is True
+
+
+def test_broker_authoritative_close_without_timestamp_is_watch(tmp_path: Path) -> None:
+    trade = tmp_path / "TRD_BROKER_CLOSE"
+    _write(trade / "lifecycle_bundle.json", {
+        "day": "2026-06-24",
+        "trade_id": trade.name,
+        "symbol": "097780",
+        "lifecycle": {
+            "status": "closed",
+            "entry": {"ts": "2026-06-24T01:42:09+00:00", "price": 1414, "qty": 1000},
+        },
+    })
+    _write(trade / "entry.json", {})
+    _write(trade / "exit.json", {
+        "broker_day_authoritative": True,
+        "action": "SELL",
+        "price": 1399,
+        "qty": 1000,
+        "timestamp": "",
+        "execution_details": {
+            "broker_day_authoritative": True,
+            "broker_day_truth_source": "kiwoom.ka10170",
+            "broker_realized_pnl": -27433,
+            "broker_realized_pnl_pct": -0.0194,
+        },
+    })
+    for name in ("scanner", "strategist", "commander", "monitor"):
+        _write(trade / "evidence" / f"{name}_evidence.json", {})
+
+    model = build_q9_trade_read_model(trade)
+
+    assert model["evidence_class"] == "REALIZED"
+    assert model["integrity"]["status"] == "WATCH"
+    assert model["integrity"]["defects"] == []
+    assert "broker_exit_timestamp_unavailable" in model["integrity"]["watch_items"]
+    assert model["exit"]["broker_authoritative"] is True
+    assert model["outcome"]["net_return_pct"] == -1.94
+
+
+def test_freeze_baseline_hash_is_stable_and_trade_independent() -> None:
+    assert _baseline_hash() == _baseline_hash()
+
+
+def test_start_gate_accepts_legitimate_pending_forward_rows() -> None:
+    gate = build_full_chain_start_gate(
+        models=[],
+        baseline_hash=_baseline_hash(),
+        inventory={
+            "daily_artifacts": {
+                "q9_decision_windows": {
+                    "exists": True,
+                    "schema_match": True,
+                    "complete_abc_window_count": 20,
+                    "pre_strategist_forward_candidate_count": 100,
+                    "forward_observed_candidate_count": 80,
+                    "forward_pending_candidate_count": 20,
+                    "forward_invalid_candidate_count": 0,
+                    "missing_selected_candidate_count": 0,
+                }
+            }
+        },
+    )
+
+    assert "missing_forward_price" not in gate["reason_categories"]

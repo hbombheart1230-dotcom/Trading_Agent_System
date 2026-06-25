@@ -30,6 +30,15 @@ Q9 evaluates Commander, Strategist, Scanner, Monitor, execution, Reporter
 feedback, and their interactions. It does not create a new trading tactic and
 does not replace Q8.
 
+## Fixed Program Names
+
+- Q9: `Multi-Agent Attribution Evaluation`
+- Q10: `Samsung/Hynix Large-Cap Baseline Control`
+- Q11: `Opening Surge & Market Reversal Research` (`09:00-10:00 KST`)
+
+Q10 and Q11 are independent shadow programs running in parallel with Q9. They
+are not sequential replacements for Q9.
+
 ## Documents
 
 - `current_operating_baseline.md`
@@ -41,6 +50,18 @@ does not replace Q8.
   - permitted measurement-only fixes
   - mandatory daily post-close checks
   - valid-day and sample-count rules
+- `q9_day1_opening_calculation_review_2026-06-24.md`
+  - Day 1 Samsung Electronics and SK hynix opening-move diagnosis
+  - separates arithmetic correctness from opening-model fitness
+  - records volume-reference, cost-edge-state, VWAP, and compound-gate concerns
+  - authorizes no runtime behavior change during the freeze
+- `opportunity_engine_shadow_plan.md`
+  - Q11 independent 09:00-10:00 opening-surge and market-reversal research
+  - records real-time market, breadth, relative-strength, volume, and turnover evidence
+  - produces virtual probe entries and exits without Q9 or runtime integration
+- `baseline_samsung_hynix_control.md`
+  - Q10 independent Samsung Electronics / SK hynix large-cap control
+  - compares a fixed-universe rule baseline against Q9 without changing Q9
 - `q9_full_chain_evaluation_matrix.md`
   - fixed Strategist, Scanner, Commander, Monitor-entry, and Monitor-exit scope
   - Top-10 evaluation boundary and rank-bucket comparisons

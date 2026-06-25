@@ -206,6 +206,38 @@ def run_closeout_maintenance(
     except Exception as exc:
         out["steps"]["operator_visibility_summary"] = {"ok": False, "error": str(exc)}
 
+    try:
+        from libs.reporting.evaluation.frozen_window_closeout import (
+            run_frozen_window_closeout,
+        )
+
+        frozen = run_frozen_window_closeout(
+            day=normalized_day,
+            reports_root=reports_root,
+            state_path=state_path or Path("data/state.json"),
+        )
+        out["steps"]["q9_baseline_frozen_window"] = {
+            "ok": bool(frozen.get("ok")),
+            "result_path": frozen.get("result_path"),
+            "valid_day_count": frozen.get("valid_day_count"),
+            "remaining_valid_days": frozen.get("remaining_valid_days"),
+            "window_complete": frozen.get("window_complete"),
+            "evidence_status": (
+                (frozen.get("day_record") or {}).get("evidence_status")
+            ),
+            "forward_windows_complete": (
+                (frozen.get("day_record") or {}).get("forward_windows_complete")
+            ),
+            "primary_alpha": dict(
+                (frozen.get("day_record") or {}).get("primary_alpha") or {}
+            ),
+        }
+    except Exception as exc:
+        out["steps"]["q9_baseline_frozen_window"] = {
+            "ok": False,
+            "error": str(exc),
+        }
+
     out["ok"] = all(bool(step.get("ok")) for step in out["steps"].values() if isinstance(step, dict))
     out["artifacts"] = {
         name: {

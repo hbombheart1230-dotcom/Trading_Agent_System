@@ -154,9 +154,15 @@ def attach_forward_outcomes(
         base_epoch = _to_int(base.get("baseline_epoch"), 0) if isinstance(base, Mapping) else 0
         base_price = _to_float(base.get("baseline_price"), None) if isinstance(base, Mapping) else None
         minute_rows = list(rows_by_symbol.get(symbol) or [])
+        generated_epoch = _parse_epoch(row.get("_payload_generated_at") or row.get("generated_at"))
+        generated_day = _kst_day_from_epoch(generated_epoch)
         if (base_epoch <= 0 or base_price is None or base_price <= 0) and minute_rows:
-            generated_epoch = _parse_epoch(row.get("_payload_generated_at") or row.get("generated_at"))
-            usable = [r for r in minute_rows if int(r.get("ts") or 0) <= generated_epoch] if generated_epoch > 0 else []
+            usable = [
+                r
+                for r in minute_rows
+                if int(r.get("ts") or 0) <= generated_epoch
+                and (not generated_day or _row_day(r) == generated_day)
+            ] if generated_epoch > 0 else []
             baseline_row = usable[-1] if usable else None
             if baseline_row:
                 base_epoch = int(baseline_row.get("ts") or 0)
@@ -175,9 +181,23 @@ def attach_forward_outcomes(
             }
             out.append(row)
             continue
+        base_day = _row_day(
+            {
+                "ts": base_epoch,
+                "raw_ts": base.get("baseline_raw_ts") if isinstance(base, Mapping) else "",
+            }
+        )
+        if generated_day and base_day and generated_day != base_day:
+            row["shadow_forward_outcome"] = {
+                "available": False,
+                "reason": "stale_baseline_cross_day",
+                "generated_day": generated_day,
+                "baseline_day": base_day,
+            }
+            out.append(row)
+            continue
         checkpoints: Dict[str, Any] = {}
         observed = 0
-        base_day = _row_day({"ts": base_epoch, "raw_ts": base.get("baseline_raw_ts") if isinstance(base, Mapping) else ""})
         same_day_rows = [r for r in minute_rows if not base_day or _row_day(r) == base_day]
         for minutes in CHECKPOINT_MINUTES:
             target = int(base_epoch + minutes * 60)

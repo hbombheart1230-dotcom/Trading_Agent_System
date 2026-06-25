@@ -79,11 +79,42 @@ A day is valid only when:
 - the runtime covered the full regular session
 - daily Q9 artifacts exist
 - the additive Q9 schema is valid
-- P/A/B/C rows are linked by decision ID
+- at least 20 P/A/B/C windows exist
+- at least 95% of Scanner decision windows have linked P/A/B/C rows
 - selected candidates are present where selection occurred
-- forward observations are available or have an explicit legitimate pending
-  reason
+- at least 95% of forward candidate rows are observed or have an explicit
+  legitimate pending reason
 - no unresolved artifact-integrity blocker changes the interpretation
+
+A day with zero executed trades can still be a valid Q9 day. Trade execution
+is not required for Scanner, Strategist, Commander, shadow-candidate, or
+forward-outcome evaluation. Monitor entry, Monitor exit, and realized-system
+samples remain insufficient until actual trades occur.
+
+Synthetic/test rows are excluded from the formal sample and reported as a
+warning. A small number of invalid forward rows are excluded from the affected
+component sample. They invalidate the whole day only when usable forward
+coverage falls below 95%.
+
+The canonical validity artifact is:
+
+- `reports/evaluation/daily/YYYY-MM-DD/q9_day_validity.json`
+
+Its final post-close status is `VALID` or `INVALID`. During the session it is
+`IN_PROGRESS`; this is not a failed day.
+
+## Day-One Operational Checkpoints
+
+For each formal evaluation day:
+
+1. 09:10 KST: confirm runtime heartbeat, Q9 schema, and fresh P/A/B/C linkage.
+2. 12:00 KST: confirm linkage ratio and forward observation growth.
+3. 15:35 KST or after Kiwoom regular-session close confirmation: generate the
+   final Q9 evaluation and inspect `q9_day_validity.json`.
+
+If a measurement defect is found intraday, repair the measurement path only.
+Preserve already valid rows. Do not discard the full day unless the final
+validity artifact is `INVALID`.
 
 ## Decision Timing
 

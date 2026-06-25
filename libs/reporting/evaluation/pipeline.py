@@ -9,7 +9,9 @@ from typing import Any
 from .artifact_inventory import build_artifact_inventory, iter_trade_dirs, read_json
 from .counterfactuals import build_selection_attribution
 from .daily_scorecard import build_daily_scorecard
+from .day_validity import build_q9_day_validity
 from .feedback_effectiveness import build_feedback_effectiveness
+from .five_day_freeze import build_freeze_manifest
 from .markdown import render_daily_scorecard, render_trade_evaluation
 from .rolling_scorecard import build_rolling_scorecard
 from .start_gate import build_full_chain_start_gate
@@ -28,15 +30,8 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _baseline_hash(models: list[dict[str, Any]]) -> str:
-    basis = [
-        {
-            "trade_id": model.get("trade_id"),
-            "playbook": (model.get("selection") or {}).get("strategist_playbook"),
-            "source": ((model.get("provenance") or {}).get("field_sources") or {}).get("strategy_policy_source"),
-        }
-        for model in models
-    ]
+def _baseline_hash() -> str:
+    basis = build_freeze_manifest()
     return hashlib.sha256(json.dumps(basis, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
 
 
@@ -49,12 +44,13 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
     attributions = [build_selection_attribution(model) for model in models]
     q8_path = reports_root / "operator_summary" / "daily" / day / "q8_shadow_blocker_review.json"
     q8_review = read_json(q8_path)
-    baseline_hash = _baseline_hash(models)
+    baseline_hash = _baseline_hash()
     start_gate = build_full_chain_start_gate(
         models=models,
         inventory=inventory,
         baseline_hash=baseline_hash,
     )
+    day_validity = build_q9_day_validity(day=day, inventory=inventory)
     scorecard = build_daily_scorecard(
         day=day,
         inventory=inventory,
@@ -62,6 +58,7 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         attributions=attributions,
         q8_review=q8_review,
         start_gate=start_gate,
+        day_validity=day_validity,
     )
     scorecard["generated_at"] = datetime.now(timezone.utc).isoformat()
     scorecard["baseline_hash"] = baseline_hash
@@ -81,6 +78,7 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
     daily_out = evaluation_root / "daily" / day
     _write_json(daily_out / "artifact_inventory.json", inventory)
     _write_json(daily_out / "full_chain_start_gate.json", start_gate)
+    _write_json(daily_out / "q9_day_validity.json", day_validity)
     _write_json(daily_out / "daily_scorecard.json", scorecard)
     _write_text(daily_out / "daily_scorecard.md", render_daily_scorecard(scorecard))
 
@@ -130,6 +128,7 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         "trade_count": len(models),
         "daily_scorecard": str(daily_out / "daily_scorecard.json"),
         "full_chain_start_gate": str(daily_out / "full_chain_start_gate.json"),
+        "q9_day_validity": str(daily_out / "q9_day_validity.json"),
         "rolling_scorecards": rolling_outputs,
         "strategist_effectiveness": str(evaluation_root / "strategist" / day / "strategist_effectiveness.json"),
         "feedback_effectiveness": str(evaluation_root / "feedback" / day / "feedback_effectiveness.json"),

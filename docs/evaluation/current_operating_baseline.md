@@ -32,6 +32,7 @@ reopen a completed evaluation window or authorize a behavior change.
 | Q9 attribution linkage | ACTIVE | New decision windows persist pre-Strategist universe P, Scanner A, Strategist B, and Commander C with forward outcomes. Older windows remain historical context only. |
 | Q9 fixed forward window | READY TO START | 2026-06-23 is excluded as the instrumentation/application day. The next full regular-session trading day is Day 1 of the fixed five-valid-day window. |
 | Runtime behavior change | PROHIBITED | A separate promotion review is required. |
+| Samsung/Hynix control | FROZEN WITH Q9 | The independent rule-based baseline and Q9 behavior are frozen for five valid full trading days starting 2026-06-24. Only observability/reporting defects may be fixed. |
 
 ## Fixed System Scope
 

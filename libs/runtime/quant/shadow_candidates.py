@@ -242,8 +242,27 @@ def _market_snapshot_for_symbol(state: Mapping[str, Any], symbol: str, *, now_ep
     rows = _normalize_minute_rows(_minute_root(state).get(symbol))
     if not rows:
         return {"available": False, "reason": "minute_rows_unavailable"}
-    usable = [row for row in rows if int(row.get("ts") or 0) <= int(now_epoch)]
-    baseline = usable[-1] if usable else rows[-1]
+    now_day = datetime.fromtimestamp(int(now_epoch), tz=ZoneInfo("Asia/Seoul")).date()
+    same_day_rows = [
+        row
+        for row in rows
+        if datetime.fromtimestamp(int(row.get("ts") or 0), tz=ZoneInfo("Asia/Seoul")).date()
+        == now_day
+    ]
+    if not same_day_rows:
+        latest = rows[-1]
+        return {
+            "available": False,
+            "reason": "same_day_minute_rows_unavailable",
+            "latest_epoch": int(latest.get("ts") or 0),
+            "latest_raw_ts": _text(latest.get("raw_ts")),
+        }
+    usable = [
+        row for row in same_day_rows if int(row.get("ts") or 0) <= int(now_epoch)
+    ]
+    if not usable:
+        return {"available": False, "reason": "same_day_baseline_not_reached"}
+    baseline = usable[-1]
     return {
         "available": True,
         "baseline_epoch": int(baseline["ts"]),
@@ -258,7 +277,23 @@ def _attach_market_snapshot(row: Dict[str, Any], state: Mapping[str, Any], *, no
     if not symbol:
         row["shadow_forward_base"] = {"available": False, "reason": "symbol_missing"}
         return row
-    row["shadow_forward_base"] = _market_snapshot_for_symbol(state, symbol, now_epoch=now_epoch)
+    snapshot = _market_snapshot_for_symbol(state, symbol, now_epoch=now_epoch)
+    if not snapshot.get("available"):
+        compact = _as_dict(row.get("compact_feature_snapshot"))
+        feature_price = _float(
+            compact.get("engine_close_last")
+            or compact.get("skill_quote_price"),
+            None,
+        )
+        if feature_price is not None and feature_price > 0:
+            snapshot = {
+                "available": True,
+                "baseline_epoch": int(now_epoch),
+                "baseline_price": float(feature_price),
+                "source": "scanner_feature_snapshot",
+                "fallback_reason": _text(snapshot.get("reason")),
+            }
+    row["shadow_forward_base"] = snapshot
     return row
 
 
@@ -676,6 +711,9 @@ def _q9_decision_candidate_rows(
             if not isinstance(candidate, Mapping) or not _symbol(candidate):
                 continue
             row = _candidate_context(candidate)
+            compact_feature_snapshot = _as_dict(candidate.get("compact_feature_snapshot"))
+            if compact_feature_snapshot:
+                row["compact_feature_snapshot"] = compact_feature_snapshot
             row.update(
                 {
                     "symbol": _symbol(candidate),

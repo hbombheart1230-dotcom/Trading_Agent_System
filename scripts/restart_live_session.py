@@ -228,7 +228,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lock-stale-sec", type=int, default=to_int(os.getenv("M13_LIVE_LOCK_STALE_SEC", "1800"), 1800))
     p.add_argument("--tick-pipeline", choices=["legacy_m10", "integrated_chain"], default="integrated_chain")
     p.add_argument("--sleep-sec", type=int, default=30)
-    p.add_argument("--allow-offhours", dest="allow_offhours", action="store_true", default=True)
+    p.add_argument("--allow-offhours", dest="allow_offhours", action="store_true", default=False)
     p.add_argument("--no-allow-offhours", dest="allow_offhours", action="store_false")
     p.add_argument("--session-hard-gate", action="store_true")
     p.add_argument("--stop-wait-sec", type=int, default=15)

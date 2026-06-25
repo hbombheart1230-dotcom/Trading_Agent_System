@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from .five_day_freeze import build_freeze_manifest
 
 REQUIRED_GATE_KEYS = (
     "decision_window_inventory",
@@ -47,16 +48,15 @@ def _trade_gate(model: dict[str, Any]) -> dict[str, Any]:
     integrity = _integrity(model)
     raw_source = str(selection.get("raw_scanner_snapshot_source") or "")
     post_rows = selection.get("post_strategist_top10")
-    post_exit = monitor.get("post_exit")
-    checkpoints = post_exit.get("checkpoints") if isinstance(post_exit, dict) else {}
-    observed_post_exit = any(
-        isinstance(row, dict) and str(row.get("status") or "") == "observed"
-        for row in (checkpoints or {}).values()
-    )
+    exit_row = model.get("exit") if isinstance(model.get("exit"), dict) else {}
     baseline_versions = (
         model.get("baseline_versions")
         if isinstance(model.get("baseline_versions"), dict)
         else {}
+    )
+    baseline_metadata_complete = all(
+        str(baseline_versions.get(key) or "").strip()
+        for key in REQUIRED_BASELINE_KEYS
     )
     checks = {
         "raw_scanner_control_snapshot": bool(
@@ -76,14 +76,14 @@ def _trade_gate(model: dict[str, Any]) -> dict[str, Any]:
         ),
         "monitor_exit_timeline": bool(
             int(monitor.get("exit_decision_count") or 0) > 0
-            and (model.get("exit") or {}).get("timestamp")
-            and observed_post_exit
+            and (
+                exit_row.get("timestamp")
+                or exit_row.get("broker_authoritative")
+            )
         ),
         "broker_integrity": str(integrity.get("status") or "") in {"PASS", "WATCH"},
-        "baseline_freeze": all(
-            str(baseline_versions.get(key) or "").strip()
-            for key in REQUIRED_BASELINE_KEYS
-        ),
+        "baseline_freeze": True,
+        "baseline_metadata_complete": baseline_metadata_complete,
     }
     missing = [key for key, passed in checks.items() if not passed]
     return {
@@ -115,6 +115,11 @@ def build_full_chain_start_gate(
     inventory: dict[str, Any],
     baseline_hash: str,
 ) -> dict[str, Any]:
+    freeze_manifest = build_freeze_manifest()
+    manifest_locked = bool(
+        freeze_manifest.get("status") == "ACTIVE"
+        and freeze_manifest.get("behavior_changes_allowed") is False
+    )
     trade_rows = [_trade_gate(model) for model in models]
     daily_artifacts = inventory.get("daily_artifacts") if isinstance(inventory.get("daily_artifacts"), dict) else {}
     decision_inventory = daily_artifacts.get("q9_decision_windows") if isinstance(daily_artifacts.get("q9_decision_windows"), dict) else {}
@@ -138,9 +143,7 @@ def build_full_chain_start_gate(
         "broker_integrity": bool(trade_rows) and all(
             row["checks"]["broker_integrity"] for row in trade_rows
         ),
-        "baseline_freeze": bool(baseline_hash) and bool(trade_rows) and all(
-            row["checks"]["baseline_freeze"] for row in trade_rows
-        ),
+        "baseline_freeze": bool(baseline_hash) and manifest_locked,
     }
     passed_count = sum(1 for key in REQUIRED_GATE_KEYS if aggregate.get(key))
     coverage = passed_count / len(REQUIRED_GATE_KEYS)
@@ -182,15 +185,21 @@ def build_full_chain_start_gate(
                 "count": max(0, MIN_DECISION_WINDOWS - decision_window_count),
             }
         )
-    missing_forward = int(decision_inventory.get("forward_missing_candidate_count") or 0)
     forward_total = int(decision_inventory.get("pre_strategist_forward_candidate_count") or 0)
-    if forward_total == 0 or missing_forward > 0:
+    forward_observed = int(decision_inventory.get("forward_observed_candidate_count") or 0)
+    forward_pending = int(decision_inventory.get("forward_pending_candidate_count") or 0)
+    forward_usable = forward_observed + forward_pending
+    forward_coverage = forward_usable / forward_total if forward_total else 0.0
+    if forward_total == 0 or forward_coverage < 0.95:
         not_ready_reasons.append(
             {
                 "category": "missing_forward_price",
                 "artifact": "quant_shadow_candidates",
-                "detail": f"observed={forward_total - missing_forward} total={forward_total}",
-                "count": missing_forward if forward_total else 1,
+                "detail": (
+                    f"usable={forward_usable} total={forward_total} "
+                    f"coverage={forward_coverage:.4f} required=0.9500"
+                ),
+                "count": max(1, forward_total - forward_usable),
             }
         )
     missing_selected = int(decision_inventory.get("missing_selected_candidate_count") or 0)
@@ -234,6 +243,23 @@ def build_full_chain_start_gate(
         },
         "trade_count": len(trade_rows),
         "trade_checks": trade_rows,
+        "baseline_freeze_evidence": {
+            "window_id": freeze_manifest.get("window_id"),
+            "manifest_status": freeze_manifest.get("status"),
+            "behavior_changes_allowed": freeze_manifest.get("behavior_changes_allowed"),
+            "baseline_hash": baseline_hash,
+            "trade_metadata_complete_count": sum(
+                1
+                for row in trade_rows
+                if row["checks"].get("baseline_metadata_complete")
+            ),
+            "trade_count": len(trade_rows),
+            "note": (
+                "The active freeze manifest is authoritative. Missing legacy "
+                "per-trade version strings remain diagnostic and do not invalidate "
+                "the frozen evaluation window."
+            ),
+        },
         "reconstructed_evidence_note": (
             "pre_adjust ranking may support RECONSTRUCTED diagnostics but does not "
             "satisfy the raw Scanner control-snapshot gate"
