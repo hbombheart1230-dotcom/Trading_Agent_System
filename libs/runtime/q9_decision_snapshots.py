@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -11,6 +14,40 @@ from zoneinfo import ZoneInfo
 
 SCHEMA_VERSION = "q9_decision_windows.v1"
 KST = ZoneInfo("Asia/Seoul")
+_WRITE_LOCK = threading.Lock()
+
+
+@contextmanager
+def _cross_process_lock(path: Path):
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        except ImportError:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        handle.seek(0)
+        try:
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except ImportError:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -92,45 +129,49 @@ def _upsert(state: dict[str, Any], stage_payload: Mapping[str, Any]) -> dict[str
     decision_id = ensure_q9_decision_id(state)
     path = _output_path(state)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = _read_payload(path, day=_day(state))
-    windows = [
-        dict(row)
-        for row in payload.get("windows") or []
-        if isinstance(row, Mapping)
-    ]
-    target = next(
-        (row for row in windows if str(row.get("decision_id") or "") == decision_id),
-        None,
-    )
-    if target is None:
-        generated_at = _generated_at(state)
-        try:
-            generated_dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
-        except ValueError:
-            generated_dt = None
-        target = {
-            "schema_version": "q9_decision_window.v1",
-            "behavior_effect": "observation_only",
-            "decision_id": decision_id,
-            "decision_epoch": (
-                state.get("now_epoch")
-                if state.get("now_epoch") is not None
-                else int(generated_dt.timestamp())
-                if generated_dt is not None
-                else None
-            ),
-            "generated_at": generated_at,
-            "run_id": str(state.get("run_id") or ""),
-        }
-        windows.append(target)
-    target.update(dict(stage_payload))
-    target["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    payload["windows"] = windows
-    payload["window_count"] = len(windows)
-    payload["updated_at"] = target["updated_at"]
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
-    temp.replace(path)
+    with _WRITE_LOCK, _cross_process_lock(path):
+        payload = _read_payload(path, day=_day(state))
+        windows = [
+            dict(row)
+            for row in payload.get("windows") or []
+            if isinstance(row, Mapping)
+        ]
+        target = next(
+            (row for row in windows if str(row.get("decision_id") or "") == decision_id),
+            None,
+        )
+        if target is None:
+            generated_at = _generated_at(state)
+            try:
+                generated_dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+            except ValueError:
+                generated_dt = None
+            target = {
+                "schema_version": "q9_decision_window.v1",
+                "behavior_effect": "observation_only",
+                "decision_id": decision_id,
+                "decision_epoch": (
+                    state.get("now_epoch")
+                    if state.get("now_epoch") is not None
+                    else int(generated_dt.timestamp())
+                    if generated_dt is not None
+                    else None
+                ),
+                "generated_at": generated_at,
+                "run_id": str(state.get("run_id") or ""),
+            }
+            windows.append(target)
+        target.update(dict(stage_payload))
+        target["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        payload["windows"] = windows
+        payload["window_count"] = len(windows)
+        payload["updated_at"] = target["updated_at"]
+        temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        temp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        temp.replace(path)
     state["q9_decision_snapshot"] = dict(target)
     state["q9_decision_snapshot_path"] = str(path)
     scanner_output = state.get("scanner_output")

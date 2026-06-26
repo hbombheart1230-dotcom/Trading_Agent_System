@@ -63,6 +63,21 @@ def test_market_reversal_and_surge_candidate_are_observed() -> None:
     assert any(row["opportunity"]["probe_candidate"] for row in signals)
 
 
+def test_probe_fail_reasons_and_near_miss_are_recorded() -> None:
+    start = 1782259200
+    rows = _candles("005930", start=start, step=0.6, volume=100.0)["005930"]
+    signals = build_signal_timeline(
+        day="2026-06-24",
+        candles={"005930": rows},
+        market_timeline=[],
+    )
+
+    assert signals
+    assert all("probe_fail_reasons" in row["opportunity"] for row in signals)
+    assert all("market_data_missing" in row["opportunity"] for row in signals)
+    assert any(row["opportunity"]["market_data_missing"] for row in signals)
+
+
 def test_signal_timeline_is_limited_to_opening_hour() -> None:
     start = 1782259200
     rows = _candles("005930", start=start, step=0.8)["005930"]
@@ -115,11 +130,42 @@ def test_artifacts_are_separate_from_q9(tmp_path: Path) -> None:
         allow_fresh_fetch=False,
     )
     signals = json.loads(Path(result["signals"]).read_text(encoding="utf-8"))
+    report = Path(result["daily_report"]).read_text(encoding="utf-8")
     assert signals["behavior_effect"] == "shadow_only"
     assert signals["evaluation_program_id"] == "Q11_OPENING_SURGE_MARKET_REVERSAL"
     assert signals["research_window"] == "09:00-10:00 KST"
+    assert "market_data_missing_signal_count" in signals["data_quality"]
+    assert "probe_near_miss_count" in signals["data_quality"]
+    assert "## Probe Near-Misses" in report
+    assert "## Probe Fail Reasons" in report
     assert "opportunity_engine_shadow" in result["signals"]
     assert "quant_shadow_candidates" not in result["signals"]
+
+
+def test_pipeline_preserves_higher_quality_existing_signal_snapshot(tmp_path: Path) -> None:
+    start = 1782259200
+    first = build_opportunity_engine_artifacts(
+        day="2026-06-24",
+        symbols=("005930",),
+        reports_root=tmp_path / "reports",
+        candles=_candles("005930", start=start, step=0.8),
+        market_timeline=_market(start),
+        allow_fresh_fetch=False,
+    )
+    first_payload = json.loads(Path(first["signals"]).read_text(encoding="utf-8"))
+
+    second = build_opportunity_engine_artifacts(
+        day="2026-06-24",
+        symbols=("005930",),
+        reports_root=tmp_path / "reports",
+        candles={"005930": []},
+        market_timeline=_market(start),
+        allow_fresh_fetch=False,
+    )
+    second_payload = json.loads(Path(second["signals"]).read_text(encoding="utf-8"))
+
+    assert second_payload["signal_count"] == first_payload["signal_count"]
+    assert second_payload["data_quality"]["preserved_higher_quality_previous_snapshot"] is True
 
 
 def test_package_has_no_q9_or_execution_imports() -> None:

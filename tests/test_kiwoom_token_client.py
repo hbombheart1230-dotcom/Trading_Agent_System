@@ -57,6 +57,11 @@ def test_ensure_token_refresh_and_cache(tmp_path, monkeypatch):
     assert res2.token == "tok1"
     assert len(sess2.calls) == 0
 
+    res3 = cli2.ensure_token(force_refresh=True)
+    assert res3.action == "refreshed"
+    assert res3.token == "tok2"
+    assert len(sess2.calls) == 1
+
 
 def test_ensure_token_dry_run(tmp_path, monkeypatch):
     s = make_settings(tmp_path, monkeypatch)

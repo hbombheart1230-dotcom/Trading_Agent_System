@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from libs.reporting.baseline_samsung_hynix import build_baseline_artifacts
 from libs.reporting.evaluation.pipeline import build_q9_evaluation
+from libs.reporting.evaluation.q9_artifact_repair import repair_q9_day_artifacts
 from libs.research.opportunity_engine import build_opportunity_engine_artifacts
 
 from .five_day_freeze import build_freeze_manifest
@@ -107,6 +108,7 @@ def run_frozen_window_closeout(
     state_path: Path = Path("data/state.json"),
 ) -> dict[str, Any]:
     reports_root = Path(reports_root)
+    q9_repair = repair_q9_day_artifacts(reports_root=reports_root, day=day)
     q9 = build_q9_evaluation(reports_root, day)
     baseline = build_baseline_artifacts(
         day=day,
@@ -182,6 +184,7 @@ def run_frozen_window_closeout(
         "schema_version": "q9_baseline_frozen_closeout.v1",
         "ok": generation_ok and not verification_error,
         "day": day,
+        "q9_artifact_repair": q9_repair,
         "freeze_manifest": build_freeze_manifest(),
         "day_record": day_record,
         "q11": {

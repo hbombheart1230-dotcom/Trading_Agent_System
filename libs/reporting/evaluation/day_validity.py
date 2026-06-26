@@ -151,6 +151,8 @@ def build_q9_day_validity(
             "full_session_coverage": bool(decision.get("full_session_coverage")),
             "first_window_kst": decision.get("first_scanner_window_kst"),
             "last_window_kst": decision.get("last_scanner_window_kst"),
+            "last_runtime_evidence_kst": decision.get("last_q9_runtime_evidence_kst"),
+            "session_coverage_source": decision.get("session_coverage_source"),
             "synthetic_window_count": synthetic_count,
             "missing_selected_candidate_count": missing_selected,
             "forward_candidate_count": forward_total,

@@ -179,6 +179,17 @@ def score_opportunity(
         str(market_features.get("state") or "") == "risk_off_continuation"
         and float(symbol_features.get("market_relative_strength_proxy_pct") or 0.0) < 1.0
     )
+    probe_fail_reasons: list[str] = []
+    if score < 0.68:
+        probe_fail_reasons.append("score_below_0.68")
+    if hard_risk_off:
+        probe_fail_reasons.append("hard_risk_off")
+    if float(symbol_features.get("momentum_3m_pct") or 0.0) <= 0.0:
+        probe_fail_reasons.append("momentum_3m_not_positive")
+    if float(symbol_features.get("robust_volume_ratio") or 0.0) < 0.80:
+        probe_fail_reasons.append("robust_volume_lt_0.80")
+    if not bool(symbol_features.get("opening_low_held")):
+        probe_fail_reasons.append("opening_low_not_held")
     probe_candidate = bool(
         score >= 0.68
         and not hard_risk_off
@@ -198,6 +209,9 @@ def score_opportunity(
         "score": round(score, 6),
         "state": state,
         "probe_candidate": probe_candidate,
+        "probe_fail_reasons": [] if probe_candidate else probe_fail_reasons,
+        "probe_near_miss": bool((not probe_candidate) and score >= 0.65),
+        "market_data_missing": not bool(market_features.get("available")),
         "hard_risk_off": hard_risk_off,
         "components": {key: round(value, 6) for key, value in components.items()},
     }

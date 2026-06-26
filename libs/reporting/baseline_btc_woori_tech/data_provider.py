@@ -123,10 +123,15 @@ def load_btc_signal_rows(*, day: str) -> dict[str, Any]:
 
 def signal_at(payload: Mapping[str, Any], *, epoch: int) -> dict[str, Any]:
     observations: list[dict[str, Any]] = []
+    stale_after_sec = 15 * 60
     for source_name, rows in (payload.get("sources") or {}).items():
         eligible = [row for row in rows if int(row.get("ts") or 0) <= epoch]
         if eligible:
-            observations.append({"name": source_name, **dict(eligible[-1])})
+            observation = {"name": source_name, **dict(eligible[-1])}
+            age_sec = max(0, epoch - int(observation.get("ts") or 0))
+            observation["age_sec"] = age_sec
+            observation["stale"] = age_sec > stale_after_sec
+            observations.append(observation)
     direct = [
         row
         for row in observations
@@ -135,12 +140,15 @@ def signal_at(payload: Mapping[str, Any], *, epoch: int) -> dict[str, Any]:
     basis = direct or observations
     positive = [float(row.get("momentum_5m_pct") or 0.0) for row in basis]
     momentum = sum(positive) / len(positive) if positive else None
+    stale_sources = [str(row.get("name") or "") for row in observations if row.get("stale")]
     return {
         "available": momentum is not None,
         "momentum_5m_pct": round(momentum, 6) if momentum is not None else None,
         "positive": bool(momentum is not None and momentum > 0.0),
         "observations": observations,
         "source_count": len(observations),
+        "fresh_source_count": sum(1 for row in observations if not row.get("stale")),
+        "stale_sources": stale_sources,
+        "freshness_warning": "stale_sources_present" if stale_sources else "",
         "reason": "" if observations else "btc_signal_unavailable",
     }
-

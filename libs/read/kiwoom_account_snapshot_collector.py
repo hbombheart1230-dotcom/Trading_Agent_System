@@ -11,6 +11,13 @@ from libs.read.kiwoom_broker_truth_common import KiwoomBrokerTruthClient, requir
 
 
 SNAPSHOT_ROOT = Path("data/logs/kiwoom_account_snapshots")
+_AUTH_FAILURE_TOKENS = (
+    "Token이 유효하지 않습니다",
+    "token",
+    "8005",
+    "805004",
+    "인증에 실패",
+)
 
 
 def _utc_now() -> datetime:
@@ -23,6 +30,30 @@ def _compact_ts(dt: datetime) -> str:
 
 def _day8(day: str) -> str:
     return str(day or "").replace("-", "")
+
+
+def _payload_has_auth_failure(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    text = json.dumps(payload, ensure_ascii=False)
+    lower = text.lower()
+    return any(token.lower() in lower for token in _AUTH_FAILURE_TOKENS)
+
+
+def _snapshot_latest_eligible(snapshot: Dict[str, Any]) -> bool:
+    calls = snapshot.get("calls") if isinstance(snapshot.get("calls"), list) else []
+    if not calls:
+        return False
+    saw_success = False
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        payload = call.get("payload")
+        if _payload_has_auth_failure(payload):
+            return False
+        if isinstance(payload, dict) and str(payload.get("return_code")) == "0":
+            saw_success = True
+    return saw_success
 
 
 class KiwoomAccountSnapshotCollector:
@@ -149,6 +180,11 @@ def save_kiwoom_account_snapshot(
     latest_path = day_dir / "latest.json"
     snapshot["path"] = str(path)
     path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-    latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    if _snapshot_latest_eligible(snapshot):
+        latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        snapshot["latest_update_skipped"] = False
+    else:
+        snapshot["latest_update_skipped"] = True
+        snapshot["latest_skip_reason"] = "snapshot_not_latest_eligible"
     snapshot["latest_path"] = str(latest_path)
     return snapshot

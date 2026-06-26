@@ -26,6 +26,22 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _signal_payload_quality(payload: Mapping[str, Any]) -> tuple[int, int, int]:
+    quality = payload.get("data_quality") if isinstance(payload.get("data_quality"), Mapping) else {}
+    signal_count = int(payload.get("signal_count") or 0)
+    candle_rows = int(quality.get("candle_row_count") or 0)
+    missing_count = len(list(quality.get("missing_symbols") or [])) if isinstance(quality.get("missing_symbols"), list) else 0
+    return signal_count, candle_rows, -missing_count
+
+
 def build_opportunity_engine_artifacts(
     *,
     day: str,
@@ -63,11 +79,20 @@ def build_opportunity_engine_artifacts(
         slippage_pct=slippage_pct,
     )
     summary = summarize_trades(trades)
+    market_missing_count = sum(
+        1
+        for row in signals
+        if not bool((row.get("market") or {}).get("available"))
+        or bool((row.get("opportunity") or {}).get("market_data_missing"))
+    )
+    probe_near_miss_count = sum(1 for row in signals if bool((row.get("opportunity") or {}).get("probe_near_miss")))
     data_quality = {
         "symbol_count": len(normalized_symbols),
         "symbols_with_candles": sum(1 for rows in candle_map.values() if rows),
         "candle_row_count": sum(len(rows) for rows in candle_map.values()),
         "market_snapshot_count": len(timeline),
+        "market_data_missing_signal_count": market_missing_count,
+        "probe_near_miss_count": probe_near_miss_count,
         "missing_symbols": [symbol for symbol, rows in candle_map.items() if not rows],
     }
     output_dir = reports_root / "evaluation" / "opportunity_engine_shadow" / day
@@ -75,6 +100,19 @@ def build_opportunity_engine_artifacts(
     trades_path = output_dir / "opportunity_engine_virtual_trades.json"
     report_path = output_dir / "opportunity_engine_daily_report.md"
     metadata_path = output_dir / "opportunity_engine_daily_report.json"
+    existing_signal_payload = _read_json(signals_path)
+    if existing_signal_payload and _signal_payload_quality(existing_signal_payload) > (len(signals), int(data_quality["candle_row_count"]), -len(data_quality["missing_symbols"])):
+        existing_signals = existing_signal_payload.get("signals") if isinstance(existing_signal_payload.get("signals"), list) else []
+        if existing_signals:
+            signals = [dict(row) for row in existing_signals if isinstance(row, Mapping)]
+            trades = simulate_probe_v0(
+                signals,
+                cost_pct=cost_pct,
+                slippage_pct=slippage_pct,
+            )
+            summary = summarize_trades(trades)
+            data_quality = dict(existing_signal_payload.get("data_quality") or {})
+            data_quality["preserved_higher_quality_previous_snapshot"] = True
     _write_json(
         signals_path,
         {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Mapping, Sequence
 
 
@@ -12,6 +13,19 @@ def render_report(
     data_quality: Mapping[str, Any],
 ) -> str:
     probes = [row for row in signals if bool((row.get("opportunity") or {}).get("probe_candidate"))]
+    near_misses = [row for row in signals if bool((row.get("opportunity") or {}).get("probe_near_miss"))]
+    fail_reasons = Counter(
+        str(reason)
+        for row in signals
+        for reason in list((row.get("opportunity") or {}).get("probe_fail_reasons") or [])
+        if str(reason)
+    )
+    market_missing_count = sum(
+        1
+        for row in signals
+        if not bool((row.get("market") or {}).get("available"))
+        or bool((row.get("opportunity") or {}).get("market_data_missing"))
+    )
     lines = [
         f"# Q11 Opening Surge & Market Reversal Shadow Report - {day}",
         "",
@@ -30,11 +44,13 @@ def render_report(
         f"- Symbols with candles: {data_quality.get('symbols_with_candles', 0)}",
         f"- Candle rows: {data_quality.get('candle_row_count', 0)}",
         f"- Market snapshots: {data_quality.get('market_snapshot_count', 0)}",
+        f"- Signals missing market data: {data_quality.get('market_data_missing_signal_count', market_missing_count)}",
         "",
         "## Shadow Results",
         "",
         f"- Signal rows: {len(signals)}",
         f"- Probe candidates: {len(probes)}",
+        f"- Probe near-misses: {len(near_misses)}",
         f"- Virtual trades: {summary.get('trade_count', 0)}",
         f"- Win rate: {summary.get('win_rate')}",
         f"- Average net return: {summary.get('average_net_return_pct')}",
@@ -60,6 +76,40 @@ def render_report(
         )
     if not probes:
         lines.append("| - | - | - | - | - | - | - | - |")
+    lines.extend(
+        [
+            "",
+            "## Probe Near-Misses",
+            "",
+            "| Time | Symbol | Score | State | Fail reasons | 3m momentum | Robust volume | VWAP distance |",
+            "|---:|---|---:|---|---|---:|---:|---:|",
+        ]
+    )
+    for row in near_misses[:50]:
+        features = row.get("symbol_features") or {}
+        opportunity = row.get("opportunity") or {}
+        reasons = ", ".join(str(reason) for reason in list(opportunity.get("probe_fail_reasons") or []))
+        lines.append(
+            f"| {row.get('as_of_epoch')} | {row.get('symbol')} | {float(opportunity.get('score') or 0.0):.4f} "
+            f"| {opportunity.get('state')} | {reasons or '-'} "
+            f"| {float(features.get('momentum_3m_pct') or 0.0):.4f}% "
+            f"| {float(features.get('robust_volume_ratio') or 0.0):.3f} "
+            f"| {float(features.get('vwap_distance_pct') or 0.0):.4f}% |"
+        )
+    if not near_misses:
+        lines.append("| - | - | - | - | - | - | - | - |")
+    lines.extend(
+        [
+            "",
+            "## Probe Fail Reasons",
+            "",
+        ]
+    )
+    if fail_reasons:
+        for reason, count in fail_reasons.most_common():
+            lines.append(f"- {reason}: {count}")
+    else:
+        lines.append("- none")
     lines.extend(
         [
             "",

@@ -423,3 +423,53 @@ def test_build_portfolio_snapshot_marks_reader_error_health_in_mock_mode(monkeyp
     assert isinstance(health, dict)
     assert health.get("reader_ok") is False
     assert "account_api_500" in str(health.get("reader_error") or "")
+
+
+def test_build_portfolio_snapshot_uses_valid_account_snapshot_fallback_after_reader_error(monkeypatch, tmp_path):
+    import json
+
+    class BrokenReader:
+        def get_portfolio_snapshot(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("account_balance_api_failed(status=401)")
+
+    snapshot_root = tmp_path / "kiwoom_account_snapshots"
+    day_dir = snapshot_root / "2026-06-25"
+    day_dir.mkdir(parents=True)
+    (day_dir / "valid.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "kiwoom_account_snapshot.v1",
+                "day": "2026-06-25",
+                "trigger": "scheduled_closeout_fallback",
+                "generated_at": "2026-06-25T07:00:01+00:00",
+                "calls": [
+                    {
+                        "api_id": "kt00018",
+                        "status": "ok",
+                        "payload": {
+                            "prsm_dpst_aset_amt": "000000094797551",
+                            "acnt_evlt_remn_indv_tot": [],
+                            "return_code": 0,
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_ACCOUNT_SNAPSHOT_ROOT", str(snapshot_root))
+    state = {"portfolio_reader": BrokenReader(), "persisted_state": {"mock_positions": []}}
+
+    out = build_portfolio_snapshot(state)
+    ps = out["portfolio_snapshot"]
+    health = ps["_health"]
+
+    assert ps["cash"] == 94797551.0
+    assert ps["positions"] == []
+    assert health["reader_ok"] is True
+    assert health["source"] == "account_snapshot_fallback_after_reader_error"
+    assert health["reader_positions_authoritative"] is True

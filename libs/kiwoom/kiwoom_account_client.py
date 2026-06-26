@@ -15,6 +15,12 @@ class KiwoomAccountClient:
         self.http = http
         self.tokens = token_client
 
+    @staticmethod
+    def _is_invalid_token_payload(payload: Dict[str, object]) -> bool:
+        text = str(payload.get("return_msg") or payload.get("message") or "").lower()
+        code = str(payload.get("return_code") or payload.get("code") or "").strip()
+        return code in {"3", "8005", "805004"} and ("token" in text or "인증" in text or "8005" in text)
+
     def get_account_balance(self, *, dry_run: bool = False) -> ApiResponse:
         # Kiwoom REST (mock/real) account-balance endpoint.
         # Legacy /uapi path is not used by Kiwoom OpenAPI and causes unstable responses.
@@ -47,15 +53,17 @@ class KiwoomAccountClient:
             "dmst_stex_tp": "KRX",
         }
 
-        url, resp = self.http.request(
-            "POST",
-            path,
-            headers=headers,
-            json_body=body,
-        )
+        url, resp = self.http.request("POST", path, headers=headers, json_body=body)
         assert resp is not None
         parsed = ApiResponse.from_http(resp.status_code, resp.text)
         payload = parsed.payload if isinstance(parsed.payload, dict) else {}
+        if self._is_invalid_token_payload(payload):
+            ensure = self.tokens.ensure_token(dry_run=False, force_refresh=True)
+            headers.update(self.tokens.auth_headers(ensure.token))
+            url, resp = self.http.request("POST", path, headers=headers, json_body=body)
+            assert resp is not None
+            parsed = ApiResponse.from_http(resp.status_code, resp.text)
+            payload = parsed.payload if isinstance(parsed.payload, dict) else {}
         rc = str(payload.get("return_code") or "").strip()
         if rc and rc not in ("0",):
             msg = str(payload.get("return_msg") or payload.get("message") or "").strip()

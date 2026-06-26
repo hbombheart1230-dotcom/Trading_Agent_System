@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from libs.reporting.evaluation.artifact_inventory import build_artifact_inventory
 from libs.reporting.evaluation.day_validity import build_q9_day_validity
 
 
@@ -118,3 +119,63 @@ def test_current_session_is_not_invalidated_before_close() -> None:
 
     assert payload["status"] == "IN_PROGRESS"
     assert payload["blockers"] == []
+
+
+def test_runtime_shadow_evidence_confirms_session_after_last_scanner_window(
+    tmp_path,
+) -> None:
+    reports = tmp_path / "reports"
+    daily = reports / "operator_summary" / "daily" / "2026-06-25"
+    daily.mkdir(parents=True)
+    (daily / "q9_decision_windows.json").write_text(
+        """
+        {
+          "schema_version": "q9_decision_windows.v1",
+          "windows": [
+            {
+              "decision_id": "Q9_20260625_open",
+              "generated_at": "2026-06-25T00:05:00+00:00",
+              "scanner_control": {},
+              "scanner_pre_strategist_universe": {},
+              "strategist_selection": {},
+              "commander_final": {}
+            },
+            {
+              "decision_id": "Q9_20260625_last_scanner",
+              "generated_at": "2026-06-25T06:14:00+00:00",
+              "scanner_control": {},
+              "scanner_pre_strategist_universe": {},
+              "strategist_selection": {},
+              "commander_final": {}
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    shadow = (
+        tmp_path
+        / "data"
+        / "logs"
+        / "quant_shadow_candidates"
+        / "2026-06-25"
+    )
+    shadow.mkdir(parents=True)
+    (shadow / "close.json").write_text(
+        """
+        {
+          "generated_at": "2026-06-25T06:29:00+00:00",
+          "q9_decision_candidates": [
+            {"q9_decision_role": "C_COMMANDER_FINAL", "symbol": "005930"}
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    inventory = build_artifact_inventory(reports, "2026-06-25")
+    decision = inventory["daily_artifacts"]["q9_decision_windows"]
+
+    assert decision["full_session_coverage"] is True
+    assert decision["session_coverage_source"] == "scanner_selection_plus_q9_shadow_runtime"
+    assert decision["last_q9_runtime_evidence_kst"].endswith("15:29:00+09:00")

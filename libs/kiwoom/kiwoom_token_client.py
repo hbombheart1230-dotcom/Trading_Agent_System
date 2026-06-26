@@ -35,7 +35,7 @@ class KiwoomTokenClient:
         self.http = http
         self.cache = TokenCache(self.s.kiwoom_token_cache_path)
 
-    def ensure_token(self, *, dry_run: bool = False) -> EnsureTokenResult:
+    def ensure_token(self, *, dry_run: bool = False, force_refresh: bool = False) -> EnsureTokenResult:
         # ✅ Dry-run must be side-effect free and must not require secrets.
         if dry_run:
             return EnsureTokenResult(
@@ -47,7 +47,7 @@ class KiwoomTokenClient:
 
         margin = int(self.s.kiwoom_token_refresh_margin_sec)
         cached = self.cache.load()
-        if cached and (not cached.will_expire_within(margin)):
+        if cached and (not force_refresh) and (not cached.will_expire_within(margin)):
             return EnsureTokenResult(
                 action="cache_hit",
                 token=cached.access_token,

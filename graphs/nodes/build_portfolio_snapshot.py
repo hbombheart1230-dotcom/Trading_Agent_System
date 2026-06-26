@@ -8,7 +8,8 @@ from pathlib import Path
 from libs.core.symbols import normalize_symbol
 from libs.read.portfolio_reader import PortfolioReader
 from libs.read.portfolio_reader import MockPortfolioReader
-from libs.read.kiwoom_portfolio_reader import KiwoomPortfolioReader
+from libs.read.kiwoom_portfolio_reader import KiwoomPortfolioReader, _extract_cash, _extract_positions
+from libs.read.snapshot_models import PortfolioSnapshot
 
 
 def _safe_int(value: object, default: int = 0) -> int:
@@ -35,6 +36,61 @@ def _safe_ratio(value: object) -> float | None:
     if abs(out) > 1.0:
         out = out / 100.0
     return float(out)
+
+
+def _snapshot_payload_has_auth_failure(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    text = json.dumps(payload, ensure_ascii=False).lower()
+    return any(token in text for token in ("token", "8005", "805004", "인증에 실패"))
+
+
+def _portfolio_snapshot_from_account_log_payload(payload: dict) -> PortfolioSnapshot | None:
+    cash = _extract_cash(payload)
+    positions = _extract_positions(payload)
+    if cash > 0.0 or positions:
+        return PortfolioSnapshot(cash=cash, positions=positions)
+    return None
+
+
+def _load_valid_account_snapshot_fallback() -> tuple[PortfolioSnapshot, dict] | None:
+    root = Path(os.getenv("KIWOOM_ACCOUNT_SNAPSHOT_ROOT", "data/logs/kiwoom_account_snapshots"))
+    if not root.exists():
+        return None
+    files = sorted(root.glob("**/*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in files:
+        if path.name == "latest.json":
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        calls = payload.get("calls") if isinstance(payload.get("calls"), list) else []
+        if not calls:
+            continue
+        if any(_snapshot_payload_has_auth_failure((call or {}).get("payload")) for call in calls if isinstance(call, dict)):
+            continue
+        best: PortfolioSnapshot | None = None
+        for api_id in ("kt00018", "kt00004", "ka10085"):
+            for call in calls:
+                if not isinstance(call, dict) or str(call.get("api_id") or "") != api_id:
+                    continue
+                call_payload = call.get("payload") if isinstance(call.get("payload"), dict) else {}
+                if str(call_payload.get("return_code")) not in ("0", ""):
+                    continue
+                snap = _portfolio_snapshot_from_account_log_payload(call_payload)
+                if snap is not None:
+                    best = snap
+                    break
+            if best is not None:
+                meta = {
+                    "source_path": str(path),
+                    "generated_at": str(payload.get("generated_at") or ""),
+                    "day": str(payload.get("day") or ""),
+                    "trigger": str(payload.get("trigger") or ""),
+                }
+                return best, meta
+    return None
 
 
 def _normalize_positions(raw: object) -> list[dict]:
@@ -319,7 +375,17 @@ def build_portfolio_snapshot(state: dict) -> dict:
         health["source"] = "mock_fallback_after_reader_error"
         if not mock_mode:
             raise
-        snap = MockPortfolioReader(cash=fallback_cash, positions=[]).get_portfolio_snapshot()
+        account_log_fallback = _load_valid_account_snapshot_fallback() if execution_mode == "real" else None
+        if account_log_fallback is not None:
+            snap, fallback_meta = account_log_fallback
+            health["reader_ok"] = True
+            health["source"] = "account_snapshot_fallback_after_reader_error"
+            health["fallback_source_path"] = str(fallback_meta.get("source_path") or "")
+            health["fallback_generated_at"] = str(fallback_meta.get("generated_at") or "")
+            health["fallback_day"] = str(fallback_meta.get("day") or "")
+            health["fallback_trigger"] = str(fallback_meta.get("trigger") or "")
+        else:
+            snap = MockPortfolioReader(cash=fallback_cash, positions=[]).get_portfolio_snapshot()
 
     if mock_mode and float(getattr(snap, "cash", 0.0) or 0.0) <= 0.0:
         health["fallback_applied"] = True

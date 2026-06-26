@@ -81,6 +81,13 @@ class RealExecutor:
     def _allow() -> Dict[str, Any]:
         return {"ok": True, "code": "OK", "message": "allowed"}
 
+    @staticmethod
+    def _is_invalid_token_response(response: ApiResponse) -> bool:
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        text = str(payload.get("return_msg") or payload.get("message") or response.error_message or "").lower()
+        code = str(payload.get("return_code") or payload.get("code") or response.error_code or "").strip()
+        return code in {"3", "8005", "805004"} and ("token" in text or "인증" in text or "8005" in text)
+
     def preflight_check(self, req: Optional[PreparedRequest] = None) -> Dict[str, Any]:
         """M24-5: explicit preflight check with stable denial reason codes.
 
@@ -161,6 +168,7 @@ class RealExecutor:
 
         # --- Token issuance (only after all guards pass) ---
         token = auth_token
+        token_from_cache = not bool(token)
         if not token:
             ensure = self.tokens.ensure_token(dry_run=False)
             token = ensure.token
@@ -190,4 +198,17 @@ class RealExecutor:
         )
         assert resp is not None
         api_resp = ApiResponse.from_http(resp.status_code, resp.text)
+        if token_from_cache and self._is_invalid_token_response(api_resp):
+            ensure = self.tokens.ensure_token(dry_run=False, force_refresh=True)
+            headers.update({"Authorization": f"Bearer {ensure.token}"})
+            url, resp = self.http.request(
+                req.method,
+                req.path,
+                headers=headers,
+                params=req.query,
+                json_body=req.body if req.body else None,
+                dry_run=False,
+            )
+            assert resp is not None
+            api_resp = ApiResponse.from_http(resp.status_code, resp.text)
         return ExecutionResult(response=api_resp, meta={"executor": "real", "url": url})

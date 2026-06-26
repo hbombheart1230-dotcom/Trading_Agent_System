@@ -111,8 +111,18 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
         )
         if parsed is not None
     ]
+    shadow_times = [
+        parsed
+        for parsed in (
+            _parse_window_kst(row.get("generated_at"))
+            for row in shadow_payloads
+            if row.get("q9_decision_candidates")
+        )
+        if parsed is not None
+    ]
     first_window = min(window_times) if window_times else None
     last_window = max(window_times) if window_times else None
+    last_runtime_evidence = max(window_times + shadow_times) if (window_times or shadow_times) else None
     record.update(
         {
             "expected_schema_version": Q9_DECISION_SCHEMA,
@@ -150,11 +160,19 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
             "synthetic_window_count": len(synthetic_windows),
             "first_scanner_window_kst": first_window.isoformat() if first_window else "",
             "last_scanner_window_kst": last_window.isoformat() if last_window else "",
+            "last_q9_runtime_evidence_kst": (
+                last_runtime_evidence.isoformat() if last_runtime_evidence else ""
+            ),
+            "session_coverage_source": (
+                "scanner_selection_plus_q9_shadow_runtime"
+                if last_runtime_evidence and last_runtime_evidence != last_window
+                else "scanner_selection"
+            ),
             "full_session_coverage": bool(
                 first_window
-                and last_window
+                and last_runtime_evidence
                 and (first_window.hour, first_window.minute) <= (9, 10)
-                and (last_window.hour, last_window.minute) >= (15, 15)
+                and (last_runtime_evidence.hour, last_runtime_evidence.minute) >= (15, 15)
             ),
             "shadow_payload_count": len(shadow_payloads),
             "pre_strategist_forward_candidate_count": len(pre_rows),

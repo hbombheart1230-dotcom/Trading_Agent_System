@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from graphs.nodes.scanner_node import scanner_node
 from libs.runtime.scanner.candidate_risk import resolve_candidate_base_risk
 
 
@@ -88,3 +89,44 @@ def test_missing_market_inputs_are_visible_and_deterministic() -> None:
     assert first["source"] == "market_data_fallback"
     assert "atr_ratio" in first["missing_inputs"]
     assert "trading_value" in first["missing_inputs"]
+
+
+def test_scanner_uses_market_data_fallback_when_upstream_risk_is_missing() -> None:
+    state = {
+        "mock_top_value_symbols": ["005930"],
+        "mock_top_volume_symbols": ["005930"],
+        "mock_condition_symbols": ["005930"],
+        "scanner_features": {
+            "005930": {
+                "close_last": 100_000,
+                "atr14": 1_000,
+                "volatility20": 0.02,
+                "rolling_drawdown20": 0.01,
+                "gap_pct": 0.005,
+                "signal_score": 0.2,
+                "regime": "trend",
+            }
+        },
+        "skill_data": {
+            "market.quote": {
+                "data": [
+                    {
+                        "symbol": "005930",
+                        "price": 100_000,
+                        "change_pct": 1.0,
+                        "volume": 1_000_000,
+                        "value": 100_000_000_000,
+                        "best_bid": 99_900,
+                        "best_ask": 100_000,
+                    }
+                ]
+            }
+        },
+    }
+
+    out = scanner_node(state)
+    row = (out.get("scan_results") or [])[0]
+
+    assert row["base_risk_source"] == "market_data_fallback"
+    assert row["components"]["base_risk"] < 0.70
+    assert row["components"]["base_risk"] != row["features"]["unit_hash"]

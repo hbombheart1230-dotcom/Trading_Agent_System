@@ -29,6 +29,7 @@ def apply_market_status_closeout_events(state: Dict[str, Any]) -> Dict[str, Any]
     if not events:
         return state
 
+    today = datetime.now(KST).date().isoformat()
     persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
     processed = set(str(x) for x in list(persisted.get("processed_market_status_event_ids") or []))
     processed_actions = set(str(x) for x in list(persisted.get("processed_market_status_action_keys") or []))
@@ -36,7 +37,13 @@ def apply_market_status_closeout_events(state: Dict[str, Any]) -> Dict[str, Any]
     state["kiwoom_market_status"] = dict(current)
     persisted["kiwoom_market_status"] = dict(current)
     current_code = str(current.get("code") or "")
-    current_day = _event_day_kst(current) if current else datetime.now(KST).date().isoformat()
+    current_day = _event_day_kst(current) if current else today
+    current_is_today = bool(current) and current_day == today
+    if current and not current_is_today:
+        state["kiwoom_market_status_stale"] = True
+        persisted["kiwoom_market_status_stale"] = True
+        persisted["kiwoom_closeout_notice_active"] = False
+        state["kiwoom_closeout_notice_active"] = False
 
     for event in events:
         event_id = str(event.get("event_id") or "")
@@ -44,7 +51,7 @@ def apply_market_status_closeout_events(state: Dict[str, Any]) -> Dict[str, Any]
         if not event_id or event_id in processed:
             continue
         day = _event_day_kst(event)
-        if day != current_day:
+        if day != today:
             continue
         if code in SESSION_OPEN_CODES:
             state["kiwoom_closeout_notice_active"] = False
@@ -77,12 +84,16 @@ def apply_market_status_closeout_events(state: Dict[str, Any]) -> Dict[str, Any]
 
     # Historical events drive one-time actions, but the latest websocket state
     # is authoritative for the live closeout guard after replay completes.
-    if current_code in SESSION_OPEN_CODES:
+    if current_is_today and current_code in SESSION_OPEN_CODES:
         state["kiwoom_closeout_notice_active"] = False
         persisted["kiwoom_closeout_notice_active"] = False
-    elif current_code in CLOSEOUT_NOTICE_CODES:
+        state["kiwoom_market_status_stale"] = False
+        persisted["kiwoom_market_status_stale"] = False
+    elif current_is_today and current_code in CLOSEOUT_NOTICE_CODES:
         state["kiwoom_closeout_notice_active"] = True
         persisted["kiwoom_closeout_notice_active"] = True
+        state["kiwoom_market_status_stale"] = False
+        persisted["kiwoom_market_status_stale"] = False
 
     persisted["processed_market_status_event_ids"] = [
         str(event.get("event_id") or "")

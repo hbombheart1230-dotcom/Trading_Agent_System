@@ -17,6 +17,7 @@ from libs.reporting.trade_fallback_text import (
 from libs.reporting.trade_execution_snapshot import build_execution_details, build_execution_snapshot
 from libs.reporting.trade_memory_application_surface import build_trade_memory_application_surface
 from libs.reporting.trade_memory_surface import build_trade_report_memory_surface
+from libs.reporting.trade_symbol_context import normalize_scanner_context_for_executed_symbol
 from libs.reporting.trade_story_pipeline import (
     build_execution_outcome_human,
     build_filters_human,
@@ -1202,6 +1203,10 @@ def apply_entry_exit_holding_enrichment(
                 fallback_price = first_monitor_ctx.get("current_price") or first_monitor_ctx.get("price")
             if fallback_price is not None and fallback_price != "":
                 entry_ctx_live["price"] = fallback_price
+        refreshed_scanner_context = normalize_scanner_context_for_executed_symbol(
+            refreshed_scanner_context,
+            executed_symbol=symbol,
+        )
         entry_ctx_live["scanner_context"] = attach_strategy_anchor(
             refreshed_scanner_context,
             strategy_anchor_run_id=strategy_anchor_run_id,

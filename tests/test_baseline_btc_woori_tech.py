@@ -99,6 +99,29 @@ def test_deterministic_decision() -> None:
     assert build_decision_snapshot(**kwargs) == build_decision_snapshot(**kwargs)
 
 
+def test_btc_signal_records_stale_proxy_without_changing_direct_signal() -> None:
+    payload = _btc()
+    payload["sources"]["coinbase_proxy"] = [
+        {
+            "ts": 1782345600,
+            "raw_ts": "20260625090000",
+            "price": 100.0,
+            "momentum_5m_pct": -5.0,
+            "source": "fixture:stale_proxy",
+        }
+    ]
+    decision = build_decision_snapshot(
+        day="2026-06-25",
+        as_of_epoch=1782347400,
+        woori_candles=_candles(),
+        btc_signals=payload,
+    )
+
+    assert decision["btc_signal"]["positive"] is True
+    assert decision["btc_signal"]["stale_sources"] == ["coinbase_proxy"]
+    assert decision["btc_signal"]["freshness_warning"] == "stale_sources_present"
+
+
 def test_cost_and_slippage_application() -> None:
     summary = summarize(
         [
@@ -160,4 +183,3 @@ def test_artifacts_have_no_order_intent_or_execution(tmp_path: Path) -> None:
         assert "execution" not in row
         assert row["entry_rule_count"] <= 3
         assert row["exit_rule_count"] <= 2
-
