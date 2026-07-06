@@ -122,6 +122,15 @@ def _scanner_evidence_context(trade_dir: Path, selected_symbol: str) -> dict[str
     }
 
 
+def _candidate_by_symbol(rows: Any, symbol: str) -> dict[str, Any]:
+    if not symbol or not isinstance(rows, list):
+        return {}
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("symbol") or "") == symbol:
+            return dict(row)
+    return {}
+
+
 def _monitor_evidence_context(trade_dir: Path) -> dict[str, Any]:
     evidence = read_json(trade_dir / "evidence" / "monitor_evidence.json")
     return {
@@ -391,7 +400,16 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         if post_strategist_top10
         else (scanner_context.get("top_candidates") or [None])[0]
     )
-    selected_candidate = scanner_evidence.get("selected_candidate")
+    selected_candidate = (
+        scanner_evidence.get("selected_candidate")
+        if isinstance(scanner_evidence.get("selected_candidate"), dict)
+        else {}
+    )
+    if not selected_candidate:
+        selected_candidate = (
+            _candidate_by_symbol(post_strategist_top10, selected_symbol)
+            or _candidate_by_symbol(raw_scanner_top10, selected_symbol)
+        )
     horizon_contract = build_horizon_contract(
         bundle=bundle,
         entry=entry,
