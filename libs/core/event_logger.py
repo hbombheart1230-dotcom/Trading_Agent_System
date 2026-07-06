@@ -59,6 +59,61 @@ def _is_canonical_operator_event_log_path(path: Path) -> bool:
         return False
 
 
+def _event_log_max_bytes() -> int:
+    raw = str(os.getenv("EVENT_LOG_MAX_BYTES", "") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 1_000_000_000
+    return max(10_000_000, value)
+
+
+def _event_log_payload_max_bytes() -> int:
+    raw = str(os.getenv("EVENT_LOG_PAYLOAD_MAX_BYTES", "") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 10_000
+    return max(3_000, value)
+
+
+def _event_log_compact_top_items() -> int:
+    raw = str(os.getenv("EVENT_LOG_COMPACT_TOP_ITEMS", "") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 5
+    return max(1, min(20, value))
+
+
+def _event_log_compaction_enabled() -> bool:
+    raw = str(os.getenv("EVENT_LOG_COMPACT_HEAVY_PAYLOADS", "1") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _rotate_large_event_log(path: Path) -> None:
+    try:
+        if not _is_canonical_operator_event_log_path(path):
+            return
+        if not path.exists() or path.stat().st_size < _event_log_max_bytes():
+            return
+        archive_dir = path.parent / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        target = archive_dir / f"{path.stem}_{stamp}_{os.getpid()}{path.suffix}"
+        path.replace(target)
+    except Exception:
+        # Logging must never stop trading/runtime flow. Rotation is best-effort.
+        return
+
+
+def _payload_size_bytes(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:
+        return 0
+
+
 def _sanitize_payload(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
@@ -70,6 +125,330 @@ def _sanitize_payload(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_sanitize_payload(item) for item in value]
     return str(value)
+
+
+_COMPACT_ROW_KEYS = (
+    "rank",
+    "symbol",
+    "name",
+    "score",
+    "score_total",
+    "pre_adjust_score_total",
+    "post_adjust_score_total",
+    "scanner_intrinsic_control_score_total",
+    "confidence",
+    "risk_score",
+    "entry_compatibility_score",
+    "scanner_chart_fit_score",
+    "scanner_macro_chart_fit_score",
+    "tactical_strategy",
+    "tactical_subtype",
+    "playbook",
+    "candidate_source",
+    "dominant_block_reason",
+    "expected_monitor_block_reason",
+    "why",
+)
+
+
+def _compact_candidate_row(row: Any) -> Any:
+    if not isinstance(row, dict):
+        return _compact_value(row, depth=1)
+    out: Dict[str, Any] = {}
+    for key in _COMPACT_ROW_KEYS:
+        value = row.get(key)
+        if value not in (None, "", [], {}):
+            out[key] = _compact_value(value, depth=1)
+    for key in ("sources", "source_scores", "score_breakdown", "tactic_suitability", "compatibility_components"):
+        value = row.get(key)
+        if value not in (None, "", [], {}):
+            out[key] = _compact_value(value, depth=1)
+    return out
+
+
+def _compact_rows(rows: Any, *, limit: int) -> list[Any]:
+    if not isinstance(rows, list):
+        return []
+    return [_compact_candidate_row(row) for row in rows[:limit]]
+
+
+def _symbol_list(rows: Any, *, limit: int) -> list[str]:
+    if not isinstance(rows, list):
+        return []
+    out: list[str] = []
+    for row in rows[:limit]:
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip():
+            out.append(str(row.get("symbol") or "").strip())
+    return out
+
+
+def _compact_value(value: Any, *, depth: int = 2) -> Any:
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= 800 else value[:800] + "...[truncated]"
+    if isinstance(value, dict):
+        if depth <= 0:
+            return {"_type": "dict", "_keys": [str(key) for key in list(value.keys())[:20]]}
+        out: Dict[str, Any] = {}
+        for key, item in list(value.items())[:40]:
+            out[str(key)] = _compact_value(item, depth=depth - 1)
+        if len(value) > 40:
+            out["_truncated_key_count"] = len(value) - 40
+        return out
+    if isinstance(value, (list, tuple)):
+        limit = _event_log_compact_top_items()
+        out = [_compact_value(item, depth=depth - 1) for item in list(value)[:limit]]
+        if len(value) > limit:
+            out.append({"_truncated_item_count": len(value) - limit})
+        return out
+    return str(value)
+
+
+def _copy_known_fields(payload: Dict[str, Any], keys: tuple[str, ...]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            out[key] = _compact_value(value, depth=2)
+    return out
+
+
+def _compact_candidate_ranking_table(payload: Dict[str, Any]) -> Dict[str, Any]:
+    limit = _event_log_compact_top_items()
+    out = _copy_known_fields(
+        payload,
+        (
+            "tie_break_rule",
+            "reconstructed_pre_adjust_evidence_class",
+            "reconstructed_pre_adjust_limitation",
+            "scanner_intrinsic_control_source",
+            "scanner_intrinsic_control_evidence_class",
+            "scanner_intrinsic_control_limitation",
+        ),
+    )
+    for key in (
+        "rows",
+        "post_strategist_top10",
+        "reconstructed_pre_adjust_top10",
+        "scanner_intrinsic_control_top10",
+        "scanner_intrinsic_control_top20",
+    ):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            out[f"{key}_count"] = len(rows)
+            out[f"{key}_symbols"] = _symbol_list(rows, limit=20)
+            out[key] = _compact_rows(rows, limit=limit)
+
+    snapshot = payload.get("pre_strategist_full_universe_snapshot")
+    if isinstance(snapshot, dict):
+        source_top20 = snapshot.get("source_universe_top20")
+        intrinsic_top20 = snapshot.get("intrinsic_ranked_top20")
+        out["pre_strategist_full_universe_snapshot"] = {
+            "schema_version": snapshot.get("schema_version"),
+            "behavior_effect": snapshot.get("behavior_effect"),
+            "source": snapshot.get("source"),
+            "scope": snapshot.get("scope"),
+            "candidate_count": snapshot.get("candidate_count"),
+            "source_universe_top20_symbols": _symbol_list(source_top20, limit=20),
+            "intrinsic_ranked_top20_symbols": _symbol_list(intrinsic_top20, limit=20),
+            "source_universe_top20": _compact_rows(source_top20, limit=limit),
+            "intrinsic_ranked_top20": _compact_rows(intrinsic_top20, limit=limit),
+            "limitation": snapshot.get("limitation"),
+        }
+    return out
+
+
+def _compact_event_payload(stage: str, event: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    original_bytes = _payload_size_bytes(payload)
+    max_bytes = _event_log_payload_max_bytes()
+    if not _event_log_compaction_enabled() or original_bytes <= max_bytes:
+        return payload
+
+    stage_event = f"{stage}.{event}"
+    if stage_event == "scanner.candidate_ranking_table":
+        compacted = _compact_candidate_ranking_table(payload)
+    elif stage_event == "scanner.selection_output":
+        compacted = _copy_known_fields(
+            payload,
+            (
+                "selected_symbol",
+                "scanner_selected_symbol",
+                "selected_rank",
+                "scanner_rank",
+                "selected_score_total",
+                "scanner_score_total",
+                "margin_vs_second",
+                "playbook",
+                "policy_source",
+                "entry_compatibility_score",
+                "dominant_block_reason",
+                "expected_monitor_block_reason",
+                "selection_summary",
+                "selection_reason_with_bias",
+                "why_selected",
+                "runner_ups_lost",
+                "tie_break_rule",
+                "final_decision_basis",
+            ),
+        )
+    elif stage_event == "scanner.summary":
+        compacted = _copy_known_fields(
+            payload,
+            (
+                "candidate_source",
+                "candidate_pool_before_filter",
+                "candidate_pool_after_filter",
+                "total_candidates_before_filter",
+                "total_candidates_after_filter",
+                "top_stock",
+                "top_score",
+                "scanner_selected_symbol",
+                "scanner_rank",
+                "scanner_score_total",
+                "scanner_score_breakdown",
+                "scanner_top_candidates",
+                "top_ranked_symbols",
+                "strategist_playbook",
+                "condition_search_status",
+                "condition_search_source",
+                "condition_search_reason",
+                "scan_aggressiveness",
+                "scanner_bias_applied",
+                "scanner_memory_bias_applied",
+                "market_representative_guard_applied",
+                "blocker_family_concentration_applied",
+                "selection_vetoed",
+                "selection_veto_reason",
+            ),
+        )
+    elif stage_event.startswith("monitor."):
+        compacted = _copy_known_fields(
+            payload,
+            (
+                "run_id",
+                "symbol",
+                "decision",
+                "action",
+                "reason",
+                "final_decision",
+                "primary_reason_code",
+                "hard_filter_passed",
+                "hard_filter_fail_reasons",
+                "total_score",
+                "entry_threshold",
+                "score_passed",
+                "scoring_mode",
+                "legacy_entry_decision",
+                "scoring_entry_decision",
+                "entry_decision",
+                "entry_reason",
+                "exit_decision",
+                "exit_reason",
+                "entry_triggered",
+                "entry_evaluated",
+                "entry_pattern",
+                "entry_quality_score",
+                "entry_quality_tier",
+                "score_breakdown",
+                "policy_alignment_summary",
+                "policy_aware_gating",
+                "chart_structure_decision_hint",
+                "no_trade_surface",
+                "scanner_monitor_handoff",
+                "entry_blocker_surface",
+                "entry_threshold_margins",
+                "entry_thresholds",
+                "exit_thresholds",
+                "watch_axes",
+                "applied_policy",
+                "effective_policy",
+                "current_price",
+                "vwap",
+                "volume_ratio",
+                "entry_volume_ratio",
+                "entry_pullback_depth_pct",
+                "entry_minutes_since_session_open",
+                "entry_latest_candle_ts",
+                "entry_minute_refetch_attempted",
+                "entry_minute_refetch_succeeded",
+                "entry_minute_refetch_failure_reason",
+            ),
+        )
+    elif stage_event.startswith("commander.") or stage_event.startswith("commander_router."):
+        compacted = _copy_known_fields(
+            payload,
+            (
+                "mode",
+                "phase",
+                "symbol",
+                "selected_symbol",
+                "decision",
+                "reason",
+                "route",
+                "route_reason",
+                "open_position_count",
+                "max_positions",
+                "position_symbols",
+                "q9",
+                "q10",
+                "q11",
+                "q12",
+                "applied_policy",
+                "effective_policy",
+                "commander_decision",
+            ),
+        )
+    elif stage_event.startswith("decision_trace."):
+        compacted = _copy_known_fields(
+            payload,
+            (
+                "agent",
+                "symbol",
+                "decision",
+                "reason",
+                "selected_symbol",
+                "final_decision",
+                "primary_reason_code",
+                "payload",
+            ),
+        )
+    elif stage_event.startswith("strategist."):
+        compacted = _copy_known_fields(
+            payload,
+            (
+                "scenario",
+                "market_regime",
+                "market_regime_rail",
+                "risk_level",
+                "selected_strategy",
+                "selected_playbook",
+                "priority_symbols",
+                "avoid_symbols",
+                "news_quality",
+                "global_sentiment",
+                "recommendations",
+                "decision",
+                "reason",
+            ),
+        )
+    else:
+        compacted = _compact_value(payload, depth=2)
+        if not isinstance(compacted, dict):
+            compacted = {"value": compacted}
+
+    compacted["_event_log_compacted"] = True
+    compacted["_event_log_original_bytes"] = original_bytes
+    compacted["_event_log_original_keys"] = [str(key) for key in list(payload.keys())[:80]]
+    if _payload_size_bytes(compacted) > max_bytes:
+        compacted = {
+            "_event_log_compacted": True,
+            "_event_log_original_bytes": original_bytes,
+            "_event_log_original_keys": [str(key) for key in list(payload.keys())[:80]],
+            "_event_log_compaction_fallback": "generic_depth_1",
+            "summary": _compact_value(compacted, depth=1),
+        }
+    return compacted
 
 
 def build_event_envelope(
@@ -89,9 +468,10 @@ def build_event_envelope(
     symbol: str = "",
 ) -> Dict[str, Any]:
     ts_utc = ts or _utc_iso()
-    safe_payload = _sanitize_payload(payload or {})
     stage_text = str(stage or "").strip()
     event_text = str(event or "").strip()
+    compact_payload = _compact_event_payload(stage_text, event_text, payload or {})
+    safe_payload = _sanitize_payload(compact_payload)
     event_name_text = str(event_name or "").strip() or ".".join(part for part in (stage_text, event_text) if part)
     agent_text = str(agent or "").strip() or stage_text
     phase_text = str(phase or "").strip()
@@ -227,6 +607,7 @@ class EventLogger:
 
         # Ensure directory exists
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_large_event_log(self.log_path)
 
         # Append atomically-ish (single write) for most OSes
         line = json.dumps(rec, ensure_ascii=False)

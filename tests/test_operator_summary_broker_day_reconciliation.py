@@ -1,7 +1,12 @@
 import json
 from pathlib import Path
 
-from libs.reporting.operator_period_summary import _enrich_rows_with_truth_surface, _is_closed_trade, _metric_return_pct
+from libs.reporting.operator_period_summary import (
+    _enrich_rows_with_truth_surface,
+    _is_closed_trade,
+    _is_realized_nonclosed_exit,
+    _metric_return_pct,
+)
 
 
 def test_enrich_rows_uses_ka10170_to_close_open_lifecycle_residue(tmp_path: Path) -> None:
@@ -75,3 +80,64 @@ def test_enrich_rows_uses_ka10170_to_close_open_lifecycle_residue(tmp_path: Path
     assert row["broker_day_authoritative"] is True
     assert _is_closed_trade(row) is True
     assert _metric_return_pct(row) == -2.54
+
+
+def test_closeout_broker_skip_is_not_counted_as_closed_or_realized(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    trade_dir = reports_root / "trades" / "2026-07-03" / "1500" / "TRD_20260703_025440_06"
+    trade_dir.mkdir(parents=True)
+    (trade_dir / "lifecycle_bundle.json").write_text(
+        json.dumps(
+            {
+                "trade_id": "TRD_20260703_025440_06",
+                "symbol": "025440",
+                "trade_lifecycle_status": "partial",
+                "entry": {"symbol": "025440", "qty": 49, "price": 3280},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    daily = reports_root / "operator_summary" / "daily" / "2026-07-03"
+    daily.mkdir(parents=True)
+    (daily / "closeout_maintenance.json").write_text(
+        json.dumps(
+            {
+                "steps": {
+                    "broker_closed_trade_reconciliation": {
+                        "snapshot_path": "data/logs/kiwoom_account_snapshots/2026-07-03/latest.json",
+                        "skipped": [
+                            {
+                                "trade_id": "TRD_20260703_025440_06",
+                                "symbol": "025440",
+                                "reason": "order_pair_or_day_diary_row_not_found",
+                            }
+                        ],
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    rows = _enrich_rows_with_truth_surface(
+        [
+            {
+                "trade_id": "TRD_20260703_025440_06",
+                "date": "2026-07-03",
+                "symbol": "025440",
+                "status": "partial",
+                "last_status": "partial",
+                "last_action": "SELL",
+                "result_pct": -0.01,
+                "trade_root_path": str(trade_dir),
+            }
+        ],
+        reports_root,
+    )
+
+    row = rows[0]
+    assert row["broker_reconciliation_status"] == "skipped_unresolved"
+    assert _is_closed_trade(row) is False
+    assert _is_realized_nonclosed_exit(row) is False

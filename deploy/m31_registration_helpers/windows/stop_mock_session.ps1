@@ -71,7 +71,16 @@ function Get-LoopRows {
       $cmd = [string]$_.CommandLine
       (
         ($cmd -like "*scripts/run_m13_live_loop.py*") -or
-        ($cmd -like "*-m scripts.run_m13_live_loop*")
+        ($cmd -like "*-m scripts.run_m13_live_loop*") -or
+        ($cmd -like "*scripts\run_session.py*") -or
+        ($cmd -like "*scripts/run_session.py*") -or
+        ($cmd -like "*-m scripts.run_session*") -or
+        ($cmd -like "*scripts\run_baseline_samsung_hynix.py*") -or
+        ($cmd -like "*scripts/run_baseline_samsung_hynix.py*") -or
+        ($cmd -like "*scripts\run_opportunity_engine_shadow.py*") -or
+        ($cmd -like "*scripts/run_opportunity_engine_shadow.py*") -or
+        ($cmd -like "*scripts\run_baseline_btc_woori_tech.py*") -or
+        ($cmd -like "*scripts/run_baseline_btc_woori_tech.py*")
       ) -and (
         ($cmd -like "*$AbsLockPath*") -or
         ($cmd -like "*$ResolvedRoot*")

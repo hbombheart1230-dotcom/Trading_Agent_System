@@ -17,6 +17,7 @@ from .contracts import (
     REPORT_SCHEMA,
     TARGET_SYMBOL,
 )
+from .crypto_fear_greed import load_crypto_fear_greed_index, unavailable as unavailable_crypto_fear_greed
 from .data_provider import load_btc_signal_rows, load_woori_candles
 from .forward_returns import attach_forward_returns, summarize
 from .report import render_report
@@ -60,6 +61,7 @@ def build_baseline_btc_woori_artifacts(
     q9_root: Path = Path("data/logs/quant_shadow_candidates"),
     candles: list[Mapping[str, Any]] | None = None,
     btc_signals: Mapping[str, Any] | None = None,
+    crypto_fear_greed: Mapping[str, Any] | None = None,
     allow_fresh_fetch: bool = True,
     reconstruct_intraday: bool = True,
     slippage_pct: float = DEFAULT_SLIPPAGE_PCT,
@@ -70,6 +72,13 @@ def build_baseline_btc_woori_artifacts(
         else load_woori_candles(day=day, state_path=state_path, allow_fresh_fetch=allow_fresh_fetch)
     )
     signal_payload = dict(btc_signals) if btc_signals is not None else load_btc_signal_rows(day=day)
+    fear_greed_payload = (
+        dict(crypto_fear_greed)
+        if crypto_fear_greed is not None
+        else load_crypto_fear_greed_index(day=day)
+        if allow_fresh_fetch
+        else unavailable_crypto_fear_greed("fresh_fetch_disabled", day=day)
+    )
     epochs = _decision_epochs(candle_rows) if reconstruct_intraday else ([int(candle_rows[-1]["ts"])] if candle_rows else [])
     decisions: list[dict[str, Any]] = []
     for epoch in epochs:
@@ -78,11 +87,19 @@ def build_baseline_btc_woori_artifacts(
             as_of_epoch=epoch,
             woori_candles=candle_rows,
             btc_signals=signal_payload,
+            crypto_fear_greed=fear_greed_payload,
         )
         row["generated_at"] = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
         decisions.append(row)
     output_dir = reports_root / "evaluation" / "baseline_btc_woori_tech" / day
     decisions_path = output_dir / "baseline_btc_woori_decisions.json"
+    existing = _read(decisions_path)
+    existing_decisions = [
+        row for row in existing.get("decisions") or []
+        if isinstance(row, dict)
+    ]
+    if not decisions and existing_decisions:
+        decisions = existing_decisions
     forward_path = output_dir / "baseline_btc_woori_forward_returns.json"
     report_path = output_dir / "baseline_btc_woori_daily_report.md"
     comparison_path = output_dir / "baseline_btc_woori_comparison.json"
@@ -97,6 +114,8 @@ def build_baseline_btc_woori_artifacts(
             "sources": signal_payload.get("available_sources") or [],
             "fallback_reason": signal_payload.get("fallback_reason") or "",
         },
+        "crypto_fear_greed": fear_greed_payload,
+        "crypto_fear_greed_behavior_effect": "observation_only",
         "decision_count": len(decisions),
         "decisions": decisions,
     }
@@ -170,4 +189,3 @@ def build_baseline_btc_woori_artifacts(
         "daily_report_metadata": str(metadata_path),
         "comparison": str(comparison_path),
     }
-

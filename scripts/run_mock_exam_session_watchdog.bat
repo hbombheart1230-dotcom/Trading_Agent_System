@@ -2,26 +2,12 @@
 setlocal
 
 set "ROOT=%~dp0.."
-set "SESSION_BAT=%ROOT%\scripts\run_mock_exam_session.bat"
-set "RESTART_BAT=%ROOT%\scripts\restart_live_session.bat"
+set "PY=%ROOT%\venv\Scripts\python.exe"
 
-if not exist "%SESSION_BAT%" (
-  echo missing_file %SESSION_BAT%
-  exit /b 3
-)
-if not exist "%RESTART_BAT%" (
-  echo missing_file %RESTART_BAT%
+if not exist "%PY%" (
+  echo python_not_found path=%PY%
   exit /b 3
 )
 
-set "LIVE_STATUS="
-for /f "tokens=2 delims==" %%i in ('call "%RESTART_BAT%" --status-only ^| findstr /b "live_status="') do set "LIVE_STATUS=%%i"
-
-if /I "%LIVE_STATUS%"=="running" (
-  echo ok session_loop_alive
-  exit /b 0
-)
-
-echo watchdog_restart session_loop_missing
-call "%SESSION_BAT%" --no-allow-offhours --session-hard-gate %*
+"%PY%" "%ROOT%\scripts\start_trading_day.py" --mode watchdog --lookback-min 10 %*
 exit /b %ERRORLEVEL%

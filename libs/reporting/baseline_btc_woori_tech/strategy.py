@@ -53,6 +53,7 @@ def build_decision_snapshot(
     as_of_epoch: int,
     woori_candles: list[Mapping[str, Any]],
     btc_signals: Mapping[str, Any],
+    crypto_fear_greed: Mapping[str, Any] | None = None,
     volume_ratio_min: float = 1.2,
 ) -> dict[str, Any]:
     local = _features(woori_candles, epoch=as_of_epoch)
@@ -82,6 +83,8 @@ def build_decision_snapshot(
         "as_of_epoch": as_of_epoch,
         "target": {"symbol": TARGET_SYMBOL, "ticker": TARGET_TICKER, "name": TARGET_NAME},
         "btc_signal": btc,
+        "crypto_fear_greed": dict(crypto_fear_greed or {}),
+        "crypto_fear_greed_behavior_effect": "observation_only",
         "local_features": local,
         "entry_rules": list(ENTRY_RULES),
         "entry_rule_count": len(ENTRY_RULES),
@@ -104,4 +107,3 @@ def build_decision_snapshot(
         "strategist_used": False,
         "commander_used": False,
     }
-

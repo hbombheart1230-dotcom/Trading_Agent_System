@@ -51,6 +51,9 @@ are not sequential replacements for Q9.
   - mandatory daily post-close checks
   - valid-day and sample-count rules
 - `q9_day1_opening_calculation_review_2026-06-24.md`
+- `q9_horizon_contract_observability_2026-06-26.md`
+  - adds read-only Strategist/Commander intended holding-window attribution
+  - records premature exits versus strategy horizon without changing runtime
   - Day 1 Samsung Electronics and SK hynix opening-move diagnosis
   - separates arithmetic correctness from opening-model fitness
   - records volume-reference, cost-edge-state, VWAP, and compound-gate concerns

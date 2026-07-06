@@ -13,10 +13,21 @@ execution behavior.
 - BTC/KRW when directly available, otherwise derived from `BTC-USD * KRW=X`
 - BTC/USD from `BTC-USD`
 - Coinbase proxy from `COIN`
+- Crypto Fear & Greed Index from `alternative.me/fng`
 - Woori minute candles from the existing Kiwoom minute provider
 
 Unavailable BTC inputs are recorded as `btc_signal_unavailable`; they never
 fall back to a fabricated neutral or positive signal.
+
+The Crypto Fear & Greed Index is recorded as an observation-only feature:
+
+- `crypto_fear_greed.value`
+- `crypto_fear_greed.classification`
+- `crypto_fear_greed.regime`
+- `crypto_fear_greed.observed_at`
+- `crypto_fear_greed.fallback_reason`
+
+It does not change Q12 virtual entry eligibility in v0.
 
 ## Strategy v0
 

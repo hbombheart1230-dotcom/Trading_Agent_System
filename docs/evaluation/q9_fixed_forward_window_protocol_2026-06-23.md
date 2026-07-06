@@ -7,7 +7,8 @@ Effective date: 2026-06-23
 - Q9 direction: retained
 - Q9 observability enhancement: complete
 - 2026-06-23: instrumentation/application day, excluded from the formal sample
-- Formal Day 1: the next full regular-session trading day
+- 2026-06-24 through 2026-06-26: historical context only for the renewed window
+- Renewed Formal Day 1: 2026-06-29, if the full regular-session validity gate passes
 - Formal window length: five valid trading days
 
 The window is counted by actual full regular-session trading days, not calendar
@@ -111,6 +112,32 @@ For each formal evaluation day:
 2. 12:00 KST: confirm linkage ratio and forward observation growth.
 3. 15:35 KST or after Kiwoom regular-session close confirmation: generate the
    final Q9 evaluation and inspect `q9_day_validity.json`.
+
+Use the deterministic readiness checker instead of ad-hoc manual inspection:
+
+- Preopen:
+  `python scripts/check_q9_q12_readiness.py --day YYYY-MM-DD --phase preopen`
+- Intraday after 09:10 KST:
+  `python scripts/check_q9_q12_readiness.py --day YYYY-MM-DD --phase intraday`
+- Post-close:
+  `python scripts/run_frozen_q9_baseline_closeout.py --day YYYY-MM-DD`
+  then
+  `python scripts/check_q9_q12_readiness.py --day YYYY-MM-DD --phase closeout`
+
+The readiness checker is observability-only. It must not start, stop, select,
+approve, or execute trades. It verifies:
+
+- live session heartbeat
+- Q10 Samsung/Hynix loop
+- Q11 opening opportunity loop
+- Q12 BTC/Woori loop
+- Q9 decision-window artifact
+- Q10/Q11/Q12 daily artifacts
+- final Q9 day-validity status after closeout
+
+The post-close closeout must generate Q9, Q10, Q11, and Q12 artifacts. A day
+with missing Q12 artifacts is a reporting defect even though Q12 is not part of
+runtime execution.
 
 If a measurement defect is found intraday, repair the measurement path only.
 Preserve already valid rows. Do not discard the full day unless the final

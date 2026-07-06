@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 from zoneinfo import ZoneInfo
 
+from libs.reporting.trade_report_symbol_metadata import SYMBOL_NAME_FALLBACKS, SYMBOL_THEME_FALLBACKS
+
 
 def _read_json(path: Path) -> Dict[str, Any]:
     try:
@@ -35,6 +37,13 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(text) if text else float(default)
     except Exception:
         return float(default)
+
+
+def _is_missing(value: Any) -> bool:
+    if value in (None, "", [], {}):
+        return True
+    text = str(value).strip().lower()
+    return text in {"none", "null", "unknown", "unavailable", "nan"}
 
 
 def _symbol_from_trade_id(trade_id: str) -> str:
@@ -209,6 +218,17 @@ def _build_truth_payload_from_day_diary(row: Mapping[str, Any], *, symbol: str) 
     }
 
 
+def _symbol_metadata(symbol: Any) -> Dict[str, Any]:
+    normalized = _norm_symbol(symbol)
+    themes = list(SYMBOL_THEME_FALLBACKS.get(normalized, []))
+    return {
+        "symbol": normalized,
+        "symbol_name": SYMBOL_NAME_FALLBACKS.get(normalized, ""),
+        "themes": themes,
+        "theme": ", ".join(themes),
+    }
+
+
 def _find_closed_day_diary_row(rows: List[Dict[str, Any]], *, symbol: str, entry: Mapping[str, Any]) -> Dict[str, Any]:
     qty = _to_int(entry.get("qty") or entry.get("filled_qty"))
     buy_price = _to_float(entry.get("filled_price") or entry.get("avg_price") or entry.get("price"))
@@ -231,8 +251,12 @@ def _find_closed_day_diary_row(rows: List[Dict[str, Any]], *, symbol: str, entry
 
 def _patch_report_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> Dict[str, Any]:
     out = dict(payload or {})
+    metadata = _symbol_metadata(truth.get("symbol"))
     out["status"] = "closed"
     out["action"] = "SELL"
+    out["symbol"] = truth.get("symbol") or out.get("symbol")
+    if _is_missing(out.get("symbol_name")) and metadata.get("symbol_name"):
+        out["symbol_name"] = metadata.get("symbol_name")
     truth_surface = dict(out.get("truth_surface") or {})
     truth_surface["status"] = {
         **dict(truth_surface.get("status") or {}),
@@ -288,14 +312,26 @@ def _patch_report_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> 
             "price_truth_source": truth.get("source"),
         }
     )
+    if _is_missing(shared.get("symbol_name")) and metadata.get("symbol_name"):
+        shared["symbol_name"] = metadata.get("symbol_name")
+    if _is_missing(shared.get("theme")) and metadata.get("theme"):
+        shared["theme"] = metadata.get("theme")
+        shared["themes"] = list(metadata.get("themes") or [])
     out["shared_facts"] = shared
     return out
 
 
 def _patch_summary_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> Dict[str, Any]:
     out = dict(payload or {})
+    metadata = _symbol_metadata(truth.get("symbol"))
     trade = dict(out.get("trade") or {})
     trade.update({"status": "종결", "action": "매도"})
+    trade["symbol"] = truth.get("symbol") or trade.get("symbol")
+    if _is_missing(trade.get("symbol_name")) and metadata.get("symbol_name"):
+        trade["symbol_name"] = metadata.get("symbol_name")
+    if _is_missing(trade.get("theme")) and metadata.get("theme"):
+        trade["theme"] = metadata.get("theme")
+        trade["themes"] = list(metadata.get("themes") or [])
     out["trade"] = trade
     out["truth_surface"] = {
         **dict(out.get("truth_surface") or {}),
@@ -375,16 +411,51 @@ def _patch_exit_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> Di
     return out
 
 
+def _patch_entry_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> Dict[str, Any]:
+    out = dict(payload or {})
+    buy_price = truth.get("buy_price")
+    out["symbol"] = truth.get("symbol") or out.get("symbol")
+    if _is_missing(out.get("qty")):
+        out["qty"] = truth.get("qty")
+    if _is_missing(out.get("filled_qty")):
+        out["filled_qty"] = truth.get("qty")
+    if _is_missing(out.get("price")):
+        out["price"] = buy_price
+    if _is_missing(out.get("filled_price")):
+        out["filled_price"] = buy_price
+    if _is_missing(out.get("avg_price")):
+        out["avg_price"] = buy_price
+
+    details = dict(out.get("execution_details") or {})
+    details.update(
+        {
+            "broker_day_authoritative": True,
+            "broker_day_truth_source": truth.get("source"),
+            "broker_day_match_mode": truth.get("match_mode"),
+            "broker_buy_price": buy_price,
+            "filled_qty": truth.get("qty"),
+        }
+    )
+    if _is_missing(details.get("filled_price")):
+        details["filled_price"] = buy_price
+    if _is_missing(details.get("avg_price")):
+        details["avg_price"] = buy_price
+    out["execution_details"] = details
+    out["broker_day_authoritative"] = True
+    out["broker_day_truth_source"] = truth.get("source")
+    out["broker_day_match_mode"] = truth.get("match_mode")
+    out["broker_buy_price"] = buy_price
+    return out
+
+
 def _patch_lifecycle_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> Dict[str, Any]:
     out = dict(payload or {})
     out["trade_lifecycle_status"] = "closed"
     out["status"] = "closed"
     out["symbol"] = truth.get("symbol") or out.get("symbol")
-    entry = dict(out.get("entry") or {})
-    entry.setdefault("symbol", truth.get("symbol"))
-    entry.setdefault("qty", truth.get("qty"))
-    entry.setdefault("price", truth.get("buy_price"))
+    entry = _patch_entry_payload(dict(out.get("entry") or {}), truth)
     out["entry"] = entry
+    out["entry_execution_details"] = dict(entry.get("execution_details") or {})
     out["exit"] = _patch_exit_payload(dict(out.get("exit") or {}), truth)
     shared = dict(out.get("shared_facts") or {})
     shared.update(
@@ -480,6 +551,7 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
         if not entry_path.exists() or not lifecycle_path.exists():
             continue
         report = _read_json(report_path) if report_path.exists() else {}
+        entry = _read_json(entry_path)
         lifecycle = _read_json(lifecycle_path)
         broker_reconciliation = (
             lifecycle.get("broker_reconciliation")
@@ -496,11 +568,51 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             if isinstance(lifecycle.get("exit"), dict)
             else {}
         )
+        lifecycle_entry = (
+            lifecycle.get("entry")
+            if isinstance(lifecycle.get("entry"), dict)
+            else {}
+        )
+        entry_price_available = not _is_missing(
+            entry.get("price")
+            or entry.get("filled_price")
+            or (entry.get("execution_details") or {}).get("filled_price")
+            or lifecycle_entry.get("price")
+            or lifecycle_entry.get("filled_price")
+            or (lifecycle_entry.get("execution_details") or {}).get("filled_price")
+        )
+        expected_metadata = _symbol_metadata(_symbol_from_trade_id(trade_dir.name))
+        summary_payload = _read_json(summary_path) if summary_path.exists() else {}
+        summary_trade = (
+            summary_payload.get("trade")
+            if isinstance(summary_payload.get("trade"), dict)
+            else {}
+        )
+        report_shared = report.get("shared_facts") if isinstance(report.get("shared_facts"), dict) else {}
+        metadata_available = bool(
+            (
+                not expected_metadata.get("symbol_name")
+                or not _is_missing(
+                    report.get("symbol_name")
+                    or report_shared.get("symbol_name")
+                    or summary_trade.get("symbol_name")
+                )
+            )
+            and (
+                not expected_metadata.get("theme")
+                or not _is_missing(
+                    report_shared.get("theme")
+                    or summary_trade.get("theme")
+                )
+            )
+        )
         already_authoritative_and_consistent = bool(
             str(broker_reconciliation.get("source") or "") == "kiwoom.ka10170"
             and str(nested_lifecycle.get("status") or "").lower() == "closed"
             and str(lifecycle_exit.get("broker_day_truth_source") or "") == "kiwoom.ka10170"
             and lifecycle_exit.get("timestamp")
+            and entry_price_available
+            and metadata_available
         )
         if (
             str(
@@ -515,7 +627,6 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             continue
         trade_id = trade_dir.name
         symbol = _symbol_from_trade_id(trade_id)
-        entry = _read_json(entry_path)
         buy = _find_buy_order(fill_orders, order_id=str(entry.get("order_id") or ""), symbol=symbol)
         sell = _find_sell_after_buy(fill_orders, buy=buy, symbol=symbol) if buy else {}
         day_diary_row = (
@@ -543,6 +654,7 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
         if summary_path.exists():
             _write_json(summary_path, _patch_summary_payload(_read_json(summary_path), truth))
         _write_json(lifecycle_path, _patch_lifecycle_payload(lifecycle, truth))
+        _write_json(entry_path, _patch_entry_payload(_read_json(entry_path), truth))
         _write_json(exit_path, _patch_exit_payload(_read_json(exit_path), truth))
         if health_path.exists():
             _write_json(health_path, _patch_health_payload(_read_json(health_path), truth))

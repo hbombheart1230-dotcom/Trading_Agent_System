@@ -30,9 +30,11 @@ reopen a completed evaluation window or authorize a behavior change.
 | Q8 shadow collection | CONTINUING AS EVIDENCE | Existing collectors may keep producing tactical counterfactual evidence for Q9. This is not a new Q8 promotion window. |
 | Q9 system evaluation | ACTIVE | Q9 evaluates whether the complete decision chain adds value. It remains read-only. |
 | Q9 attribution linkage | ACTIVE | New decision windows persist pre-Strategist universe P, Scanner A, Strategist B, and Commander C with forward outcomes. Older windows remain historical context only. |
-| Q9 fixed forward window | READY TO START | 2026-06-23 is excluded as the instrumentation/application day. The next full regular-session trading day is Day 1 of the fixed five-valid-day window. |
+| Q9 fixed forward window | READY TO START | 2026-06-24 through 2026-06-26 remain historical context. The renewed fixed five-valid-day window starts on 2026-06-29. |
 | Runtime behavior change | PROHIBITED | A separate promotion review is required. |
-| Samsung/Hynix control | FROZEN WITH Q9 | The independent rule-based baseline and Q9 behavior are frozen for five valid full trading days starting 2026-06-24. Only observability/reporting defects may be fixed. |
+| Samsung/Hynix control | FROZEN WITH Q9 | The independent rule-based baseline and Q9 behavior are frozen for five valid full trading days starting 2026-06-29. Only observability/reporting defects may be fixed. |
+| Q11 opening opportunity control | FROZEN WITH Q9 | Q11 remains shadow-only and is frozen with the renewed 2026-06-29 window. |
+| Q12 BTC/Woori control | FROZEN WITH Q9 | Q12 remains shadow-only and is frozen with the renewed 2026-06-29 window. |
 
 ## Fixed System Scope
 

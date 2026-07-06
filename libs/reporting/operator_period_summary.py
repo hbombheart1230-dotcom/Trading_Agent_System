@@ -310,6 +310,33 @@ def _extract_truth_surface_metrics(row: Dict[str, Any], reports_root: Path) -> D
     return {"truth_surface_available": False}
 
 
+def _closeout_broker_skip_for_row(row: Dict[str, Any], reports_root: Path) -> Dict[str, Any]:
+    day = str(row.get("date") or row.get("day") or "").strip()[:10]
+    trade_id = str(row.get("trade_id") or "").strip()
+    if not day or not trade_id:
+        return {}
+    closeout = _read_json(Path(reports_root) / "operator_summary" / "daily" / day / "closeout_maintenance.json")
+    if not isinstance(closeout, dict):
+        return {}
+    steps = closeout.get("steps") if isinstance(closeout.get("steps"), dict) else {}
+    broker = (
+        steps.get("broker_closed_trade_reconciliation")
+        if isinstance(steps.get("broker_closed_trade_reconciliation"), dict)
+        else {}
+    )
+    for skipped in broker.get("skipped") or []:
+        if not isinstance(skipped, dict):
+            continue
+        if str(skipped.get("trade_id") or "") != trade_id:
+            continue
+        return {
+            "broker_reconciliation_status": "skipped_unresolved",
+            "broker_reconciliation_reason": str(skipped.get("reason") or ""),
+            "broker_reconciliation_snapshot_path": str(broker.get("snapshot_path") or ""),
+        }
+    return {}
+
+
 def _state_snapshot_candidate_paths(reports_root: Path) -> List[Path]:
     candidates: List[Path] = []
     raw = str(os.getenv("STATE_STORE_PATH") or "").strip()
@@ -1503,8 +1530,12 @@ def _enrich_rows_with_truth_surface(rows: Iterable[Dict[str, Any]], reports_root
         row_obj = dict(row or {})
         row_obj.update(_extract_trade_decision_fields(row_obj, reports_root))
         truth_metrics = _extract_truth_surface_metrics(row_obj, reports_root)
+        broker_skip = _closeout_broker_skip_for_row(row_obj, reports_root)
+        broker_skip_unresolved = bool(broker_skip and not bool(truth_metrics.get("truth_surface_available")))
+        if broker_skip_unresolved:
+            row_obj.update(broker_skip)
         broker_truth_metrics = _broker_day_trade_diary_truth_metrics(row_obj, reports_root)
-        if broker_truth_metrics and (
+        if not broker_skip_unresolved and broker_truth_metrics and (
             not bool(truth_metrics.get("truth_surface_available"))
             or str(row_obj.get("last_status") or row_obj.get("status") or "").strip().lower() != "closed"
         ):
@@ -1626,6 +1657,8 @@ def _has_partial_lifecycle_marker(row: Dict[str, Any]) -> bool:
 
 
 def _is_closed_trade(row: Dict[str, Any]) -> bool:
+    if str(row.get("broker_reconciliation_status") or "") == "skipped_unresolved":
+        return False
     if _has_partial_lifecycle_marker(row):
         return False
     status = _trade_status(row)
@@ -1681,6 +1714,8 @@ def _same_day_new_trade_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
 
 def _is_realized_nonclosed_exit(row: Dict[str, Any]) -> bool:
+    if str(row.get("broker_reconciliation_status") or "") == "skipped_unresolved":
+        return False
     if _is_closed_trade(row) or _trade_action(row) != "SELL":
         return False
     return _is_recovered_partial_marker(row)

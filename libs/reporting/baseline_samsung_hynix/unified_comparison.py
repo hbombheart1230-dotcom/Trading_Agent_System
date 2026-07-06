@@ -8,10 +8,10 @@ from .contracts import HORIZONS
 
 
 ROLE_LABELS = {
-    "P_SCANNER_PRE_STRATEGIST_UNIVERSE": "Q9 P: Pre-Strategist",
-    "A_SCANNER_CONTROL": "Q9 A: Scanner Control",
-    "B_STRATEGIST_RANKED": "Q9 B: Strategist Ranked",
-    "C_COMMANDER_FINAL": "Q9 C: Commander Final",
+    "P_SCANNER_PRE_STRATEGIST_UNIVERSE": "Q9 P: Scanner Source Universe",
+    "A_SCANNER_CONTROL": "Q9 A: Scanner Intrinsic Control",
+    "B_STRATEGIST_RANKED": "Q9 B: Strategy-Weighted Scanner",
+    "C_COMMANDER_FINAL": "Q9 C: Commander Approval/Veto Candidate",
     "BASELINE_TOP1": "Samsung/Hynix Baseline Top1",
 }
 Q9_ROLES = tuple(key for key in ROLE_LABELS if key != "BASELINE_TOP1")
@@ -59,9 +59,9 @@ def _root_cause(
     if int(p.get("trade_count") or 0) > 0 and p_avg <= baseline_avg:
         return "scanner_candidate_set_or_intrinsic_ranking_underperformed_fixed_baseline"
     if int(b.get("trade_count") or 0) > 0 and b_avg < p_avg:
-        return "strategist_ranking_degraded_pre_strategist_edge"
+        return "strategy_weighting_degraded_scanner_intrinsic_edge"
     if int(c.get("trade_count") or 0) > 0 and c_avg < b_avg:
-        return "commander_final_selection_degraded_strategist_output"
+        return "commander_approval_or_veto_candidate_degraded_strategy_weighted_edge"
     if c_avg <= baseline_avg:
         return "multi_agent_complexity_did_not_exceed_fixed_baseline"
     return ""
@@ -244,7 +244,10 @@ def render_unified_comparison(payload: Mapping[str, Any]) -> str:
         "",
         "## Interpretation",
         "",
-        "- Multi-agent alpha is measured as Q9 C Commander Final average net return minus baseline Top1 average net return.",
+        "- Multi-agent alpha is measured as Q9 C Commander Approval/Veto Candidate average net return minus baseline Top1 average net return.",
+        "- Q9 B is the Scanner ranking after strategy/tactic weighting; it is not an LLM-selected new universe.",
+        "- Q9 C is the Commander approval/veto candidate; it is not a Commander-selected new universe.",
+        "- Compare Q9 P/A against Q9 B/C separately to detect strategy-weighting degradation even when baseline alpha is positive.",
         "- P/A/B/C and baseline rows use the same broker cost and evaluation slippage assumptions.",
         "- `INSUFFICIENT_EVIDENCE` means one side has no comparable observation for that horizon.",
         "- This report is evaluation-only and does not authorize trading behavior changes.",

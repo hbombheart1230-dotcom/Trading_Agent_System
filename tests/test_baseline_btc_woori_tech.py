@@ -58,16 +58,35 @@ def _btc(*, start: int = 1782345600, positive: bool = True) -> dict:
     }
 
 
+def _fear_greed() -> dict:
+    return {
+        "schema_version": "q12_crypto_fear_greed.v1",
+        "available": True,
+        "source": "fixture",
+        "day": "2026-06-25",
+        "observed_day": "2026-06-25",
+        "observed_at": "2026-06-25T09:00:00+09:00",
+        "value": 72,
+        "classification": "Greed",
+        "regime": "greed",
+        "fallback_reason": "",
+        "behavior_effect": "observation_only",
+    }
+
+
 def test_fixed_target_symbol() -> None:
     decision = build_decision_snapshot(
         day="2026-06-25",
         as_of_epoch=1782347400,
         woori_candles=_candles(),
         btc_signals=_btc(),
+        crypto_fear_greed=_fear_greed(),
     )
 
     assert decision["target"]["symbol"] == TARGET_SYMBOL
     assert decision["target"]["ticker"] == "041190.KQ"
+    assert decision["crypto_fear_greed"]["value"] == 72
+    assert decision["crypto_fear_greed_behavior_effect"] == "observation_only"
 
 
 def test_btc_signal_unavailable_fallback() -> None:
@@ -170,6 +189,7 @@ def test_artifacts_have_no_order_intent_or_execution(tmp_path: Path) -> None:
         q9_root=tmp_path / "q9",
         candles=_candles(),
         btc_signals=_btc(),
+        crypto_fear_greed=_fear_greed(),
     )
     decisions = json.loads(Path(result["decisions"]).read_text(encoding="utf-8"))
     forward = json.loads(Path(result["forward_returns"]).read_text(encoding="utf-8"))
@@ -177,9 +197,34 @@ def test_artifacts_have_no_order_intent_or_execution(tmp_path: Path) -> None:
     assert decisions["schema_version"] == DECISIONS_SCHEMA
     assert forward["schema_version"] == FORWARD_SCHEMA
     assert decisions["fixed_target"] == "041190.KQ"
+    assert decisions["crypto_fear_greed"]["regime"] == "greed"
+    assert decisions["crypto_fear_greed_behavior_effect"] == "observation_only"
     for row in decisions["decisions"]:
         assert row["order_execution_allowed"] is False
         assert row["order_intent"] is None
         assert "execution" not in row
         assert row["entry_rule_count"] <= 3
         assert row["exit_rule_count"] <= 2
+        assert row["crypto_fear_greed"]["classification"] == "Greed"
+        assert row["crypto_fear_greed_behavior_effect"] == "observation_only"
+
+
+def test_crypto_fear_greed_does_not_change_virtual_entry_rule() -> None:
+    base_kwargs = {
+        "day": "2026-06-25",
+        "as_of_epoch": 1782347400,
+        "woori_candles": _candles(),
+        "btc_signals": _btc(),
+    }
+    greedy = build_decision_snapshot(
+        **base_kwargs,
+        crypto_fear_greed={**_fear_greed(), "value": 84, "classification": "Extreme Greed", "regime": "extreme_greed"},
+    )
+    fearful = build_decision_snapshot(
+        **base_kwargs,
+        crypto_fear_greed={**_fear_greed(), "value": 12, "classification": "Extreme Fear", "regime": "extreme_fear"},
+    )
+
+    assert greedy["entry_conditions"] == fearful["entry_conditions"]
+    assert greedy["eligible"] == fearful["eligible"]
+    assert greedy["action"] == fearful["action"]

@@ -14,6 +14,14 @@ from .feedback_effectiveness import build_feedback_effectiveness
 from .five_day_freeze import build_freeze_manifest
 from .markdown import render_daily_scorecard, render_trade_evaluation
 from .rolling_scorecard import build_rolling_scorecard
+from .horizon_compliance_report import (
+    build_horizon_compliance_report,
+    render_horizon_compliance_report,
+)
+from .selection_authority_audit import (
+    build_selection_authority_audit,
+    render_selection_authority_audit,
+)
 from .start_gate import build_full_chain_start_gate
 from .strategist_effectiveness import build_strategist_effectiveness
 from .trade_evaluator import evaluate_trade
@@ -62,6 +70,8 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
     )
     scorecard["generated_at"] = datetime.now(timezone.utc).isoformat()
     scorecard["baseline_hash"] = baseline_hash
+    selection_authority = build_selection_authority_audit(models)
+    horizon_compliance = build_horizon_compliance_report(evaluations)
 
     for trade_dir, model, evaluation, attribution in zip(
         iter_trade_dirs(reports_root, day),
@@ -81,6 +91,16 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
     _write_json(daily_out / "q9_day_validity.json", day_validity)
     _write_json(daily_out / "daily_scorecard.json", scorecard)
     _write_text(daily_out / "daily_scorecard.md", render_daily_scorecard(scorecard))
+    _write_json(daily_out / "selection_authority_audit.json", selection_authority)
+    _write_text(
+        daily_out / "selection_authority_audit.md",
+        render_selection_authority_audit(selection_authority),
+    )
+    _write_json(daily_out / "horizon_compliance_report.json", horizon_compliance)
+    _write_text(
+        daily_out / "horizon_compliance_report.md",
+        render_horizon_compliance_report(horizon_compliance),
+    )
 
     daily_scorecards: list[dict[str, Any]] = []
     for path in sorted((evaluation_root / "daily").glob("*/daily_scorecard.json")):
@@ -127,6 +147,8 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         "day": day,
         "trade_count": len(models),
         "daily_scorecard": str(daily_out / "daily_scorecard.json"),
+        "selection_authority_audit": str(daily_out / "selection_authority_audit.json"),
+        "horizon_compliance_report": str(daily_out / "horizon_compliance_report.json"),
         "full_chain_start_gate": str(daily_out / "full_chain_start_gate.json"),
         "q9_day_validity": str(daily_out / "q9_day_validity.json"),
         "rolling_scorecards": rolling_outputs,

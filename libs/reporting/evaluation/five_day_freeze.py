@@ -4,8 +4,8 @@ from datetime import date, timedelta
 from typing import Any
 
 
-FREEZE_WINDOW_ID = "q9_samsung_hynix_5d_20260624"
-FREEZE_START_DAY = "2026-06-24"
+FREEZE_WINDOW_ID = "q9_q10_q11_q12_5d_20260629"
+FREEZE_START_DAY = "2026-06-29"
 TARGET_VALID_DAYS = 5
 
 PROTECTED_BEHAVIOR = (
@@ -17,6 +17,8 @@ PROTECTED_BEHAVIOR = (
     "Samsung/Hynix ranking formula",
     "Samsung/Hynix entry conditions and thresholds",
     "Samsung/Hynix exit conditions",
+    "Q11 opening opportunity scoring and virtual trade rules",
+    "Q12 BTC/Woori scoring and virtual entry rules",
 )
 
 ALLOWED_CHANGES = (

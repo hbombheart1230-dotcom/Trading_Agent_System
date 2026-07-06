@@ -8,6 +8,8 @@ from libs.reporting.trade_read_model import build_trade_read_model as build_lega
 
 from .artifact_inventory import inventory_trade, read_json
 from .contracts import CONTRACT_VERSION, EvidenceClass, IntegrityStatus
+from .horizon_contract import build_horizon_contract
+from .scanner_score_decomposition import decompose_scanner_score
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -130,6 +132,33 @@ def _monitor_evidence_context(trade_dir: Path) -> dict[str, Any]:
     }
 
 
+def _closeout_broker_skip(trade_dir: Path, *, day: str, trade_id: str) -> dict[str, Any]:
+    try:
+        reports_root = trade_dir.parents[3]
+    except IndexError:
+        return {}
+    closeout = read_json(
+        reports_root / "operator_summary" / "daily" / day[:10] / "closeout_maintenance.json"
+    )
+    steps = closeout.get("steps") if isinstance(closeout.get("steps"), dict) else {}
+    broker = (
+        steps.get("broker_closed_trade_reconciliation")
+        if isinstance(steps.get("broker_closed_trade_reconciliation"), dict)
+        else {}
+    )
+    for row in broker.get("skipped") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("trade_id") or "") == trade_id:
+            return {
+                "trade_id": trade_id,
+                "symbol": str(row.get("symbol") or ""),
+                "reason": str(row.get("reason") or "broker_closed_trade_unresolved"),
+                "snapshot_path": str(broker.get("snapshot_path") or ""),
+            }
+    return {}
+
+
 def _daily_q9_snapshot(
     trade_dir: Path,
     *,
@@ -198,6 +227,9 @@ def _daily_q9_snapshot(
 def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
     legacy = build_legacy_trade_read_model(str(trade_dir))
     bundle = read_json(trade_dir / "lifecycle_bundle.json")
+    legacy_facts = legacy.get("facts") if isinstance(legacy.get("facts"), dict) else {}
+    trade_id = str(legacy_facts.get("trade_id") or bundle.get("trade_id") or trade_dir.name)
+    day = str(bundle.get("day") or trade_dir.parts[-3])
     lifecycle, entry, exit_row = _lifecycle_sections(bundle)
     entry_artifact = read_json(trade_dir / "entry.json")
     exit_artifact = read_json(trade_dir / "exit.json")
@@ -228,6 +260,7 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         else ""
     )
     exit_details = exit_row.get("execution_details") if isinstance(exit_row.get("execution_details"), dict) else {}
+    shared_facts = bundle.get("shared_facts") if isinstance(bundle.get("shared_facts"), dict) else {}
     broker_exit_authoritative = bool(
         exit_row.get("broker_day_authoritative")
         or exit_details.get("broker_day_authoritative")
@@ -244,6 +277,16 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
     )
     pnl_ratio = broker_pnl_pct if broker_pnl_pct is not None else facts.get("pnl_pct")
     pnl_source = "exit.execution_details.broker_realized_pnl_pct" if broker_pnl_pct is not None else legacy_pnl_source
+    closeout_broker_skip = _closeout_broker_skip(trade_dir, day=day, trade_id=trade_id)
+    existing_broker_truth = bool(
+        realized_exit
+        and (
+            broker_exit_authoritative
+            or broker_pnl_pct is not None
+            or str(shared_facts.get("pnl_truth_source") or "").startswith(("kiwoom.", "broker"))
+            or str(shared_facts.get("price_truth_source") or "").startswith(("kiwoom.", "broker"))
+        )
+    )
 
     defects: list[str] = []
     watch_items: list[str] = []
@@ -262,6 +305,9 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         watch_items.append("pnl_authority_weak")
     if not realized_exit:
         watch_items.append("trade_open_or_exit_missing")
+    if closeout_broker_skip and not existing_broker_truth:
+        defects.append("broker_closed_trade_unresolved")
+        watch_items.append(f"broker_reconciliation_skipped:{closeout_broker_skip.get('reason')}")
 
     if "exit_before_entry" in defects or "entry_missing" in defects:
         integrity = IntegrityStatus.BLOCKER
@@ -333,12 +379,35 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         if isinstance(strategist_selection.get("post_strategist_top10"), list)
         else list(scanner_evidence.get("post_strategist_top10") or [])
     )
+    raw_scanner_top1 = (
+        raw_scanner_top10[0]
+        if raw_scanner_top10
+        else scanner_context.get("raw_scanner_top1")
+        or scanner_context.get("pre_strategist_top1")
+        or scanner_context.get("unbiased_top_candidate")
+    )
+    post_strategy_top1 = (
+        post_strategist_top10[0]
+        if post_strategist_top10
+        else (scanner_context.get("top_candidates") or [None])[0]
+    )
+    selected_candidate = scanner_evidence.get("selected_candidate")
+    horizon_contract = build_horizon_contract(
+        bundle=bundle,
+        entry=entry,
+        exit_row=exit_row,
+        entry_artifact=entry_artifact,
+        exit_artifact=exit_artifact,
+        scanner_context=scanner_context,
+        strategist_context=strategist_context,
+        monitor_context=monitor_context,
+    )
     return {
         "schema_version": "q9_trade_read_model.v1",
         "contract_version": CONTRACT_VERSION,
         "evidence_class": EvidenceClass.REALIZED.value if realized_exit else EvidenceClass.UNAVAILABLE.value,
-        "trade_id": str(facts.get("trade_id") or trade_dir.name),
-        "day": str(bundle.get("day") or trade_dir.parts[-3]),
+        "trade_id": trade_id,
+        "day": day,
         "symbol": str(facts.get("symbol") or bundle.get("symbol") or ""),
         "status": str(
             lifecycle.get("status")
@@ -371,22 +440,13 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
             "pnl_source": pnl_source,
             "holding_seconds": _holding_seconds(entry_ts, exit_ts, facts.get("hold_duration_sec")),
         },
+        "horizon_contract": horizon_contract,
         "selection": {
-            "scanner_top1": (
-                post_strategist_top10[0]
-                if post_strategist_top10
-                else (scanner_context.get("top_candidates") or [None])[0]
-            ),
-            "raw_scanner_top1": (
-                raw_scanner_top10[0]
-                if raw_scanner_top10
-                else scanner_context.get("raw_scanner_top1")
-                or scanner_context.get("pre_strategist_top1")
-                or scanner_context.get("unbiased_top_candidate")
-            ),
+            "scanner_top1": post_strategy_top1,
+            "raw_scanner_top1": raw_scanner_top1,
             "selected_symbol": selected_symbol,
             "selected_rank": scanner_context.get("selected_rank") or scanner_evidence.get("selected_rank"),
-            "selected_candidate": scanner_evidence.get("selected_candidate"),
+            "selected_candidate": selected_candidate,
             "runner_ups": scanner_context.get("runner_ups") or [],
             "post_strategist_top10": post_strategist_top10,
             "reconstructed_pre_adjust_top10": scanner_evidence.get("reconstructed_pre_adjust_top10") or [],
@@ -421,6 +481,16 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
                     or commander_final.get("no_trade")
                 )
             ),
+            "selection_mismatch": (
+                dict(scanner_context.get("selection_mismatch") or {})
+                if isinstance(scanner_context.get("selection_mismatch"), dict)
+                else {}
+            ),
+            "score_decomposition": {
+                "raw_scanner_top1": decompose_scanner_score(raw_scanner_top1),
+                "post_strategy_top1": decompose_scanner_score(post_strategy_top1),
+                "selected_candidate": decompose_scanner_score(selected_candidate),
+            },
             "strategist_playbook": (
                 strategist_context.get("playbook")
                 or scanner_evidence.get("playbook")
@@ -464,6 +534,16 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
             "defects": defects,
             "watch_items": watch_items,
             "required_artifact_complete": inventory["complete"],
+            "closeout_broker_reconciliation": {
+                "status": (
+                    "skipped_but_existing_broker_truth_available"
+                    if closeout_broker_skip and existing_broker_truth
+                    else "skipped_unresolved"
+                    if closeout_broker_skip
+                    else "not_flagged"
+                ),
+                **closeout_broker_skip,
+            },
         },
         "provenance": {
             "trade_dir": str(trade_dir),

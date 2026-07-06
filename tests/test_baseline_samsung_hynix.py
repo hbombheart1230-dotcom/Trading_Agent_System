@@ -336,7 +336,8 @@ def test_unified_comparison_attributes_strategist_degradation() -> None:
     primary = result["overall"]["multi_agent_alpha"]
 
     assert primary["status"] == "NO_ALPHA"
-    assert primary["root_cause"] == "strategist_ranking_degraded_pre_strategist_edge"
+    assert primary["root_cause"] == "strategy_weighting_degraded_scanner_intrinsic_edge"
+    assert "Strategy-Weighted Scanner" in render_unified_comparison(result)
 
 
 def test_unified_comparison_handles_missing_baseline_sample() -> None:
@@ -498,11 +499,12 @@ def test_five_day_freeze_manifest_is_behavior_locked() -> None:
 
     assert manifest["target_valid_trading_days"] == 5
     assert manifest["planned_weekdays"] == [
-        "2026-06-24",
-        "2026-06-25",
-        "2026-06-26",
         "2026-06-29",
         "2026-06-30",
+        "2026-07-01",
+        "2026-07-02",
+        "2026-07-03",
     ]
+    assert manifest["window_id"] == "q9_q10_q11_q12_5d_20260629"
     assert manifest["behavior_changes_allowed"] is False
     assert manifest["observability_reporting_fixes_allowed"] is True

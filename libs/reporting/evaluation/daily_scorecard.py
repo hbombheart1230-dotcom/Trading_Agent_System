@@ -30,6 +30,33 @@ def build_daily_scorecard(
         str((row.get("integrity") or {}).get("status") or IntegrityStatus.FAIL.value)
         for row in trade_evaluations
     )
+    horizon_rows = [
+        row.get("horizon_alignment") or {}
+        for row in trade_evaluations
+        if str((row.get("horizon_alignment") or {}).get("status") or "") == "observed"
+    ]
+    horizon_buckets = Counter(str(row.get("bucket") or "unknown") for row in horizon_rows)
+    horizon_violation_candidates = [
+        row for row in horizon_rows
+        if bool(row.get("horizon_violation_candidate"))
+    ]
+    before_min_rows = [
+        row for row in horizon_rows
+        if bool(row.get("exited_before_min_hold"))
+    ]
+    before_target_rows = [
+        row for row in horizon_rows
+        if bool(row.get("exited_before_target_hold"))
+    ]
+    target_improvement_rows = [
+        row for row in horizon_rows
+        if bool(row.get("target_hold_would_improve_exit"))
+    ]
+    early_exit_cost_values = [
+        float(row.get("early_exit_cost_pct"))
+        for row in horizon_rows
+        if row.get("early_exit_cost_pct") is not None
+    ]
     strategist_deltas = [
         row["deltas"]["strategist_delta_pct"]
         for row in attributions
@@ -68,6 +95,19 @@ def build_daily_scorecard(
             "comparison_count": len(strategist_deltas),
             "average_strategist_delta_pct": round(sum(strategist_deltas) / len(strategist_deltas), 4) if strategist_deltas else None,
             "unavailable_count": len(attributions) - len(strategist_deltas),
+        },
+        "horizon_alignment": {
+            "observed_count": len(horizon_rows),
+            "bucket_counts": dict(horizon_buckets),
+            "exit_before_min_hold_count": len(before_min_rows),
+            "exit_before_target_hold_count": len(before_target_rows),
+            "horizon_violation_candidate_count": len(horizon_violation_candidates),
+            "target_hold_would_improve_exit_count": len(target_improvement_rows),
+            "average_early_exit_cost_pct": (
+                round(sum(early_exit_cost_values) / len(early_exit_cost_values), 4)
+                if early_exit_cost_values
+                else None
+            ),
         },
         "q8_shadow_evidence": {
             "candidate_count": q8_review.get("candidate_count"),

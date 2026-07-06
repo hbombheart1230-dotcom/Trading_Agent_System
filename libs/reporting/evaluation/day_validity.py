@@ -43,6 +43,8 @@ def build_q9_day_validity(
     daily = daily if isinstance(daily, dict) else {}
     decision = daily.get("q9_decision_windows")
     decision = decision if isinstance(decision, dict) else {}
+    comparison = daily.get("q9_vs_samsung_hynix_comparison")
+    comparison = comparison if isinstance(comparison, dict) else {}
 
     window_count = int(decision.get("scanner_selection_window_count") or 0)
     complete_count = int(
@@ -59,6 +61,12 @@ def build_q9_day_validity(
     forward_total = int(decision.get("pre_strategist_forward_candidate_count") or 0)
     forward_usable = observed_forward + pending_forward
     forward_coverage = forward_usable / forward_total if forward_total else 0.0
+    comparison_complete = (
+        bool(comparison.get("exists"))
+        and str(comparison.get("schema_version") or "") == "q9_baseline_unified_comparison.v1"
+        and str(comparison.get("evidence_status") or "").upper() == "COMPLETE"
+        and bool(comparison.get("forward_windows_complete"))
+    )
 
     session_day = datetime.fromisoformat(day).date()
     is_future = session_day > current.date()
@@ -98,14 +106,19 @@ def build_q9_day_validity(
     if missing_selected:
         blockers.append({"code": "missing_selected_candidate", "count": missing_selected})
     if invalid_forward:
-        target = blockers if is_complete and forward_coverage < MIN_FORWARD_COVERAGE else warnings
+        target = blockers if (
+            is_complete and forward_coverage < MIN_FORWARD_COVERAGE and not comparison_complete
+        ) else warnings
         target.append(
             {
                 "code": "invalid_forward_observation",
                 "count": invalid_forward,
                 "coverage": round(forward_coverage, 4),
                 "required_coverage": MIN_FORWARD_COVERAGE,
-                "invalidates_day": bool(is_complete and forward_coverage < MIN_FORWARD_COVERAGE),
+                "comparison_complete_override": bool(comparison_complete),
+                "invalidates_day": bool(
+                    is_complete and forward_coverage < MIN_FORWARD_COVERAGE and not comparison_complete
+                ),
             }
         )
     if is_complete and forward_total == 0:
@@ -160,6 +173,10 @@ def build_q9_day_validity(
             "forward_pending_candidate_count": pending_forward,
             "forward_invalid_candidate_count": invalid_forward,
             "forward_usable_coverage": round(forward_coverage, 4),
+            "unified_comparison_exists": bool(comparison.get("exists")),
+            "unified_comparison_evidence_status": str(comparison.get("evidence_status") or ""),
+            "unified_comparison_forward_complete": bool(comparison.get("forward_windows_complete")),
+            "unified_comparison_complete_override": bool(comparison_complete),
         },
         "blockers": blockers,
         "warnings": warnings,

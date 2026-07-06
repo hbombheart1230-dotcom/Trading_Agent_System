@@ -1,14 +1,16 @@
-# Q9 + Samsung/Hynix Five-Day Freeze
+# Q9/Q10/Q11/Q12 Five-Day Freeze
 
-Effective: 2026-06-24
+Effective: 2026-06-29
 
 ## Window
 
 - Target: five valid full regular-session trading days
-- Planned weekdays: 2026-06-24, 2026-06-25, 2026-06-26,
-  2026-06-29, 2026-06-30
+- Planned weekdays: 2026-06-29, 2026-06-30, 2026-07-01,
+  2026-07-02, 2026-07-03
 - Holidays or materially incomplete sessions do not count.
 - The window ends after five valid days, not after five calendar weekdays.
+- 2026-06-24 through 2026-06-26 remain historical context only. They do not
+  count toward this renewed five-valid-day window.
 
 ## Frozen Behavior
 
@@ -22,6 +24,8 @@ The following behavior must not change during the window:
 - Samsung/Hynix ranking formula
 - Samsung/Hynix entry conditions and thresholds
 - Samsung/Hynix exit conditions
+- Q11 opening opportunity scoring and virtual trade rules
+- Q12 BTC/Woori scoring and virtual entry rules
 
 Only observability and reporting defects may be fixed.
 
@@ -33,8 +37,10 @@ Kiwoom regular-session close confirmation invokes the existing
 1. Q9 daily evaluation generation
 2. Samsung/Hynix baseline intraday reconstruction and report generation
 3. unified Q9 P/A/B/C versus baseline comparison generation
-4. forward-window and evidence-status verification
-5. Commander Final alpha recording for each horizon
+4. Q11 opening opportunity report generation
+5. Q12 BTC/Woori report generation
+6. forward-window and evidence-status verification
+7. Commander Final alpha recording for each horizon
 
 Manual command:
 
@@ -44,8 +50,8 @@ venv\Scripts\python.exe scripts\run_frozen_q9_baseline_closeout.py --day YYYY-MM
 
 Artifacts:
 
-- `reports/evaluation/freeze_window/q9_samsung_hynix_5d_20260624/daily_ledger.json`
-- `reports/evaluation/freeze_window/q9_samsung_hynix_5d_20260624/daily_ledger.md`
+- `reports/evaluation/freeze_window/q9_q10_q11_q12_5d_20260629/daily_ledger.json`
+- `reports/evaluation/freeze_window/q9_q10_q11_q12_5d_20260629/daily_ledger.md`
 - daily `post_close_verification.json`
 
 ## Evidence Verification

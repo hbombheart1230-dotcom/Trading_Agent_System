@@ -126,20 +126,26 @@ def build_baseline_artifacts(
     decisions_path = output_dir / "baseline_samsung_hynix_decisions.json"
     existing = _read(decisions_path)
     reconstructed_epochs = set(decision_epochs) if reconstruct_intraday else set()
-    decisions = [
+    existing_decisions = [
         row
         for row in existing.get("decisions") or []
-        if (
-            isinstance(row, dict)
-            and _complete_fixed_universe_decision(row)
-            and (
-                not reconstruct_intraday
-                or int(row.get("as_of_epoch") or 0) in reconstructed_epochs
-            )
-            and row.get("decision_id")
-            not in {new.get("decision_id") for new in new_decisions}
-        )
+        if isinstance(row, dict) and _complete_fixed_universe_decision(row)
     ]
+    if reconstruct_intraday and not new_decisions and existing_decisions:
+        decisions = existing_decisions
+    else:
+        decisions = [
+            row
+            for row in existing_decisions
+            if (
+                (
+                    not reconstruct_intraday
+                    or int(row.get("as_of_epoch") or 0) in reconstructed_epochs
+                )
+                and row.get("decision_id")
+                not in {new.get("decision_id") for new in new_decisions}
+            )
+        ]
     decisions.extend(new_decisions)
     decisions.sort(key=lambda row: (int(row.get("as_of_epoch") or 0), str(row.get("decision_id") or "")))
     decisions_payload = {

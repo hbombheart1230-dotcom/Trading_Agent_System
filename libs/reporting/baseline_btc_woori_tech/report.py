@@ -11,6 +11,7 @@ def render_report(
     comparison: Mapping[str, Any],
 ) -> str:
     cost = forward.get("cost_model") or {}
+    fear_greed = decisions.get("crypto_fear_greed") if isinstance(decisions.get("crypto_fear_greed"), Mapping) else {}
     lines = [
         "# Q12 BTC / Woori Technology Investment Baseline",
         "",
@@ -20,6 +21,11 @@ def render_report(
         "- Q9/Q10/main execution integration: none",
         "- OrderIntent / execution: disabled",
         f"- Evidence status: `{forward.get('evidence_status')}`",
+        (
+            "- Crypto Fear & Greed: "
+            f"`{fear_greed.get('value')}` / `{fear_greed.get('classification') or fear_greed.get('regime')}` "
+            f"(available={bool(fear_greed.get('available'))}, effect=`observation_only`)"
+        ),
         (
             f"- Cost: {float(cost.get('round_trip_cost_pct') or 0):.4f}% "
             f"+ slippage {float(cost.get('slippage_pct') or 0):.4f}%"
@@ -82,4 +88,3 @@ def render_report(
         "- Results do not authorize Q9 or production strategy changes.",
     ]
     return "\n".join(lines) + "\n"
-

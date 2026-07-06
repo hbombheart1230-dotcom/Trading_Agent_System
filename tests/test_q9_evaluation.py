@@ -7,8 +7,10 @@ from libs.reporting.evaluation.contracts import EvidenceClass, validate_contract
 from libs.reporting.evaluation.metrics import performance_metrics
 from libs.reporting.evaluation.pipeline import build_q9_evaluation
 from libs.reporting.evaluation.trade_read_model import build_q9_trade_read_model
+from libs.reporting.evaluation.trade_evaluator import evaluate_trade
 from libs.reporting.evaluation.pipeline import _baseline_hash
 from libs.reporting.evaluation.start_gate import build_full_chain_start_gate
+from libs.reporting.evaluation.frozen_window_closeout import _cleanup_q9_daily_artifact_debris
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -133,6 +135,135 @@ def test_open_trade_exit_placeholder_is_not_realized(tmp_path: Path) -> None:
     assert evaluation["evidence_class"] == "UNAVAILABLE"
     assert evaluation["integrity"]["status"] == "WATCH"
     assert evaluation["realized_outcome"]["net_return_pct"] is None
+
+
+def test_closeout_broker_skip_excludes_unresolved_trade_from_metrics(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    trade = reports / "trades" / "2026-07-03" / "1500" / "TRD_20260703_025440_06"
+    _write(trade / "lifecycle_bundle.json", {
+        "day": "2026-07-03",
+        "trade_id": "TRD_20260703_025440_06",
+        "symbol": "025440",
+        "lifecycle": {
+            "status": "partial",
+            "entry": {"timestamp": "2026-07-03T06:01:00+00:00", "price": 3280, "qty": 49},
+            "exit": {
+                "timestamp": "2026-07-03T06:02:00+00:00",
+                "action": "SELL",
+                "price": 3279,
+                "qty": 49,
+                "execution_details": {"filled_qty": 49},
+            },
+        },
+        "shared_facts": {"status": "partial", "pnl_pct": -0.0001, "pnl": -159},
+    })
+    for name in ("scanner", "strategist", "commander", "monitor"):
+        _write(trade / "evidence" / f"{name}_evidence.json", {})
+    _write(trade / "entry.json", {})
+    daily = reports / "operator_summary" / "daily" / "2026-07-03"
+    _write(daily / "daily_summary.json", {})
+    _write(daily / "q8_shadow_blocker_review.json", {})
+    _write(daily / "closeout_maintenance.json", {
+        "steps": {
+            "broker_closed_trade_reconciliation": {
+                "snapshot_path": "data/logs/kiwoom_account_snapshots/2026-07-03/latest.json",
+                "skipped": [{
+                    "trade_id": "TRD_20260703_025440_06",
+                    "symbol": "025440",
+                    "reason": "order_pair_or_day_diary_row_not_found",
+                }],
+            }
+        }
+    })
+
+    result = build_q9_evaluation(reports, "2026-07-03")
+    scorecard = json.loads(Path(result["daily_scorecard"]).read_text(encoding="utf-8"))
+    evaluation = json.loads(
+        (reports / "evaluation" / "trades" / "2026-07-03" / "TRD_20260703_025440_06" / "trade_evaluation.json").read_text(encoding="utf-8")
+    )
+
+    assert "broker_closed_trade_unresolved" in evaluation["integrity"]["defects"]
+    assert evaluation["integrity"]["promotion_metric_eligible"] is False
+    assert scorecard["realized_performance"]["count"] == 0
+
+
+def test_closeout_broker_skip_does_not_override_existing_broker_truth(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    trade = reports / "trades" / "2026-07-03" / "1500" / "TRD_20260703_025440_06"
+    _write(trade / "lifecycle_bundle.json", {
+        "day": "2026-07-03",
+        "trade_id": "TRD_20260703_025440_06",
+        "symbol": "025440",
+        "lifecycle": {
+            "status": "partial",
+            "entry": {"timestamp": "2026-07-03T06:01:00+00:00", "price": 3280, "qty": 49},
+            "exit": {
+                "timestamp": "2026-07-03T06:02:00+00:00",
+                "action": "SELL",
+                "price": 3365,
+                "qty": 49,
+                "execution_details": {
+                    "filled_qty": 49,
+                    "broker_realized_pnl": -159,
+                    "broker_realized_pnl_pct": -0.0001,
+                },
+            },
+        },
+        "shared_facts": {
+            "status": "partial",
+            "pnl_pct": -0.0001,
+            "pnl": -159,
+            "pnl_truth_source": "kiwoom.ka10170",
+            "price_truth_source": "broker_fill",
+        },
+    })
+    for name in ("scanner", "strategist", "commander", "monitor"):
+        _write(trade / "evidence" / f"{name}_evidence.json", {})
+    _write(trade / "entry.json", {})
+    daily = reports / "operator_summary" / "daily" / "2026-07-03"
+    _write(daily / "daily_summary.json", {})
+    _write(daily / "q8_shadow_blocker_review.json", {})
+    _write(daily / "closeout_maintenance.json", {
+        "steps": {
+            "broker_closed_trade_reconciliation": {
+                "snapshot_path": "data/logs/kiwoom_account_snapshots/2026-07-03/latest.json",
+                "skipped": [{
+                    "trade_id": "TRD_20260703_025440_06",
+                    "symbol": "025440",
+                    "reason": "order_pair_or_day_diary_row_not_found",
+                }],
+            }
+        }
+    })
+
+    result = build_q9_evaluation(reports, "2026-07-03")
+    scorecard = json.loads(Path(result["daily_scorecard"]).read_text(encoding="utf-8"))
+    evaluation = json.loads(
+        (reports / "evaluation" / "trades" / "2026-07-03" / "TRD_20260703_025440_06" / "trade_evaluation.json").read_text(encoding="utf-8")
+    )
+
+    assert "broker_closed_trade_unresolved" not in evaluation["integrity"]["defects"]
+    assert evaluation["integrity"]["promotion_metric_eligible"] is True
+    assert scorecard["realized_performance"]["count"] == 1
+    assert scorecard["realized_performance"]["average_return_pct"] == -0.01
+
+
+def test_q9_daily_artifact_cleanup_removes_stale_temp_and_lock(tmp_path: Path) -> None:
+    daily = tmp_path / "reports" / "operator_summary" / "daily" / "2026-07-03"
+    daily.mkdir(parents=True)
+    (daily / "q9_decision_windows.json").write_text("{}", encoding="utf-8")
+    (daily / "q9_decision_windows.json.1234.deadbeef.tmp").write_text("{}", encoding="utf-8")
+    (daily / "q9_decision_windows.json.lock").write_bytes(b"\0")
+
+    result = _cleanup_q9_daily_artifact_debris(
+        reports_root=tmp_path / "reports",
+        day="2026-07-03",
+    )
+
+    assert result["ok"] is True
+    assert result["removed_count"] == 2
+    assert not (daily / "q9_decision_windows.json.1234.deadbeef.tmp").exists()
+    assert not (daily / "q9_decision_windows.json.lock").exists()
 
 
 def test_q9_read_model_derives_hold_rank_and_playbook_from_evidence(tmp_path: Path) -> None:
@@ -287,6 +418,74 @@ def test_broker_authoritative_close_without_timestamp_is_watch(tmp_path: Path) -
     assert "broker_exit_timestamp_unavailable" in model["integrity"]["watch_items"]
     assert model["exit"]["broker_authoritative"] is True
     assert model["outcome"]["net_return_pct"] == -1.94
+
+
+def test_q9_horizon_contract_flags_early_exit_vs_strategy_intent(tmp_path: Path) -> None:
+    trade = tmp_path / "TRD_HORIZON_EARLY_EXIT"
+    _write(trade / "lifecycle_bundle.json", {
+        "day": "2026-06-26",
+        "trade_id": trade.name,
+        "symbol": "097780",
+        "lifecycle": {
+            "status": "closed",
+            "entry": {"ts": "2026-06-26T00:10:00+00:00", "price": 1000, "qty": 1},
+            "exit": {
+                "ts": "2026-06-26T00:12:00+00:00",
+                "action": "SELL",
+                "price": 990,
+                "qty": 1,
+                "execution_details": {
+                    "filled_qty": 1,
+                    "broker_realized_pnl_pct": -0.01,
+                },
+            },
+        },
+    })
+    _write(trade / "entry.json", {
+        "monitor_context": {
+            "commander_horizon_policy": {
+                "schema_version": "commander_horizon_policy.v1",
+                "strategy_horizon": "intraday",
+                "source_strategy_horizon": "intraday",
+                "expected_hold_window": {
+                    "min_sec": 300,
+                    "target_sec": 1800,
+                    "max_sec": 14400,
+                },
+                "exit_guidance": {
+                    "early_exit_allowed_reasons": ["hard_stop", "liquidity_collapse"],
+                    "avoid_early_exit_reasons": ["small_noise_pullback"],
+                },
+                "observability_only": True,
+                "allow_behavior_change": False,
+                "do_not_force_hold": True,
+            }
+        }
+    })
+    _write(trade / "exit.json", {
+        "post_exit_shadow": {
+            "checkpoints": {
+                "+30m": {
+                    "status": "observed",
+                    "return_pct": 1.25,
+                }
+            },
+            "max_post_exit_upside_pct": 1.5,
+        }
+    })
+    for name in ("scanner", "strategist", "commander", "monitor"):
+        _write(trade / "evidence" / f"{name}_evidence.json", {})
+
+    model = build_q9_trade_read_model(trade)
+    evaluation = evaluate_trade(model)
+
+    assert model["horizon_contract"]["available"] is True
+    assert model["horizon_contract"]["strategy_horizon"] == "intraday"
+    assert evaluation["horizon_alignment"]["status"] == "observed"
+    assert evaluation["horizon_alignment"]["bucket"] == "before_min_hold"
+    assert evaluation["horizon_alignment"]["horizon_violation_candidate"] is True
+    assert evaluation["horizon_alignment"]["target_hold_would_improve_exit"] is True
+    assert "horizon_violation_candidate" in evaluation["integrity"]["watch_items"]
 
 
 def test_freeze_baseline_hash_is_stable_and_trade_independent() -> None:

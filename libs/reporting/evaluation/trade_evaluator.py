@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import CONTRACT_VERSION, EvidenceClass, IntegrityStatus
+from .horizon_contract import evaluate_horizon_contract
 
 
 def _number(value: Any) -> float | None:
@@ -34,7 +35,12 @@ def evaluate_trade(model: dict[str, Any]) -> dict[str, Any]:
     if net_return is not None and net_return < 0 and "profit" in exit_reason.lower():
         watch_items.append("exit_reason_outcome_conflict")
 
-    eligible = integrity in {IntegrityStatus.PASS.value, IntegrityStatus.WATCH.value} and net_return is not None
+    broker_unresolved = "broker_closed_trade_unresolved" in defects
+    eligible = (
+        integrity in {IntegrityStatus.PASS.value, IntegrityStatus.WATCH.value}
+        and net_return is not None
+        and not broker_unresolved
+    )
     post_exit = (model.get("monitor") or {}).get("post_exit")
     post_exit = post_exit if isinstance(post_exit, dict) else {}
     checkpoints = post_exit.get("checkpoints") if isinstance(post_exit.get("checkpoints"), dict) else {}
@@ -43,6 +49,19 @@ def evaluate_trade(model: dict[str, Any]) -> dict[str, Any]:
         for key, value in checkpoints.items()
         if isinstance(value, dict) and str(value.get("status") or "") == "observed"
     }
+    horizon_alignment = evaluate_horizon_contract(
+        contract=model.get("horizon_contract") or {},
+        actual_hold_sec=holding_seconds,
+        exit_reason=exit_reason,
+        net_return_pct=net_return,
+        post_exit=post_exit,
+    )
+    if horizon_alignment.get("horizon_violation_candidate"):
+        watch_items.append("horizon_violation_candidate")
+    if horizon_alignment.get("exited_before_min_hold"):
+        watch_items.append("exit_before_strategy_min_hold")
+    elif horizon_alignment.get("exited_before_target_hold"):
+        watch_items.append("exit_before_strategy_target_hold")
     return {
         "schema_version": "trade_evaluation.v1",
         "contract_version": CONTRACT_VERSION,
@@ -76,6 +95,7 @@ def evaluate_trade(model: dict[str, Any]) -> dict[str, Any]:
             "max_post_exit_upside_pct": post_exit.get("max_post_exit_upside_pct"),
             "max_post_exit_drawdown_pct": post_exit.get("max_post_exit_drawdown_pct"),
         },
+        "horizon_alignment": horizon_alignment,
         "tactic_alignment": {
             "playbook": (model.get("selection") or {}).get("strategist_playbook"),
             "selected_rank": (model.get("selection") or {}).get("selected_rank"),

@@ -103,3 +103,68 @@ def test_event_logger_keeps_explicit_tmp_log_during_pytest(
     logger = EventLogger(log_path=log_path)
 
     assert logger.log_path == log_path
+
+
+def test_event_logger_compacts_large_candidate_ranking_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EVENT_LOG_PAYLOAD_MAX_BYTES", "30000")
+    monkeypatch.setenv("EVENT_LOG_COMPACT_TOP_ITEMS", "3")
+    log_path = tmp_path / "events.jsonl"
+    logger = EventLogger(log_path=log_path)
+    rows = [
+        {
+            "rank": index,
+            "symbol": f"00{index:04d}",
+            "score_total": 1.0 - index / 100.0,
+            "confidence": 0.8,
+            "risk_score": 0.2,
+            "sources": ["theme", "volume", "news"],
+            "source_scores": {"theme": 0.9, "volume": 0.8},
+            "huge_unused_blob": "x" * 1000,
+        }
+        for index in range(1, 31)
+    ]
+
+    rec = logger.log(
+        run_id=new_run_id(),
+        stage="scanner",
+        event="candidate_ranking_table",
+        payload={
+            "tie_break_rule": "score_total desc",
+            "rows": rows,
+            "scanner_intrinsic_control_top20": rows,
+            "pre_strategist_full_universe_snapshot": {
+                "schema_version": "q9_scanner_pre_strategist_universe.v1",
+                "candidate_count": len(rows),
+                "source_universe_top20": rows[:20],
+                "intrinsic_ranked_top20": rows[:20],
+            },
+        },
+        ts="2026-02-07T00:00:00+00:00",
+    )
+
+    payload = rec["payload"]
+    assert payload["_event_log_compacted"] is True
+    assert payload["rows_count"] == 30
+    assert len(payload["rows"]) == 3
+    assert payload["rows"][0]["symbol"] == "000001"
+    assert "huge_unused_blob" not in payload["rows"][0]
+    assert payload["scanner_intrinsic_control_top20_count"] == 30
+    assert payload["pre_strategist_full_universe_snapshot"]["candidate_count"] == 30
+
+
+def test_event_logger_keeps_small_payload_uncompacted(tmp_path: Path) -> None:
+    log_path = tmp_path / "events.jsonl"
+    logger = EventLogger(log_path=log_path)
+
+    rec = logger.log(
+        run_id=new_run_id(),
+        stage="monitor",
+        event="state_transition",
+        payload={"symbol": "005930", "from": "watch", "to": "hold"},
+        ts="2026-02-07T00:00:00+00:00",
+    )
+
+    assert rec["payload"] == {"symbol": "005930", "from": "watch", "to": "hold"}

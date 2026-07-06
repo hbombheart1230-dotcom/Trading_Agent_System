@@ -60,6 +60,74 @@ def _rows(value: Any, *, limit: int = 10) -> list[dict[str, Any]]:
     return [dict(row) for row in value if isinstance(row, Mapping)][:limit]
 
 
+def _compact_scalar(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _compact_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
+    wanted = (
+        "rank",
+        "symbol",
+        "name",
+        "score",
+        "score_total",
+        "total_score",
+        "pre_adjust_score_total",
+        "confidence",
+        "risk_score",
+        "theme",
+        "theme_name",
+        "quant_tactic_id",
+        "tactical_subtype",
+        "primary_failure_axis",
+        "reason",
+        "would_enter",
+        "guard_blocked",
+        "cost_floor_state",
+        "q9_selected",
+        "q9_decision_role",
+    )
+    out = {key: _compact_scalar(row.get(key)) for key in wanted if key in row}
+    if "symbol" not in out and row.get("ticker"):
+        out["symbol"] = _compact_scalar(row.get("ticker"))
+    return out
+
+
+def _compact_candidates(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    return [_compact_candidate(row) for row in rows[:limit]]
+
+
+def _compact_mapping(value: Mapping[str, Any], *, list_limit: int = 20) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, raw in value.items():
+        if isinstance(raw, Mapping):
+            nested = {
+                nested_key: _compact_scalar(nested_value)
+                for nested_key, nested_value in raw.items()
+                if isinstance(nested_value, (str, int, float, bool)) or nested_value is None
+            }
+            if nested:
+                out[str(key)] = nested
+        elif isinstance(raw, list):
+            if key in {
+                "intrinsic_ranked_top20",
+                "top10",
+                "top20",
+                "post_strategist_top10",
+                "ranked_candidates",
+                "candidates",
+            }:
+                out[str(key)] = _compact_candidates(
+                    [dict(row) for row in raw if isinstance(row, Mapping)],
+                    limit=list_limit,
+                )
+        elif isinstance(raw, (str, int, float, bool)) or raw is None:
+            out[str(key)] = raw
+    return out
+
+
 def _day(state: Mapping[str, Any]) -> str:
     for value in (
         state.get("started_at"),
@@ -210,6 +278,11 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
             **pre_strategist_universe,
             "source_universe_before_filters": source_universe,
         }
+    compact_pre = _compact_mapping(pre_strategist_universe, list_limit=20)
+    compact_pre["intrinsic_ranked_top20"] = (
+        _compact_candidates(_rows(pre_strategist_universe.get("intrinsic_ranked_top20"), limit=20), limit=20)
+        or _compact_candidates(intrinsic, limit=20)
+    )
     return _upsert(
         state,
         {
@@ -219,8 +292,8 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
                 "scope": "same_candidate_universe_ranking_only",
                 "source": "scanner_intrinsic_control_snapshot",
                 "evidence_class": "TRUSTED_SHADOW",
-                "top10": intrinsic[:10],
-                "top20": intrinsic[:20],
+                "top10": _compact_candidates(intrinsic, limit=10),
+                "top20": _compact_candidates(intrinsic, limit=20),
                 "top1_symbol": str((intrinsic[0] if intrinsic else {}).get("symbol") or ""),
                 "universe_control_available": False,
                 "limitation": (
@@ -229,16 +302,12 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
                 ),
             },
             "scanner_pre_strategist_universe": {
-                **pre_strategist_universe,
+                **compact_pre,
                 "schema_version": str(
                     pre_strategist_universe.get("schema_version")
                     or "q9_scanner_pre_strategist_universe.v1"
                 ),
                 "behavior_effect": "evaluation_only",
-                "intrinsic_ranked_top20": (
-                    _rows(pre_strategist_universe.get("intrinsic_ranked_top20"), limit=20)
-                    or intrinsic[:20]
-                ),
             },
             "strategist_selection": {
                 "strategist_run_id": str(
@@ -260,7 +329,7 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
                     or scanner.get("strategist_playbook")
                     or ""
                 ),
-                "post_strategist_top10": post,
+                "post_strategist_top10": _compact_candidates(post, limit=10),
                 "selected_symbol": str(selected.get("symbol") or scanner.get("top_stock") or ""),
                 "evidence_class": "REALIZED_DECISION_SNAPSHOT",
             },

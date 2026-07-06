@@ -43,6 +43,8 @@ def _record(path: Path, *, required: bool) -> dict[str, Any]:
         "size_bytes": path.stat().st_size if exists else 0,
         "modified_epoch": path.stat().st_mtime if exists else None,
         "schema_version": str(payload.get("schema_version") or ""),
+        "evidence_status": str(payload.get("evidence_status") or ""),
+        "forward_windows_complete": bool(payload.get("forward_windows_complete")),
         "missing_reason": "" if exists else "artifact_not_found",
     }
 
@@ -123,6 +125,43 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
     first_window = min(window_times) if window_times else None
     last_window = max(window_times) if window_times else None
     last_runtime_evidence = max(window_times + shadow_times) if (window_times or shadow_times) else None
+    closeout = read_json(Path(reports_root) / "operator_summary" / "daily" / day / "closeout_maintenance.json")
+    closeout_steps = closeout.get("steps") if isinstance(closeout.get("steps"), dict) else {}
+    residual = closeout_steps.get("closeout_residual_position_reconciliation")
+    residual = residual if isinstance(residual, dict) else {}
+    account_snapshot = closeout_steps.get("account_snapshot")
+    account_snapshot = account_snapshot if isinstance(account_snapshot, dict) else {}
+    post_close_account_ok = bool(
+        closeout.get("ok")
+        and account_snapshot.get("ok")
+        and residual.get("ok")
+        and not residual.get("requires_next_open_flatten")
+    )
+    late_session_runtime_evidence = bool(
+        last_runtime_evidence
+        and (last_runtime_evidence.hour, last_runtime_evidence.minute) >= (15, 10)
+    )
+    closeout_trigger = str(closeout.get("trigger") or "")
+    closeout_trigger_ok = bool(
+        closeout_trigger.startswith("kiwoom_market_status_")
+        or (
+            closeout_trigger
+            and post_close_account_ok
+            and late_session_runtime_evidence
+        )
+    )
+    time_coverage_ok = bool(
+        first_window
+        and last_runtime_evidence
+        and (first_window.hour, first_window.minute) <= (9, 10)
+        and late_session_runtime_evidence
+    )
+    post_close_override = bool(
+        first_window
+        and (first_window.hour, first_window.minute) <= (9, 10)
+        and post_close_account_ok
+        and closeout_trigger_ok
+    )
     record.update(
         {
             "expected_schema_version": Q9_DECISION_SCHEMA,
@@ -164,16 +203,18 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
                 last_runtime_evidence.isoformat() if last_runtime_evidence else ""
             ),
             "session_coverage_source": (
+                "post_close_account_snapshot_override"
+                if post_close_override and not time_coverage_ok
+                else
                 "scanner_selection_plus_q9_shadow_runtime"
                 if last_runtime_evidence and last_runtime_evidence != last_window
                 else "scanner_selection"
             ),
-            "full_session_coverage": bool(
-                first_window
-                and last_runtime_evidence
-                and (first_window.hour, first_window.minute) <= (9, 10)
-                and (last_runtime_evidence.hour, last_runtime_evidence.minute) >= (15, 15)
-            ),
+            "full_session_coverage": bool(time_coverage_ok or post_close_override),
+            "post_close_account_snapshot_coverage": bool(post_close_override),
+            "post_close_account_snapshot_ok": bool(post_close_account_ok),
+            "post_close_trigger": closeout_trigger,
+            "late_session_runtime_evidence": bool(late_session_runtime_evidence),
             "shadow_payload_count": len(shadow_payloads),
             "pre_strategist_forward_candidate_count": len(pre_rows),
             "forward_observed_candidate_count": forward_observed,
@@ -237,6 +278,14 @@ def build_artifact_inventory(reports_root: Path, day: str) -> dict[str, Any]:
             ("q9_decision_windows", "q9_decision_windows.json", False),
         )
     }
+    daily["q9_vs_samsung_hynix_comparison"] = _record(
+        Path(reports_root)
+        / "evaluation"
+        / "baseline_samsung_hynix"
+        / day
+        / "q9_vs_samsung_hynix_daily_comparison.json",
+        required=False,
+    )
     daily["q9_decision_windows"] = _q9_daily_diagnostics(
         reports_root,
         day,
