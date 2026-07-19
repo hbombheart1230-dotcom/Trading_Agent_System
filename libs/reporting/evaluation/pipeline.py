@@ -7,9 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from .artifact_inventory import build_artifact_inventory, iter_trade_dirs, read_json
+from .attribution_score_v0 import build_attribution_score_v0, render_attribution_score_v0
 from .counterfactuals import build_selection_attribution
 from .daily_scorecard import build_daily_scorecard
 from .day_validity import build_q9_day_validity
+from .entry_timing_attribution import (
+    build_entry_timing_attribution_report,
+    render_entry_timing_attribution_report,
+)
 from .feedback_effectiveness import build_feedback_effectiveness
 from .five_day_freeze import build_freeze_manifest
 from .markdown import render_daily_scorecard, render_trade_evaluation
@@ -72,6 +77,20 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
     scorecard["baseline_hash"] = baseline_hash
     selection_authority = build_selection_authority_audit(models)
     horizon_compliance = build_horizon_compliance_report(evaluations)
+    entry_timing = build_entry_timing_attribution_report(
+        day=day,
+        models=models,
+        reports_root=reports_root,
+    )
+    attribution_score = build_attribution_score_v0(
+        day=day,
+        reports_root=reports_root,
+        models=models,
+        daily_scorecard=scorecard,
+        selection_authority=selection_authority,
+        horizon_compliance=horizon_compliance,
+        entry_timing=entry_timing,
+    )
 
     for trade_dir, model, evaluation, attribution in zip(
         iter_trade_dirs(reports_root, day),
@@ -100,6 +119,16 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
     _write_text(
         daily_out / "horizon_compliance_report.md",
         render_horizon_compliance_report(horizon_compliance),
+    )
+    _write_json(daily_out / "entry_timing_attribution_report.json", entry_timing)
+    _write_text(
+        daily_out / "entry_timing_attribution_report.md",
+        render_entry_timing_attribution_report(entry_timing),
+    )
+    _write_json(daily_out / "attribution_score_v0.json", attribution_score)
+    _write_text(
+        daily_out / "attribution_score_v0.md",
+        render_attribution_score_v0(attribution_score),
     )
 
     daily_scorecards: list[dict[str, Any]] = []
@@ -149,6 +178,8 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         "daily_scorecard": str(daily_out / "daily_scorecard.json"),
         "selection_authority_audit": str(daily_out / "selection_authority_audit.json"),
         "horizon_compliance_report": str(daily_out / "horizon_compliance_report.json"),
+        "entry_timing_attribution_report": str(daily_out / "entry_timing_attribution_report.json"),
+        "attribution_score_v0": str(daily_out / "attribution_score_v0.json"),
         "full_chain_start_gate": str(daily_out / "full_chain_start_gate.json"),
         "q9_day_validity": str(daily_out / "q9_day_validity.json"),
         "rolling_scorecards": rolling_outputs,
