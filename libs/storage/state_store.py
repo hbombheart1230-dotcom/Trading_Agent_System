@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -16,6 +17,18 @@ _BROKER_TRUTH_PROTECTED_KEYS = (
     "closeout_backup_liquidation",
     _BROKER_TRUTH_MARKER,
 )
+_REPLACE_RETRY_DELAYS_SEC = (0.05, 0.1, 0.2, 0.4, 0.5, 0.5)
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    for delay_sec in (*_REPLACE_RETRY_DELAYS_SEC, None):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if delay_sec is None:
+                raise
+            time.sleep(delay_sec)
 
 
 def _broker_truth_revision(state: Dict[str, Any]) -> float:
@@ -104,7 +117,7 @@ class StateStore:
                 f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, self.path)
+            _replace_with_retry(tmp_path, self.path)
         finally:
             try:
                 if tmp_path.exists():

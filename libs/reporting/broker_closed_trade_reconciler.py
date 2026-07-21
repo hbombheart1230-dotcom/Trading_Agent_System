@@ -62,6 +62,11 @@ def _order_time_value(row: Mapping[str, Any]) -> str:
     return str(row.get("cntr_tm") or row.get("ord_tm") or "").strip()
 
 
+def _order_time_sort_key(row: Mapping[str, Any]) -> str:
+    digits = re.sub(r"\D", "", _order_time_value(row))
+    return digits[:6] if len(digits) >= 6 else digits
+
+
 def _order_time_to_utc(day: str, value: Any) -> str:
     digits = re.sub(r"\D", "", str(value or ""))
     if len(digits) < 6:
@@ -77,6 +82,10 @@ def _order_time_to_utc(day: str, value: Any) -> str:
 
 def _side(row: Mapping[str, Any]) -> str:
     text = str(row.get("io_tp_nm") or "").strip()
+    if "매도" in text:
+        return "sell"
+    if "매수" in text:
+        return "buy"
     if "매도" in text:
         return "sell"
     if "매수" in text:
@@ -132,9 +141,30 @@ def _find_buy_order(orders: List[Dict[str, Any]], *, order_id: str, symbol: str)
     return {}
 
 
+def _find_order_by_id(
+    orders: List[Dict[str, Any]],
+    *,
+    order_id: str,
+    symbol: str,
+    side: str = "",
+) -> Dict[str, Any]:
+    normalized_order = str(order_id or "").strip().lstrip("0")
+    if not normalized_order:
+        return {}
+    side_text = str(side or "").strip().lower()
+    for row in orders:
+        if side_text and _side(row) != side_text:
+            continue
+        if symbol and _norm_symbol(row.get("stk_cd")) != symbol:
+            continue
+        if str(row.get("ord_no") or "").strip().lstrip("0") == normalized_order:
+            return dict(row)
+    return {}
+
+
 def _find_sell_after_buy(orders: List[Dict[str, Any]], *, buy: Mapping[str, Any], symbol: str) -> Dict[str, Any]:
     qty = _to_int(buy.get("cntr_qty") or buy.get("cnfm_qty") or buy.get("ord_qty"))
-    buy_time = _order_time_value(buy)
+    buy_time = _order_time_sort_key(buy)
     candidates = []
     for row in orders:
         if _side(row) != "sell":
@@ -143,11 +173,30 @@ def _find_sell_after_buy(orders: List[Dict[str, Any]], *, buy: Mapping[str, Any]
             continue
         if qty and _to_int(row.get("cntr_qty") or row.get("cnfm_qty") or row.get("ord_qty")) != qty:
             continue
-        row_time = _order_time_value(row)
+        row_time = _order_time_sort_key(row)
         if buy_time and row_time and row_time <= buy_time:
             continue
         candidates.append(dict(row))
-    candidates.sort(key=_order_time_value)
+    candidates.sort(key=_order_time_sort_key)
+    return candidates[0] if candidates else {}
+
+
+def _find_buy_before_sell(orders: List[Dict[str, Any]], *, sell: Mapping[str, Any], symbol: str) -> Dict[str, Any]:
+    qty = _to_int(sell.get("cntr_qty") or sell.get("cnfm_qty") or sell.get("ord_qty"))
+    sell_time = _order_time_sort_key(sell)
+    candidates = []
+    for row in orders:
+        if _side(row) != "buy":
+            continue
+        if symbol and _norm_symbol(row.get("stk_cd")) != symbol:
+            continue
+        if qty and _to_int(row.get("cntr_qty") or row.get("cnfm_qty") or row.get("ord_qty")) != qty:
+            continue
+        row_time = _order_time_sort_key(row)
+        if sell_time and row_time and row_time >= sell_time:
+            continue
+        candidates.append(dict(row))
+    candidates.sort(key=_order_time_sort_key, reverse=True)
     return candidates[0] if candidates else {}
 
 
@@ -189,6 +238,35 @@ def _build_truth_payload(*, symbol: str, buy: Mapping[str, Any], sell: Mapping[s
     }
 
 
+def _build_order_pair_truth(
+    *,
+    symbol: str,
+    entry: Mapping[str, Any],
+    exit_payload: Mapping[str, Any],
+    order_rows: List[Dict[str, Any]],
+    fee_rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    buy = _find_order_by_id(
+        order_rows,
+        order_id=str(entry.get("order_id") or ""),
+        symbol=symbol,
+        side="buy",
+    )
+    sell = _find_order_by_id(
+        order_rows,
+        order_id=str(exit_payload.get("order_id") or ""),
+        symbol=symbol,
+        side="sell",
+    )
+    if buy and not sell:
+        sell = _find_sell_after_buy(order_rows, buy=buy, symbol=symbol)
+    if sell and not buy:
+        buy = _find_buy_before_sell(order_rows, sell=sell, symbol=symbol)
+    if not buy or not sell:
+        return {}
+    return _build_truth_payload(symbol=symbol, buy=buy, sell=sell, order_rows=fee_rows)
+
+
 def _build_truth_payload_from_day_diary(row: Mapping[str, Any], *, symbol: str) -> Dict[str, Any]:
     buy_qty = _to_int(row.get("buy_qty"))
     sell_qty = _to_int(row.get("sell_qty"))
@@ -216,6 +294,21 @@ def _build_truth_payload_from_day_diary(row: Mapping[str, Any], *, symbol: str) 
         "match_mode": "ka10170_symbol_buy_sell_qty_exact",
         "authoritative": True,
     }
+
+
+def _merge_day_diary_with_order_pair(
+    day_diary_truth: Mapping[str, Any],
+    order_pair_truth: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Keep exact ka10170 PnL while retaining order-level timing evidence."""
+    truth = dict(day_diary_truth or {})
+    pair = dict(order_pair_truth or {})
+    for key in ("buy_order_no", "sell_order_no", "buy_time", "sell_time"):
+        if pair.get(key):
+            truth[key] = pair[key]
+    if pair:
+        truth["match_mode"] = "ka10170_with_order_pair_time"
+    return truth
 
 
 def _symbol_metadata(symbol: Any) -> Dict[str, Any]:
@@ -400,6 +493,7 @@ def _patch_exit_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> Di
             "broker_fee": truth.get("fee_tax"),
             "broker_tax": 0,
             "broker_buy_price": truth.get("buy_price"),
+            "pnl_truth_source": truth.get("source"),
             "filled_qty": truth.get("qty"),
             "filled_price": truth.get("sell_price"),
             "avg_price": truth.get("sell_price"),
@@ -457,6 +551,8 @@ def _patch_lifecycle_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) 
     out["entry"] = entry
     out["entry_execution_details"] = dict(entry.get("execution_details") or {})
     out["exit"] = _patch_exit_payload(dict(out.get("exit") or {}), truth)
+    out["exit_execution_details"] = dict(out["exit"].get("execution_details") or {})
+    out["execution_details"] = dict(out["exit_execution_details"])
     shared = dict(out.get("shared_facts") or {})
     shared.update(
         {
@@ -520,6 +616,148 @@ def _patch_health_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> 
     return out
 
 
+def _pair_same_symbol_round_trips(order_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows = [
+        dict(row)
+        for row in order_rows
+        if _side(row) in {"buy", "sell"} and _norm_symbol(row.get("stk_cd"))
+    ]
+    rows.sort(key=lambda row: (_norm_symbol(row.get("stk_cd")), _order_time_sort_key(row), str(row.get("ord_no") or "")))
+    open_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    pairs: List[Dict[str, Any]] = []
+    for row in rows:
+        symbol = _norm_symbol(row.get("stk_cd"))
+        side = _side(row)
+        if side == "buy":
+            open_by_symbol.setdefault(symbol, []).append(row)
+            continue
+        buys = open_by_symbol.setdefault(symbol, [])
+        if not buys:
+            continue
+        sell_qty = _to_int(row.get("cntr_qty") or row.get("cnfm_qty") or row.get("ord_qty"))
+        match_index = 0
+        for idx, buy in enumerate(buys):
+            buy_qty = _to_int(buy.get("cntr_qty") or buy.get("cnfm_qty") or buy.get("ord_qty"))
+            if not sell_qty or not buy_qty or buy_qty == sell_qty:
+                match_index = idx
+                break
+        buy = buys.pop(match_index)
+        pairs.append({"symbol": symbol, "buy": buy, "sell": row})
+    pairs.sort(key=lambda row: _order_time_sort_key(row["sell"]))
+    return pairs
+
+
+def _order_pair_key(truth: Mapping[str, Any]) -> str:
+    return f"{str(truth.get('buy_order_no') or '').strip()}:{str(truth.get('sell_order_no') or '').strip()}"
+
+
+def _truth_from_pair(pair: Mapping[str, Any], *, fee_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return _build_truth_payload(
+        symbol=str(pair.get("symbol") or ""),
+        buy=pair.get("buy") if isinstance(pair.get("buy"), Mapping) else {},
+        sell=pair.get("sell") if isinstance(pair.get("sell"), Mapping) else {},
+        order_rows=fee_rows,
+    )
+
+
+def _trade_hour_from_order_time(value: Any) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) < 2:
+        return "unknown"
+    return f"{digits[:2]}00"
+
+
+def _next_trade_id(day: str, symbol: str, trade_dirs: List[Path]) -> str:
+    prefix = f"TRD_{day.replace('-', '')}_{symbol}_"
+    max_seq = 0
+    for path in trade_dirs:
+        if not path.name.startswith(prefix):
+            continue
+        suffix = path.name[len(prefix):]
+        if suffix.isdigit():
+            max_seq = max(max_seq, int(suffix))
+    return f"{prefix}{max_seq + 1:02d}"
+
+
+def _write_synthetic_trade_bundle(
+    *,
+    reports_root: Path,
+    day: str,
+    truth: Mapping[str, Any],
+    trade_id: str,
+) -> Path:
+    symbol = str(truth.get("symbol") or "")
+    trade_dir = reports_root / "trades" / day / _trade_hour_from_order_time(truth.get("sell_time")) / trade_id
+    metadata = _symbol_metadata(symbol)
+    base = {
+        "schema_version": "broker_synthesized_trade_bundle.v1",
+        "trade_id": trade_id,
+        "day": day,
+        "symbol": symbol,
+        "symbol_name": metadata.get("symbol_name"),
+        "theme": metadata.get("theme"),
+        "themes": metadata.get("themes"),
+        "recovery_source": "broker_synthesized_missing_trade_bundle",
+    }
+    entry = _patch_entry_payload(
+        {
+            **base,
+            "action": "BUY",
+            "order_id": truth.get("buy_order_no"),
+            "timestamp": _order_time_to_utc(day, truth.get("buy_time")),
+            "ts": _order_time_to_utc(day, truth.get("buy_time")),
+            "qty": truth.get("qty"),
+            "price": truth.get("buy_price"),
+        },
+        truth,
+    )
+    exit_payload = _patch_exit_payload(
+        {
+            **base,
+            "action": "SELL",
+            "order_id": truth.get("sell_order_no"),
+            "timestamp": _order_time_to_utc(day, truth.get("sell_time")),
+            "ts": _order_time_to_utc(day, truth.get("sell_time")),
+        },
+        truth,
+    )
+    lifecycle = _patch_lifecycle_payload(
+        {
+            **base,
+            "trade_lifecycle_status": "closed",
+            "status": "closed",
+            "entry": entry,
+            "exit": exit_payload,
+            "lifecycle": {"status": "closed", "entry": entry, "exit": exit_payload},
+            "shared_facts": {
+                "symbol": symbol,
+                "symbol_name": metadata.get("symbol_name"),
+                "theme": metadata.get("theme"),
+                "themes": metadata.get("themes"),
+            },
+        },
+        truth,
+    )
+    _write_json(trade_dir / "entry.json", entry)
+    _write_json(trade_dir / "exit.json", exit_payload)
+    _write_json(trade_dir / "lifecycle_bundle.json", lifecycle)
+    _write_json(trade_dir / "_health.json", _patch_health_payload(base, truth))
+    evidence_dir = trade_dir / "evidence"
+    for name in ("scanner_evidence", "strategist_evidence", "commander_evidence", "monitor_evidence"):
+        _write_json(
+            evidence_dir / f"{name}.json",
+            {
+                "schema_version": f"{name}.v1",
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "recovery_source": "broker_synthesized_missing_trade_bundle",
+                "events": [],
+            },
+        )
+    _write_json(trade_dir / "ai_trade_report_input.json", _patch_report_payload(base, truth))
+    return trade_dir
+
+
 def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"), day: str) -> Dict[str, Any]:
     normalized_day = str(day or "").strip()[:10]
     snapshot = _load_latest_snapshot(normalized_day, reports_root)
@@ -531,6 +769,8 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
     day_diary_rows = _day_trade_diary_rows(snapshot)
     patched: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
+    synthesized: List[Dict[str, Any]] = []
+    used_order_pairs: set[str] = set()
     day_root = reports_root / "trades" / normalized_day
     trade_dirs = [
         path
@@ -542,8 +782,12 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
         symbol = _symbol_from_trade_id(path.name)
         symbol_trade_counts[symbol] = symbol_trade_counts.get(symbol, 0) + 1
     for trade_dir in trade_dirs:
+        trade_id = trade_dir.name
+        symbol = _symbol_from_trade_id(trade_id)
         report_path = trade_dir / "reports" / "ai_trade_report.json"
         summary_path = trade_dir / "reports" / "ai_trade_summary.json"
+        report_input_path = trade_dir / "ai_trade_report_input.json"
+        compact_input_path = trade_dir / "ai_trade_report_compact_input.json"
         lifecycle_path = trade_dir / "lifecycle_bundle.json"
         exit_path = trade_dir / "exit.json"
         health_path = trade_dir / "_health.json"
@@ -613,6 +857,7 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             and lifecycle_exit.get("timestamp")
             and entry_price_available
             and metadata_available
+            and int(symbol_trade_counts.get(symbol) or 0) <= 1
         )
         if (
             str(
@@ -625,23 +870,27 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             and already_authoritative_and_consistent
         ):
             continue
-        trade_id = trade_dir.name
-        symbol = _symbol_from_trade_id(trade_id)
         buy = _find_buy_order(fill_orders, order_id=str(entry.get("order_id") or ""), symbol=symbol)
         sell = _find_sell_after_buy(fill_orders, buy=buy, symbol=symbol) if buy else {}
+        order_pair_truth = _build_order_pair_truth(
+            symbol=symbol,
+            entry=entry,
+            exit_payload=lifecycle_exit if lifecycle_exit else _read_json(exit_path),
+            order_rows=fill_orders,
+            fee_rows=fee_rows,
+        )
         day_diary_row = (
             _find_closed_day_diary_row(day_diary_rows, symbol=symbol, entry=entry)
             if symbol_trade_counts.get(symbol) == 1
             else {}
         )
         if day_diary_row:
-            truth = _build_truth_payload_from_day_diary(day_diary_row, symbol=symbol)
-            if buy and sell:
-                truth["buy_order_no"] = str(buy.get("ord_no") or "")
-                truth["sell_order_no"] = str(sell.get("ord_no") or "")
-                truth["buy_time"] = _order_time_value(buy)
-                truth["sell_time"] = _order_time_value(sell)
-                truth["match_mode"] = "ka10170_with_order_pair_time"
+            truth = _merge_day_diary_with_order_pair(
+                _build_truth_payload_from_day_diary(day_diary_row, symbol=symbol),
+                order_pair_truth,
+            )
+        elif order_pair_truth:
+            truth = order_pair_truth
         elif buy and sell:
             truth = _build_truth_payload(symbol=symbol, buy=buy, sell=sell, order_rows=fee_rows)
         else:
@@ -649,6 +898,11 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
                 skipped.append({"trade_id": trade_id, "symbol": symbol, "reason": "order_pair_or_day_diary_row_not_found"})
                 continue
         truth["exit_ts"] = _order_time_to_utc(normalized_day, truth.get("sell_time"))
+        used_order_pairs.add(_order_pair_key(truth))
+        if report_input_path.exists():
+            _write_json(report_input_path, _patch_report_payload(_read_json(report_input_path), truth))
+        if compact_input_path.exists():
+            _write_json(compact_input_path, _patch_report_payload(_read_json(compact_input_path), truth))
         if report_path.exists():
             _write_json(report_path, _patch_report_payload(report, truth))
         if summary_path.exists():
@@ -670,11 +924,31 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             )
         except Exception:
             pass
+    for pair in _pair_same_symbol_round_trips(fee_rows):
+        truth = _truth_from_pair(pair, fee_rows=fee_rows)
+        if not truth:
+            continue
+        key = _order_pair_key(truth)
+        if key in used_order_pairs:
+            continue
+        truth["exit_ts"] = _order_time_to_utc(normalized_day, truth.get("sell_time"))
+        trade_id = _next_trade_id(normalized_day, str(truth.get("symbol") or ""), trade_dirs)
+        trade_dir = _write_synthetic_trade_bundle(
+            reports_root=reports_root,
+            day=normalized_day,
+            truth=truth,
+            trade_id=trade_id,
+        )
+        trade_dirs.append(trade_dir)
+        used_order_pairs.add(key)
+        synthesized.append({"trade_id": trade_id, "trade_dir": str(trade_dir), **truth})
     return {
         "ok": True,
         "snapshot_path": str(snapshot.get("_snapshot_path") or ""),
         "patched_count": len(patched),
         "patched": patched,
+        "synthesized_count": len(synthesized),
+        "synthesized": synthesized,
         "skipped": skipped[:20],
     }
 

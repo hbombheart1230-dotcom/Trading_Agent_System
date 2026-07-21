@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
+from libs.market.korea_index_sanity import korea_index_sanity
+
 
 def _float(value: Any, default: float = 0.0) -> float:
     try:
@@ -46,6 +48,7 @@ def classify_market_regime_rail(macro_packet: Mapping[str, Any]) -> Dict[str, An
     global_sentiment = _as_dict(macro_packet.get("global_sentiment"))
     index_moves = _as_dict(macro_packet.get("index_moves"))
     korea_indices = _as_dict(macro_packet.get("korea_indices"))
+    sanity = korea_index_sanity(korea_indices) if korea_indices else {"status": "ok", "warning_count": 0, "warnings": [], "extreme_move_requires_confirmation": False}
     krx_night_futures = _as_dict(macro_packet.get("krx_night_futures"))
     macro_moves = _as_dict(macro_packet.get("macro_moves"))
 
@@ -117,6 +120,7 @@ def classify_market_regime_rail(macro_packet: Mapping[str, Any]) -> Dict[str, An
             "dxy_pct": dxy_pct,
             "vix_pct": vix_pct,
         },
+        "market_input_sanity": sanity,
     }
 
 

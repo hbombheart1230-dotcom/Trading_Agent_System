@@ -99,6 +99,60 @@ def _text_value(value: Any) -> str:
     return text
 
 
+def _looks_like_mojibake(text: str) -> bool:
+    if not text:
+        return False
+    if "\ufffd" in text:
+        return True
+    compatibility_count = sum(1 for ch in text if "\uf900" <= ch <= "\ufaff")
+    if compatibility_count:
+        return True
+    question_count = text.count("?")
+    return question_count >= 2 and any(ord(ch) > 127 for ch in text)
+
+
+def _operator_label_fallback(value: Any, *, axis: str = "") -> str:
+    text = _text_value(value)
+    if not text:
+        return ""
+    if not _looks_like_mojibake(text):
+        return text
+    lowered = text.lower()
+    if "entry evidence was not captured" in lowered or "position context was inferred" in lowered:
+        return ""
+    if "pending exit lock" in lowered:
+        return "pending_exit_lock"
+    if "sell reconciled from kiwoom day trade diary" in lowered:
+        return "broker_day_trade_diary_closed"
+    if "broker day trade diary" in lowered:
+        return "broker_day_trade_diary_closed"
+    if "exit_trigger_not_captured" in lowered or "monitor_exit_trigger_not_captured" in lowered:
+        return "monitor_exit_trigger_not_captured"
+    if "sell_execution_confirmed" in lowered or "full_sell_quantity_reconciled" in lowered:
+        return "monitor_exit_trigger_not_captured"
+    if "intraday_low_break" in lowered or "?μ쨷" in text:
+        return "intraday_low_break"
+    if "vwap_breakdown" in lowered or "vwap ?댄깉" in lowered:
+        return "vwap_breakdown"
+    if "hard_stop" in lowered or "stop_loss" in lowered or "怨좎젙" in text or "?먯젅" in text:
+        return "stop_loss"
+    if "take_profit" in lowered or "?듭젅" in text:
+        return "take_profit"
+    if "vwap" in lowered and ("breakout" in lowered or "?뚰뙆" in text or "怨좎젏" in text):
+        return "breakout_vwap_volume_confirmation"
+    if "vwap" in lowered and ("pullback" in lowered or "?뚮" in text):
+        return "pullback_vwap_volume_confirmation"
+    if "breakout" in lowered or "?뚰뙆" in text:
+        return "breakout"
+    if "pullback" in lowered or "?뚮" in text:
+        return "pullback"
+    if axis == "exit":
+        return "unreadable_exit_label"
+    if axis == "entry":
+        return "unreadable_entry_label"
+    return "unreadable_operator_label"
+
+
 def _first_text(*values: Any) -> str:
     for value in values:
         text = _text_value(value)
@@ -1634,9 +1688,14 @@ def _iter_symbol_trade_history(reports_root: Path) -> Iterable[Dict[str, Any]]:
 
 
 def _top_counter(counter: Counter[str], limit: int = 5) -> List[Dict[str, Any]]:
+    normalized: Counter[str] = Counter()
+    for name, count in counter.items():
+        clean_name = _operator_label_fallback(name)
+        if clean_name:
+            normalized[clean_name] += int(count)
     return [
         {"name": name, "count": int(count)}
-        for name, count in counter.most_common(limit)
+        for name, count in normalized.most_common(limit)
         if str(name or "").strip()
     ]
 
@@ -1911,7 +1970,8 @@ def _performance_field_value(row: Dict[str, Any], field: str) -> Any:
 def _performance_rows_by_field(rows: List[Dict[str, Any]], field: str, *, limit: int = 8) -> List[Dict[str, Any]]:
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        name = _text_value(_performance_field_value(row, field))
+        axis = "entry" if field.startswith("entry") else "exit" if field.startswith("exit") else ""
+        name = _operator_label_fallback(_performance_field_value(row, field), axis=axis)
         if not name:
             continue
         grouped[name].append(row)
@@ -1948,8 +2008,14 @@ def _combined_pattern_key(row: Dict[str, Any]) -> str:
     playbook = _first_text(row.get("final_playbook"), row.get("playbook"))
     tactical = _text_value(row.get("tactical_strategy"))
     rank = _text_value(row.get("scanner_rank_bucket"))
-    entry = _operator_pattern_name(row.get("entry_pattern_type"), axis="entry", fallback_reason=row.get("entry_reason"))
-    exit_pattern = _operator_pattern_name(row.get("exit_pattern_type"), axis="exit", fallback_reason=row.get("exit_reason"))
+    entry = _operator_label_fallback(
+        _operator_pattern_name(row.get("entry_pattern_type"), axis="entry", fallback_reason=row.get("entry_reason")),
+        axis="entry",
+    )
+    exit_pattern = _operator_label_fallback(
+        _operator_pattern_name(row.get("exit_pattern_type"), axis="exit", fallback_reason=row.get("exit_reason")),
+        axis="exit",
+    )
     parts = [part for part in (playbook, tactical, rank, entry, exit_pattern) if part]
     return " | ".join(parts)
 

@@ -4053,7 +4053,7 @@ def test_monitor_entry_candidate_cascade_blocks_fifth_priority_candidate_by_defa
     assert "minute_source_present" in fallback_trace[0]
 
 
-def test_monitor_entry_candidate_cascade_uses_commander_priority_expansion(monkeypatch):
+def test_monitor_entry_candidate_cascade_q15_caps_commander_priority_expansion(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
 
@@ -4112,14 +4112,14 @@ def test_monitor_entry_candidate_cascade_uses_commander_priority_expansion(monke
     out = monitor_node(state)
 
     intents = out.get("intents") or []
-    assert len(intents) == 1
-    assert intents[0]["symbol"] == "GGG"
+    assert intents == []
     cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
     assert cascade.get("attempted") is True
-    assert cascade.get("max_priority_rank") == 7
-    assert cascade.get("max_runner_ups") == 6
+    assert cascade.get("requested_max_priority_rank") == 7
+    assert cascade.get("max_priority_rank") == 3
+    assert cascade.get("max_runner_ups") == 2
     assert cascade.get("cascade_enabled") is True
-    assert cascade.get("fallback_to_symbol") == "GGG"
+    assert not cascade.get("fallback_to_symbol")
     assert cascade.get("control_mode") == "expand_when_market_ok"
 
 
@@ -4671,6 +4671,48 @@ def test_monitor_trend_breakdown_exit_uses_feature_signal(monkeypatch):
     exit_info = out.get("monitor_exit") or {}
     assert str(exit_info.get("reason") or "") == "trend_breakdown"
     assert float(exit_info.get("vwap_distance") or 0.0) == -0.01
+
+
+def test_monitor_rejects_implausible_engine_vwap_for_trend_breakdown(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "480")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = _base_state()
+    state["selected"] = {
+        "symbol": "006800",
+        "price": 36350.0,
+        "features": {
+            "engine_trend_strength": -0.25,
+            "engine_vwap_distance": -0.3867531480191311,
+        },
+    }
+    state["portfolio_snapshot"] = {
+        "cash": 94_000_000.0,
+        "positions": [
+            {
+                "symbol": "006800",
+                "qty": 82,
+                "avg_price": 36351.0,
+                "current_price": 36350.0,
+                "hold_sec": 30,
+            }
+        ],
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "trend_strength_floor": -0.15,
+        "take_profit_pct": 0.0,
+    }
+
+    out = monitor_node(state)
+
+    assert out.get("intents") == []
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") != "trend_breakdown"
+    assert exit_info.get("engine_vwap_distance_rejected") is True
+    assert float(exit_info.get("engine_vwap_distance_rejected_value")) == -0.3867531480191311
+    assert str(exit_info.get("engine_vwap_distance_rejected_reason") or "") == "outside_session_plausibility_bound"
 
 
 def test_monitor_exit_policy_prefers_commander_carry_overrides():

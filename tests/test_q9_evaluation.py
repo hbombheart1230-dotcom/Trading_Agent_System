@@ -107,6 +107,7 @@ def test_q9_pipeline_writes_read_only_outputs(tmp_path: Path) -> None:
     assert scorecard["evaluation_phase"]["q8_status"] == "CLOSED"
     assert scorecard["evaluation_phase"]["full_chain_start_gate"]["status"] == "NOT_READY"
     assert Path(result["full_chain_start_gate"]).exists()
+    assert Path(result["no_trade_attribution_report"]).exists()
     assert (reports / "evaluation" / "trades" / "2026-06-19" / "TRD_1" / "trade_evaluation.json").exists()
 
 
@@ -246,6 +247,96 @@ def test_closeout_broker_skip_does_not_override_existing_broker_truth(tmp_path: 
     assert evaluation["integrity"]["promotion_metric_eligible"] is True
     assert scorecard["realized_performance"]["count"] == 1
     assert scorecard["realized_performance"]["average_return_pct"] == -0.01
+
+
+def test_broker_day_split_sell_child_is_not_counted_as_independent_trade(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    parent = reports / "trades" / "2026-07-15" / "0900" / "TRD_20260715_005360_01"
+    child = reports / "trades" / "2026-07-15" / "0900" / "TRD_20260715_005360_02"
+    _write(parent / "lifecycle_bundle.json", {
+        "day": "2026-07-15",
+        "trade_id": parent.name,
+        "symbol": "005360",
+        "lifecycle": {
+            "status": "closed",
+            "entry": {
+                "timestamp": "2026-07-15T00:01:00+00:00",
+                "price": 3186,
+                "qty": 952,
+            },
+            "exit": {
+                "timestamp": "2026-07-15T00:09:00+00:00",
+                "action": "SELL",
+                "price": 3445,
+                "qty": 476,
+                "execution_details": {"filled_qty": 476},
+            },
+        },
+        "shared_facts": {"status": "closed", "pnl_pct": 0.0806616},
+    })
+    _write(parent / "entry.json", {"symbol": "005360", "filled_qty": 952})
+    _write(parent / "exit.json", {
+        "symbol": "005360",
+        "ts": "2026-07-15T00:09:00+00:00",
+        "action": "SELL",
+        "filled_qty": 476,
+    })
+    (parent / "reports").mkdir(parents=True)
+    (parent / "reports" / "ai_trade_summary.md").write_text("# summary", encoding="utf-8")
+
+    _write(child / "lifecycle_bundle.json", {
+        "day": "2026-07-15",
+        "trade_id": child.name,
+        "symbol": "005360",
+        "lifecycle": {
+            "status": "closed",
+            "entry": {
+                "timestamp": "2026-07-15T00:01:00+00:00",
+                "price": 3186,
+                "qty": 476,
+            },
+            "exit": {
+                "timestamp": "2026-07-15T00:09:01+00:00",
+                "action": "SELL",
+                "price": 3445,
+                "qty": 476,
+                "execution_details": {"filled_qty": 476},
+            },
+        },
+        "shared_facts": {"status": "closed", "pnl_pct": 0.0806616},
+    })
+    _write(child / "entry.json", {"trade_id": child.name, "symbol": "005360", "filled_qty": 476})
+    _write(child / "exit.json", {
+        "trade_id": child.name,
+        "symbol": "005360",
+        "filled_qty": 476,
+    })
+    _write(child / "_health.json", {
+        "trade_id": child.name,
+        "symbol": "005360",
+        "status": "closed_by_broker_day_trade_diary",
+    })
+    for trade in (parent, child):
+        for name in ("scanner", "strategist", "commander", "monitor"):
+            _write(trade / "evidence" / f"{name}_evidence.json", {})
+    daily = reports / "operator_summary" / "daily" / "2026-07-15"
+    _write(daily / "daily_summary.json", {})
+    _write(daily / "q8_shadow_blocker_review.json", {})
+
+    result = build_q9_evaluation(reports, "2026-07-15")
+    scorecard = json.loads(Path(result["daily_scorecard"]).read_text(encoding="utf-8"))
+    child_eval = json.loads(
+        (reports / "evaluation" / "trades" / "2026-07-15" / child.name / "trade_evaluation.json").read_text(encoding="utf-8")
+    )
+    selection = json.loads(Path(result["selection_authority_audit"]).read_text(encoding="utf-8"))
+
+    assert scorecard["artifact_integrity"]["trade_count"] == 2
+    assert scorecard["artifact_integrity"]["eligible_trade_count"] == 1
+    assert scorecard["realized_performance"]["count"] == 1
+    assert "broker_day_partial_exit_duplicate" in child_eval["integrity"]["defects"]
+    assert child_eval["integrity"]["promotion_metric_eligible"] is False
+    assert selection["trade_count"] == 1
+    assert selection["summary"]["excluded:broker_day_partial_exit_duplicate"] == 1
 
 
 def test_q9_daily_artifact_cleanup_removes_stale_temp_and_lock(tmp_path: Path) -> None:

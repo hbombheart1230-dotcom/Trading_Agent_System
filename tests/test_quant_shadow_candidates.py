@@ -134,6 +134,70 @@ def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() 
     assert skipped["evaluated"] is False
 
 
+def test_build_quant_shadow_candidate_payload_preserves_q15_skipped_runner_up_evidence() -> None:
+    state = {
+        "run_id": "run-q15",
+        "trade_day": "2026-07-10",
+        "tick_ts": 1783641720,
+        "selected": {"symbol": "005930", "rank": 1, "score_total": 1.2},
+        "ranked_candidates": [
+            {"symbol": "005930", "rank": 1, "score_total": 1.2},
+            {"symbol": "000660", "rank": 2, "score_total": 0.8},
+            {"symbol": "035420", "rank": 3, "score_total": 1.1},
+        ],
+        "monitor_entry": {
+            "reason": "breakout_not_ready",
+            "intent_submitted": False,
+        },
+        "monitor_entry_cascade": {
+            "attempted": True,
+            "eligible": True,
+            "top_pick_symbol": "005930",
+            "top_pick_triggered": False,
+            "top_pick_reason": "breakout_not_ready",
+            "top_pick_guard_blocked": False,
+            "skipped": [
+                {
+                    "symbol": "000660",
+                    "reason": "q15_score_gap_above_runner_up_limit",
+                    "rank": 2,
+                    "top_pick_score": 1.2,
+                    "candidate_score": 0.8,
+                    "score_gap": 0.4,
+                    "max_score_gap": 0.2,
+                },
+                {
+                    "symbol": "035420",
+                    "reason": "q15_runner_up_expected_blocker",
+                    "rank": 3,
+                    "expected_blocker": "below_vwap_reclaim_not_ready",
+                },
+            ],
+            "fallback_used": False,
+            "final_selected_symbol": "005930",
+        },
+    }
+
+    payload = build_quant_shadow_candidate_payload(state)
+    skipped_rows = [
+        row for row in payload["candidates"]
+        if row.get("shadow_role") == "runner_up_skipped"
+    ]
+
+    assert len(skipped_rows) == 2
+    score_gap_row = next(row for row in skipped_rows if row["symbol"] == "000660")
+    blocker_row = next(row for row in skipped_rows if row["symbol"] == "035420")
+    assert score_gap_row["reason"] == "q15_score_gap_above_runner_up_limit"
+    assert score_gap_row["rank"] == 2
+    assert score_gap_row["top_pick_score"] == 1.2
+    assert score_gap_row["candidate_score"] == 0.8
+    assert score_gap_row["score_gap"] == 0.4
+    assert score_gap_row["max_score_gap"] == 0.2
+    assert score_gap_row["would_enter"] is False
+    assert blocker_row["reason"] == "q15_runner_up_expected_blocker"
+    assert blocker_row["expected_blocker"] == "below_vwap_reclaim_not_ready"
+
+
 def test_build_quant_shadow_candidate_payload_fills_quant_surface_and_market_snapshot() -> None:
     state = {
         "run_id": "run-market",

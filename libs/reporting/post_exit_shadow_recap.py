@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
 from libs.core.symbols import normalize_symbol
-from libs.runtime.strategy_horizon_feedback import update_post_exit_shadow_with_price_observations
+from libs.runtime.strategy_horizon_feedback import (
+    build_post_exit_shadow_placeholder,
+    update_post_exit_shadow_with_price_observations,
+)
 
 
 CHECKPOINT_LABELS = ("+5m", "+15m", "+30m", "+60m", "EOD")
@@ -443,6 +446,32 @@ def _post_exit_shadow_from_report(report: Mapping[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _post_exit_shadow_from_lifecycle(report_path: Path) -> Dict[str, Any]:
+    trade_dir = report_path.parents[1]
+    bundle = _read_json(trade_dir / "lifecycle_bundle.json")
+    if not bundle:
+        return {}
+    lifecycle = _as_dict(bundle.get("lifecycle")) or bundle
+    status = str(
+        bundle.get("trade_lifecycle_status")
+        or lifecycle.get("status")
+        or bundle.get("status")
+        or ""
+    ).strip()
+    exit_ctx = _as_dict(lifecycle.get("exit")) or _as_dict(bundle.get("exit"))
+    exit_details = (
+        _as_dict(exit_ctx.get("execution_details"))
+        or _as_dict(bundle.get("exit_execution_details"))
+        or _as_dict(bundle.get("execution_details"))
+    )
+    return build_post_exit_shadow_placeholder(
+        lifecycle_bundle=bundle,
+        lifecycle=lifecycle,
+        status=status,
+        exit_execution_details=exit_details,
+    )
+
+
 def _checkpoint_summary(shadow: Mapping[str, Any]) -> Dict[str, Any]:
     checkpoints = _as_dict(shadow.get("checkpoints"))
     out: Dict[str, Any] = {}
@@ -496,9 +525,12 @@ def build_post_exit_shadow_recap(
 ) -> Dict[str, Any]:
     state_obj = state if isinstance(state, Mapping) else {}
     trades: List[Dict[str, Any]] = []
+    fresh_minute_cache: Dict[str, tuple[List[Dict[str, Any]], Dict[str, Any]]] = {}
     for report_path in iter_trade_report_json_paths(reports_root, day):
         report = _read_json(report_path)
         shadow = _post_exit_shadow_from_report(report)
+        if not shadow:
+            shadow = _post_exit_shadow_from_lifecycle(report_path)
         if not shadow:
             continue
         symbol = str(shadow.get("symbol") or report.get("symbol") or "").strip()
@@ -506,10 +538,18 @@ def build_post_exit_shadow_recap(
         rows = same_day_closeout_rows_for_shadow(shadow, rows)
         fresh_minute_fetch: Dict[str, Any] = {"attempted": False}
         if symbol and _fresh_minute_fetch_enabled() and _post_exit_shadow_needs_fresh_minutes(shadow, rows):
-            fresh_rows, fresh_minute_fetch = fetch_fresh_minute_rows_for_symbol(
-                symbol,
-                run_id=f"post_exit_shadow_recap:{day}:{report_path.parents[1].name}",
-            )
+            cached = fresh_minute_cache.get(symbol)
+            if cached is None:
+                fresh_rows, fresh_minute_fetch = fetch_fresh_minute_rows_for_symbol(
+                    symbol,
+                    run_id=f"post_exit_shadow_recap:{day}:{symbol}",
+                )
+                fresh_minute_cache[symbol] = (list(fresh_rows), dict(fresh_minute_fetch))
+                fresh_minute_fetch = {**fresh_minute_fetch, "cache_hit": False}
+            else:
+                cached_rows, cached_fetch = cached
+                fresh_rows = list(cached_rows)
+                fresh_minute_fetch = {**cached_fetch, "cache_hit": True}
             fresh_rows = same_day_closeout_rows_for_shadow(shadow, fresh_rows)
             rows = merge_minute_rows(rows, fresh_rows)
         updated_shadow = (
@@ -684,6 +724,63 @@ def render_post_exit_shadow_daily_recap_md(recap: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_trade_recap_markdown(trade: Mapping[str, Any]) -> str:
+    lines = [
+        f"# 매도 후 가격 추적 Recap - {trade.get('label')}",
+        "",
+        "- 기준: 실제 매도 후 같은 종목을 가상 보유했다고 가정한 관측 전용 결과입니다.",
+        "- 적용: 기존 ai_trade_report 본문은 수정하지 않고 recap과 summary 산출물만 갱신합니다.",
+        f"- 가격 관측 상태: {trade.get('price_observation_status')}",
+        f"- 사유: {trade.get('price_observation_reason') or '-'}",
+        f"- 마지막 관측 시각: {trade.get('latest_observed_ts') or '-'}",
+        f"- 최선 관측 지점: {trade.get('best_exit_offset') or '-'} / {_price(trade.get('best_exit_price'))}",
+        f"- 최대 매도 후 상승: {_pct(trade.get('max_post_exit_upside_pct'))}",
+        f"- 최대 매도 후 하락: {_pct(trade.get('max_post_exit_drawdown_pct'))}",
+        "",
+        "| 지점 | 상태 | 가격 | 수익률 | 관측 시각 |",
+        "| --- | --- | ---: | ---: | --- |",
+    ]
+    checkpoints = _as_dict(trade.get("checkpoints"))
+    for label in CHECKPOINT_LABELS:
+        row = _as_dict(checkpoints.get(label))
+        lines.append(
+            f"| {label} | {row.get('status') or 'pending'} | {_price(row.get('price'))} | "
+            f"{_pct(row.get('return_pct'))} | {row.get('observed_ts') or row.get('latest_observed_ts') or '-'} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _render_daily_recap_markdown(recap: Mapping[str, Any]) -> str:
+    summary = _as_dict(recap.get("summary"))
+    lines = [
+        f"# 매도 후 가격 추적 일괄 Recap ({recap.get('day')})",
+        "",
+        "- 기준: stage4 closeout review와 16:00 closeout에서 당일 매도 후 가격 추적을 일괄 갱신합니다.",
+        "- 적용: 기존 ai_trade_report 본문은 수정하지 않고 recap과 ai_trade_summary 산출물만 갱신합니다.",
+        f"- 총 대상: {summary.get('total', 0)}건",
+        f"- 관측 완료: {summary.get('observed', 0)}건",
+        f"- EOD 관측 완료: {summary.get('eod_observed', 0)}건",
+        f"- 대기: {summary.get('pending', 0)}건",
+        "",
+        "| 거래 | 상태 | +5m | +15m | +30m | +60m | EOD | 최선 지점 | 최대 상승 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |",
+    ]
+    for trade in _as_list(recap.get("trades")):
+        if not isinstance(trade, dict):
+            continue
+        checkpoints = _as_dict(trade.get("checkpoints"))
+        returns = []
+        for label in CHECKPOINT_LABELS:
+            row = _as_dict(checkpoints.get(label))
+            returns.append(_pct(row.get("return_pct")) if row.get("status") == "observed" else "-")
+        lines.append(
+            f"| {trade.get('label')} | {trade.get('price_observation_status')} | "
+            f"{returns[0]} | {returns[1]} | {returns[2]} | {returns[3]} | {returns[4]} | "
+            f"{trade.get('best_exit_offset') or '-'} | {_pct(trade.get('max_post_exit_upside_pct'))} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def write_post_exit_shadow_recap_outputs(
     recap: Mapping[str, Any],
     *,
@@ -703,10 +800,10 @@ def write_post_exit_shadow_recap_outputs(
         if str(json_path):
             _write_json(json_path, trade)
         if str(md_path):
-            _write_text(md_path, render_post_exit_shadow_trade_recap_md(trade))
+            _write_text(md_path, _render_trade_recap_markdown(trade))
 
     _write_json(daily_json, recap)
-    _write_text(daily_md, render_post_exit_shadow_daily_recap_md(recap))
+    _write_text(daily_md, _render_daily_recap_markdown(recap))
 
     return {"report_json_path": str(daily_json), "report_md_path": str(daily_md)}
 

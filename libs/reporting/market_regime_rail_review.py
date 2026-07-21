@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
+from libs.market.korea_index_sanity import korea_index_sanity
+
 
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -53,6 +55,7 @@ def classify_market_regime_rail(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
         }
 
     korea = snapshot.get("korea_indices") if isinstance(snapshot.get("korea_indices"), Mapping) else {}
+    sanity = korea_index_sanity(korea) if korea else {"status": "ok", "warning_count": 0, "warnings": [], "extreme_move_requires_confirmation": False}
     macro_moves = snapshot.get("macro_moves") if isinstance(snapshot.get("macro_moves"), Mapping) else {}
     global_sentiment = snapshot.get("global_sentiment") if isinstance(snapshot.get("global_sentiment"), Mapping) else {}
 
@@ -165,6 +168,7 @@ def classify_market_regime_rail(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
         "rail_confidence": confidence,
         "rationale": rationale,
         "market_inputs": inputs,
+        "market_input_sanity": sanity,
         "expected_tactical_behavior": behavior,
         "q8_review_focus": focus,
         "secondary_flags": {
@@ -214,6 +218,21 @@ def render_market_regime_rail_markdown(rail: Mapping[str, Any], *, day: str) -> 
     if inputs.get("krx_night_futures_status") or inputs.get("krx_night_futures_pressure"):
         lines.append(f"- krx_night_futures_status: `{inputs.get('krx_night_futures_status') or '-'}`")
         lines.append(f"- krx_night_futures_pressure: `{inputs.get('krx_night_futures_pressure') or '-'}`")
+    sanity = rail.get("market_input_sanity") if isinstance(rail.get("market_input_sanity"), Mapping) else {}
+    warnings = sanity.get("warnings") if isinstance(sanity.get("warnings"), list) else []
+    if warnings:
+        lines += ["", "## Market Input Sanity", ""]
+        lines.append(f"- status: `{sanity.get('status') or 'warning'}`")
+        lines.append(f"- extreme_move_requires_confirmation: `{bool(sanity.get('extreme_move_requires_confirmation'))}`")
+        for row in warnings[:8]:
+            if not isinstance(row, Mapping):
+                continue
+            lines.append(
+                "- warning: "
+                f"`{row.get('code')}` {row.get('index') or '-'} "
+                f"change_pct={float(row.get('change_pct') or 0.0):.4f} "
+                f"severity=`{row.get('severity') or '-'}`"
+            )
     lines += ["", "## Expected Tactical Behavior", ""]
     for item in list(rail.get("expected_tactical_behavior") or []):
         lines.append(f"- {item}")

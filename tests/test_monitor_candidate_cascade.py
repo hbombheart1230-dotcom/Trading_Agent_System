@@ -145,6 +145,124 @@ def test_candidate_cascade_skips_runner_ups_above_rank_limit() -> None:
     assert "012340" not in plan["runner_up_symbols"]
 
 
+def test_candidate_cascade_q15_caps_commander_expanded_runner_up_rank() -> None:
+    candidates = [
+        {"symbol": "005930", "rank": 1, "score_total": 1.00},
+        {"symbol": "000660", "rank": 2, "score_total": 0.99},
+        {"symbol": "035420", "rank": 3, "score_total": 0.98},
+        {"symbol": "012340", "rank": 4, "score_total": 0.97},
+        {"symbol": "034220", "rank": 5, "score_total": 0.96},
+    ]
+
+    plan = build_entry_candidate_cascade_plan(
+        selected_symbol="005930",
+        ranked_candidates=candidates,
+        scanner_output={},
+        open_position_count=0,
+        entry_guard_blocked=False,
+        entry_triggered=False,
+        entry_reason="breakout_not_ready",
+        max_runner_ups=4,
+        cascade_enabled=True,
+    )
+
+    assert plan["requested_max_priority_rank"] == 5
+    assert plan["max_priority_rank"] == 3
+    assert plan["max_runner_ups"] == 2
+    assert plan["runner_up_symbols"] == ["000660", "035420"]
+    assert "012340" not in plan["runner_up_symbols"]
+    assert "034220" not in plan["runner_up_symbols"]
+
+
+def test_candidate_cascade_q15_blocks_large_score_gap_runner_up() -> None:
+    candidates = [
+        {"symbol": "005930", "rank": 1, "score_total": 1.20},
+        {"symbol": "000660", "rank": 2, "score_total": 0.80},
+        {"symbol": "035420", "rank": 3, "score_total": 1.05},
+    ]
+
+    plan = build_entry_candidate_cascade_plan(
+        selected_symbol="005930",
+        ranked_candidates=candidates,
+        scanner_output={},
+        open_position_count=0,
+        entry_guard_blocked=False,
+        entry_triggered=False,
+        entry_reason="breakout_not_ready",
+        max_runner_ups=2,
+        cascade_enabled=True,
+    )
+
+    assert plan["runner_up_symbols"] == ["035420"]
+    skipped = list(plan["skipped"])
+    assert any(
+        row.get("symbol") == "000660"
+        and row.get("reason") == "q15_score_gap_above_runner_up_limit"
+        and row.get("score_gap") > row.get("max_score_gap")
+        for row in skipped
+    )
+
+
+def test_candidate_cascade_q15_blocks_runner_up_with_expected_hard_blocker() -> None:
+    candidates = [
+        {"symbol": "005930", "rank": 1, "score_total": 1.20},
+        {
+            "symbol": "000660",
+            "rank": 2,
+            "score_total": 1.15,
+            "expected_monitor_block_reason": "below_vwap_reclaim_not_ready",
+        },
+        {"symbol": "035420", "rank": 3, "score_total": 1.10},
+    ]
+
+    plan = build_entry_candidate_cascade_plan(
+        selected_symbol="005930",
+        ranked_candidates=candidates,
+        scanner_output={},
+        open_position_count=0,
+        entry_guard_blocked=False,
+        entry_triggered=False,
+        entry_reason="breakout_not_ready",
+        max_runner_ups=2,
+        cascade_enabled=True,
+    )
+
+    assert plan["runner_up_symbols"] == ["035420"]
+    assert any(
+        row.get("symbol") == "000660"
+        and row.get("reason") == "q15_runner_up_expected_blocker"
+        and row.get("expected_blocker") == "below_vwap_reclaim_not_ready"
+        for row in plan["skipped"]
+    )
+
+
+def test_candidate_cascade_q15_allows_volume_insufficient_runner_up_to_reach_monitor() -> None:
+    candidates = [
+        {"symbol": "005930", "rank": 1, "score_total": 1.20},
+        {
+            "symbol": "000660",
+            "rank": 2,
+            "score_total": 1.15,
+            "expected_monitor_block_reason": "volume_insufficient",
+        },
+    ]
+
+    plan = build_entry_candidate_cascade_plan(
+        selected_symbol="005930",
+        ranked_candidates=candidates,
+        scanner_output={},
+        open_position_count=0,
+        entry_guard_blocked=False,
+        entry_triggered=False,
+        entry_reason="breakout_not_ready",
+        max_runner_ups=1,
+        cascade_enabled=True,
+    )
+
+    assert plan["runner_up_symbols"] == ["000660"]
+    assert not any(row.get("reason") == "q15_runner_up_expected_blocker" for row in plan["skipped"])
+
+
 def test_candidate_cascade_stops_on_commander_blocked_reason() -> None:
     plan = build_entry_candidate_cascade_plan(
         selected_symbol="005930",

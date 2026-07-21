@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 from libs.reporting.operator_visibility import _build_trading_health_status
 from libs.reporting.operator_period_summary import (
+    _operator_label_fallback,
+    _top_counter,
     generate_operator_daily_summary_artifact,
     generate_operator_period_summary,
     generate_operator_symbol_summary_artifact,
@@ -14,6 +17,26 @@ from libs.reporting.operator_period_summary import (
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def test_operator_summary_sanitizes_mojibake_labels_without_touching_normal_korean() -> None:
+    assert _operator_label_fallback("VWAP 위 눌림목 + 거래량 확인", axis="entry") == "VWAP 위 눌림목 + 거래량 확인"
+    assert (
+        _operator_label_fallback("吏곸쟾 怨좎젏 ?뚰뙆 + VWAP ?좎? + 嫄곕옒???뺤씤", axis="entry")
+        == "breakout_vwap_volume_confirmation"
+    )
+
+    rows = _top_counter(
+        Counter(
+            {
+                "吏곸쟾 怨좎젏 ?뚰뙆 + VWAP ?좎? + 嫄곕옒???뺤씤": 2,
+                "VWAP 위 눌림목 + 거래량 확인": 1,
+            }
+        )
+    )
+
+    assert rows[0] == {"name": "breakout_vwap_volume_confirmation", "count": 2}
+    assert rows[1] == {"name": "VWAP 위 눌림목 + 거래량 확인", "count": 1}
 
 
 def test_trading_health_status_turns_red_on_weak_intraday_performance(tmp_path: Path) -> None:

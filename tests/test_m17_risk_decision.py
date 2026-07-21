@@ -28,6 +28,20 @@ def test_m17_rejects_when_risk_too_high():
     assert out.get("execution_pending") is not True
 
 
+def test_m17_clears_stale_reject_detail_before_approval():
+    state = {
+        "policy": {"max_risk": 0.7, "min_confidence": 0.6, "max_scan_retries": 1},
+        "selected": {"symbol": "009730", "risk_score": 0.35, "confidence": 0.83},
+        "decision_detail": "risk_score(0.740)>=max_risk(0.700)",
+    }
+
+    out = decision_node(state)
+
+    assert out["decision"] == "approve"
+    assert out["decision_reason"] == "within_policy"
+    assert "decision_detail" not in out
+
+
 def test_m17_retries_scan_on_low_confidence_then_approves():
     def scanner(state: Dict[str, Any]) -> Dict[str, Any]:
         # first attempt: low confidence -> should trigger retry_scan

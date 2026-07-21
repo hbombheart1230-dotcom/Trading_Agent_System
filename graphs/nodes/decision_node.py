@@ -100,6 +100,10 @@ def decision_node(state: Dict[str, Any]) -> Dict[str, Any]:
       - Execution is still governed by Supervisor/ApprovalService + guards.
     """
 
+    # The graph may reuse state across a re-scan. Decision-specific narrative
+    # must not leak from a prior reject into the current decision snapshot.
+    state.pop("decision_detail", None)
+
     policy = state.get("policy") or {}
     min_confidence = float(policy.get("min_confidence") or 0.6)
     max_risk = float(policy.get("max_risk") or 0.7)

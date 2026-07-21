@@ -38,6 +38,7 @@ from libs.reporting.trade_report_ai import (
     render_trade_report_markdown,
     render_trade_summary_markdown_with_evaluation,
 )
+from libs.reporting.trade_regeneration_truth import merge_post_exit_shadow_recap
 from libs.runtime.strategy_horizon_feedback import update_post_exit_shadow_with_price_observations
 
 
@@ -180,6 +181,14 @@ def _read_runtime_state(path: Path) -> Dict[str, Any]:
     except Exception:
         return {}
     return {}
+
+
+def _read_json_object(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _runtime_minute_rows_for_symbol(runtime_state: Dict[str, Any], symbol: str) -> List[Dict[str, Any]]:
@@ -353,6 +362,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             runtime_state=runtime_state,
             symbol=symbol_hint or str(report.get("symbol") or ""),
         )
+        recap_path = output_paths["report_json_path"].with_name("post_exit_shadow_recap.json")
+        report = merge_post_exit_shadow_recap(dict(report), _read_json_object(recap_path))
         llm_artifact = report.get("llm_response_artifact") if isinstance(report.get("llm_response_artifact"), dict) else {}
         generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
         diagnostics = {} if bool(args.local_debug) else _sync_report_diagnostics(trade_paths, report, llm_artifact)

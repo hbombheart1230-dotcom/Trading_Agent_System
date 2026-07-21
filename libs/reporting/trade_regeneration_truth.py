@@ -7,6 +7,39 @@ from libs.reporting.trade_execution_truth_merge import (
 )
 
 
+def _post_exit_observed_checkpoint_count(shadow: Mapping[str, Any] | None) -> int:
+    checkpoints = dict((shadow or {}).get("checkpoints") or {})
+    return sum(
+        1
+        for row in checkpoints.values()
+        if isinstance(row, Mapping) and str(row.get("status") or "").lower() == "observed"
+    )
+
+
+def merge_post_exit_shadow_recap(
+    report: Mapping[str, Any] | None,
+    recap: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    """Preserve the richest post-exit observation during report regeneration."""
+    out = dict(report or {})
+    recap_shadow = dict((recap or {}).get("post_exit_shadow") or {})
+    report_shadow = dict(out.get("post_exit_shadow") or {})
+    if not recap_shadow:
+        return out
+    if _post_exit_observed_checkpoint_count(recap_shadow) < _post_exit_observed_checkpoint_count(report_shadow):
+        return out
+
+    out["post_exit_shadow"] = recap_shadow
+    fact_payload = dict(out.get("fact_payload") or {})
+    fact_payload["post_exit_shadow"] = dict(recap_shadow)
+    fact_trade = dict(fact_payload.get("trade") or {})
+    if fact_trade:
+        fact_trade["post_exit_shadow"] = dict(recap_shadow)
+        fact_payload["trade"] = fact_trade
+    out["fact_payload"] = fact_payload
+    return out
+
+
 def _minimal_rebuild_execution_details(details: Mapping[str, Any] | None) -> Dict[str, Any]:
     details_obj = dict(details or {})
     out: Dict[str, Any] = {}
@@ -29,6 +62,21 @@ def _minimal_rebuild_execution_details(details: Mapping[str, Any] | None) -> Dic
         if details_obj.get(key) not in (None, "", [], {}):
             out[key] = details_obj.get(key)
     return out
+
+
+def _has_authoritative_order_pair_truth(details: Mapping[str, Any] | None) -> bool:
+    details_obj = dict(details or {})
+    source = str(
+        details_obj.get("broker_day_truth_source")
+        or details_obj.get("pnl_truth_source")
+        or ""
+    ).strip()
+    return bool(
+        source == "kiwoom.order_pair_snapshot"
+        and details_obj.get("broker_realized_pnl") not in (None, "")
+        and details_obj.get("broker_realized_pnl_pct") not in (None, "")
+        and details_obj.get("filled_price") not in (None, "")
+    )
 
 
 def _rehydrate_side_execution_details(
@@ -85,13 +133,17 @@ def rehydrate_lifecycle_bundle_execution_truth(
             if isinstance(bundle_obj.get("entry_execution_details"), dict)
             else dict((entry_ctx.get("execution_details") or {}) if isinstance(entry_ctx.get("execution_details"), dict) else {})
         )
-        rebuilt_exit = _rehydrate_side_execution_details(
-            exit_ctx,
-            trade_day=trade_day,
-            entry_execution_details=effective_entry_execution,
-        )
-        if prefer_richer_execution_details(exit_ctx.get("execution_details"), rebuilt_exit):
-            exit_ctx["execution_details"] = merge_preferred_execution_details(exit_ctx.get("execution_details"), rebuilt_exit)
+        existing_exit_details = dict(exit_ctx.get("execution_details") or {})
+        if not _has_authoritative_order_pair_truth(existing_exit_details):
+            rebuilt_exit = _rehydrate_side_execution_details(
+                exit_ctx,
+                trade_day=trade_day,
+                entry_execution_details=effective_entry_execution,
+            )
+            if prefer_richer_execution_details(existing_exit_details, rebuilt_exit):
+                exit_ctx["execution_details"] = merge_preferred_execution_details(existing_exit_details, rebuilt_exit)
+        else:
+            exit_ctx["execution_details"] = existing_exit_details
         bundle_obj["exit"] = exit_ctx
         bundle_obj["exit_execution_details"] = dict(exit_ctx.get("execution_details") or {})
 

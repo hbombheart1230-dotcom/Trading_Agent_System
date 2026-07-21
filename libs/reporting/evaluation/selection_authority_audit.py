@@ -26,6 +26,11 @@ def build_selection_authority_audit(
     rows: list[dict[str, Any]] = []
     counters: Counter[str] = Counter()
     for model in models:
+        integrity = _mapping(model.get("integrity"))
+        defects = {str(value) for value in (integrity.get("defects") or [])}
+        if "broker_day_partial_exit_duplicate" in defects:
+            counters["excluded:broker_day_partial_exit_duplicate"] += 1
+            continue
         selection = _mapping(model.get("selection"))
         monitor = _mapping(model.get("monitor"))
         commander = _mapping(selection.get("commander_final"))

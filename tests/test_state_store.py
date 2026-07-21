@@ -1,4 +1,6 @@
 from pathlib import Path
+from unittest.mock import patch
+
 from libs.storage.state_store import StateStore
 
 
@@ -53,3 +55,43 @@ def test_state_store_does_not_overwrite_newer_broker_truth_with_stale_positions(
     assert state["open_positions"] == 0
     assert state["mock_positions"] == []
     assert state["broker_truth_position_reconciliation"]["generated_at"] == "2026-06-17T07:03:27+00:00"
+
+
+def test_state_store_retries_transient_windows_replace_lock(tmp_path: Path):
+    p = tmp_path / "state.json"
+    store = StateStore(str(p))
+    real_replace = __import__("os").replace
+    attempts = 0
+
+    def flaky_replace(source, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(5, "temporary file lock")
+        real_replace(source, target)
+
+    with patch("libs.storage.state_store.os.replace", side_effect=flaky_replace), patch(
+        "libs.storage.state_store.time.sleep"
+    ) as sleep:
+        store.save({"last_order_epoch": 456})
+
+    assert attempts == 3
+    assert sleep.call_count == 2
+    assert store.load()["last_order_epoch"] == 456
+
+
+def test_state_store_raises_after_replace_lock_retry_exhausted(tmp_path: Path):
+    p = tmp_path / "state.json"
+    store = StateStore(str(p))
+
+    with patch("libs.storage.state_store.os.replace", side_effect=PermissionError(5, "persistent file lock")), patch(
+        "libs.storage.state_store.time.sleep"
+    ) as sleep:
+        try:
+            store.save({"last_order_epoch": 789})
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("persistent replace lock must still fail")
+
+    assert sleep.call_count == 6

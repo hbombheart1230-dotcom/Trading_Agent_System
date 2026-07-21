@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from libs.reporting.trade_regeneration_truth import rehydrate_lifecycle_bundle_execution_truth
+from libs.reporting.trade_regeneration_truth import (
+    merge_post_exit_shadow_recap,
+    rehydrate_lifecycle_bundle_execution_truth,
+)
 
 
 def test_rehydrate_preserves_order_status_fill_price_for_ka10077_disambiguation(monkeypatch) -> None:
@@ -165,3 +168,72 @@ def test_rehydrate_refreshes_kiwoom_day_truth_for_mock_execution(monkeypatch) ->
     assert details.get("pnl_truth_source") == "kiwoom.ka10077"
     assert details.get("broker_day_truth_source") == "kiwoom.ka10077"
     assert details["broker_day_authoritative"] is True
+
+
+def test_rehydrate_preserves_authoritative_order_pair_truth(monkeypatch) -> None:
+    class _UnexpectedDayPnlReader:
+        @classmethod
+        def from_env(cls):
+            raise AssertionError("order-pair truth must not be replaced by symbol-day aggregate truth")
+
+    monkeypatch.setattr("libs.read.kiwoom_day_pnl_reader.KiwoomDayPnlReader", _UnexpectedDayPnlReader)
+
+    order_pair = {
+        "filled_qty": 1000,
+        "filled_price": 2701.0,
+        "broker_realized_pnl": -38274.0,
+        "broker_realized_pnl_pct": -0.014097237569060773,
+        "broker_fee": 24274,
+        "broker_tax": 0,
+        "broker_buy_price": 2715.0,
+        "broker_day_truth_source": "kiwoom.order_pair_snapshot",
+        "broker_day_match_mode": "entry_order_id_next_same_symbol_qty_sell",
+        "pnl_truth_source": "kiwoom.order_pair_snapshot",
+        "broker_day_authoritative": True,
+    }
+    out = rehydrate_lifecycle_bundle_execution_truth(
+        {
+            "day": "2026-07-16",
+            "trade_id": "TRD_20260716_001790_04",
+            "symbol": "001790",
+            "trade_lifecycle_status": "closed",
+            "entry": {
+                "action": "BUY",
+                "symbol": "001790",
+                "execution_details": {"filled_qty": 1000, "filled_price": 2715.0},
+            },
+            "exit": {
+                "action": "SELL",
+                "symbol": "001790",
+                "execution_details": dict(order_pair),
+            },
+        }
+    )
+
+    assert out["exit_execution_details"] == order_pair
+    assert out["execution_details"] == order_pair
+
+
+def test_merge_post_exit_shadow_recap_preserves_observed_closeout_data() -> None:
+    pending = {
+        "symbol": "001790",
+        "price_observation_status": "pending",
+        "checkpoints": {"+5m": {"status": "pending"}, "EOD": {"status": "pending"}},
+    }
+    observed = {
+        "symbol": "001790",
+        "price_observation_status": "observed",
+        "checkpoints": {
+            "+5m": {"status": "observed", "price": 2755.0},
+            "EOD": {"status": "observed", "price": 2730.0},
+        },
+    }
+
+    out = merge_post_exit_shadow_recap(
+        {"post_exit_shadow": pending, "fact_payload": {"trade": {"symbol": "001790"}}},
+        {"post_exit_shadow": observed},
+    )
+
+    assert out["post_exit_shadow"] == observed
+    assert out["fact_payload"]["post_exit_shadow"] == observed
+    assert out["fact_payload"]["trade"]["post_exit_shadow"] == observed

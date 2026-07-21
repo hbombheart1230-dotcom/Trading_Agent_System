@@ -119,6 +119,43 @@ def test_global_sentiment_signal_exposes_korea_index_context(monkeypatch):
     assert (sig.get("korea_indices") or {}).get("indices", {}).get("KOSPI", {}).get("previous_close") == 3080.0
 
 
+def test_global_sentiment_signal_logs_korea_index_sanity(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "0")
+
+    class _Inputs:
+        sp500_ret = 0.0
+        nasdaq_ret = 0.0
+        dow_ret = 0.0
+        vix_ret = 0.0
+        vix_level = 18.0
+        dxy_ret = 0.0
+        tnx_delta = 0.0
+
+    korea_packet = {
+        "status": "ok",
+        "source": "kiwoom.ka20009",
+        "indices": {
+            "KOSPI": {
+                "current": 6795.82,
+                "previous_close": 7475.94,
+                "change_pct": -9.1,
+                "open": 7412.03,
+                "high": 7529.07,
+                "low": 6789.62,
+            },
+        },
+    }
+
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: _Inputs())
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_korea_index_inputs", lambda _state, _policy: korea_packet)
+
+    sig = compute_global_sentiment_signal(state={}, policy={})
+    sanity = sig.get("korea_index_sanity") or {}
+
+    assert sanity["status"] == "warning"
+    assert sanity["extreme_move_requires_confirmation"] is True
+
+
 def test_global_sentiment_signal_exposes_extended_macro_indicator_slots(monkeypatch):
     monkeypatch.setenv("DRY_RUN", "0")
 

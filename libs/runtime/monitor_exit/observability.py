@@ -148,6 +148,11 @@ def build_monitor_exit_payload(
         "trailing_drawdown": decision.get("trailing_drawdown"),
         "peak_drawdown": decision.get("peak_drawdown"),
         "vwap_distance": decision.get("vwap_distance"),
+        "engine_vwap_distance_rejected": bool(decision.get("engine_vwap_distance_rejected")),
+        "engine_vwap_distance_rejected_value": decision.get("engine_vwap_distance_rejected_value"),
+        "engine_vwap_distance_rejected_reason": str(
+            decision.get("engine_vwap_distance_rejected_reason") or ""
+        ),
         "vwap_breakdown_confirmation_required": bool(decision.get("vwap_breakdown_confirmation_required")),
         "vwap_breakdown_confirmed": bool(decision.get("vwap_breakdown_confirmed")),
         "vwap_breakdown_confirmation_pending": bool(decision.get("vwap_breakdown_confirmation_pending")),
@@ -263,4 +268,3 @@ def build_monitor_exit_payload(
         "entry_intent_cooldown_sec": int(entry_info.get("intent_cooldown_sec") or 0),
         "entry_intent_cooldown_until": entry_info.get("intent_cooldown_until"),
     }
-

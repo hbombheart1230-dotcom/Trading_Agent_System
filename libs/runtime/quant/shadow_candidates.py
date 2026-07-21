@@ -557,6 +557,16 @@ def _skipped_row(row: Mapping[str, Any], ranked_by_symbol: Mapping[str, Dict[str
             "would_enter": False,
         }
     )
+    for key in (
+        "rank",
+        "top_pick_score",
+        "candidate_score",
+        "score_gap",
+        "max_score_gap",
+        "expected_blocker",
+    ):
+        if row.get(key) not in (None, ""):
+            base[key] = row.get(key)
     return base
 
 

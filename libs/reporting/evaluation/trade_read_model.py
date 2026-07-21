@@ -34,11 +34,144 @@ def _meaningful(*values: Any) -> Any:
     return None
 
 
+def _deep_value(obj: Any, *keys: str) -> Any:
+    if isinstance(obj, dict):
+        for key in keys:
+            if key in obj and obj[key] not in (None, ""):
+                return obj[key]
+        for value in obj.values():
+            found = _deep_value(value, *keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _deep_value(value, *keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _lifecycle_sections(bundle: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     lifecycle = bundle.get("lifecycle") if isinstance(bundle.get("lifecycle"), dict) else bundle
     entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else bundle.get("entry")
     exit_row = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else bundle.get("exit")
     return lifecycle, entry if isinstance(entry, dict) else {}, exit_row if isinstance(exit_row, dict) else {}
+
+
+def _trade_has_summary(trade_dir: Path) -> bool:
+    return (
+        (trade_dir / "reports" / "ai_trade_summary.json").exists()
+        or (trade_dir / "reports" / "ai_trade_summary.md").exists()
+    )
+
+
+def _is_broker_day_partial_exit_duplicate(
+    trade_dir: Path,
+    *,
+    trade_id: str,
+    symbol: str,
+    bundle: dict[str, Any],
+    entry_artifact: dict[str, Any],
+    exit_artifact: dict[str, Any],
+) -> dict[str, Any]:
+    """Detect a broker-day diary child row from a split sell, not a new trade.
+
+    Kiwoom/MTS may report one entry position as multiple same-symbol sell rows.
+    The closeout recovery can materialize the extra sell row as a TRD_* child
+    without a trade summary. That row must remain auditable, but it must not be
+    counted as an independent trade in Q9/Q13/Q14 performance.
+    """
+    health = read_json(trade_dir / "_health.json")
+    broker_reconciliation = (
+        health.get("broker_reconciliation")
+        if isinstance(health.get("broker_reconciliation"), dict)
+        else {}
+    )
+    health_status = str(
+        health.get("status")
+        or broker_reconciliation.get("status")
+        or health.get("recovery_source")
+        or ""
+    ).strip().lower()
+    if health_status != "closed_by_broker_day_trade_diary":
+        source_text = " ".join(
+            str(_deep_value(obj, "source", "broker_day_truth_source") or "")
+            for obj in (bundle, entry_artifact, exit_artifact, broker_reconciliation)
+        ).lower()
+        if "kiwoom.order_pair_snapshot" not in source_text:
+            return {}
+    if _trade_has_summary(trade_dir):
+        return {}
+    if not symbol:
+        return {}
+
+    child_qty = _as_float(
+        _deep_value(exit_artifact, "filled_qty", "quantity", "qty")
+        or _deep_value(bundle, "filled_qty", "quantity", "qty")
+        or _deep_value(entry_artifact, "filled_qty", "quantity", "qty")
+    )
+    child_pnl = _as_float(_deep_value(bundle, "pnl_pct"))
+    try:
+        day_dir = trade_dir.parents[1]
+    except IndexError:
+        return {}
+
+    for sibling in sorted(day_dir.glob("*/*")):
+        if not sibling.is_dir() or sibling == trade_dir:
+            continue
+        sibling_bundle = read_json(sibling / "lifecycle_bundle.json")
+        sibling_symbol = str(
+            sibling_bundle.get("symbol")
+            or _deep_value(read_json(sibling / "entry.json"), "symbol")
+            or ""
+        ).strip()
+        if sibling_symbol != symbol or not _trade_has_summary(sibling):
+            continue
+        sibling_entry = read_json(sibling / "entry.json")
+        sibling_exit = read_json(sibling / "exit.json")
+        parent_entry_qty = _as_float(
+            _deep_value(sibling_entry, "filled_qty", "quantity", "qty")
+            or _deep_value(sibling_bundle, "filled_qty", "quantity", "qty")
+        )
+        parent_exit_qty = _as_float(
+            _deep_value(sibling_exit, "filled_qty", "quantity", "qty")
+            or _deep_value(sibling_bundle, "quantity", "qty")
+        )
+        parent_pnl = _as_float(_deep_value(sibling_bundle, "pnl_pct"))
+        qty_links = (
+            child_qty is not None
+            and parent_entry_qty is not None
+            and parent_exit_qty is not None
+            and parent_entry_qty > parent_exit_qty
+            and abs(parent_entry_qty - (parent_exit_qty + child_qty)) <= 1.0
+        )
+        pnl_links = (
+            child_pnl is not None
+            and parent_pnl is not None
+            and abs(child_pnl - parent_pnl) <= 0.0001
+        )
+        if qty_links or (pnl_links and child_qty is not None and parent_exit_qty == child_qty):
+            return {
+                "status": "duplicate_partial_exit_child",
+                "parent_trade_id": sibling.name,
+                "child_trade_id": trade_id,
+                "symbol": symbol,
+                "health_status": health_status,
+                "child_quantity": child_qty,
+                "parent_entry_quantity": parent_entry_qty,
+                "parent_exit_quantity": parent_exit_qty,
+                "reason": "broker_day_diary_split_sell_child",
+            }
+    return {}
 
 
 def _is_realized_exit(exit_row: dict[str, Any], bundle: dict[str, Any]) -> bool:
@@ -249,6 +382,15 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
     realized_exit = _is_realized_exit(exit_row, bundle)
     inventory = inventory_trade(trade_dir)
     facts = legacy.get("facts") if isinstance(legacy.get("facts"), dict) else legacy
+    symbol = str(facts.get("symbol") or bundle.get("symbol") or "")
+    partial_exit_duplicate = _is_broker_day_partial_exit_duplicate(
+        trade_dir,
+        trade_id=trade_id,
+        symbol=symbol,
+        bundle=bundle,
+        entry_artifact=entry_artifact,
+        exit_artifact=exit_artifact,
+    )
     entry_ts = _meaningful(entry.get("timestamp"), entry.get("ts"), facts.get("entry_ts"))
     entry_details = (
         entry.get("execution_details")
@@ -317,9 +459,17 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
     if closeout_broker_skip and not existing_broker_truth:
         defects.append("broker_closed_trade_unresolved")
         watch_items.append(f"broker_reconciliation_skipped:{closeout_broker_skip.get('reason')}")
+    if partial_exit_duplicate:
+        defects.append("broker_day_partial_exit_duplicate")
+        watch_items.append(
+            f"partial_exit_duplicate_parent:{partial_exit_duplicate.get('parent_trade_id')}"
+        )
 
+    metric_exclusion_only = bool(defects) and set(defects) <= {"broker_day_partial_exit_duplicate"}
     if "exit_before_entry" in defects or "entry_missing" in defects:
         integrity = IntegrityStatus.BLOCKER
+    elif metric_exclusion_only:
+        integrity = IntegrityStatus.WATCH
     elif defects:
         integrity = IntegrityStatus.FAIL
     elif watch_items:
@@ -426,7 +576,7 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         "evidence_class": EvidenceClass.REALIZED.value if realized_exit else EvidenceClass.UNAVAILABLE.value,
         "trade_id": trade_id,
         "day": day,
-        "symbol": str(facts.get("symbol") or bundle.get("symbol") or ""),
+        "symbol": symbol,
         "status": str(
             lifecycle.get("status")
             or ((bundle.get("shared_facts") or {}).get("status") if isinstance(bundle.get("shared_facts"), dict) else "")
@@ -562,6 +712,7 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
                 ),
                 **closeout_broker_skip,
             },
+            "partial_exit_duplicate": partial_exit_duplicate,
         },
         "provenance": {
             "trade_dir": str(trade_dir),

@@ -90,6 +90,114 @@ def test_post_exit_shadow_recap_updates_from_state_cache_without_rewriting_repor
     assert report_path.read_text(encoding="utf-8") == original_report_text
 
 
+def test_post_exit_shadow_recap_synthesizes_each_repeated_symbol_trade(tmp_path: Path, monkeypatch) -> None:
+    reports_root = tmp_path / "reports"
+    day = "2026-07-16"
+    for index, exit_minute in ((1, 10), (2, 20)):
+        trade_dir = reports_root / "trades" / day / "1300" / f"TRD_20260716_001790_{index:02d}"
+        _write_json(
+            trade_dir / "reports" / "ai_trade_report.json",
+            {"trade_id": trade_dir.name, "symbol": "001790", "status": "closed"},
+        )
+        _write_json(
+            trade_dir / "lifecycle_bundle.json",
+            {
+                "trade_id": trade_dir.name,
+                "symbol": "001790",
+                "trade_lifecycle_status": "closed",
+                "status": "closed",
+                "exit": {
+                    "action": "SELL",
+                    "symbol": "001790",
+                    "ts": f"2026-07-16T04:{exit_minute:02d}:00+00:00",
+                    "execution_details": {"filled_price": 2700 + index, "symbol": "001790"},
+                },
+            },
+        )
+
+    state_path = tmp_path / "state.json"
+    _write_json(
+        state_path,
+        {
+            "persisted_state": {
+                "recent_minute_ohlcv_by_symbol": {
+                    "001790": {
+                        "rows": [
+                            {"ts": _epoch(2026, 7, 16, 4, 15), "close": 2710, "raw_ts": "20260716131500"},
+                            {"ts": _epoch(2026, 7, 16, 4, 25), "close": 2720, "raw_ts": "20260716132500"},
+                        ]
+                    }
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(recap_mod, "_fresh_minute_fetch_enabled", lambda: False)
+
+    out = generate_post_exit_shadow_recap(
+        reports_root=reports_root,
+        report_dir=reports_root / "dev" / "analysis" / "post_exit_shadow_recap",
+        day=day,
+        state_path=state_path,
+    )
+
+    assert out["summary"]["total"] == 2
+    assert {row["trade_id"] for row in out["trades"]} == {
+        "TRD_20260716_001790_01",
+        "TRD_20260716_001790_02",
+    }
+    assert all(row["post_exit_shadow"]["exit_ts"] for row in out["trades"])
+
+
+def test_post_exit_shadow_recap_reuses_fresh_minutes_for_repeated_symbol(tmp_path: Path, monkeypatch) -> None:
+    reports_root = tmp_path / "reports"
+    day = "2026-07-16"
+    for index, exit_minute in ((1, 10), (2, 20)):
+        report_path = (
+            reports_root
+            / "trades"
+            / day
+            / "1300"
+            / f"TRD_20260716_001790_{index:02d}"
+            / "reports"
+            / "ai_trade_report.json"
+        )
+        _write_json(
+            report_path,
+            {
+                "trade_id": report_path.parents[1].name,
+                "symbol": "001790",
+                "post_exit_shadow": {
+                    "symbol": "001790",
+                    "exit_ts": f"2026-07-16T04:{exit_minute:02d}:00+00:00",
+                    "exit_price": 2700.0,
+                    "checkpoints": {label: {"status": "pending"} for label in ("+5m", "+15m", "+30m", "+60m", "EOD")},
+                },
+            },
+        )
+
+    calls = []
+
+    def fake_fetch(symbol: str, *, run_id: str = "post_exit_shadow_recap"):
+        calls.append((symbol, run_id))
+        return [
+            {"ts": _epoch(2026, 7, 16, 6, 30), "close": 2750, "high": 2760, "low": 2690, "raw_ts": "20260716153000"},
+        ], {"attempted": True, "ok": True, "rows": 1, "source": "test"}
+
+    monkeypatch.setattr(recap_mod, "fetch_fresh_minute_rows_for_symbol", fake_fetch)
+    monkeypatch.setattr(recap_mod, "_post_exit_shadow_needs_fresh_minutes", lambda shadow, rows: True)
+    out = generate_post_exit_shadow_recap(
+        reports_root=reports_root,
+        report_dir=reports_root / "dev" / "analysis" / "post_exit_shadow_recap",
+        day=day,
+        state_path=tmp_path / "missing_state.json",
+    )
+
+    assert len(calls) == 1
+    assert out["summary"]["total"] == 2
+    assert out["summary"]["eod_observed"] == 2
+    assert [row["fresh_minute_fetch"]["cache_hit"] for row in out["trades"]] == [False, True]
+
+
 def test_post_exit_shadow_recap_uses_default_state_json_when_state_path_omitted(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     reports_root = tmp_path / "reports"
@@ -373,7 +481,7 @@ def test_post_exit_shadow_recap_fetches_fresh_minutes_when_cache_stops_before_ma
 
     def fake_fetch(symbol: str, *, run_id: str = "post_exit_shadow_recap"):
         assert symbol == "034220"
-        assert "TRD_20200102_034220_02" in run_id
+        assert run_id.endswith(":034220")
         return [
             {"ts": _epoch(2020, 1, 2, 6, 44), "close": 14580, "high": 14620, "low": 14550, "raw_ts": "20200102154400"},
         ], {"attempted": True, "ok": True, "rows": 1, "source": "test"}

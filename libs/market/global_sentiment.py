@@ -32,6 +32,7 @@ from libs.data_quality.signal_contract import (
     SIGNAL_STATUS_UNAVAILABLE,
     make_signal,
 )
+from libs.market.korea_index_sanity import korea_index_sanity
 
 
 def _is_dry_run() -> bool:
@@ -512,6 +513,16 @@ def _sentiment_evidence(
     krx_night_futures: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     korea_packet = korea_indices if isinstance(korea_indices, dict) else {}
+    korea_sanity = (
+        korea_index_sanity(korea_packet)
+        if korea_packet
+        else {
+            "status": "ok",
+            "warning_count": 0,
+            "warnings": [],
+            "extreme_move_requires_confirmation": False,
+        }
+    )
     korea_rows = korea_packet.get("indices") if isinstance(korea_packet.get("indices"), dict) else {}
     kospi = korea_rows.get("KOSPI") if isinstance(korea_rows.get("KOSPI"), dict) else {}
     kosdaq = korea_rows.get("KOSDAQ") if isinstance(korea_rows.get("KOSDAQ"), dict) else {}
@@ -577,6 +588,7 @@ def _sentiment_evidence(
         },
         "raw_score": float(raw),
         "korea_indices": dict(korea_packet or {}),
+        "korea_index_sanity": dict(korea_sanity),
         "krx_night_futures": dict(night or {}),
         "macro_indicators": dict(macro_indicators or {}),
     }
@@ -621,6 +633,7 @@ def _signal_with_evidence(
             "index_moves": signal.get("index_moves"),
             "macro_moves": signal.get("macro_moves"),
             "korea_indices": signal.get("korea_indices"),
+            "korea_index_sanity": signal.get("korea_index_sanity"),
             "krx_night_futures": signal.get("krx_night_futures"),
             "macro_indicators": signal.get("macro_indicators"),
         },

@@ -105,4 +105,9 @@ def preview_exit_decision_for_symbol(
     decision["etf_deviation_pct"] = exit_policy_map.get("etf_deviation_pct")
     decision["etf_deviation_source"] = str(exit_policy_map.get("etf_deviation_source") or "")
     decision["asset_class_detected"] = str(exit_policy_map.get("asset_class_detected") or "")
+    decision["engine_vwap_distance_rejected"] = bool(exit_policy_map.get("engine_vwap_distance_rejected"))
+    decision["engine_vwap_distance_rejected_value"] = exit_policy_map.get("engine_vwap_distance_rejected_value")
+    decision["engine_vwap_distance_rejected_reason"] = str(
+        exit_policy_map.get("engine_vwap_distance_rejected_reason") or ""
+    )
     return decision

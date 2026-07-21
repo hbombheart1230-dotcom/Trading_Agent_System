@@ -11,6 +11,9 @@ from libs.runtime.monitor_exit.vwap_state_adapter import (
 )
 
 
+_MAX_ENGINE_VWAP_DISTANCE_ABS = 0.30
+
+
 def enrich_exit_policy_with_market_inputs(
     *,
     state: Dict[str, Any],
@@ -59,8 +62,14 @@ def enrich_exit_policy_with_market_inputs(
         out["vwap_distance"] = float(fresh_vwap_distance)
         out["vwap_distance_source"] = str(fresh_vwap_distance_source)
     elif features.get("engine_vwap_distance") is not None:
-        out.setdefault("vwap_distance", features.get("engine_vwap_distance"))
-        out.setdefault("vwap_distance_source", "selected.features.engine_vwap_distance")
+        engine_vwap_distance = to_float(features.get("engine_vwap_distance"))
+        if abs(engine_vwap_distance) <= _MAX_ENGINE_VWAP_DISTANCE_ABS:
+            out.setdefault("vwap_distance", engine_vwap_distance)
+            out.setdefault("vwap_distance_source", "selected.features.engine_vwap_distance")
+        else:
+            out["engine_vwap_distance_rejected"] = True
+            out["engine_vwap_distance_rejected_value"] = float(engine_vwap_distance)
+            out["engine_vwap_distance_rejected_reason"] = "outside_session_plausibility_bound"
 
     vwap_breakdown_pct = to_float(out.get("vwap_breakdown_pct"))
     if vwap_breakdown_pct > 0.0:

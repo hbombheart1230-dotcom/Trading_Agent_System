@@ -33,6 +33,29 @@ _HARD_BLOCK_CASCADE_REASONS = {
 }
 
 _DEFAULT_MAX_PRIORITY_RANK = 3
+_DEFAULT_Q15_MAX_RUNNER_UP_RANK = 3
+_DEFAULT_Q15_MAX_SCORE_GAP = 0.20
+
+_Q15_HIGH_RISK_RUNNER_BLOCKERS = {
+    "below_vwap_reclaim_not_ready",
+    "pullback_below_vwap_reclaim_not_ready",
+    "volume_confirmation_missing",
+    "volume_missing",
+    "cost_filter_failed",
+    "cost_adjusted_edge_not_ready",
+    "directional_edge_evidence_missing",
+    "estimated_gross_edge_missing",
+    "pullback_not_mature",
+    "too_extended_from_vwap",
+    "still_overextended_after_pullback",
+}
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 def _candidate_rank(row: Mapping[str, Any], fallback_rank: int) -> int:
@@ -44,6 +67,36 @@ def _candidate_rank(row: Mapping[str, Any], fallback_rank: int) -> int:
         if rank > 0:
             return int(rank)
     return max(1, int(fallback_rank))
+
+
+def _candidate_score(row: Mapping[str, Any]) -> float | None:
+    for key in (
+        "score_total",
+        "post_adjust_score_total",
+        "adjusted_score_total",
+        "total_score",
+        "score",
+        "scanner_score_total",
+    ):
+        value = _to_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _candidate_blocker(row: Mapping[str, Any]) -> str:
+    for key in (
+        "expected_monitor_block_reason",
+        "dominant_block_reason",
+        "monitor_block_reason",
+        "entry_block_reason",
+        "primary_failure_axis",
+        "reason",
+    ):
+        reason = str(row.get(key) or "").strip()
+        if reason:
+            return reason
+    return ""
 
 
 def _normalize_reason_set(values: Sequence[Any] | None) -> set[str]:
@@ -85,6 +138,9 @@ def build_entry_candidate_cascade_plan(
     hard_block_override_enabled: bool = False,
     hard_block_override_reason: str = "",
     excluded_symbols: Sequence[Any] | None = None,
+    q15_runner_up_gate_enabled: bool = True,
+    q15_max_runner_up_rank: int = _DEFAULT_Q15_MAX_RUNNER_UP_RANK,
+    q15_max_score_gap: float = _DEFAULT_Q15_MAX_SCORE_GAP,
 ) -> Dict[str, Any]:
     selected_sym = normalize_symbol(selected_symbol)
     reason = str(entry_reason or "").strip()
@@ -93,7 +149,12 @@ def build_entry_candidate_cascade_plan(
     max_runner_ups = max(0, int(max_runner_ups))
     if not bool(cascade_enabled):
         max_runner_ups = 0
-    max_priority_rank = max(1, int(max_runner_ups) + 1)
+    requested_max_priority_rank = max(1, int(max_runner_ups) + 1)
+    q15_rank_cap = max(1, int(q15_max_runner_up_rank or _DEFAULT_Q15_MAX_RUNNER_UP_RANK))
+    q15_score_gap_cap = max(0.0, float(q15_max_score_gap))
+    max_priority_rank = min(requested_max_priority_rank, q15_rank_cap) if q15_runner_up_gate_enabled else requested_max_priority_rank
+    if q15_runner_up_gate_enabled:
+        max_runner_ups = min(max_runner_ups, max(0, max_priority_rank - 1))
     allowed_reasons = _normalize_reason_set(cascade_allowed_reasons) or set(_CASCADE_ELIGIBLE_REASONS)
     blocked_reasons = _normalize_reason_set(cascade_blocked_reasons)
     plan: Dict[str, Any] = {
@@ -102,8 +163,13 @@ def build_entry_candidate_cascade_plan(
         "reason": reason,
         "top_pick_symbol": selected_sym,
         "max_priority_rank": int(max_priority_rank),
+        "requested_max_priority_rank": int(requested_max_priority_rank),
         "max_runner_ups": int(max_runner_ups),
+        "requested_max_runner_ups": int(max(0, requested_max_priority_rank - 1)),
         "cascade_enabled": bool(cascade_enabled and max_runner_ups > 0),
+        "q15_runner_up_gate_enabled": bool(q15_runner_up_gate_enabled),
+        "q15_max_runner_up_rank": int(q15_rank_cap),
+        "q15_max_score_gap": float(q15_score_gap_cap),
         "cascade_allowed_reasons": sorted(allowed_reasons),
         "cascade_blocked_reasons": sorted(blocked_reasons),
         "hard_block_override_enabled": bool(hard_block_override_enabled),
@@ -161,6 +227,15 @@ def build_entry_candidate_cascade_plan(
         for symbol in list(excluded_symbols or [])
         if normalize_symbol(symbol)
     }
+    selected_score = None
+    for index, row in enumerate(list(ranked_candidates or []), start=1):
+        if not isinstance(row, Mapping):
+            continue
+        if normalize_symbol(row.get("symbol") or "") == selected_sym:
+            selected_score = _candidate_score(row)
+            break
+    if selected_score is not None:
+        plan["top_pick_score"] = selected_score
     runner_rows: List[Mapping[str, Any]] = []
     for index, row in enumerate(list(ranked_candidates or []), start=1):
         if not isinstance(row, Mapping):
@@ -172,6 +247,33 @@ def build_entry_candidate_cascade_plan(
         if candidate_rank > max_priority_rank:
             plan["skipped"].append(
                 {"symbol": symbol, "reason": "rank_above_cascade_limit", "rank": int(candidate_rank)}
+            )
+            continue
+        candidate_score = _candidate_score(row)
+        if q15_runner_up_gate_enabled and selected_score is not None and candidate_score is not None:
+            score_gap = float(selected_score) - float(candidate_score)
+            if score_gap > q15_score_gap_cap:
+                plan["skipped"].append(
+                    {
+                        "symbol": symbol,
+                        "reason": "q15_score_gap_above_runner_up_limit",
+                        "rank": int(candidate_rank),
+                        "top_pick_score": selected_score,
+                        "candidate_score": candidate_score,
+                        "score_gap": score_gap,
+                        "max_score_gap": q15_score_gap_cap,
+                    }
+                )
+                continue
+        blocker = _candidate_blocker(row)
+        if q15_runner_up_gate_enabled and blocker in _Q15_HIGH_RISK_RUNNER_BLOCKERS:
+            plan["skipped"].append(
+                {
+                    "symbol": symbol,
+                    "reason": "q15_runner_up_expected_blocker",
+                    "rank": int(candidate_rank),
+                    "expected_blocker": blocker,
+                }
             )
             continue
         if symbol in excluded:

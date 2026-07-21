@@ -257,25 +257,77 @@ def write_closeout_maintenance_report(payload: Dict[str, Any], *, reports_root: 
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "closeout_maintenance.json"
     md_path = out_dir / "closeout_maintenance.md"
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    lines = [
-        f"# Closeout Maintenance ({day})",
-        "",
-        f"- ok: **{bool(payload.get('ok'))}**",
-        f"- trigger: `{payload.get('trigger')}`",
-        "",
-        "## Steps",
-    ]
-    for name, step in (payload.get("steps") or {}).items():
-        if not isinstance(step, dict):
-            continue
-        lines.append(f"- {name}: **{'ok' if step.get('ok') else 'failed'}**")
-        if step.get("error"):
-            lines.append(f"  - error: `{step.get('error')}`")
-        for key in ("report_md_path", "report_json_path", "latest_path", "path"):
-            if step.get(key):
-                lines.append(f"  - {key}: `{step.get(key)}`")
-    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+    def _write(payload_to_write: Dict[str, Any]) -> None:
+        json_path.write_text(json.dumps(payload_to_write, ensure_ascii=False, indent=2), encoding="utf-8")
+        lines = [
+            f"# Closeout Maintenance ({day})",
+            "",
+            f"- ok: **{bool(payload_to_write.get('ok'))}**",
+            f"- trigger: `{payload_to_write.get('trigger')}`",
+            "",
+            "## Steps",
+        ]
+        for name, step in (payload_to_write.get("steps") or {}).items():
+            if not isinstance(step, dict):
+                continue
+            lines.append(f"- {name}: **{'ok' if step.get('ok') else 'failed'}**")
+            if step.get("error"):
+                lines.append(f"  - error: `{step.get('error')}`")
+            for key in ("report_md_path", "report_json_path", "latest_path", "path"):
+                if step.get(key):
+                    lines.append(f"  - {key}: `{step.get(key)}`")
+        md_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+    _write(payload)
+    try:
+        from libs.reporting.evaluation.pipeline import build_q9_evaluation
+
+        refreshed = build_q9_evaluation(reports_root=reports_root, day=day)
+        payload.setdefault("steps", {})["q9_evaluation_post_close_refresh"] = {
+            "ok": True,
+            "artifact_inventory_path": str(
+                Path(reports_root) / "evaluation" / "daily" / day / "artifact_inventory.json"
+            ),
+            "q9_day_validity_path": str(refreshed.get("q9_day_validity") or ""),
+            "daily_scorecard_path": str(refreshed.get("daily_scorecard") or ""),
+        }
+    except Exception as exc:
+        payload.setdefault("steps", {})["q9_evaluation_post_close_refresh"] = {
+            "ok": False,
+            "error": str(exc),
+        }
+    payload["ok"] = all(bool(step.get("ok")) for step in payload.get("steps", {}).values() if isinstance(step, dict))
+    try:
+        from libs.reporting.evaluation.artifact_inventory import build_artifact_inventory
+        from libs.reporting.evaluation.day_validity import build_q9_day_validity
+
+        daily_out = Path(reports_root) / "evaluation" / "daily" / day
+        daily_out.mkdir(parents=True, exist_ok=True)
+        payload.setdefault("steps", {})["post_close_inventory_final_refresh"] = {
+            "ok": True,
+            "artifact_inventory_path": str(daily_out / "artifact_inventory.json"),
+            "q9_day_validity_path": str(daily_out / "q9_day_validity.json"),
+        }
+        payload["ok"] = all(bool(step.get("ok")) for step in payload.get("steps", {}).values() if isinstance(step, dict))
+        _write(payload)
+        inventory = build_artifact_inventory(reports_root=reports_root, day=day)
+        day_validity = build_q9_day_validity(day=day, inventory=inventory)
+        (daily_out / "artifact_inventory.json").write_text(
+            json.dumps(inventory, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (daily_out / "q9_day_validity.json").write_text(
+            json.dumps(day_validity, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        payload.setdefault("steps", {})["post_close_inventory_final_refresh"] = {
+            "ok": False,
+            "error": str(exc),
+        }
+        payload["ok"] = all(bool(step.get("ok")) for step in payload.get("steps", {}).values() if isinstance(step, dict))
+        _write(payload)
     return {"report_json_path": str(json_path), "report_md_path": str(md_path)}
 
 

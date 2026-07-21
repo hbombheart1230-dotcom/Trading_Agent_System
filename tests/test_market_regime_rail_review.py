@@ -31,6 +31,42 @@ def test_classify_market_regime_rail_for_us_tech_positive_korea_weak() -> None:
     assert rail["behavior_effect"] == "evaluation_only"
 
 
+def test_classify_market_regime_rail_exposes_extreme_korea_index_sanity() -> None:
+    rail = classify_market_regime_rail(
+        {
+            "available": True,
+            "index_moves": {"kospi_pct": -9.1, "kosdaq_pct": -4.5, "kospi200_pct": -9.9},
+            "korea_indices": {
+                "breadth": -0.72,
+                "indices": {
+                    "KOSPI": {
+                        "current": 6795.82,
+                        "previous_close": 7475.94,
+                        "change_pct": -9.1,
+                        "open": 7412.03,
+                        "high": 7529.07,
+                        "low": 6789.62,
+                    },
+                    "KOSPI200": {
+                        "current": 1078.13,
+                        "previous_close": 1196.69,
+                        "change_pct": -9.91,
+                        "open": 1185.03,
+                        "high": 1204.96,
+                        "low": 1076.53,
+                    },
+                },
+            },
+            "macro_moves": {"vix_level": 15.0, "vix_pct": -5.0},
+        }
+    )
+
+    sanity = rail["market_input_sanity"]
+    assert sanity["status"] == "warning"
+    assert sanity["extreme_move_requires_confirmation"] is True
+    assert {row["index"] for row in sanity["warnings"]} == {"KOSPI", "KOSPI200"}
+
+
 def test_q8_shadow_blocker_review_carries_market_regime_rail() -> None:
     review = build_q8_shadow_blocker_review(
         [],
