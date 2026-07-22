@@ -799,6 +799,41 @@ def test_operator_daily_summary_marks_runtime_activity_unavailable(tmp_path: Pat
     assert "승인/차단: 0 / 0" not in text
 
 
+def test_operator_daily_summary_uses_q9_approval_and_block_counts(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    _write_json(
+        reports / "operator_summary" / "daily" / "2026-07-22" / "q9_decision_windows.json",
+        {
+            "windows": [
+                {
+                    "decision_id": "D1",
+                    "commander_final": {"decision": "approve", "monitor_intent": "BUY"},
+                },
+                {
+                    "decision_id": "D2",
+                    "commander_final": {"decision": "reject", "monitor_intent": "NOOP"},
+                },
+            ]
+        },
+    )
+
+    _md, _json, daily = generate_operator_daily_summary_artifact(
+        reports_root=reports,
+        day="2026-07-22",
+        daily_report_payload={"trade_index": []},
+    )
+
+    runtime = daily["runtime_activity"]
+    assert runtime["source"] == "q9_decision_windows"
+    assert runtime["events"] == 2
+    assert runtime["commander_decision_count"] == 2
+    assert runtime["missing_commander_decision_count"] == 0
+    assert runtime["approvals"] == 1
+    assert runtime["blocks"] == 1
+    assert runtime["monitor_buy_count"] == 1
+    assert runtime["monitor_noop_count"] == 1
+
+
 def test_operator_daily_summary_surfaces_residual_positions_and_overnight_reason(tmp_path: Path) -> None:
     reports = tmp_path / "reports"
     state_path = tmp_path / "data" / "state.json"

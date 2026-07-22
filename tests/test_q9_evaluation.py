@@ -108,6 +108,7 @@ def test_q9_pipeline_writes_read_only_outputs(tmp_path: Path) -> None:
     assert scorecard["evaluation_phase"]["full_chain_start_gate"]["status"] == "NOT_READY"
     assert Path(result["full_chain_start_gate"]).exists()
     assert Path(result["no_trade_attribution_report"]).exists()
+    assert Path(result["q16_proxy_rejection_review"]).exists()
     assert (reports / "evaluation" / "trades" / "2026-06-19" / "TRD_1" / "trade_evaluation.json").exists()
 
 
@@ -581,6 +582,50 @@ def test_q9_horizon_contract_flags_early_exit_vs_strategy_intent(tmp_path: Path)
 
 def test_freeze_baseline_hash_is_stable_and_trade_independent() -> None:
     assert _baseline_hash() == _baseline_hash()
+
+
+def test_confirmed_runtime_defect_is_preserved_but_excluded_from_promotion_metrics(tmp_path: Path) -> None:
+    trade = tmp_path / "reports" / "trades" / "2026-07-21" / "0900" / "TRD_20260721_006800_01"
+    _write(trade / "lifecycle_bundle.json", {
+        "day": "2026-07-21",
+        "trade_id": trade.name,
+        "symbol": "006800",
+        "lifecycle": {
+            "status": "closed",
+            "entry": {"ts": "2026-07-21T00:54:02+00:00", "price": 36351},
+            "exit": {
+                "ts": "2026-07-21T00:54:36+00:00",
+                "price": 36343,
+                "action": "SELL",
+                "execution_details": {
+                    "broker_realized_pnl_pct": -0.0092,
+                    "broker_realized_pnl": -27411,
+                    "broker_day_authoritative": True,
+                },
+            },
+        },
+        "shared_facts": {"status": "closed"},
+    })
+    _write(trade / "entry.json", {"timestamp": "2026-07-21T00:54:02+00:00", "price": 36351})
+    _write(trade / "exit.json", {"timestamp": "2026-07-21T00:54:36+00:00", "price": 36343})
+    _write(trade / "evaluation_exclusion.json", {
+        "schema_version": "evaluation_exclusion.v1",
+        "trade_id": trade.name,
+        "active": True,
+        "reason_code": "invalid_vwap_fallback_false_trend_breakdown",
+        "scopes": ["promotion_metrics", "behavior_attribution"],
+    })
+    for name in ("scanner", "strategist", "commander", "monitor"):
+        _write(trade / "evidence" / f"{name}_evidence.json", {})
+
+    model = build_q9_trade_read_model(trade)
+    evaluation = evaluate_trade(model)
+
+    assert model["outcome"]["net_return_pct"] == -0.92
+    assert model["integrity"]["status"] == "WATCH"
+    assert "confirmed_runtime_defect" in model["integrity"]["defects"]
+    assert model["integrity"]["evaluation_exclusion"]["behavior_metric_excluded"] is True
+    assert evaluation["integrity"]["promotion_metric_eligible"] is False
 
 
 def test_start_gate_accepts_legitimate_pending_forward_rows() -> None:

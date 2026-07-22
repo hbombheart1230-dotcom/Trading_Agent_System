@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from libs.reporting.evaluation.full_chain_component_review import (
+    _behavior_metric_eligible,
     _attribution_component,
     _decision_window_attribution,
     _paired_role_deltas,
@@ -21,6 +22,16 @@ def _candidate(window: str, role: str, value: float) -> dict:
             }
         },
     }
+
+
+def test_behavior_metric_eligibility_excludes_confirmed_defects() -> None:
+    assert _behavior_metric_eligible({"integrity": {"defects": []}}) is True
+    assert _behavior_metric_eligible({
+        "integrity": {"defects": ["confirmed_runtime_defect"]}
+    }) is False
+    assert _behavior_metric_eligible({
+        "integrity": {"defects": ["broker_day_partial_exit_duplicate"]}
+    }) is False
 
 
 def test_paired_role_delta_uses_same_decision_window() -> None:

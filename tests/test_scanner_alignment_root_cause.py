@@ -75,6 +75,21 @@ def test_scanner_alignment_root_cause_classifies_scanner_ranking_failure() -> No
     assert summary["Scanner Ranking Failure"]["avg_return_pct"] == -0.3
 
 
+def test_scanner_alignment_excludes_trade_absent_from_authority_audit() -> None:
+    result = build_scanner_alignment_root_cause_report(
+        day="2026-07-21",
+        models=[_model("T1", selected="A", rank=1, top="A", ret=-0.92)],
+        evaluations=[_evaluation("T1", -0.92)],
+        selection_authority={
+            "rows": [],
+            "summary": {"excluded:confirmed_runtime_defect": 1},
+        },
+    )
+
+    assert result["trade_count"] == 0
+    assert result["largest_behavior_root_cause"] == {}
+
+
 def test_scanner_alignment_root_cause_range_reads_daily_artifacts(tmp_path: Path) -> None:
     reports = tmp_path / "reports"
     daily = reports / "evaluation" / "daily" / "2026-07-06"

@@ -15,16 +15,25 @@ Q13/Q14 remain the evaluation baseline for checking whether Q15 improves the sys
 
 Current operating phase:
 
-- `Post-Q15 two-day adjustment retest`
+- `Post-Q15 adjustment retest closed: RETAIN`
 - The initial post-Q15 window closed on 2026-07-16 as `ADJUST_AND_RETEST`.
-- Q15 remains active.
-- Only the anticipated `volume_insufficient` pre-veto was removed; Monitor's
-  actual volume hard gate remains active.
-- No additional behavior patch is allowed during the two-day retest.
+- The fixed two-day retest closed on 2026-07-21 without extension.
+- Retain removal of the anticipated `volume_insufficient` pre-veto.
+- Monitor's actual volume hard gate remains active.
+- No broader runner-up or volume relaxation is authorized.
+- Q16 applies one cost-horizon fit patch after the Q15 close: triggered signals
+  no longer use ATR/volatility proxy alone as directional cost-edge evidence.
 
 Close decision:
 
 - `docs/q13_q14_validation/post_q15_close_decision_2026-07-16.md`
+- `docs/q13_q14_validation/post_q15_adjustment_retest_close_2026-07-21.md`
+- `docs/q13_q14_validation/q16_cost_horizon_fit_patch_2026-07-21.md`
+
+Artifact integrity fixes:
+
+- `docs/q13_q14_validation/broker_stale_fill_reconciliation_fix_2026-07-22.md`
+- `docs/q13_q14_validation/measurement_integrity_fix_2026-07-22.md`
 
 Post-Q15 decision tree:
 

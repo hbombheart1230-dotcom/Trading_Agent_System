@@ -31,6 +31,9 @@ def build_selection_authority_audit(
         if "broker_day_partial_exit_duplicate" in defects:
             counters["excluded:broker_day_partial_exit_duplicate"] += 1
             continue
+        if "confirmed_runtime_defect" in defects:
+            counters["excluded:confirmed_runtime_defect"] += 1
+            continue
         selection = _mapping(model.get("selection"))
         monitor = _mapping(model.get("monitor"))
         commander = _mapping(selection.get("commander_final"))

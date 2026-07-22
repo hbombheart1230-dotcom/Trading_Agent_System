@@ -5,6 +5,7 @@ from libs.skills.runner import SkillRunResult
 
 from graphs.nodes.monitor_node import _evaluate_entry_cost_filter, _extract_monitor_strategy_frame, monitor_node
 from libs.contracts.agent_outputs import build_monitor_output_artifact
+from libs.runtime.monitor_entry_cost_filter import resolve_entry_cost_filter_config
 
 
 class _FakeMinuteSkillRunner:
@@ -731,6 +732,38 @@ def test_entry_cost_filter_allows_triggered_signal_volatility_proxy():
     assert result["estimated_gross_edge_pct"] == 0.01225
     assert result["cost_adjusted_edge_pct"] == 0.00325
     assert result["fail_reasons"] == []
+
+
+def test_entry_cost_filter_default_config_does_not_promote_triggered_volatility_proxy():
+    config = resolve_entry_cost_filter_config(
+        state={},
+        policy={},
+        monitor_policy={},
+        strategy_monitor_policy={},
+        entry_policy_input={},
+        commander_entry_control={},
+    )
+
+    result = _evaluate_entry_cost_filter(
+        entry_info={
+            "triggered": True,
+            "metrics": {"current_price": 100.0},
+            "condition_scores": {"confidence_score": 0.9, "confidence_threshold": 0.7},
+        },
+        selected={
+            "symbol": "BBB",
+            "price": 100.0,
+            "features": {"engine_atr14": 4.0, "engine_volatility20": 0.05},
+        },
+        qty=10,
+        config=config,
+    )
+
+    assert config["allow_triggered_signal_proxy_edge"] is False
+    assert result["passed"] is False
+    assert result["triggered_signal_proxy_edge_allowed"] is False
+    assert result["effective_directional_edge_required"] is True
+    assert "directional_edge_evidence_missing" in result["fail_reasons"]
 
 
 def test_entry_cost_filter_requires_gross_edge_above_cost_multiplier():

@@ -59,6 +59,22 @@ def test_attribution_score_marks_missing_evidence_as_insufficient() -> None:
     assert payload["scores"]["exit_horizon_score"]["status"] == "INSUFFICIENT_EVIDENCE"
 
 
+def test_explicit_defect_exclusion_does_not_reduce_evidence_quality() -> None:
+    payload = _base_score(
+        models=[{"trade_id": "T1", "integrity": {"defects": ["confirmed_runtime_defect"]}}],
+        daily_scorecard={"artifact_integrity": {"status_counts": {"WATCH": 1}}},
+        selection_authority={
+            "rows": [],
+            "summary": {"excluded:confirmed_runtime_defect": 1},
+        },
+        horizon_compliance={"rows": [], "excluded_trade_count": 1},
+        entry_timing={"rows": [], "excluded_trade_count": 1},
+    )
+
+    assert payload["scores"]["evidence_quality_score"]["score"] == 100
+    assert payload["weakest_observed_axis"] == {"name": "", "score": None}
+
+
 def test_attribution_score_penalizes_bad_entry_timing() -> None:
     payload = _base_score(
         entry_timing={

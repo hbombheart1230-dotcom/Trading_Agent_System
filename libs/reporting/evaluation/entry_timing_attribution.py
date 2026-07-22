@@ -203,7 +203,15 @@ def build_entry_timing_attribution_report(
     )
     windows = _daily_windows_by_id(Path(reports_root), day)
     rows: list[dict[str, Any]] = []
+    excluded_count = 0
     for model in models:
+        defects = {
+            str(value)
+            for value in (_mapping(model.get("integrity")).get("defects") or [])
+        }
+        if "broker_day_partial_exit_duplicate" in defects or "confirmed_runtime_defect" in defects:
+            excluded_count += 1
+            continue
         trade_id = str(model.get("trade_id") or "")
         symbol = str(model.get("symbol") or "")
         selection = _mapping(model.get("selection"))
@@ -321,6 +329,7 @@ def build_entry_timing_attribution_report(
         "behavior_effect": "observation_only",
         "day": day,
         "trade_count": len(rows),
+        "excluded_trade_count": excluded_count,
         "label_summary": label_rows,
         "rows": rows,
         "limitations": [

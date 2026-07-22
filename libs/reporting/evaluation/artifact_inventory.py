@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -87,13 +88,16 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
         if bool((row.get("shadow_forward_outcome") or {}).get("available"))
     )
     forward_pending = 0
+    forward_unavailable = 0
     forward_invalid = 0
+    forward_reason_counts: Counter[str] = Counter()
     for row in observed_rows:
         outcome = row.get("shadow_forward_outcome")
         outcome = outcome if isinstance(outcome, dict) else {}
         if outcome.get("available"):
             continue
         reason = str(outcome.get("reason") or "")
+        forward_reason_counts[reason or "checkpoint_status_only"] += 1
         checkpoints = outcome.get("checkpoints")
         checkpoints = checkpoints if isinstance(checkpoints, dict) else {}
         statuses = {
@@ -103,6 +107,12 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
         }
         if reason in {"", "forward_window_pending"} and statuses <= {"", "pending"}:
             forward_pending += 1
+        elif reason in {
+            "baseline_or_minute_rows_unavailable",
+            "baseline_unavailable",
+            "minute_rows_unavailable",
+        }:
+            forward_unavailable += 1
         else:
             forward_invalid += 1
     window_times = [
@@ -220,7 +230,9 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
             "forward_observed_candidate_count": forward_observed,
             "forward_missing_candidate_count": max(0, len(pre_rows) - forward_observed),
             "forward_pending_candidate_count": forward_pending,
+            "forward_unavailable_candidate_count": forward_unavailable,
             "forward_invalid_candidate_count": forward_invalid,
+            "forward_outcome_reason_counts": dict(forward_reason_counts),
         }
     )
     return record

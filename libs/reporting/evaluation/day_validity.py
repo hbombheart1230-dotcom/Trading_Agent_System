@@ -56,6 +56,7 @@ def build_q9_day_validity(
     synthetic_count = int(decision.get("synthetic_window_count") or 0)
     missing_selected = int(decision.get("missing_selected_candidate_count") or 0)
     invalid_forward = int(decision.get("forward_invalid_candidate_count") or 0)
+    unavailable_forward = int(decision.get("forward_unavailable_candidate_count") or 0)
     pending_forward = int(decision.get("forward_pending_candidate_count") or 0)
     observed_forward = int(decision.get("forward_observed_candidate_count") or 0)
     forward_total = int(decision.get("pre_strategist_forward_candidate_count") or 0)
@@ -121,6 +122,22 @@ def build_q9_day_validity(
                 ),
             }
         )
+    if unavailable_forward:
+        target = blockers if (
+            is_complete and forward_coverage < MIN_FORWARD_COVERAGE and not comparison_complete
+        ) else warnings
+        target.append(
+            {
+                "code": "forward_observation_unavailable",
+                "count": unavailable_forward,
+                "coverage": round(forward_coverage, 4),
+                "required_coverage": MIN_FORWARD_COVERAGE,
+                "comparison_complete_override": bool(comparison_complete),
+                "invalidates_day": bool(
+                    is_complete and forward_coverage < MIN_FORWARD_COVERAGE and not comparison_complete
+                ),
+            }
+        )
     if is_complete and forward_total == 0:
         blockers.append({"code": "missing_forward_candidate_rows", "count": 1})
     if pending_forward:
@@ -171,6 +188,7 @@ def build_q9_day_validity(
             "forward_candidate_count": forward_total,
             "forward_observed_candidate_count": observed_forward,
             "forward_pending_candidate_count": pending_forward,
+            "forward_unavailable_candidate_count": unavailable_forward,
             "forward_invalid_candidate_count": invalid_forward,
             "forward_usable_coverage": round(forward_coverage, 4),
             "unified_comparison_exists": bool(comparison.get("exists")),

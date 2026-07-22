@@ -2243,7 +2243,61 @@ def _runtime_activity_payload(
     day: str,
     source_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
-    if source_payload:
+    explicit_runtime_keys = {
+        "events",
+        "approvals",
+        "blocks",
+        "symbols_observed",
+        "generated_symbol_report_count",
+    }
+    q9_path = (
+        Path(reports_root)
+        / "operator_summary"
+        / "daily"
+        / day
+        / "q9_decision_windows.json"
+    )
+    q9_payload = _read_json(q9_path)
+    q9_payload = q9_payload if isinstance(q9_payload, dict) else {}
+    q9_windows = [
+        row
+        for row in list(q9_payload.get("windows") or [])
+        if isinstance(row, dict)
+        and not any(
+            marker in " ".join(
+                str(row.get(key) or "").lower()
+                for key in ("decision_id", "run_id", "candidate_pool_id")
+            )
+            for marker in ("test", "fixture", "synthetic")
+        )
+    ]
+    if q9_windows:
+        decisions = [
+            str((row.get("commander_final") or {}).get("decision") or "").strip().lower()
+            for row in q9_windows
+            if isinstance(row.get("commander_final"), dict)
+        ]
+        monitor_intents = [
+            str((row.get("commander_final") or {}).get("monitor_intent") or "").strip().upper()
+            for row in q9_windows
+            if isinstance(row.get("commander_final"), dict)
+        ]
+        return {
+            "source": "q9_decision_windows",
+            "source_path": str(q9_path),
+            "events": len(q9_windows),
+            "commander_decision_count": len(decisions),
+            "missing_commander_decision_count": max(0, len(q9_windows) - len(decisions)),
+            "approvals": sum(value in {"approve", "approved", "allow"} for value in decisions),
+            "blocks": sum(value in {"reject", "blocked", "veto"} for value in decisions),
+            "noops": sum(value in {"noop", "no_trade"} for value in decisions),
+            "monitor_buy_count": sum(value == "BUY" for value in monitor_intents),
+            "monitor_noop_count": sum(value == "NOOP" for value in monitor_intents),
+            "symbols_observed_count": 0,
+            "generated_symbol_report_count": 0,
+        }
+
+    if source_payload and any(key in source_payload for key in explicit_runtime_keys):
         return {
             "source": "daily_report_payload",
             "events": _safe_int(source_payload.get("events")),

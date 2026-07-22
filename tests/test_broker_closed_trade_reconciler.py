@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from libs.reporting.broker_closed_trade_reconciler import (
     _build_order_pair_truth,
     _find_closed_day_diary_row,
@@ -11,6 +13,7 @@ from libs.reporting.broker_closed_trade_reconciler import (
     _patch_lifecycle_payload,
     _patch_report_payload,
     _patch_summary_payload,
+    reconcile_broker_closed_trade_reports,
 )
 
 
@@ -43,6 +46,205 @@ def test_single_round_trip_keeps_exact_day_diary_pnl_with_order_timing() -> None
     assert merged["buy_order_no"] == "101"
     assert merged["sell_order_no"] == "102"
     assert merged["match_mode"] == "ka10170_with_order_pair_time"
+
+
+def test_authoritative_closed_trade_marks_order_pair_used_before_synthesis(tmp_path) -> None:
+    day = "2026-07-21"
+    reports_root = tmp_path / "reports"
+    trade_dir = reports_root / "trades" / day / "0900" / "TRD_20260721_006800_01"
+    trade_dir.mkdir(parents=True)
+    entry = {
+        "symbol": "006800",
+        "order_id": "0053372",
+        "price": 36351.0,
+        "execution_details": {"filled_price": 36351.0},
+    }
+    exit_payload = {
+        "symbol": "006800",
+        "order_id": "0053622",
+        "timestamp": "2026-07-21T00:54:37+00:00",
+        "broker_day_truth_source": "kiwoom.ka10170",
+    }
+    lifecycle = {
+        "trade_lifecycle_status": "closed",
+        "broker_reconciliation": {"source": "kiwoom.ka10170"},
+        "entry": entry,
+        "exit": exit_payload,
+        "lifecycle": {"status": "closed", "entry": entry, "exit": exit_payload},
+        "shared_facts": {"symbol_name": "Mirae Asset Securities", "theme": "Securities"},
+    }
+    (trade_dir / "entry.json").write_text(json.dumps(entry), encoding="utf-8")
+    (trade_dir / "exit.json").write_text(json.dumps(exit_payload), encoding="utf-8")
+    (trade_dir / "lifecycle_bundle.json").write_text(json.dumps(lifecycle), encoding="utf-8")
+    reports_dir = trade_dir / "reports"
+    reports_dir.mkdir()
+    (reports_dir / "ai_trade_report.json").write_text(
+        json.dumps(
+            {
+                "status": "closed",
+                "symbol_name": "Mirae Asset Securities",
+                "shared_facts": {"symbol_name": "Mirae Asset Securities", "theme": "Securities"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot_dir = tmp_path / "data" / "logs" / "kiwoom_account_snapshots" / day
+    snapshot_dir.mkdir(parents=True)
+    orders = [
+        {
+            "stk_cd": "006800",
+            "ord_no": "0053372",
+            "io_tp_nm": "+buy",
+            "ord_qty": "82",
+            "cntr_qty": "82",
+            "cntr_pric": "36351",
+            "ord_tm": "095405",
+        },
+        {
+            "stk_cd": "006800",
+            "ord_no": "0053622",
+            "io_tp_nm": "-sell",
+            "ord_qty": "82",
+            "cntr_qty": "82",
+            "cntr_pric": "36343",
+            "ord_tm": "095437",
+        },
+    ]
+    # _side also accepts the broker's encoded +/- prefixes through the Korean labels;
+    # keep explicit side labels here so the fixture remains readable.
+    orders[0]["io_tp_nm"] = "+매수"
+    orders[1]["io_tp_nm"] = "-매도"
+    snapshot = {"calls": [{"api_id": "ka10076", "payload": {"cntr": orders}}]}
+    (snapshot_dir / "latest.json").write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    result = reconcile_broker_closed_trade_reports(reports_root=reports_root, day=day)
+
+    assert result["ok"] is True
+    assert result["synthesized_count"] == 0
+    assert [path.name for path in (reports_root / "trades" / day / "0900").iterdir()] == [
+        "TRD_20260721_006800_01"
+    ]
+
+
+def test_undated_ka10076_rows_cannot_synthesize_previous_day_trades(tmp_path) -> None:
+    day = "2026-07-17"
+    reports_root = tmp_path / "reports"
+    snapshot_dir = tmp_path / "data" / "logs" / "kiwoom_account_snapshots" / day
+    snapshot_dir.mkdir(parents=True)
+    stale_rows = [
+        {
+            "stk_cd": "001790",
+            "ord_no": "0088903",
+            "io_tp_nm": "+매수",
+            "ord_qty": "1000",
+            "cntr_qty": "1000",
+            "cntr_pric": "2705",
+            "ord_tm": "120830",
+        },
+        {
+            "stk_cd": "001790",
+            "ord_no": "0096087",
+            "io_tp_nm": "-매도",
+            "ord_qty": "1000",
+            "cntr_qty": "1000",
+            "cntr_pric": "2727",
+            "ord_tm": "124250",
+        },
+    ]
+    snapshot = {
+        "day": day,
+        "calls": [
+            {"api_id": "ka10076", "body": {}, "payload": {"cntr": stale_rows}},
+            {
+                "api_id": "kt00009",
+                "body": {"ord_dt": "20260717"},
+                "payload": {"acnt_ord_cntr_prst_array": []},
+            },
+        ],
+    }
+    (snapshot_dir / "latest.json").write_text(
+        json.dumps(snapshot, ensure_ascii=False), encoding="utf-8"
+    )
+
+    result = reconcile_broker_closed_trade_reports(reports_root=reports_root, day=day)
+
+    assert result["ok"] is True
+    assert result["authoritative_order_count"] == 0
+    assert result["undated_fee_row_count"] == 2
+    assert result["synthesized_count"] == 0
+    assert not (reports_root / "trades" / day).exists()
+
+
+def test_day_scoped_kt00009_round_trip_can_synthesize_trade(tmp_path) -> None:
+    day = "2026-07-17"
+    reports_root = tmp_path / "reports"
+    snapshot_dir = tmp_path / "data" / "logs" / "kiwoom_account_snapshots" / day
+    snapshot_dir.mkdir(parents=True)
+    orders = [
+        {
+            "stk_cd": "A001790",
+            "ord_no": "0000101",
+            "io_tp_nm": "현금매수",
+            "ord_qty": "0000001000",
+            "cntr_qty": "0000001000",
+            "cntr_uv": "0000002705",
+            "cntr_tm": "12:08:30",
+        },
+        {
+            "stk_cd": "A001790",
+            "ord_no": "0000102",
+            "io_tp_nm": "현금매도",
+            "ord_qty": "0000001000",
+            "cntr_qty": "0000001000",
+            "cntr_uv": "0000002727",
+            "cntr_tm": "12:42:50",
+        },
+    ]
+    snapshot = {
+        "day": day,
+        "calls": [
+            {
+                "api_id": "kt00009",
+                "body": {"ord_dt": "20260717"},
+                "payload": {"acnt_ord_cntr_prst_array": orders},
+            }
+        ],
+    }
+    (snapshot_dir / "latest.json").write_text(
+        json.dumps(snapshot, ensure_ascii=False), encoding="utf-8"
+    )
+
+    result = reconcile_broker_closed_trade_reports(reports_root=reports_root, day=day)
+
+    assert result["ok"] is True
+    assert result["authoritative_order_count"] == 2
+    assert result["synthesized_count"] == 1
+    assert result["synthesized"][0]["source_api"] == "kt00009"
+    assert result["synthesized"][0]["query_day"] == "20260717"
+    lifecycle_path = next(
+        (reports_root / "trades" / day).glob("*/*/lifecycle_bundle.json")
+    )
+    lifecycle = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+    assert lifecycle["broker_reconciliation"]["source_api"] == "kt00009"
+    assert lifecycle["broker_reconciliation"]["query_day"] == "20260717"
+    assert lifecycle["exit"]["broker_source_api"] == "kt00009"
+    assert lifecycle["exit"]["broker_query_day"] == "20260717"
+
+
+def test_mismatched_snapshot_day_blocks_reconciliation(tmp_path) -> None:
+    day = "2026-07-17"
+    reports_root = tmp_path / "reports"
+    snapshot_dir = tmp_path / "data" / "logs" / "kiwoom_account_snapshots" / day
+    snapshot_dir.mkdir(parents=True)
+    (snapshot_dir / "latest.json").write_text(
+        json.dumps({"day": "2026-07-16", "calls": []}), encoding="utf-8"
+    )
+
+    result = reconcile_broker_closed_trade_reports(reports_root=reports_root, day=day)
+
+    assert result["ok"] is False
+    assert result["reason"] == "account_snapshot_day_mismatch"
 
 
 def test_order_pair_truth_can_match_buy_from_exit_order_when_entry_order_missing() -> None:

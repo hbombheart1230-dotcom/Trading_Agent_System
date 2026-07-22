@@ -109,15 +109,53 @@ def _iter_snapshot_rows(snapshot: Mapping[str, Any], key: str) -> Iterable[Dict[
                     yield dict(row)
 
 
-def _day_trade_diary_rows(snapshot: Mapping[str, Any]) -> List[Dict[str, Any]]:
+def _compact_day(day: str) -> str:
+    return re.sub(r"\D", "", str(day or ""))[:8]
+
+
+def _call_matches_requested_day(call: Mapping[str, Any], *, day: str, body_key: str) -> bool:
+    body = call.get("body") if isinstance(call.get("body"), Mapping) else {}
+    return _compact_day(body.get(body_key)) == _compact_day(day)
+
+
+def _day_scoped_order_rows(snapshot: Mapping[str, Any], *, day: str) -> List[Dict[str, Any]]:
+    """Return fills from the API whose request explicitly names the trading day.
+
+    ka10076 has no date parameter and the mock broker can return the previous
+    session's fills on a no-trade day. It may enrich fees, but it cannot prove
+    that a trade happened on ``day``.
+    """
+    rows: List[Dict[str, Any]] = []
+    for call in list(snapshot.get("calls") or []):
+        if not isinstance(call, dict) or str(call.get("api_id") or "").strip() != "kt00009":
+            continue
+        if not _call_matches_requested_day(call, day=day, body_key="ord_dt"):
+            continue
+        payload = call.get("payload") if isinstance(call.get("payload"), dict) else {}
+        for row in list(payload.get("acnt_ord_cntr_prst_array") or []):
+            if not isinstance(row, dict):
+                continue
+            normalized = dict(row)
+            normalized["_broker_source_api"] = "kt00009"
+            normalized["_broker_query_day"] = _compact_day(day)
+            rows.append(normalized)
+    return rows
+
+
+def _day_trade_diary_rows(snapshot: Mapping[str, Any], *, day: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for call in list(snapshot.get("calls") or []):
         if not isinstance(call, dict) or str(call.get("api_id") or "").strip() != "ka10170":
             continue
+        if not _call_matches_requested_day(call, day=day, body_key="base_dt"):
+            continue
         payload = call.get("payload") if isinstance(call.get("payload"), dict) else {}
         for row in list(payload.get("tdy_trde_diary") or []):
             if isinstance(row, dict):
-                rows.append(dict(row))
+                normalized = dict(row)
+                normalized["_broker_source_api"] = "ka10170"
+                normalized["_broker_query_day"] = _compact_day(day)
+                rows.append(normalized)
     return rows
 
 
@@ -233,6 +271,8 @@ def _build_truth_payload(*, symbol: str, buy: Mapping[str, Any], sell: Mapping[s
         "pnl_pct_text": f"{pnl_pct * 100.0:.2f}%",
         "result_label": "profit" if pnl > 0 else "loss" if pnl < 0 else "breakeven",
         "source": "kiwoom.order_pair_snapshot",
+        "source_api": str(sell.get("_broker_source_api") or buy.get("_broker_source_api") or ""),
+        "query_day": str(sell.get("_broker_query_day") or buy.get("_broker_query_day") or ""),
         "match_mode": "entry_order_id_next_same_symbol_qty_sell",
         "authoritative": True,
     }
@@ -377,6 +417,8 @@ def _patch_report_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> 
         "broker_day_authoritative": True,
         "broker_day_match_status": "matched",
         "broker_day_match_confidence": "high",
+        "broker_source_api": truth.get("source_api"),
+        "broker_query_day": truth.get("query_day"),
     }
     truth_surface["availability"] = {
         **dict(truth_surface.get("availability") or {}),
@@ -400,6 +442,8 @@ def _patch_report_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> 
             "broker_day_match_mode": truth.get("match_mode"),
             "broker_day_authoritative": True,
             "broker_day_match_status": "matched",
+            "broker_source_api": truth.get("source_api"),
+            "broker_query_day": truth.get("query_day"),
             "broker_fill_price": truth.get("sell_price"),
             "broker_buy_price": truth.get("buy_price"),
             "price_truth_source": truth.get("source"),
@@ -480,6 +524,8 @@ def _patch_exit_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> Di
             "broker_buy_price": truth.get("buy_price"),
             "broker_day_truth_source": truth.get("source"),
             "broker_day_match_mode": truth.get("match_mode"),
+            "broker_source_api": truth.get("source_api"),
+            "broker_query_day": truth.get("query_day"),
         }
     )
     details = dict(out.get("execution_details") or {})
@@ -488,6 +534,8 @@ def _patch_exit_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> Di
             "broker_day_authoritative": True,
             "broker_day_truth_source": truth.get("source"),
             "broker_day_match_mode": truth.get("match_mode"),
+            "broker_source_api": truth.get("source_api"),
+            "broker_query_day": truth.get("query_day"),
             "broker_realized_pnl": truth.get("pnl"),
             "broker_realized_pnl_pct": truth.get("pnl_pct"),
             "broker_fee": truth.get("fee_tax"),
@@ -526,6 +574,8 @@ def _patch_entry_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> D
             "broker_day_authoritative": True,
             "broker_day_truth_source": truth.get("source"),
             "broker_day_match_mode": truth.get("match_mode"),
+            "broker_source_api": truth.get("source_api"),
+            "broker_query_day": truth.get("query_day"),
             "broker_buy_price": buy_price,
             "filled_qty": truth.get("qty"),
         }
@@ -538,6 +588,8 @@ def _patch_entry_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) -> D
     out["broker_day_authoritative"] = True
     out["broker_day_truth_source"] = truth.get("source")
     out["broker_day_match_mode"] = truth.get("match_mode")
+    out["broker_source_api"] = truth.get("source_api")
+    out["broker_query_day"] = truth.get("query_day")
     out["broker_buy_price"] = buy_price
     return out
 
@@ -566,6 +618,8 @@ def _patch_lifecycle_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) 
             "pnl_truth_source": truth.get("source"),
             "broker_day_truth_source": truth.get("source"),
             "broker_day_match_mode": truth.get("match_mode"),
+            "broker_source_api": truth.get("source_api"),
+            "broker_query_day": truth.get("query_day"),
             "broker_day_authoritative": True,
             "broker_fill_price": truth.get("sell_price"),
             "broker_buy_price": truth.get("buy_price"),
@@ -599,6 +653,8 @@ def _patch_lifecycle_payload(payload: Dict[str, Any], truth: Mapping[str, Any]) 
         "status": "closed_by_broker_day_trade_diary",
         "source": truth.get("source"),
         "match_mode": truth.get("match_mode"),
+        "source_api": truth.get("source_api"),
+        "query_day": truth.get("query_day"),
         "pnl": truth.get("pnl"),
         "pnl_pct": truth.get("pnl_pct"),
     }
@@ -763,10 +819,19 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
     snapshot = _load_latest_snapshot(normalized_day, reports_root)
     if not snapshot:
         return {"ok": False, "reason": "account_snapshot_missing", "patched_count": 0}
-    orders = list(_iter_snapshot_rows(snapshot, "acnt_ord_cntr_prst_array"))
+    snapshot_day = str(snapshot.get("day") or "").strip()[:10]
+    if snapshot_day and snapshot_day != normalized_day:
+        return {
+            "ok": False,
+            "reason": "account_snapshot_day_mismatch",
+            "requested_day": normalized_day,
+            "snapshot_day": snapshot_day,
+            "patched_count": 0,
+        }
+    orders = _day_scoped_order_rows(snapshot, day=normalized_day)
     fee_rows = list(_iter_snapshot_rows(snapshot, "cntr"))
-    fill_orders = fee_rows + orders
-    day_diary_rows = _day_trade_diary_rows(snapshot)
+    fill_orders = orders
+    day_diary_rows = _day_trade_diary_rows(snapshot, day=normalized_day)
     patched: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     synthesized: List[Dict[str, Any]] = []
@@ -859,6 +924,15 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             and metadata_available
             and int(symbol_trade_counts.get(symbol) or 0) <= 1
         )
+        buy = _find_buy_order(fill_orders, order_id=str(entry.get("order_id") or ""), symbol=symbol)
+        sell = _find_sell_after_buy(fill_orders, buy=buy, symbol=symbol) if buy else {}
+        order_pair_truth = _build_order_pair_truth(
+            symbol=symbol,
+            entry=entry,
+            exit_payload=lifecycle_exit if lifecycle_exit else _read_json(exit_path),
+            order_rows=fill_orders,
+            fee_rows=fee_rows,
+        )
         if (
             str(
                 report.get("status")
@@ -869,16 +943,9 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             == "closed"
             and already_authoritative_and_consistent
         ):
+            if order_pair_truth:
+                used_order_pairs.add(_order_pair_key(order_pair_truth))
             continue
-        buy = _find_buy_order(fill_orders, order_id=str(entry.get("order_id") or ""), symbol=symbol)
-        sell = _find_sell_after_buy(fill_orders, buy=buy, symbol=symbol) if buy else {}
-        order_pair_truth = _build_order_pair_truth(
-            symbol=symbol,
-            entry=entry,
-            exit_payload=lifecycle_exit if lifecycle_exit else _read_json(exit_path),
-            order_rows=fill_orders,
-            fee_rows=fee_rows,
-        )
         day_diary_row = (
             _find_closed_day_diary_row(day_diary_rows, symbol=symbol, entry=entry)
             if symbol_trade_counts.get(symbol) == 1
@@ -924,7 +991,7 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
             )
         except Exception:
             pass
-    for pair in _pair_same_symbol_round_trips(fee_rows):
+    for pair in _pair_same_symbol_round_trips(orders):
         truth = _truth_from_pair(pair, fee_rows=fee_rows)
         if not truth:
             continue
@@ -945,6 +1012,8 @@ def reconcile_broker_closed_trade_reports(*, reports_root: Path = Path("reports"
     return {
         "ok": True,
         "snapshot_path": str(snapshot.get("_snapshot_path") or ""),
+        "authoritative_order_count": len(orders),
+        "undated_fee_row_count": len(fee_rows),
         "patched_count": len(patched),
         "patched": patched,
         "synthesized_count": len(synthesized),

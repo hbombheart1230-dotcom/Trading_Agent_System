@@ -37,11 +37,13 @@ def evaluate_trade(model: dict[str, Any]) -> dict[str, Any]:
 
     broker_unresolved = "broker_closed_trade_unresolved" in defects
     partial_exit_duplicate = "broker_day_partial_exit_duplicate" in defects
+    confirmed_runtime_defect = "confirmed_runtime_defect" in defects
     eligible = (
         integrity in {IntegrityStatus.PASS.value, IntegrityStatus.WATCH.value}
         and net_return is not None
         and not broker_unresolved
         and not partial_exit_duplicate
+        and not confirmed_runtime_defect
     )
     post_exit = (model.get("monitor") or {}).get("post_exit")
     post_exit = post_exit if isinstance(post_exit, dict) else {}

@@ -11,6 +11,10 @@ from libs.reporting.broker_closed_trade_reconciler import reconcile_broker_close
 from .artifact_inventory import build_artifact_inventory, iter_trade_dirs, read_json
 from .attribution_score_v0 import build_attribution_score_v0, render_attribution_score_v0
 from .counterfactuals import build_selection_attribution
+from .cost_basis_comparison import (
+    build_cost_basis_comparison,
+    render_cost_basis_comparison,
+)
 from .daily_scorecard import build_daily_scorecard
 from .day_validity import build_q9_day_validity
 from .entry_timing_attribution import (
@@ -28,6 +32,10 @@ from .horizon_compliance_report import (
 from .no_trade_attribution import (
     build_no_trade_attribution_report,
     render_no_trade_attribution_report,
+)
+from .q16_proxy_rejection_review import (
+    build_q16_proxy_rejection_review,
+    render_q16_proxy_rejection_review,
 )
 from .selection_authority_audit import (
     build_selection_authority_audit,
@@ -113,6 +121,15 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         reports_root=reports_root,
         trade_count=len(models),
     )
+    cost_basis_comparison = build_cost_basis_comparison(
+        reports_root=reports_root,
+        start=day,
+        end=day,
+    )
+    q16_proxy_rejection = build_q16_proxy_rejection_review(
+        reports_root=reports_root,
+        day=day,
+    )
 
     for trade_dir, model, evaluation, attribution in zip(
         iter_trade_dirs(reports_root, day),
@@ -161,6 +178,16 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
     _write_text(
         daily_out / "no_trade_attribution_report.md",
         render_no_trade_attribution_report(no_trade_attribution),
+    )
+    _write_json(daily_out / "cost_basis_comparison.json", cost_basis_comparison)
+    _write_text(
+        daily_out / "cost_basis_comparison.md",
+        render_cost_basis_comparison(cost_basis_comparison),
+    )
+    _write_json(daily_out / "q16_proxy_rejection_review.json", q16_proxy_rejection)
+    _write_text(
+        daily_out / "q16_proxy_rejection_review.md",
+        render_q16_proxy_rejection_review(q16_proxy_rejection),
     )
 
     daily_scorecards: list[dict[str, Any]] = []
@@ -215,6 +242,8 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         "entry_timing_attribution_report": str(daily_out / "entry_timing_attribution_report.json"),
         "attribution_score_v0": str(daily_out / "attribution_score_v0.json"),
         "no_trade_attribution_report": str(daily_out / "no_trade_attribution_report.json"),
+        "cost_basis_comparison": str(daily_out / "cost_basis_comparison.json"),
+        "q16_proxy_rejection_review": str(daily_out / "q16_proxy_rejection_review.json"),
         "full_chain_start_gate": str(daily_out / "full_chain_start_gate.json"),
         "q9_day_validity": str(daily_out / "q9_day_validity.json"),
         "rolling_scorecards": rolling_outputs,

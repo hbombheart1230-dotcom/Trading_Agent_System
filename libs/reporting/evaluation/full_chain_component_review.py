@@ -35,6 +35,10 @@ HORIZONS = ("+5m", "+15m", "+30m", "+60m")
 MIN_MATERIAL_RANKING_DELTA_PCT = 0.30
 MIN_POSITIVE_RANKING_DELTA_RATE = 0.55
 DEFAULT_Q9_SLIPPAGE_PCT = 0.05
+BEHAVIOR_METRIC_EXCLUSION_DEFECTS = {
+    "broker_day_partial_exit_duplicate",
+    "confirmed_runtime_defect",
+}
 
 
 def _number(value: Any) -> float | None:
@@ -44,6 +48,12 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _behavior_metric_eligible(model: Mapping[str, Any]) -> bool:
+    integrity = model.get("integrity") if isinstance(model.get("integrity"), Mapping) else {}
+    defects = {str(value) for value in (integrity.get("defects") or [])}
+    return not bool(defects & BEHAVIOR_METRIC_EXCLUSION_DEFECTS)
 
 
 def _topk_metric(
@@ -551,7 +561,8 @@ def build_full_chain_component_review(
         end=end,
     )
     candidates = _candidate_rows(payloads)
-    models = _load_trade_models(reports_root, start, end)
+    all_models = _load_trade_models(reports_root, start, end)
+    models = [model for model in all_models if _behavior_metric_eligible(model)]
     profile = load_broker_cost_profile(cost_profile_path)
     cost_pct = float(
         profile.get("conservative_round_trip_cost_pct")
@@ -733,6 +744,8 @@ def build_full_chain_component_review(
             "shadow_payload_count": len(payloads),
             "deduped_shadow_candidate_count": len(candidates),
             "trade_model_count": len(models),
+            "total_trade_model_count": len(all_models),
+            "excluded_trade_model_count": len(all_models) - len(models),
             "selection_availability": availability,
             "decision_window_attribution": decision_attribution,
             "scanner_quality": scanner_quality,

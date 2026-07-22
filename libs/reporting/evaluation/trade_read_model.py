@@ -429,6 +429,18 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
     pnl_ratio = broker_pnl_pct if broker_pnl_pct is not None else facts.get("pnl_pct")
     pnl_source = "exit.execution_details.broker_realized_pnl_pct" if broker_pnl_pct is not None else legacy_pnl_source
     closeout_broker_skip = _closeout_broker_skip(trade_dir, day=day, trade_id=trade_id)
+    evaluation_exclusion = read_json(trade_dir / "evaluation_exclusion.json")
+    exclusion_active = bool(evaluation_exclusion.get("active")) and str(
+        evaluation_exclusion.get("trade_id") or trade_id
+    ) == trade_id
+    exclusion_scopes = {
+        str(value).strip()
+        for value in (evaluation_exclusion.get("scopes") or [])
+        if str(value).strip()
+    }
+    behavior_metric_excluded = exclusion_active and bool(
+        exclusion_scopes & {"behavior_attribution", "promotion_metrics"}
+    )
     existing_broker_truth = bool(
         realized_exit
         and (
@@ -464,8 +476,16 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         watch_items.append(
             f"partial_exit_duplicate_parent:{partial_exit_duplicate.get('parent_trade_id')}"
         )
+    if behavior_metric_excluded:
+        defects.append("confirmed_runtime_defect")
+        watch_items.append(
+            f"evaluation_exclusion:{evaluation_exclusion.get('reason_code') or 'confirmed_runtime_defect'}"
+        )
 
-    metric_exclusion_only = bool(defects) and set(defects) <= {"broker_day_partial_exit_duplicate"}
+    metric_exclusion_only = bool(defects) and set(defects) <= {
+        "broker_day_partial_exit_duplicate",
+        "confirmed_runtime_defect",
+    }
     if "exit_before_entry" in defects or "entry_missing" in defects:
         integrity = IntegrityStatus.BLOCKER
     elif metric_exclusion_only:
@@ -713,6 +733,15 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
                 **closeout_broker_skip,
             },
             "partial_exit_duplicate": partial_exit_duplicate,
+            "evaluation_exclusion": (
+                {
+                    **evaluation_exclusion,
+                    "active": exclusion_active,
+                    "behavior_metric_excluded": behavior_metric_excluded,
+                }
+                if evaluation_exclusion
+                else {}
+            ),
         },
         "provenance": {
             "trade_dir": str(trade_dir),

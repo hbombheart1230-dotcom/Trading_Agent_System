@@ -11,7 +11,7 @@ ROLE_LABELS = {
     "P_SCANNER_PRE_STRATEGIST_UNIVERSE": "Q9 P: Scanner Source Universe",
     "A_SCANNER_CONTROL": "Q9 A: Scanner Intrinsic Control",
     "B_STRATEGIST_RANKED": "Q9 B: Strategy-Weighted Scanner",
-    "C_COMMANDER_FINAL": "Q9 C: Commander Approval/Veto Candidate",
+    "C_COMMANDER_FINAL": "Q9 C: Commander Policy (approved candidate / rejected cash)",
     "BASELINE_TOP1": "Samsung/Hynix Baseline Top1",
 }
 Q9_ROLES = tuple(key for key in ROLE_LABELS if key != "BASELINE_TOP1")
@@ -73,10 +73,8 @@ def build_unified_comparison(forward_payload: Mapping[str, Any]) -> dict[str, An
         for row in (forward_payload.get("summary") or {}).get("horizons") or []
         if isinstance(row, Mapping)
     }
-    q9_by_key = {
-        (str(row.get("role") or ""), str(row.get("horizon") or "")): _metrics(
-            row.get("q9_net") or {}
-        )
+    q9_raw_by_key = {
+        (str(row.get("role") or ""), str(row.get("horizon") or "")): row
         for row in (forward_payload.get("q9_comparison") or {}).get("roles") or []
         if isinstance(row, Mapping)
     }
@@ -85,9 +83,19 @@ def build_unified_comparison(forward_payload: Mapping[str, Any]) -> dict[str, An
         performers: list[dict[str, Any]] = []
         role_metrics: dict[str, dict[str, Any]] = {}
         for role in Q9_ROLES:
-            metrics = q9_by_key.get((role, horizon), _metrics({}))
+            raw_role = q9_raw_by_key.get((role, horizon), {})
+            metrics = _metrics(raw_role.get("q9_net") or {})
             role_metrics[role] = metrics
-            performers.append({"performer": role, "label": ROLE_LABELS[role], **metrics})
+            performers.append(
+                {
+                    "performer": role,
+                    "label": ROLE_LABELS[role],
+                    **metrics,
+                    "metric_semantics": str(raw_role.get("metric_semantics") or ""),
+                    "active_candidate_count": int(raw_role.get("active_candidate_count") or 0),
+                    "cash_no_trade_count": int(raw_role.get("cash_no_trade_count") or 0),
+                }
+            )
         baseline = baseline_by_horizon.get(horizon, _metrics({}))
         performers.append(
             {
@@ -123,7 +131,7 @@ def build_unified_comparison(forward_payload: Mapping[str, Any]) -> dict[str, An
             if comparable_alpha
             else None
         )
-        adds_alpha = bool(alpha_pct is not None and alpha_pct > 0.0)
+        outperformed = bool(alpha_pct is not None and alpha_pct > 0.0)
         horizons.append(
             {
                 "horizon": horizon,
@@ -144,17 +152,19 @@ def build_unified_comparison(forward_payload: Mapping[str, Any]) -> dict[str, An
                 ),
                 "multi_agent_alpha": {
                     "status": (
-                        "ADDS_ALPHA"
-                        if adds_alpha
-                        else "NO_ALPHA"
+                        "UNPAIRED_OUTPERFORMANCE"
+                        if outperformed
+                        else "UNPAIRED_UNDERPERFORMANCE"
                         if alpha_pct is not None
                         else "INSUFFICIENT_EVIDENCE"
                     ),
                     "commander_minus_baseline_pct": alpha_pct,
-                    "adds_alpha": adds_alpha if alpha_pct is not None else None,
+                    "adds_alpha": None,
+                    "causal_alpha_supported": False,
+                    "comparison_design": "unpaired_daily_forward_samples",
                     "root_cause": (
                         ""
-                        if adds_alpha
+                        if outperformed
                         else _root_cause(baseline=baseline, role_metrics=role_metrics)
                     ),
                 },
@@ -205,7 +215,7 @@ def render_unified_comparison(payload: Mapping[str, Any]) -> str:
         f"- Day: `{payload.get('day')}`",
         f"- Primary horizon: `{overall.get('primary_horizon')}`",
         f"- Primary best performer: **{best.get('label') or '-'}**",
-        f"- Multi-agent alpha status: **{alpha.get('status') or 'INSUFFICIENT_EVIDENCE'}**",
+        f"- Unpaired performance status: **{alpha.get('status') or 'INSUFFICIENT_EVIDENCE'}**",
         f"- Commander minus baseline: {_pct(alpha.get('commander_minus_baseline_pct'))}",
         f"- Root cause: `{alpha.get('root_cause') or '-'}`",
         f"- Metric basis: {payload.get('metric_basis')}",
@@ -228,7 +238,7 @@ def render_unified_comparison(payload: Mapping[str, Any]) -> str:
         "",
         "## Horizon Decisions",
         "",
-        "| Horizon | Best Performer | Best Avg Return | Multi-Agent Alpha | Alpha vs Baseline | Root Cause |",
+        "| Horizon | Best Performer | Best Avg Return | Unpaired Status | Return Delta vs Baseline | Root Cause |",
         "|---|---|---:|---|---:|---|",
     ]
     for horizon in payload.get("horizons") or []:
@@ -244,9 +254,10 @@ def render_unified_comparison(payload: Mapping[str, Any]) -> str:
         "",
         "## Interpretation",
         "",
-        "- Multi-agent alpha is measured as Q9 C Commander Approval/Veto Candidate average net return minus baseline Top1 average net return.",
+        "- Commander C uses approved candidate net return and cash return 0 for rejected/no-trade windows.",
+        "- Commander C minus the fixed Samsung/Hynix baseline is an unpaired descriptive return delta, not causal alpha.",
         "- Q9 B is the Scanner ranking after strategy/tactic weighting; it is not an LLM-selected new universe.",
-        "- Q9 C is the Commander approval/veto candidate; it is not a Commander-selected new universe.",
+        "- Q9 C is the Commander approval/veto policy outcome; it is not a Commander-selected new universe.",
         "- Compare Q9 P/A against Q9 B/C separately to detect strategy-weighting degradation even when baseline alpha is positive.",
         "- P/A/B/C and baseline rows use the same broker cost and evaluation slippage assumptions.",
         "- `INSUFFICIENT_EVIDENCE` means one side has no comparable observation for that horizon.",

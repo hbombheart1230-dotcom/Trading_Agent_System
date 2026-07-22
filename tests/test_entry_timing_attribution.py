@@ -152,3 +152,25 @@ def test_entry_timing_falls_back_to_insufficient_evidence(tmp_path):
 
     assert report["rows"][0]["label"] == "INSUFFICIENT_EVIDENCE"
     assert report["rows"][0]["entry_forward_quality"]["forward_available"] is False
+
+
+def test_entry_timing_excludes_confirmed_runtime_defect(tmp_path):
+    model = _model(
+        trade_id="T4",
+        symbol="006800",
+        decision_id="D4",
+        entry_ts="2026-07-21T00:54:02+00:00",
+        entry_price=100.0,
+        realized=-0.92,
+    )
+    model["integrity"] = {"defects": ["confirmed_runtime_defect"]}
+
+    report = build_entry_timing_attribution_report(
+        day="2026-07-21",
+        models=[model],
+        reports_root=tmp_path / "reports",
+        minute_rows_by_symbol={},
+    )
+
+    assert report["trade_count"] == 0
+    assert report["excluded_trade_count"] == 1

@@ -212,6 +212,7 @@ def test_q9_comparison_uses_one_representative_per_role_and_window(
                         "q9_decision_role": role,
                         "rank": 1,
                         "q9_selected": role != "B_STRATEGIST_RANKED",
+                        "q9_commander_decision": "approve" if role == "C_COMMANDER_FINAL" else "",
                         "shadow_forward_outcome": {
                             "checkpoints": {
                                 "+5m": {"status": "observed", "return_pct": 1.0}
@@ -223,6 +224,7 @@ def test_q9_comparison_uses_one_representative_per_role_and_window(
                         "q9_decision_role": role,
                         "rank": 2,
                         "q9_selected": role == "B_STRATEGIST_RANKED",
+                        "q9_commander_decision": "approve" if role == "C_COMMANDER_FINAL" else "",
                         "shadow_forward_outcome": {
                             "checkpoints": {
                                 "+5m": {"status": "observed", "return_pct": -10.0}
@@ -318,8 +320,10 @@ def test_unified_comparison_reports_multi_agent_alpha() -> None:
     )
     primary = result["overall"]["multi_agent_alpha"]
 
-    assert primary["status"] == "ADDS_ALPHA"
+    assert primary["status"] == "UNPAIRED_OUTPERFORMANCE"
     assert primary["commander_minus_baseline_pct"] == 0.2
+    assert primary["adds_alpha"] is None
+    assert primary["causal_alpha_supported"] is False
     assert result["overall"]["best_performer"]["performer"] == "C_COMMANDER_FINAL"
 
 
@@ -335,7 +339,7 @@ def test_unified_comparison_attributes_strategist_degradation() -> None:
     )
     primary = result["overall"]["multi_agent_alpha"]
 
-    assert primary["status"] == "NO_ALPHA"
+    assert primary["status"] == "UNPAIRED_UNDERPERFORMANCE"
     assert primary["root_cause"] == "strategy_weighting_degraded_scanner_intrinsic_edge"
     assert "Strategy-Weighted Scanner" in render_unified_comparison(result)
 
@@ -357,6 +361,54 @@ def test_unified_comparison_handles_missing_baseline_sample() -> None:
     assert primary["root_cause"] == "insufficient_comparable_forward_samples"
     assert "Unified Metrics" in markdown
     assert "Best Performer" in markdown
+
+
+def test_q9_commander_rejection_is_cash_not_strategist_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from libs.reporting.baseline_samsung_hynix import q9_comparison
+
+    rows = []
+    for role in (
+        "P_SCANNER_PRE_STRATEGIST_UNIVERSE",
+        "A_SCANNER_CONTROL",
+        "B_STRATEGIST_RANKED",
+        "C_COMMANDER_FINAL",
+    ):
+        rows.append(
+            {
+                "q9_decision_id": "D_REJECT",
+                "q9_decision_role": role,
+                "rank": 1,
+                "q9_selected": role == "B_STRATEGIST_RANKED",
+                "q9_commander_decision": "reject" if role == "C_COMMANDER_FINAL" else "",
+                "q9_commander_no_trade": role == "C_COMMANDER_FINAL",
+                "shadow_forward_outcome": {
+                    "checkpoints": {
+                        "+5m": {"status": "observed", "return_pct": 5.0},
+                    }
+                },
+            }
+        )
+
+    monkeypatch.setattr(q9_comparison, "_load_q9_rows", lambda **_: rows)
+    result = build_q9_role_comparison(
+        day="2026-07-22",
+        baseline_summary={"horizons": []},
+        cost_pct=0.2,
+        slippage_pct=0.1,
+        q9_root=tmp_path,
+    )
+    commander = next(
+        row
+        for row in result["roles"]
+        if row["role"] == "C_COMMANDER_FINAL" and row["horizon"] == "+5m"
+    )
+
+    assert commander["q9_net"]["average_return_pct"] == 0.0
+    assert commander["cash_no_trade_count"] == 1
+    assert commander["active_candidate_count"] == 0
 
 
 def test_reconstruct_intraday_creates_forward_windows(tmp_path: Path) -> None:

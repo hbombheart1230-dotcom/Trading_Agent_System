@@ -98,6 +98,36 @@ def test_low_forward_coverage_invalidates_only_that_day() -> None:
     }
 
 
+def test_unavailable_forward_coverage_is_not_mislabeled_invalid() -> None:
+    payload = build_q9_day_validity(
+        day="2026-07-22",
+        now=datetime(2026, 7, 22, 16, 0, tzinfo=KST),
+        inventory={
+            "daily_artifacts": {
+                "q9_decision_windows": {
+                    "exists": True,
+                    "schema_match": True,
+                    "scanner_selection_window_count": 100,
+                    "complete_pabc_window_count": 100,
+                    "full_session_coverage": True,
+                    "pre_strategist_forward_candidate_count": 200,
+                    "forward_observed_candidate_count": 120,
+                    "forward_pending_candidate_count": 20,
+                    "forward_unavailable_candidate_count": 60,
+                    "forward_invalid_candidate_count": 0,
+                }
+            }
+        },
+    )
+
+    assert payload["status"] == "INVALID"
+    assert payload["checks"]["forward_invalid_candidate_count"] == 0
+    assert payload["checks"]["forward_unavailable_candidate_count"] == 60
+    assert {row["code"] for row in payload["blockers"]} == {
+        "forward_observation_unavailable",
+    }
+
+
 def test_complete_unified_comparison_keeps_day_valid_despite_raw_forward_gaps() -> None:
     payload = build_q9_day_validity(
         day="2026-06-24",

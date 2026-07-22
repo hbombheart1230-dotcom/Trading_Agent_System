@@ -174,10 +174,24 @@ def attach_forward_outcomes(
                     "baseline_raw_ts": baseline_row.get("raw_ts"),
                     "source": "summary.state.minute_ohlcv_by_symbol",
                 }
-        if not symbol or base_epoch <= 0 or base_price is None or base_price <= 0 or not minute_rows:
+        if not symbol:
             row["shadow_forward_outcome"] = {
                 "available": False,
-                "reason": "baseline_or_minute_rows_unavailable",
+                "reason": "symbol_missing",
+            }
+            out.append(row)
+            continue
+        if not minute_rows:
+            row["shadow_forward_outcome"] = {
+                "available": False,
+                "reason": "minute_rows_unavailable",
+            }
+            out.append(row)
+            continue
+        if base_epoch <= 0 or base_price is None or base_price <= 0:
+            row["shadow_forward_outcome"] = {
+                "available": False,
+                "reason": "baseline_unavailable",
             }
             out.append(row)
             continue

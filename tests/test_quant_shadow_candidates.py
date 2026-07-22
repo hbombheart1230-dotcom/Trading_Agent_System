@@ -59,6 +59,12 @@ def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() 
             "cost_adjusted_edge_ok": False,
             "cost_adjusted_edge_pct": -0.05,
             "cost_drag_pct": 0.31,
+            "entry_cost_filter": {
+                "passed": False,
+                "proxy_edge_available": True,
+                "directional_edge_available": False,
+                "allow_triggered_signal_proxy_edge": False,
+            },
             "quant_factor_snapshot": {"vwap_distance_pct": 0.2},
             "entry_quant_decision": {
                 "decision": "observe",
@@ -123,6 +129,8 @@ def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() 
     assert top["guard_reason"] == "quant_entry_block"
     assert top["buy_blocked_pending_buy"] is True
     assert top["entry_quant_cost_floor_state"] == "not_met"
+    assert top["entry_cost_filter"]["proxy_edge_available"] is True
+    assert top["entry_cost_filter"]["allow_triggered_signal_proxy_edge"] is False
     assert top["quant_tactic_id"] == "pullback_reclaim"
     runner = payload["candidates"][1]
     assert runner["symbol"] == "000660"

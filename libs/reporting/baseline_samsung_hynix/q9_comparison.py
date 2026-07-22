@@ -99,6 +99,9 @@ def build_q9_role_comparison(
         ]
         for horizon in HORIZONS:
             values: list[float] = []
+            active_candidate_count = 0
+            cash_no_trade_count = 0
+            commander_decision_counts: dict[str, int] = defaultdict(int)
             for row in role_candidates:
                 outcome = row.get("shadow_forward_outcome")
                 outcome = outcome if isinstance(outcome, Mapping) else {}
@@ -107,9 +110,24 @@ def build_q9_role_comparison(
                 if checkpoint.get("status") != "observed":
                     continue
                 try:
-                    values.append(float(checkpoint.get("return_pct")) - drag)
+                    candidate_return = float(checkpoint.get("return_pct"))
                 except (TypeError, ValueError):
                     continue
+                if role == "C_COMMANDER_FINAL":
+                    decision = str(row.get("q9_commander_decision") or "").strip().lower()
+                    no_trade = bool(row.get("q9_commander_no_trade"))
+                    commander_decision_counts[decision or "unknown"] += 1
+                    if no_trade or decision in {"reject", "noop", "no_trade", "blocked"}:
+                        values.append(0.0)
+                        cash_no_trade_count += 1
+                    elif decision in {"approve", "approved", "allow", "buy"}:
+                        values.append(candidate_return - drag)
+                        active_candidate_count += 1
+                    else:
+                        continue
+                else:
+                    values.append(candidate_return - drag)
+                    active_candidate_count += 1
             baseline_row = next(
                 (
                     row
@@ -128,6 +146,14 @@ def build_q9_role_comparison(
                     "role": role,
                     "horizon": horizon,
                     "q9_net": metrics,
+                    "metric_semantics": (
+                        "commander_policy_return_approved_candidate_else_cash_zero"
+                        if role == "C_COMMANDER_FINAL"
+                        else "representative_candidate_forward_return"
+                    ),
+                    "active_candidate_count": active_candidate_count,
+                    "cash_no_trade_count": cash_no_trade_count,
+                    "commander_decision_counts": dict(commander_decision_counts),
                     "baseline_top1_count": baseline_count,
                     "baseline_top1_net_expectancy_pct": baseline_expectancy,
                     "baseline_minus_q9_expectancy_pct": (

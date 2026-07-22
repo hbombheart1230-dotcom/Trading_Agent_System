@@ -45,7 +45,12 @@ def build_horizon_compliance_report(
         }
     )
     horizon_counts: Counter[str] = Counter()
+    excluded_count = 0
     for evaluation in evaluations:
+        integrity = _mapping(evaluation.get("integrity"))
+        if integrity.get("promotion_metric_eligible") is False:
+            excluded_count += 1
+            continue
         horizon = _mapping(evaluation.get("horizon_alignment"))
         outcome = _mapping(evaluation.get("realized_outcome"))
         strategy_horizon = str(horizon.get("strategy_horizon") or "unknown")
@@ -116,6 +121,7 @@ def build_horizon_compliance_report(
         "schema_version": "horizon_compliance_report.v1",
         "behavior_effect": "observation_only",
         "trade_count": len(rows),
+        "excluded_trade_count": excluded_count,
         "horizon_counts": dict(horizon_counts),
         "group_rows": group_rows,
         "rows": rows,

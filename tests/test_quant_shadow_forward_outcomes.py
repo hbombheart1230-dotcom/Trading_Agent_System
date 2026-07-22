@@ -3,6 +3,20 @@ from __future__ import annotations
 from libs.reporting.quant_shadow_forward_outcomes import attach_forward_outcomes
 
 
+def test_attach_forward_outcomes_classifies_missing_minute_rows_as_unavailable() -> None:
+    out = attach_forward_outcomes(
+        [
+            {
+                "symbol": "005930",
+                "shadow_forward_base": {"baseline_epoch": 1, "baseline_price": 100.0},
+            }
+        ],
+        minute_rows_by_symbol={},
+    )
+
+    assert out[0]["shadow_forward_outcome"]["reason"] == "minute_rows_unavailable"
+
+
 def test_attach_forward_outcomes_rejects_cross_day_target_row() -> None:
     candidates = [
         {

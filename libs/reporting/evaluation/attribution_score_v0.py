@@ -196,6 +196,24 @@ def _evidence_quality(
     total = sum(int(value or 0) for value in counts.values())
     if total <= 0:
         return _score(INSUFFICIENT, None, ["artifact_integrity_counts_missing"])
+    selection_summary = _mapping(selection_authority.get("summary"))
+    explicitly_excluded = sum(
+        int(value or 0)
+        for key, value in selection_summary.items()
+        if str(key).startswith("excluded:")
+    )
+    if explicitly_excluded >= total:
+        return _score(
+            OK,
+            100,
+            ["all_trade_rows_explicitly_excluded_from_behavior_metrics"],
+            {
+                "integrity_status_counts": dict(counts),
+                "explicitly_excluded_trade_count": explicitly_excluded,
+                "ledger_day_present": bool(ledger_day),
+                "ledger_evidence_status": ledger_day.get("evidence_status") if ledger_day else "",
+            },
+        )
     pass_count = int(counts.get("PASS") or 0)
     watch_count = int(counts.get("WATCH") or 0)
     score = ((pass_count + (0.7 * watch_count)) / total) * 100.0
@@ -259,7 +277,16 @@ def build_attribution_score_v0(
         for key, value in scores.items()
         if value.get("status") != INSUFFICIENT and value.get("score") is not None
     }
-    weakest = min(scored.items(), key=lambda item: item[1]) if scored else ("", None)
+    behavior_scored = {
+        key: value
+        for key, value in scored.items()
+        if key != "evidence_quality_score"
+    }
+    weakest = (
+        min(scored.items(), key=lambda item: item[1])
+        if behavior_scored
+        else ("", None)
+    )
     return {
         "schema_version": "attribution_score_v0.v1",
         "evaluation_program_id": "Q13_ATTRIBUTION_SCORE_V0",

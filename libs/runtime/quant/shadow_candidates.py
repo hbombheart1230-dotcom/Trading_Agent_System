@@ -494,6 +494,7 @@ def _top_pick_row(
             "cost_adjusted_edge_ok": _bool(entry_info.get("cost_adjusted_edge_ok")),
             "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
             "cost_drag_pct": entry_info.get("cost_drag_pct"),
+            "entry_cost_filter": _as_dict(entry_info.get("entry_cost_filter")),
             "quant_factor_snapshot": _as_dict(entry_info.get("quant_factor_snapshot")),
             "entry_quant_decision": _as_dict(entry_info.get("entry_quant_decision")),
         }
@@ -534,6 +535,7 @@ def _runner_row(trace: Mapping[str, Any], ranked_by_symbol: Mapping[str, Dict[st
             "pullback_evidence_profile": _as_dict(trace.get("pullback_evidence_profile")),
             "runner_up_quality_blocked": _bool(trace.get("runner_up_quality_blocked")),
             "weak_fallback_blocked": _bool(trace.get("weak_fallback_blocked")),
+            "entry_cost_filter": _as_dict(trace.get("entry_cost_filter")),
         }
     )
     base["would_enter"] = (

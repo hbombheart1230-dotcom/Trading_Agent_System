@@ -126,7 +126,7 @@ def resolve_entry_cost_filter_config(
             config,
             "allow_triggered_signal_proxy_edge",
             "MONITOR_ENTRY_ALLOW_TRIGGERED_SIGNAL_PROXY_EDGE",
-            True,
+            False,
         ),
         "triggered_proxy_confidence_tolerance": _config_float(
             config,
