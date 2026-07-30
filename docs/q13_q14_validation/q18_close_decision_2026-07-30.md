@@ -146,4 +146,3 @@ demonstrate positive cost-adjusted expectancy before it is connected to the
 multi-agent runtime.
 
 Do not create Q19 from this decision.
-
