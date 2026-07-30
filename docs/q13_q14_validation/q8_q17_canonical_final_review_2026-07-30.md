@@ -356,17 +356,25 @@ Q9 정규장 상태:
 기존 데이터로 즉시 episode 재집계하고, 부족할 때만 최대 5거래일
 추가 관찰한 뒤 연장 없이 종결한다.
 
-## 최종 실행 순서
+Q18 final update:
 
-1. 현 행동 정책을 유지한 채 정상 런을 수행한다.
-2. 매일 기존 Q8-Q17 및 Q9 누적 산출물만 자동 갱신한다.
-3. 자연 거래가 발생하면 Q17/horizon/reentry smoke를 확인한다.
-4. Q18에서 post-reclaim 후보를 15분 독립 episode로 재집계한다.
-5. episode profit factor, drawdown, 일별 편중, 종목 편중을 확인한다.
-6. 통과하면 해당 subtype 하나만 제한적으로 승격 검토한다.
-7. 실패하면 후보를 기각하고 broad relaxation 없이 현재 방어 정책을
-   유지한다.
+- independent episode structure: 35 episodes, 21 days, 18 symbols
+- persisted episode-level forward outcomes: 0
+- decision: `RETAIN SHADOW`
+- optional five-day extension: not started
+- authority: `q18_close_decision_2026-07-30.md`
 
-평가 체계를 다시 만들거나 기간을 처음부터 세지 않는다. Q18은 기존
-clean evaluator를 이용한 단일 후보 결정이며, 기존 데이터가 부족한
-경우에도 최대 5거래일 후 연장 없이 종료한다.
+## 최종 실행 결론
+
+1. Q18은 기존 데이터 재집계로 완료했다.
+2. `confirmed_post_reclaim_pullback`은 `RETAIN SHADOW`로 종결했다.
+3. 선택적 5거래일 추가 관찰은 시작하지 않는다.
+4. Q19 평가 단계는 만들지 않는다.
+5. 현 행동 정책은 방어적 저빈도 상태로 유지한다.
+6. 기존 runtime artifact는 수동적인 장기 관측 자료로만 계속 누적한다.
+7. 다음 개발은 명시적 가설과 과거 분봉 데이터에 기반한 offline alpha
+   research로 전환한다.
+
+평가 체계를 다시 만들거나 기간을 처음부터 세지 않는다. Q18의
+episode-level artifact가 승격 기준을 충족하지 못했으므로, live 평가
+연장으로 증거 부족을 덮지 않는다.

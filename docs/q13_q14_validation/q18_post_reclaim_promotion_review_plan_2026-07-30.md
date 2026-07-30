@@ -2,6 +2,16 @@
 
 Date: 2026-07-30
 
+Status: `CLOSED_RETAIN_SHADOW`
+
+Final decision:
+
+- `q18_close_decision_2026-07-30.md`
+
+The historical episode reconstruction exposed a missing per-episode forward
+artifact. Q18 therefore closed immediately under its fixed evidence rules and
+did not start the optional five-day extension.
+
 ## Definition
 
 Q18 is the final bounded promotion review for:
