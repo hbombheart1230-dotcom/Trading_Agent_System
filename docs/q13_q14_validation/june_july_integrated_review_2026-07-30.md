@@ -130,7 +130,11 @@ independent controls were negative.
 | Q16 | RETAIN | ATR/volatility cannot substitute for directional edge |
 | Q17 | CONTRACT REPAIRED | Memory path and horizon-matched evidence corrected |
 
-No Q18 evaluation program is required.
+Q18 is reserved for the bounded promotion review of the confirmed
+post-reclaim-pullback subtype. It is not a new attribution or evaluation axis.
+The post-cleanup canonical plan in
+`q18_post_reclaim_promotion_review_plan_2026-07-30.md` supersedes the earlier
+wording that no Q18 was required.
 
 ## Evidence-Backed Behavior Changes
 

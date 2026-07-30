@@ -300,3 +300,14 @@ The authoritative post-cleanup conclusion and latest 2026-06-01 through
 When an older Q8-Q17 review contains a conflicting numerical snapshot, use the
 canonical final review. Older documents remain historical decision records and
 must not override the post-cleanup aggregate.
+
+## Q18 Bounded Promotion Review
+
+Q18 is defined as a single-candidate promotion review, not a new evaluation
+axis:
+
+- `q18_post_reclaim_promotion_review_plan_2026-07-30.md`
+
+It starts with immediate historical episode reaggregation. If evidence remains
+insufficient, it observes at most five additional full trading days and then
+closes without extension.

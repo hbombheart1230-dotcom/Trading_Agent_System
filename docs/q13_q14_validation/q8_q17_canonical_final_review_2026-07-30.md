@@ -24,7 +24,9 @@ Q8부터 평가를 다시 시작하지 않는다.
    shadow 연구 후보로 남긴다.
 8. Q17 directional-edge 계약과 horizon 계약은 코드·artifact·테스트
    기준으로 복구됐지만, 실제 체결 후 수익성은 아직 입증되지 않았다.
-9. Q18과 같은 새 평가 프로그램을 만들지 않는다.
+9. 다음 단계는 Q18이며, 새로운 평가 축이 아니라
+   `confirmed_post_reclaim_pullback` 단일 후보의 bounded promotion
+   review다.
 
 ## 권위 데이터
 
@@ -350,16 +352,21 @@ Q9 정규장 상태:
 
 - `confirmed_post_reclaim_pullback` episode-level promotion review
 
+이 단일 연구를 `Q18 Post-Reclaim Pullback Promotion Review`로 정의한다.
+기존 데이터로 즉시 episode 재집계하고, 부족할 때만 최대 5거래일
+추가 관찰한 뒤 연장 없이 종결한다.
+
 ## 최종 실행 순서
 
 1. 현 행동 정책을 유지한 채 정상 런을 수행한다.
 2. 매일 기존 Q8-Q17 및 Q9 누적 산출물만 자동 갱신한다.
 3. 자연 거래가 발생하면 Q17/horizon/reentry smoke를 확인한다.
-4. 별도로 post-reclaim 후보를 15분 독립 episode로 재집계한다.
+4. Q18에서 post-reclaim 후보를 15분 독립 episode로 재집계한다.
 5. episode profit factor, drawdown, 일별 편중, 종목 편중을 확인한다.
 6. 통과하면 해당 subtype 하나만 제한적으로 승격 검토한다.
 7. 실패하면 후보를 기각하고 broad relaxation 없이 현재 방어 정책을
    유지한다.
 
-평가 체계를 다시 만들거나 기간을 처음부터 세지 않는다. 앞으로 필요한
-것은 기존 clean evaluator를 이용한 전후 비교와 단일 후보 결정이다.
+평가 체계를 다시 만들거나 기간을 처음부터 세지 않는다. Q18은 기존
+clean evaluator를 이용한 단일 후보 결정이며, 기존 데이터가 부족한
+경우에도 최대 5거래일 후 연장 없이 종료한다.

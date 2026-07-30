@@ -270,7 +270,9 @@ not yet a production-quality independent sample.
 
 ## Final Boundary
 
-Do not start Q18.
+Do not start a new open-ended evaluation axis. Q18 is subsequently defined only
+as the bounded promotion review for the confirmed post-reclaim-pullback
+subtype; see `q18_post_reclaim_promotion_review_plan_2026-07-30.md`.
 
 The sequence is:
 
