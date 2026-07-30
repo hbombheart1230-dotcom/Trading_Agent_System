@@ -151,3 +151,26 @@ demonstrate positive cost-adjusted expectancy before it is connected to the
 multi-agent runtime.
 
 Do not create Q19 from this decision.
+
+## Post-Close Offline Reconstruction
+
+Q18 remained closed. A separate offline research module later reconstructed
+the 35 independent episodes directly from paginated Kiwoom minute history.
+
+Result:
+
+- all 18 required symbols reached the historical target interval
+- +30m valid episodes: 30/35
+- +30m fixed forward coverage: 85.71%
+- +30m live-net expectancy: +0.3292%
+- +30m live-net profit factor: 1.9656
+- same 21-day Scanner Rank 1 live-net expectancy: -0.3601%
+- all performance gates passed
+- the predeclared 90% +30m coverage gate failed
+
+The decision therefore remains `RETAIN SHADOW`. The threshold was not changed
+after observing the result.
+
+See:
+
+- `../offline_alpha/post_reclaim_offline_research_2026-07-30.md`
