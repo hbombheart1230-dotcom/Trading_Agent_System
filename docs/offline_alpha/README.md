@@ -46,3 +46,15 @@ Current research:
     artifacts
   - H6 volatility contraction breakout: rejected
   - no threshold tuning and no live or shadow integration
+
+- `structural_alpha_batch2_contract_2026-07-30.md`
+  - final frozen batch: market-shock reversal, oversold mean reversion, and
+    trend pullback resumption
+
+- `structural_alpha_batch2_result_2026-07-30.md`
+  - H7, H8, and H9 rejected
+  - no threshold tuning and no live or shadow integration
+
+- `structural_alpha_search_closure_2026-07-30.md`
+  - finite six-hypothesis search closed
+  - zero eligible candidates, five rejects, one not testable
