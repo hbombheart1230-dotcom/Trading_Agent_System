@@ -34,3 +34,15 @@ Current research:
   - 102/102 historical symbols complete
   - all three hypotheses rejected
   - no shadow or live integration
+
+- `structural_alpha_batch1_contract_2026-07-30.md`
+  - frozen contract for cross-sectional relative strength, sector leadership,
+    and volatility contraction breakout
+  - Q9 pre-Strategist Top 5 is the point-in-time universe
+
+- `structural_alpha_batch1_result_2026-07-30.md`
+  - H4 cross-sectional relative strength: rejected
+  - H5 point-in-time sector leader: not testable with current historical
+    artifacts
+  - H6 volatility contraction breakout: rejected
+  - no threshold tuning and no live or shadow integration
