@@ -289,3 +289,14 @@ test/runtime path-isolation contract are recorded in:
 
 This close is observability-only. It does not reopen frozen Q13/Q14 formulas or
 authorize a trading behavior change.
+
+## Canonical Q8-Q17 Final Review
+
+The authoritative post-cleanup conclusion and latest 2026-06-01 through
+2026-07-30 metrics are recorded in:
+
+- `q8_q17_canonical_final_review_2026-07-30.md`
+
+When an older Q8-Q17 review contains a conflicting numerical snapshot, use the
+canonical final review. Older documents remain historical decision records and
+must not override the post-cleanup aggregate.
