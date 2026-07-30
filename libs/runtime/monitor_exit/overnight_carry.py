@@ -149,6 +149,23 @@ def evaluate_overnight_carry_decision(
 
     blockers: list[str] = []
     positives: list[str] = []
+    horizon_translation = (
+        dict(frame.get("horizon_behavior_translation") or {})
+        if isinstance(frame.get("horizon_behavior_translation"), dict)
+        else {}
+    )
+    horizon = str(frame.get("strategy_horizon") or "").strip().lower()
+    horizon_allows_overnight = bool(
+        frame.get("horizon_behavior_enabled")
+        and horizon in {"overnight_probe", "1_2day_swing"}
+        and horizon_translation.get("overnight_allowed")
+    )
+    if horizon_allows_overnight:
+        positives.append(f"strategy_horizon_allows_overnight:{horizon}")
+    else:
+        blockers.append(
+            f"strategy_horizon_disallows_overnight:{horizon or 'unavailable'}"
+        )
     if bool(risk_decision.get("triggered")):
         risk_reason = str(risk_decision.get("reason") or "unknown")
         if is_soft_profit_exit_reason(risk_reason):

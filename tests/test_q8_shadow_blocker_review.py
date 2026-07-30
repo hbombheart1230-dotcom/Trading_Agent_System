@@ -14,7 +14,7 @@ def test_q8_shadow_blocker_review_groups_forward_outcomes() -> None:
                     "quant_tactic_id": "vwap_reclaim_pullback",
                     "shadow_forward_base": {
                         "available": True,
-                        "baseline_epoch": 1000,
+                        "baseline_epoch": 1780358400,
                         "baseline_price": 100.0,
                     },
                 },
@@ -26,7 +26,7 @@ def test_q8_shadow_blocker_review_groups_forward_outcomes() -> None:
                     "quant_tactic_id": "vwap_reclaim_pullback",
                     "shadow_forward_base": {
                         "available": True,
-                        "baseline_epoch": 1000,
+                        "baseline_epoch": 1780358400,
                         "baseline_price": 100.0,
                     },
                 },
@@ -38,7 +38,7 @@ def test_q8_shadow_blocker_review_groups_forward_outcomes() -> None:
                     "quant_tactic_id": "defensive_observe",
                     "shadow_forward_base": {
                         "available": True,
-                        "baseline_epoch": 1000,
+                        "baseline_epoch": 1780358400,
                         "baseline_price": 200.0,
                     },
                 },
@@ -47,14 +47,14 @@ def test_q8_shadow_blocker_review_groups_forward_outcomes() -> None:
     ]
     minute_rows = {
         "005930": [
-            {"ts": 1000, "close": 100.0, "high": 100.0, "low": 100.0},
-            {"ts": 1300, "close": 101.0, "high": 102.0, "low": 99.5},
-            {"ts": 1900, "close": 103.0, "high": 104.0, "low": 99.0},
+            {"ts": 1780358400, "close": 100.0, "high": 100.0, "low": 100.0},
+            {"ts": 1780358700, "close": 101.0, "high": 102.0, "low": 99.5},
+            {"ts": 1780359300, "close": 103.0, "high": 104.0, "low": 99.0},
         ],
         "000660": [
-            {"ts": 1000, "close": 200.0, "high": 200.0, "low": 200.0},
-            {"ts": 1300, "close": 198.0, "high": 199.0, "low": 197.0},
-            {"ts": 1900, "close": 196.0, "high": 198.0, "low": 195.0},
+            {"ts": 1780358400, "close": 200.0, "high": 200.0, "low": 200.0},
+            {"ts": 1780358700, "close": 198.0, "high": 199.0, "low": 197.0},
+            {"ts": 1780359300, "close": 196.0, "high": 198.0, "low": 195.0},
         ],
     }
 

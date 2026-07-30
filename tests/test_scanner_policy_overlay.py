@@ -58,12 +58,12 @@ def test_same_symbol_penalty_applied():
         "allow_same_symbol_reentry": True
     }
     mock_results = {
-        "AAPL": {"score": 0.80, "confidence": 0.9, "risk_score": 0.1, "compatibility_bias": 0.0},
-        "MSFT": {"score": 0.78, "confidence": 0.8, "risk_score": 0.2, "compatibility_bias": 0.0},
+        "005930": {"score": 0.80, "confidence": 0.9, "risk_score": 0.1, "compatibility_bias": 0.0},
+        "000660": {"score": 0.78, "confidence": 0.8, "risk_score": 0.2, "compatibility_bias": 0.0},
     }
     state = _mock_state_for_scanner(
         open_position_count=0,
-        last_trade_symbol="AAPL",
+        last_trade_symbol="005930",
         scanner_policy=scanner_policy,
         mock_scan_results=mock_results,
     )
@@ -71,7 +71,7 @@ def test_same_symbol_penalty_applied():
     
     scanner_output = result.get("scanner_output", {})
     assert scanner_output.get("reentry_penalty_applied") is True
-    assert result.get("selected", {}).get("symbol") in {"AAPL", "MSFT"}
+    assert result.get("selected", {}).get("symbol") in {"005930", "000660"}
 
 def test_gap_threshold_exceeded():
     scanner_policy = {
@@ -319,6 +319,8 @@ def test_blocker_family_concentration_promotes_alternative_family():
         scanner_policy={},
         mock_scan_results=mock_results,
     )
+    state["scanner_features"] = _neutral_scanner_features(*mock_results)
+    state["mock_candidate_metrics"] = _flat_candidate_metrics(*mock_results)
     result = scanner_node(state)
 
     scanner_output = result.get("scanner_output", {})
@@ -367,6 +369,8 @@ def test_blocker_family_concentration_does_not_null_selection_without_alternativ
         scanner_policy={},
         mock_scan_results=mock_results,
     )
+    state["scanner_features"] = _neutral_scanner_features(*mock_results)
+    state["mock_candidate_metrics"] = _flat_candidate_metrics(*mock_results)
     result = scanner_node(state)
 
     scanner_output = result.get("scanner_output", {})

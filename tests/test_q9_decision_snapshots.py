@@ -1,12 +1,35 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from libs.reporting.evaluation.start_gate import _trade_gate
 from libs.runtime.q9_decision_snapshots import (
     capture_commander_decision_snapshot,
     capture_scanner_decision_snapshot,
 )
+
+
+def test_default_reports_root_is_isolated_during_pytest(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "PYTEST_CURRENT_TEST",
+        "tests/test_q9_decision_snapshots.py::test_default_reports_root_is_isolated",
+    )
+    monkeypatch.setenv("REPORTS_ROOT", "reports")
+    state = {
+        "run_id": "pytest-isolation",
+        "ts": "2026-07-30T00:00:00+00:00",
+        "scanner_output": {},
+    }
+
+    result = capture_scanner_decision_snapshot(state)
+
+    assert "trading_agent_system_pytest" in result["path"]
+    assert str(Path(result["path"])).endswith(
+        str(Path("reports/operator_summary/daily/2026-07-30/q9_decision_windows.json"))
+    )
 
 
 def test_q9_snapshot_upserts_scanner_and_commander_under_one_id(tmp_path) -> None:
@@ -31,7 +54,20 @@ def test_q9_snapshot_upserts_scanner_and_commander_under_one_id(tmp_path) -> Non
                 "schema_version": "q9_scanner_pre_strategist_universe.v1",
                 "candidate_count": 2,
                 "intrinsic_ranked_top20": [
-                    {"symbol": "000660", "rank": 1, "sources": ["top_value"]},
+                    {
+                        "symbol": "000660",
+                        "rank": 1,
+                        "sources": ["top_value"],
+                        "source_scores": {"top_value": 0.8},
+                        "score_breakdown": {
+                            "trading_value": 0.2,
+                            "volume_surge": 0.1,
+                        },
+                        "compact_feature_snapshot": {
+                            "engine_close_last": 198000,
+                            "engine_signal_score": 0.8,
+                        },
+                    },
                     {"symbol": "035420", "rank": 2, "sources": ["top_volume"]},
                 ],
             },
@@ -61,6 +97,19 @@ def test_q9_snapshot_upserts_scanner_and_commander_under_one_id(tmp_path) -> Non
         row["symbol"]
         for row in window["scanner_pre_strategist_universe"]["intrinsic_ranked_top20"]
     ] == ["000660", "035420"]
+    assert (
+        window["scanner_pre_strategist_universe"]["intrinsic_ranked_top20"][0]
+        ["compact_feature_snapshot"]["engine_close_last"]
+        == 198000
+    )
+    assert "engine_signal_score" not in (
+        window["scanner_pre_strategist_universe"]["intrinsic_ranked_top20"][0]
+        ["compact_feature_snapshot"]
+    )
+    first_pre = window["scanner_pre_strategist_universe"]["intrinsic_ranked_top20"][0]
+    assert first_pre["sources"] == ["top_value"]
+    assert first_pre["source_scores"] == {"top_value": 0.8}
+    assert first_pre["score_breakdown"]["trading_value"] == 0.2
     assert window["strategist_selection"]["selected_symbol"] == "005930"
     assert window["commander_final"]["decision"] == "approve"
     assert state["scanner_output"]["q9_decision_snapshot"]["commander_final"]["decision"] == "approve"
@@ -98,6 +147,52 @@ def test_q9_commander_only_window_is_classified(tmp_path) -> None:
     capture_commander_decision_snapshot(state)
 
     assert state["q9_decision_snapshot"]["window_type"] == "commander_monitor_only"
+
+
+def test_q9_snapshot_preserves_monitor_noop_reason_and_directional_edge(
+    tmp_path,
+) -> None:
+    state = {
+        "reports_root": str(tmp_path / "reports"),
+        "run_id": "noop-run",
+        "ts": "2026-07-28T00:05:00+00:00",
+        "selected": {"symbol": "005930"},
+        "monitor_output": {
+            "intent_side": "NOOP",
+            "selected_symbol": "005930",
+            "entry_exit_reason": "quant_entry_block:cost_edge_fail",
+        },
+        "monitor_entry": {
+            "triggered": True,
+            "guard_blocked": True,
+            "guard_reason": "quant_entry_block:cost_edge_fail",
+            "primary_failure_axis": "cost_adjusted_edge",
+            "entry_lane": "strict",
+            "entry_cost_filter": {
+                "passed": False,
+                "fail_reasons": ["estimated_gross_edge_below_cost_floor"],
+            },
+            "directional_edge_estimate": {
+                "available": True,
+                "reason": "eligible_historical_directional_expectancy",
+                "expected_move_ratio": 0.000852,
+            },
+        },
+        "decision": "approve",
+        "decision_reason": "within_policy",
+    }
+
+    capture_commander_decision_snapshot(state)
+
+    commander = state["q9_decision_snapshot"]["commander_final"]
+    assert commander["monitor_intent"] == "NOOP"
+    assert commander["monitor_reason"] == "quant_entry_block:cost_edge_fail"
+    observation = commander["monitor_observation"]
+    assert observation["entry_triggered"] is True
+    assert observation["cost_filter_fail_reasons"] == [
+        "estimated_gross_edge_below_cost_floor"
+    ]
+    assert observation["directional_edge_estimate"]["available"] is True
 
 
 def test_start_gate_accepts_intrinsic_ranking_control_but_labels_scope() -> None:

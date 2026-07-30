@@ -110,6 +110,9 @@ def test_q9_pipeline_writes_read_only_outputs(tmp_path: Path) -> None:
     assert Path(result["no_trade_attribution_report"]).exists()
     assert Path(result["q16_proxy_rejection_review"]).exists()
     assert (reports / "evaluation" / "trades" / "2026-06-19" / "TRD_1" / "trade_evaluation.json").exists()
+    assert result["quant_trade_diagnosis"]["written_count"] == 1
+    assert (trade / "reports" / "quant_trade_diagnosis.json").exists()
+    assert (trade / "reports" / "quant_trade_diagnosis.md").exists()
 
 
 def test_open_trade_exit_placeholder_is_not_realized(tmp_path: Path) -> None:

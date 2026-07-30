@@ -221,7 +221,30 @@ def test_build_trade_report_memory_surface_reads_saved_strategist_input_source_i
     assert surface["reconstructed_trade_context"]["status"]["memory_packets_rebuilt"] is False
 
 
-def test_build_trade_report_memory_surface_falls_back_to_runtime_packets() -> None:
+def test_build_trade_report_memory_surface_falls_back_to_runtime_packets(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "libs.reporting.trade_memory_surface.load_commander_memory_packets",
+        lambda *, state: {
+            "daily_strategy_memory": {"status": "ok", "active": True, "resolved_day": state["day"]},
+            "weekly_strategy_memory": {"status": "ok", "active": True, "sample_day_count": 3},
+            "monthly_strategy_memory": {"status": "ok", "active": True, "sample_day_count": 10},
+            "symbol_memory_packet": {
+                "status": "ok",
+                "active": True,
+                "symbol": "005380",
+                "trade_count": 0,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "libs.reporting.trade_memory_surface._build_symbol_memory_from_persisted",
+        lambda symbol, reports_root: {
+            "status": "ok",
+            "active": True,
+            "symbol": symbol,
+            "trade_count": 0,
+        },
+    )
     story_input = {
         "day": "2026-04-21",
         "symbol": "005380",

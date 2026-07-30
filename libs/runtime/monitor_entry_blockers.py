@@ -37,7 +37,10 @@ def evaluate_entry_guard(
     if forced_reason:
         guard_blocked = True
         guard_reason = forced_reason
-        buy_blocked_open_position = True
+        if forced_reason == "same_symbol_loss_reentry_blocked":
+            buy_blocked_same_symbol = True
+        else:
+            buy_blocked_open_position = True
     elif selected_already_held:
         guard_blocked = True
         guard_reason = "same_symbol_position_open"

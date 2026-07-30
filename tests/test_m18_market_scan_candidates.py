@@ -91,7 +91,8 @@ def test_m18_strategist_generates_monitor_entry_policy_baseline(monkeypatch):
     assert strategist_output["strategy_horizon_feedback"]["observability_only"] is True
     assert strategist_output["strategist_horizon_proposal"]["observability_only"] is True
     assert strategist_output["commander_horizon_policy"]["owner"] == "commander"
-    assert strategist_output["commander_horizon_policy"]["observability_only"] is True
+    assert strategist_output["commander_horizon_policy"]["observability_only"] is False
+    assert strategist_output["commander_horizon_policy"]["allow_behavior_change"] is True
     assert strategist_output["commander_horizon_policy"]["do_not_force_hold"] is True
     assert strategist_output["strategy_horizon"] in {"scalp", "intraday"}
     assert strategist_output["strategy_horizon_feedback"]["monitor_handoff"]["do_not_force_hold"] is True

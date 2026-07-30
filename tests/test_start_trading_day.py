@@ -77,3 +77,22 @@ def test_event_health_passes_when_scanner_events_exist(tmp_path: Path, monkeypat
 
     assert result["status"] == "PASS"
     assert result["counts"]["scanner_events"] == 1
+
+
+def test_event_health_counts_q9_monitor_decision_trace(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path
+    log = root / "data" / "logs" / "events.jsonl"
+    log.parent.mkdir(parents=True)
+    now = datetime.now(mod.KST).replace(microsecond=0)
+    row = {
+        "ts_kst": now.isoformat(),
+        "stage": "decision_trace",
+        "event_name": "decision_trace.entry_exit_decision",
+        "payload": {"agent": "monitor", "payload": {"entry_evaluated": True}},
+    }
+    log.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(mod, "ROOT", root)
+
+    result = mod._event_health(now.date().isoformat(), lookback_min=10)
+
+    assert result["counts"]["q9_scanner_selection"] == 1

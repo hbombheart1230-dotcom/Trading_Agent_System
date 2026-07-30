@@ -15,7 +15,11 @@ Q13/Q14 remain the evaluation baseline for checking whether Q15 improves the sys
 
 Current operating phase:
 
-- `Post-Q15 adjustment retest closed: RETAIN`
+- `Q16 closed: RETAIN`
+- `Q17 directional-edge contract: CONTRACT_REPAIRED`
+- `same_symbol_loss_reentry_control: APPLIED_2026_07_29`
+- Close review: `docs/q13_q14_validation/q8_q17_close_review_2026-07-29.md`
+- Reentry patch: `docs/q13_q14_validation/same_symbol_loss_reentry_control_2026-07-29.md`
 - The initial post-Q15 window closed on 2026-07-16 as `ADJUST_AND_RETEST`.
 - The fixed two-day retest closed on 2026-07-21 without extension.
 - Retain removal of the anticipated `volume_insufficient` pre-veto.
@@ -23,12 +27,20 @@ Current operating phase:
 - No broader runner-up or volume relaxation is authorized.
 - Q16 applies one cost-horizon fit patch after the Q15 close: triggered signals
   no longer use ATR/volatility proxy alone as directional cost-edge evidence.
+- Q17 supplies horizon-matched empirical expectancy when the historical
+  evidence contract is satisfied. It does not re-enable proxy evidence.
+- After a full same-day loss exit, only that symbol is blocked from reentry
+  for the remainder of the Korean trading day.
 
 Close decision:
 
 - `docs/q13_q14_validation/post_q15_close_decision_2026-07-16.md`
 - `docs/q13_q14_validation/post_q15_adjustment_retest_close_2026-07-21.md`
 - `docs/q13_q14_validation/q16_cost_horizon_fit_patch_2026-07-21.md`
+- `docs/q13_q14_validation/q16_day1_review_2026-07-23.md`
+- `docs/q13_q14_validation/q16_close_decision_2026-07-24.md`
+- `docs/q13_q14_validation/q17_directional_edge_contract_patch_2026-07-24.md`
+- `docs/q13_q14_validation/same_symbol_loss_reentry_control_2026-07-29.md`
 
 Artifact integrity fixes:
 
@@ -208,3 +220,72 @@ Post-patch validation must track:
 Prior Q15 candidate documentation:
 
 - `docs/q13_q14_validation/q15_scanner_score_component_candidate_2026-07-08.md`
+
+## Cumulative Q8-Q17 Review Contract
+
+The cumulative review is an additive evaluation layer. It does not change the
+frozen Q13/Q14 formulas or any trading behavior.
+
+Command:
+
+```powershell
+venv\Scripts\python.exe scripts\run_cumulative_improvement_review.py --start 2026-06-01 --end YYYY-MM-DD
+```
+
+Outputs:
+
+- `reports/evaluation/range/<start>_<end>/cumulative_improvement_review.json`
+- `reports/evaluation/range/<start>_<end>/cumulative_improvement_review.md`
+
+The review adds four observations:
+
+- Scanner candidate windows compressed into independent 15-minute episodes.
+- First entry versus repeated same-day/same-symbol entries.
+- Confirmed post-reclaim pullback shadow outcomes with live and mock costs kept separate.
+- Strategist B versus Scanner A paired outcomes.
+
+Scanner score components are preserved in new Q9 snapshots. Historical rows
+that did not store these components remain missing; they are not reconstructed
+or guessed.
+
+## Q14 Causal Interpretation
+
+The legacy Q14 label `Scanner Ranking Failure` is outcome-conditioned: it is
+assigned when Scanner Top-1 alignment is present and the realized return is
+negative. `Aligned / No Alignment Issue` is the positive counterpart.
+
+Therefore:
+
+- both labels remain unchanged for backward compatibility
+- both are marked `outcome_conditioned`
+- neither label alone can authorize a Scanner behavior patch
+- structural causes such as `Candidate Filtering`, `Strategist Override`,
+  `Symbol Mapping`, and evidence gaps are reported separately
+
+The cumulative report exposes both:
+
+- `largest_behavior_root_cause`: legacy frozen result
+- `largest_structural_root_cause`: outcome-independent structural diagnostic
+
+## Q17 Boundary
+
+While Q17 fixed validation is active:
+
+- cumulative reports may be regenerated
+- artifact, schema, and report defects may be fixed
+- raw score component coverage may improve for new observations
+- no candidate in the cumulative report is automatically promoted
+- entry, exit, Scanner, Strategist, Commander, and execution behavior remain frozen
+
+After Q17 closes, exactly one behavior candidate may be selected. All other
+candidates remain observational controls.
+
+## Evaluation Integrity Close
+
+The 2026-07-30 integrity cleanup, regenerated evidence counts, and permanent
+test/runtime path-isolation contract are recorded in:
+
+- `evaluation_integrity_close_2026-07-30.md`
+
+This close is observability-only. It does not reopen frozen Q13/Q14 formulas or
+authorize a trading behavior change.

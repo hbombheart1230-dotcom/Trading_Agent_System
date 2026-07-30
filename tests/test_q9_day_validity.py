@@ -305,3 +305,58 @@ def test_manual_post_close_validation_preserves_late_session_coverage(
     assert decision["late_session_runtime_evidence"] is True
     assert decision["post_close_account_snapshot_ok"] is True
     assert decision["post_close_trigger"] == "q9_compact_validation_20260701"
+
+
+def test_inventory_excludes_post_session_and_non_krx_test_windows(
+    tmp_path,
+) -> None:
+    reports = tmp_path / "reports"
+    daily = reports / "operator_summary" / "daily" / "2026-07-30"
+    daily.mkdir(parents=True)
+    (daily / "q9_decision_windows.json").write_text(
+        """
+        {
+          "schema_version": "q9_decision_windows.v1",
+          "windows": [
+            {
+              "decision_id": "Q9_20260730_live",
+              "generated_at": "2026-07-30T06:15:00+00:00",
+              "scanner_pre_strategist_universe": {
+                "intrinsic_ranked_top20": [{"symbol": "005930"}]
+              },
+              "scanner_control": {"top1_symbol": "005930"},
+              "strategist_selection": {"selected_symbol": "005930"},
+              "commander_final": {"decision": "approve"}
+            },
+            {
+              "decision_id": "Q9_20260730_after_close",
+              "generated_at": "2026-07-30T06:36:00+00:00",
+              "scanner_pre_strategist_universe": {
+                "intrinsic_ranked_top20": [{"symbol": "005930"}]
+              },
+              "scanner_control": {"top1_symbol": "005930"},
+              "strategist_selection": {"selected_symbol": "005930"}
+            },
+            {
+              "decision_id": "Q9_20260730_unmarked",
+              "generated_at": "2026-07-30T06:20:00+00:00",
+              "scanner_pre_strategist_universe": {
+                "intrinsic_ranked_top20": [{"symbol": "AAA"}]
+              },
+              "scanner_control": {"top1_symbol": "AAA"},
+              "strategist_selection": {"selected_symbol": "AAA"},
+              "commander_final": {"decision": "approve"}
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    inventory = build_artifact_inventory(reports, "2026-07-30")
+    decision = inventory["daily_artifacts"]["q9_decision_windows"]
+
+    assert decision["scanner_selection_window_count"] == 1
+    assert decision["complete_pabc_window_count"] == 1
+    assert decision["post_session_window_count"] == 1
+    assert decision["synthetic_window_count"] == 1

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, time as dt_time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 from libs.runtime.quant.entry_lane_observation import build_entry_lane_observation
 from libs.runtime.quant.market_regime_observation import latest_market_regime_observation
 from libs.runtime.quant.opening_largecap_surge_shadow import (
@@ -495,6 +496,9 @@ def _top_pick_row(
             "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
             "cost_drag_pct": entry_info.get("cost_drag_pct"),
             "entry_cost_filter": _as_dict(entry_info.get("entry_cost_filter")),
+            "directional_edge_estimate": _as_dict(
+                entry_info.get("directional_edge_estimate")
+            ),
             "quant_factor_snapshot": _as_dict(entry_info.get("quant_factor_snapshot")),
             "entry_quant_decision": _as_dict(entry_info.get("entry_quant_decision")),
         }
@@ -536,6 +540,9 @@ def _runner_row(trace: Mapping[str, Any], ranked_by_symbol: Mapping[str, Dict[st
             "runner_up_quality_blocked": _bool(trace.get("runner_up_quality_blocked")),
             "weak_fallback_blocked": _bool(trace.get("weak_fallback_blocked")),
             "entry_cost_filter": _as_dict(trace.get("entry_cost_filter")),
+            "directional_edge_estimate": _as_dict(
+                trace.get("directional_edge_estimate")
+            ),
         }
     )
     base["would_enter"] = (
@@ -726,6 +733,16 @@ def _q9_decision_candidate_rows(
             compact_feature_snapshot = _as_dict(candidate.get("compact_feature_snapshot"))
             if compact_feature_snapshot:
                 row["compact_feature_snapshot"] = compact_feature_snapshot
+            for evidence_key in (
+                "score_breakdown",
+                "scanner_chart_fit",
+                "scanner_macro_chart_fit",
+                "quant_factors",
+                "cost_filter",
+            ):
+                evidence = _as_dict(candidate.get(evidence_key))
+                if evidence:
+                    row[evidence_key] = evidence
             row.update(
                 {
                     "symbol": _symbol(candidate),
@@ -745,6 +762,26 @@ def _q9_decision_candidate_rows(
                     ),
                     "q9_commander_no_trade": bool(
                         role == "C_COMMANDER_FINAL" and commander.get("no_trade")
+                    ),
+                    "q9_monitor_intent": (
+                        _text(commander.get("monitor_intent"))
+                        if role == "C_COMMANDER_FINAL"
+                        else ""
+                    ),
+                    "q9_monitor_reason": (
+                        _text(
+                            commander.get("monitor_reason")
+                            or _as_dict(commander.get("monitor_observation")).get(
+                                "reason"
+                            )
+                        )
+                        if role == "C_COMMANDER_FINAL"
+                        else ""
+                    ),
+                    "q9_monitor_observation": (
+                        _as_dict(commander.get("monitor_observation"))
+                        if role == "C_COMMANDER_FINAL"
+                        else {}
                     ),
                     "shadow_role": "q9_decision_attribution",
                     "evaluated": False,
@@ -921,6 +958,11 @@ def save_quant_shadow_candidate_payload(
     if not candidates:
         return {"status": "skipped", "reason": "no_shadow_candidates", "candidate_count": 0}
 
+    root = isolate_canonical_path_for_pytest(
+        root,
+        canonical_path=SHADOW_CANDIDATE_ROOT,
+        isolated_name="quant_shadow_candidates",
+    )
     day = _text(payload_dict.get("day")) or _today_kst()
     generated_at = _utc_now()
     day_dir = root / day

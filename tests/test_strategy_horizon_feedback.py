@@ -86,7 +86,7 @@ def test_exit_vs_strategy_intent_does_not_treat_intraday_low_break_deep_as_hard_
     assert out["exit_alignment"] == "early_unproven"
 
 
-def test_build_commander_horizon_policy_caps_long_horizon_in_live_validation() -> None:
+def test_build_commander_horizon_policy_accepts_long_horizon_with_canonical_window() -> None:
     proposal = build_strategy_horizon_feedback(
         {"strategy_horizon": "1_2day_swing"},
         playbook="breakout",
@@ -100,12 +100,17 @@ def test_build_commander_horizon_policy_caps_long_horizon_in_live_validation() -
     )
 
     assert out["owner"] == "commander"
-    assert out["observability_only"] is True
+    assert out["observability_only"] is False
     assert out["do_not_force_hold"] is True
-    assert out["allow_behavior_change"] is False
+    assert out["allow_behavior_change"] is True
     assert out["allow_behavior_translation"] is True
-    assert out["strategy_horizon"] == "intraday"
+    assert out["strategy_horizon"] == "1_2day_swing"
     assert out["source_strategy_horizon"] == "1_2day_swing"
+    assert out["expected_hold_window"] == {
+        "min_sec": 3600,
+        "target_sec": 86400,
+        "max_sec": 172800,
+    }
     assert out["strategist_horizon_proposal"]["strategy_horizon"] == "1_2day_swing"
     assert out["behavior_translation"]["applied"] is True
     assert out["monitor_handoff"]["review_cadence_sec"] > 0
@@ -136,7 +141,7 @@ def test_exit_vs_strategy_intent_prefers_commander_horizon_policy() -> None:
     )
 
     assert out["horizon_owner"] == "commander"
-    assert out["strategy_horizon"] == "intraday"
+    assert out["strategy_horizon"] == "1_2day_swing"
     assert out["source_strategy_horizon"] == "1_2day_swing"
     assert out["commander_horizon_policy"]["owner"] == "commander"
     assert out["early_exit_flag"] is True

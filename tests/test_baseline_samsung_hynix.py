@@ -540,9 +540,14 @@ def test_data_provider_retries_empty_fresh_response(tmp_path: Path, monkeypatch)
         day="2026-06-24",
         symbols=("005930",),
         allow_fresh_fetch=True,
+        run_id_prefix="q9_comparison_forward_recovery",
     )
 
     assert len(calls) == 2
+    assert all(
+        run_id.startswith("q9_comparison_forward_recovery_2026-06-24_005930_")
+        for run_id in calls
+    )
     assert result["005930"][-1]["raw_ts"] == "20260624153000"
 
 

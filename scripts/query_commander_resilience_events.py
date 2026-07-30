@@ -75,7 +75,18 @@ def _summary(rows: List[Dict[str, Any]], *, total_matched: int) -> Dict[str, Any
         payload = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
         event_total[event] = int(event_total.get(event, 0)) + 1
 
-        if event == "transition" and str(payload.get("transition") or "") == "cooldown":
+        is_cooldown_transition = (
+            event == "transition"
+            and (
+                str(payload.get("transition") or "") == "cooldown"
+                or str(payload.get("reason") or "") == "cooldown_active"
+            )
+        )
+        is_cooldown_resilience = (
+            event == "resilience"
+            and str(payload.get("reason") or "") == "incident_threshold_cooldown"
+        )
+        if is_cooldown_transition or is_cooldown_resilience:
             cooldown_transitions += 1
         if event == "intervention":
             intervention_total += 1

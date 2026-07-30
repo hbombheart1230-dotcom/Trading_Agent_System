@@ -203,6 +203,9 @@ def _build_trading_health_status(reports_root: Path, day: str) -> Dict[str, Any]
     if not summary:
         level = "UNKNOWN"
         reasons.append("performance summary artifact is missing")
+    elif sample_count <= 0:
+        level = "UNKNOWN"
+        reasons.append("no realized return samples; trading performance is not evaluable")
     elif sample_count >= 3 and (win_rate < 0.25 or avg_return <= -0.008):
         level = "RED"
         reasons.append(

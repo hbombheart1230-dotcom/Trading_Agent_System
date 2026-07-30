@@ -336,7 +336,7 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             if event == "transition":
                 tr = str(payload.get("transition") or "unknown").strip().lower() or "unknown"
                 commander_transition_total[tr] += 1
-                if tr == "cooldown":
+                if tr == "cooldown" or str(payload.get("reason") or "") == "cooldown_active":
                     commander_cooldown_transition_total += 1
 
             if event == "intervention":

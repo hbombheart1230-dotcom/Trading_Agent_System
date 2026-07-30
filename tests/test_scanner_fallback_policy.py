@@ -101,9 +101,24 @@ def test_commander_injects_scanner_policy_defaults_into_applied_policy(monkeypat
 def test_scanner_node_uses_kiwoom_results_without_fallback_when_pool_present(monkeypatch) -> None:
     for key in _REMOVED_SCANNER_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "graphs.nodes.scanner_node._maybe_hydrate_scanner_skill_results",
+        lambda state, _candidates: state,
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.scanner_node.hydrate_scanner_feature_map",
+        lambda **_kwargs: ({}, "test_fixture", []),
+    )
 
+    scanner_policy = _scanner_policy(live_fetch=False)
     state = {
-        "applied_policy": _scanner_policy(),
+        "applied_policy": {
+            **scanner_policy,
+            "scanner": {
+                **scanner_policy["scanner"],
+                "market_representative_guard": {"enabled": False},
+            },
+        },
         "mock_top_value_symbols": ["005930", "000660"],
         "mock_top_volume_symbols": ["005930", "000660"],
         "mock_scan_results": {
@@ -115,7 +130,7 @@ def test_scanner_node_uses_kiwoom_results_without_fallback_when_pool_present(mon
     out = scanner_node(state)
     scanner_output = out.get("scanner_output") or {}
 
-    assert out.get("top_stock") == "000660"
+    assert out.get("top_stock") == "005930"
     assert scanner_output.get("candidate_source") == "kiwoom_market_data"
     assert scanner_output.get("fallback_reason") == ""
     assert scanner_output.get("scanner_candidate_source") == "kiwoom"

@@ -30,7 +30,15 @@ def test_run_m13_once_calls_in_order():
         return state
 
     dt = datetime(2026, 2, 11, 9, 1, tzinfo=KST)
-    out = run_m13_once({}, dt=dt, load_state_fn=load_fn, save_state_fn=save_fn, tick_fn=lambda s, dt=None: tick_fn(s, dt=dt), eod_fn=lambda s, dt=None: eod_fn(s, dt=dt))
+    out = run_m13_once(
+        {},
+        dt=dt,
+        load_state_fn=load_fn,
+        save_state_fn=save_fn,
+        tick_fn=lambda s, dt=None: tick_fn(s, dt=dt),
+        eod_fn=lambda s, dt=None: eod_fn(s, dt=dt),
+        market_status_fn=lambda state: state,
+    )
 
     assert calls == ["load", "tick", "eod", "save"]
     assert out["loaded"] and out["tick_ran"] and out["eod_checked"] and out["saved"]
@@ -87,6 +95,7 @@ def test_run_m13_once_clears_per_run_fields_before_tick():
         save_state_fn=save_fn,
         tick_fn=lambda s, dt=None: tick_fn(s, dt=dt),
         eod_fn=lambda s, dt=None: eod_fn(s, dt=dt),
+        market_status_fn=lambda state: state,
     )
     assert out["tick_ran"] is True
 
@@ -132,6 +141,7 @@ def test_run_m13_once_keeps_durable_state_while_clearing_cycle_scoped_artifacts(
         save_state_fn=lambda s: s,
         tick_fn=lambda s, dt=None: tick_fn(s, dt=dt),
         eod_fn=lambda s, dt=None: s,
+        market_status_fn=lambda state: state,
     )
 
     assert out["tick_ran"] is True

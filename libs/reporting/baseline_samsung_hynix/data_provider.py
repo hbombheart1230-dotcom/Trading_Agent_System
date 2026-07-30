@@ -61,6 +61,7 @@ def load_existing_candles(
     day: str,
     symbols: tuple[str, ...],
     allow_fresh_fetch: bool = True,
+    run_id_prefix: str = "baseline_samsung_hynix",
 ) -> dict[str, list[dict[str, Any]]]:
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -95,7 +96,10 @@ def load_existing_candles(
 
                 fresh, _meta = fetch_fresh_minute_rows_for_symbol(
                     symbol,
-                    run_id=f"baseline_samsung_hynix_{day}_{symbol}_{attempt + 1}",
+                    run_id=(
+                        f"{str(run_id_prefix or 'minute_ohlcv_recovery')}_"
+                        f"{day}_{symbol}_{attempt + 1}"
+                    ),
                 )
                 normalized = _normalize_rows(fresh, day=day)
                 existing = result.get(symbol) or []

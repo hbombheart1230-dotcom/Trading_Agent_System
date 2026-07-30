@@ -46,7 +46,10 @@ from libs.runtime.monitor_policy import (
 from libs.llm.model_catalog import resolve_execution_profile, resolve_model_profile
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.scanner_policy import normalize_scanner_source_type
-from libs.runtime.strategy_horizon_feedback import build_commander_horizon_policy
+from libs.runtime.strategy_horizon_feedback import (
+    build_commander_horizon_policy,
+    build_horizon_context,
+)
 from libs.runtime.canonical_artifacts import (
     write_commander_artifact,
     write_commander_shadow_artifact,
@@ -2100,16 +2103,7 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         live_validation_mode=True,
         source="commander_applied_policy",
     )
-    horizon_context = {
-        "owner": "commander",
-        "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
-        "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
-        "observability_only": True,
-        "allow_behavior_translation": bool(commander_horizon_policy.get("allow_behavior_translation")),
-        "do_not_force_hold": True,
-        "decision_reason": str(commander_horizon_policy.get("decision_reason") or ""),
-        "behavior_translation": dict(commander_horizon_policy.get("behavior_translation") or {}),
-    }
+    horizon_context = build_horizon_context(commander_horizon_policy)
     strategist_refresh_context = (
         dict(commander_context.get("strategist_refresh_context") or {})
         if isinstance(commander_context.get("strategist_refresh_context"), dict)
@@ -3117,16 +3111,7 @@ def _build_commander_decision(
         live_validation_mode=True,
         source="commander_decision",
     )
-    horizon_context = {
-        "owner": "commander",
-        "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
-        "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
-        "observability_only": True,
-        "allow_behavior_translation": bool(commander_horizon_policy.get("allow_behavior_translation")),
-        "do_not_force_hold": True,
-        "decision_reason": str(commander_horizon_policy.get("decision_reason") or ""),
-        "behavior_translation": dict(commander_horizon_policy.get("behavior_translation") or {}),
-    }
+    horizon_context = build_horizon_context(commander_horizon_policy)
     strategist_refresh_context = {
         **dict(strategist_refresh_context or {}),
         "commander_horizon_policy": dict(commander_horizon_policy),

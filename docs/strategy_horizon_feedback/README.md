@@ -58,9 +58,34 @@ This folder does not own:
 
 ## Operating Rule
 
-The first implementation should be observability-only.
+The original implementation was observability-only. That rollout state is
+historical and is no longer the active runtime contract.
 
-Strategist may propose a horizon, but Commander owns the operational horizon that Monitor and Reporter should consume. Monitor may continue to exit as it does today, but every exit should record whether it aligned with the Commander horizon policy and should retain the original strategist proposal for comparison. Actual hold-extension behavior should only be enabled after enough post-exit shadow data has been collected.
+As of `2026-07-24`, Strategist proposes the horizon and Commander publishes the
+authoritative operational policy. The position stores that policy when the BUY
+is filled, and Monitor must use the stored position policy until the position
+is closed. A later Strategist or Commander cycle must not silently replace the
+horizon of an open position.
+
+Canonical windows:
+
+| Horizon | Minimum | Target | Maximum |
+| --- | ---: | ---: | ---: |
+| `scalp` | 60 sec | 300 sec | 900 sec |
+| `intraday` | 300 sec | 1,800 sec | 14,400 sec |
+| `overnight_probe` | 1,800 sec | 14,400 sec | 86,400 sec |
+| `1_2day_swing` | 3,600 sec | 86,400 sec | 172,800 sec |
+
+Runtime semantics:
+
+- minimum hold is enforced for ordinary soft exits
+- hard stop, emergency, broker/data integrity, and other hard invalidations may exit before the minimum
+- target hold is a reassessment/profit-management point, not a forced hold
+- maximum hold is the strategy time limit
+- overnight carry additionally requires `overnight_probe` or `1_2day_swing`
+- weekend/holiday and independent carry-risk blocks remain authoritative
+- the exit-vs-strategy artifact remains observational even though the
+  Commander horizon policy now changes runtime behavior
 
 Exit loosening must not be used as the first fix for low trade quality. As of the `2026-04-29` conservatism review, recent closed trades show that fee/tax drag and breakeven distance can turn flat gross exits into meaningful net losses. Any wider stop, delayed peak-drawdown exit, or hold-extension rule should be gated behind a cost-aware entry filter and reported as `cost_adjusted_edge_ok=true`.
 
@@ -94,13 +119,17 @@ Stage 3/4 contract update:
 - Stage 4 is for closeout/overnight carry review only. It should run near the carry window only when a held position is a plausible carry candidate and qualitative overnight risk matters.
 - Weekend/holiday carry blocks remain hard Commander/Monitor policy. LLM may explain risk but cannot bypass them.
 
-As of `2026-04-28 12:38 KST`, the inspected live monitor artifact verified the observability-only path:
+Historical checkpoint: as of `2026-04-28 12:38 KST`, the inspected live monitor
+artifact verified the then-active observability-only path:
 
 - `horizon_owner=commander`
 - `strategy_horizon=intraday`
 - `observability_only=true`
 - current action remains `NOOP` / `WAIT`
-- no hold-extension behavior change is enabled
+- no hold-extension behavior change was enabled at that checkpoint
+
+That checkpoint must not be interpreted as the current policy. See
+`horizon_operational_contract_fix_2026-07-24.md`.
 
 Current limitation:
 

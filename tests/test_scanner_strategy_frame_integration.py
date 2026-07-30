@@ -503,21 +503,21 @@ def test_scanner_repeat_guard_penalizes_recently_selected_symbol():
     state = {
         "now_epoch": now_epoch,
         "candidates": [
-            {"symbol": "AAA", "sources": ["top_value"], "source_scores": {"top_value": 2.0}},
-            {"symbol": "BBB", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
+            {"symbol": "005930", "sources": ["top_value"], "source_scores": {"top_value": 2.0}},
+            {"symbol": "000660", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
         ],
         "mock_scan_results": {
-            "AAA": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
-            "BBB": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+            "005930": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+            "000660": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
         },
         "persisted_state": {
             "recent_scanner_selected": [
-                {"symbol": "AAA", "epoch": now_epoch - 60},
-                {"symbol": "AAA", "epoch": now_epoch - 120},
-                {"symbol": "AAA", "epoch": now_epoch - 180},
-                {"symbol": "AAA", "epoch": now_epoch - 240},
+                {"symbol": "005930", "epoch": now_epoch - 60},
+                {"symbol": "005930", "epoch": now_epoch - 120},
+                {"symbol": "005930", "epoch": now_epoch - 180},
+                {"symbol": "005930", "epoch": now_epoch - 240},
             ],
-            "last_trade_symbol": "AAA",
+            "last_trade_symbol": "005930",
             "last_trade_epoch": now_epoch - 300,
         },
         "policy": {
@@ -538,11 +538,11 @@ def test_scanner_repeat_guard_penalizes_recently_selected_symbol():
     }
 
     out = scanner_node(state)
-    assert (out.get("selected") or {}).get("symbol") == "BBB"
+    assert (out.get("selected") or {}).get("symbol") == "000660"
     rows = {str(r.get("symbol")): r for r in out.get("scan_results", []) if isinstance(r, dict)}
-    assert float((rows["AAA"].get("score_breakdown") or {}).get("repeat_symbol_penalty") or 0.0) < 0.0
-    assert bool(((rows["AAA"].get("components") or {}).get("recent_trade_same_symbol"))) is True
-    assert str(((out.get("persisted_state") or {}).get("recent_scanner_selected") or [])[-1].get("symbol")) == "BBB"
+    assert float((rows["005930"].get("score_breakdown") or {}).get("repeat_symbol_penalty") or 0.0) < 0.0
+    assert bool(((rows["005930"].get("components") or {}).get("recent_trade_same_symbol"))) is True
+    assert str(((out.get("persisted_state") or {}).get("recent_scanner_selected") or [])[-1].get("symbol")) == "000660"
 
 
 def test_scanner_repeat_guard_penalizes_recently_blocked_symbol_with_same_reason():
@@ -550,18 +550,18 @@ def test_scanner_repeat_guard_penalizes_recently_blocked_symbol_with_same_reason
     state = {
         "now_epoch": now_epoch,
         "candidates": [
-            {"symbol": "AAA", "sources": ["top_value"], "source_scores": {"top_value": 2.0}},
-            {"symbol": "BBB", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
+            {"symbol": "005930", "sources": ["top_value"], "source_scores": {"top_value": 2.0}},
+            {"symbol": "000660", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
         ],
         "mock_scan_results": {
-            "AAA": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
-            "BBB": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+            "005930": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+            "000660": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
         },
         "persisted_state": {
             "recent_monitor_blocks": [
-                {"symbol": "AAA", "reason": "too_extended_from_vwap", "epoch": now_epoch - 60},
-                {"symbol": "AAA", "reason": "too_extended_from_vwap", "epoch": now_epoch - 120},
-                {"symbol": "AAA", "reason": "too_extended_from_vwap", "epoch": now_epoch - 180},
+                {"symbol": "005930", "reason": "too_extended_from_vwap", "epoch": now_epoch - 60},
+                {"symbol": "005930", "reason": "too_extended_from_vwap", "epoch": now_epoch - 120},
+                {"symbol": "005930", "reason": "too_extended_from_vwap", "epoch": now_epoch - 180},
             ],
         },
         "policy": {
@@ -580,10 +580,10 @@ def test_scanner_repeat_guard_penalizes_recently_blocked_symbol_with_same_reason
     }
 
     out = scanner_node(state)
-    assert (out.get("selected") or {}).get("symbol") == "BBB"
+    assert (out.get("selected") or {}).get("symbol") == "000660"
     rows = {str(r.get("symbol")): r for r in out.get("scan_results", []) if isinstance(r, dict)}
-    assert float((rows["AAA"].get("score_breakdown") or {}).get("repeat_blocker_penalty") or 0.0) < 0.0
-    assert str((rows["AAA"].get("components") or {}).get("recent_blocker_reason") or "") == "too_extended_from_vwap"
+    assert float((rows["005930"].get("score_breakdown") or {}).get("repeat_blocker_penalty") or 0.0) < 0.0
+    assert str((rows["005930"].get("components") or {}).get("recent_blocker_reason") or "") == "too_extended_from_vwap"
 
 
 def test_scanner_symbol_prior_strongly_penalizes_same_day_repeat_loser():

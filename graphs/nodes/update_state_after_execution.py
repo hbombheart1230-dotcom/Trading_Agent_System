@@ -6,6 +6,7 @@ import time
 
 from libs.core.symbols import normalize_symbol
 from libs.reporting.reasoning_trace import build_reasoning_provenance, build_reasoning_trace_from_summaries
+from libs.runtime.same_symbol_loss_reentry import record_same_symbol_exit
 
 POST_EXIT_SHADOW_WATCH_WINDOW_SEC = 90 * 60
 
@@ -1313,6 +1314,7 @@ def update_state_after_execution(state: dict) -> dict:
             _remember_post_exit_shadow_watch(ps, ex, state, now_epoch=now_epoch)
             _remember_profit_take_progress(ps, ex, now_epoch=now_epoch)
             _remember_position_entry_risk_progress(ps, ex, now_epoch=now_epoch)
+            record_same_symbol_exit(ps, ex, now_epoch=now_epoch)
 
     # Keep local mock ledger in sync when execution is explicitly mock, or when
     # runtime uses real executor against Kiwoom mock host (KIWOOM_MODE=mock).

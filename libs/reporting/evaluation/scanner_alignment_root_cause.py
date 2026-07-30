@@ -18,6 +18,13 @@ ROOT_CAUSES = (
     "Aligned / No Alignment Issue",
 )
 
+OUTCOME_CONDITIONED_CAUSES = {
+    "Scanner Ranking Failure",
+    "Aligned / No Alignment Issue",
+}
+
+EVIDENCE_GAP_CAUSES = {"Missing Evidence"}
+
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
@@ -169,6 +176,14 @@ def _impact_score(returns: list[float]) -> float:
     return round(sum(value for value in returns if value < 0), 4)
 
 
+def _diagnostic_kind(cause: str) -> str:
+    if cause in OUTCOME_CONDITIONED_CAUSES:
+        return "outcome_conditioned"
+    if cause in EVIDENCE_GAP_CAUSES:
+        return "evidence_gap"
+    return "structural"
+
+
 def _largest_cause(
     cause_summary: Sequence[Mapping[str, Any]],
     *,
@@ -238,6 +253,8 @@ def build_scanner_alignment_root_cause_report(
                 "executed_symbol": row.get("executed_symbol"),
                 "net_return_pct": net_return,
                 "root_cause": classification["root_cause"],
+                "diagnostic_kind": _diagnostic_kind(classification["root_cause"]),
+                "causal_eligible": _diagnostic_kind(classification["root_cause"]) == "structural",
                 "confidence": classification["confidence"],
                 "selected_rank": classification["selected_rank"],
                 "score_gap": classification["score_gap"],
@@ -261,6 +278,8 @@ def build_scanner_alignment_root_cause_report(
         cause_summary.append(
             {
                 "root_cause": cause,
+                "diagnostic_kind": _diagnostic_kind(cause),
+                "causal_eligible": _diagnostic_kind(cause) == "structural",
                 "trade_count": len(cause_rows),
                 "return_observation_count": len(returns),
                 "win_rate": metrics["win_rate"],
@@ -276,6 +295,10 @@ def build_scanner_alignment_root_cause_report(
         cause_summary,
         excluded={"Missing Evidence", "Aligned / No Alignment Issue"},
     )
+    largest_structural = _largest_cause(
+        cause_summary,
+        excluded=OUTCOME_CONDITIONED_CAUSES | EVIDENCE_GAP_CAUSES,
+    )
     patch_candidate = _patch_candidate(str(largest_behavior.get("root_cause") or ""))
 
     return {
@@ -288,11 +311,15 @@ def build_scanner_alignment_root_cause_report(
         "largest_root_cause": largest,
         "largest_observed_root_cause": largest,
         "largest_behavior_root_cause": largest_behavior,
+        "largest_structural_root_cause": largest_structural,
+        "outcome_conditioned_causes": sorted(OUTCOME_CONDITIONED_CAUSES),
         "q15_behavior_patch_candidate": patch_candidate,
         "rows": rows,
         "interpretation_rule": (
             "Q14 explains why scanner_alignment_score is low. It does not authorize behavior changes. "
-            "Q15 may select one behavior patch after reviewing the largest evidence-backed root cause."
+            "Scanner Ranking Failure and Aligned / No Alignment Issue are outcome-conditioned labels, "
+            "not independent causal proof. Structural behavior candidates must use "
+            "largest_structural_root_cause plus Q9 forward evidence."
         ),
     }
 
@@ -305,18 +332,21 @@ def render_scanner_alignment_root_cause_report(payload: Mapping[str, Any]) -> st
         f"- Trades: {payload.get('trade_count', 0)}",
         f"- Largest observed root cause: `{_mapping(payload.get('largest_observed_root_cause') or payload.get('largest_root_cause')).get('root_cause') or '-'}`",
         f"- Largest behavior root cause: `{_mapping(payload.get('largest_behavior_root_cause')).get('root_cause') or '-'}`",
+        f"- Largest structural root cause: `{_mapping(payload.get('largest_structural_root_cause')).get('root_cause') or '-'}`",
+        "- Outcome-conditioned labels are descriptive and are not independent causal proof.",
         f"- Q15 candidate: {payload.get('q15_behavior_patch_candidate') or '-'}",
         "",
         "## Root Cause Summary",
         "",
-        "| Root Cause | Trades | Return Obs | Win Rate | Avg Return | Profit Factor | MDD | Negative Impact |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Root Cause | Kind | Causal | Trades | Return Obs | Win Rate | Avg Return | Profit Factor | MDD | Negative Impact |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in payload.get("cause_summary") or []:
         if not isinstance(row, Mapping):
             continue
         lines.append(
-            f"| {row.get('root_cause')} | {row.get('trade_count')} | "
+            f"| {row.get('root_cause')} | {row.get('diagnostic_kind') or '-'} | "
+            f"{bool(row.get('causal_eligible'))} | {row.get('trade_count')} | "
             f"{row.get('return_observation_count')} | {float(row.get('win_rate') or 0):.1%} | "
             f"{float(row.get('avg_return_pct') or 0):.4f}% | {row.get('profit_factor')} | "
             f"{float(row.get('max_drawdown_pct') or 0):.4f}% | "
@@ -408,6 +438,8 @@ def build_scanner_alignment_root_cause_range(
         cause_summary.append(
             {
                 "root_cause": cause,
+                "diagnostic_kind": _diagnostic_kind(cause),
+                "causal_eligible": _diagnostic_kind(cause) == "structural",
                 "trade_count": len(cause_rows),
                 "return_observation_count": len(returns),
                 "win_rate": metrics["win_rate"],
@@ -422,6 +454,10 @@ def build_scanner_alignment_root_cause_range(
         cause_summary,
         excluded={"Missing Evidence", "Aligned / No Alignment Issue"},
     )
+    largest_structural = _largest_cause(
+        cause_summary,
+        excluded=OUTCOME_CONDITIONED_CAUSES | EVIDENCE_GAP_CAUSES,
+    )
     return {
         "schema_version": "scanner_alignment_root_cause_range.v1",
         "evaluation_program_id": "Q14_SCANNER_ALIGNMENT_ROOT_CAUSE_RANGE",
@@ -434,6 +470,8 @@ def build_scanner_alignment_root_cause_range(
         "largest_root_cause": largest,
         "largest_observed_root_cause": largest,
         "largest_behavior_root_cause": largest_behavior,
+        "largest_structural_root_cause": largest_structural,
+        "outcome_conditioned_causes": sorted(OUTCOME_CONDITIONED_CAUSES),
         "q15_behavior_patch_candidate": _patch_candidate(str(largest_behavior.get("root_cause") or "")),
         "daily_rows": [
             {
@@ -445,8 +483,9 @@ def build_scanner_alignment_root_cause_range(
         ],
         "rows": all_rows,
         "interpretation_rule": (
-            "Range aggregate for Q14. Use this to choose one Q15 candidate after confirming "
-            "the largest root cause is evidence-backed."
+            "Range aggregate for Q14. Outcome-conditioned labels are descriptive only. "
+            "Use largest_structural_root_cause and independent Q9 forward evidence before "
+            "choosing a behavior candidate."
         ),
     }
 

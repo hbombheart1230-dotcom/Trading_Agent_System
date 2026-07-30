@@ -114,6 +114,7 @@ def build_full_chain_start_gate(
     models: list[dict[str, Any]],
     inventory: dict[str, Any],
     baseline_hash: str,
+    day_validity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     freeze_manifest = build_freeze_manifest()
     manifest_locked = bool(
@@ -123,25 +124,72 @@ def build_full_chain_start_gate(
     trade_rows = [_trade_gate(model) for model in models]
     daily_artifacts = inventory.get("daily_artifacts") if isinstance(inventory.get("daily_artifacts"), dict) else {}
     decision_inventory = daily_artifacts.get("q9_decision_windows") if isinstance(daily_artifacts.get("q9_decision_windows"), dict) else {}
+    validity = day_validity if isinstance(day_validity, dict) else {}
+    validity_checks = validity.get("checks") if isinstance(validity.get("checks"), dict) else {}
+    no_trade_day_qualified = bool(
+        not trade_rows
+        and str(validity.get("status") or "") == "VALID"
+        and validity.get("counts_as_formal_day") is True
+    )
+    complete_pabc_window_count = int(
+        decision_inventory.get("complete_pabc_window_count")
+        or decision_inventory.get("complete_abc_window_count")
+        or 0
+    )
+    pre_strategist_window_count = int(
+        decision_inventory.get("pre_strategist_universe_window_count") or 0
+    )
+    no_trade_full_session = bool(
+        validity_checks.get("full_session_coverage")
+        or decision_inventory.get("full_session_coverage")
+    )
+    no_trade_broker_integrity = bool(
+        decision_inventory.get("post_close_account_snapshot_coverage")
+        and decision_inventory.get("post_close_account_snapshot_ok")
+    )
     aggregate: dict[str, bool] = {
         "decision_window_inventory": bool(decision_inventory.get("exists")),
-        "raw_scanner_control_snapshot": bool(trade_rows) and all(
-            row["checks"]["raw_scanner_control_snapshot"] for row in trade_rows
+        "raw_scanner_control_snapshot": (
+            pre_strategist_window_count >= MIN_DECISION_WINDOWS
+            if no_trade_day_qualified
+            else bool(trade_rows) and all(
+                row["checks"]["raw_scanner_control_snapshot"] for row in trade_rows
+            )
         ),
-        "strategist_snapshot": bool(trade_rows) and all(
-            row["checks"]["strategist_snapshot"] for row in trade_rows
+        "strategist_snapshot": (
+            complete_pabc_window_count >= MIN_DECISION_WINDOWS
+            if no_trade_day_qualified
+            else bool(trade_rows) and all(
+                row["checks"]["strategist_snapshot"] for row in trade_rows
+            )
         ),
-        "commander_final_snapshot": bool(trade_rows) and all(
-            row["checks"]["commander_final_snapshot"] for row in trade_rows
+        "commander_final_snapshot": (
+            complete_pabc_window_count >= MIN_DECISION_WINDOWS
+            if no_trade_day_qualified
+            else bool(trade_rows) and all(
+                row["checks"]["commander_final_snapshot"] for row in trade_rows
+            )
         ),
-        "monitor_entry_timeline": bool(trade_rows) and all(
-            row["checks"]["monitor_entry_timeline"] for row in trade_rows
+        "monitor_entry_timeline": (
+            complete_pabc_window_count >= MIN_DECISION_WINDOWS and no_trade_full_session
+            if no_trade_day_qualified
+            else bool(trade_rows) and all(
+                row["checks"]["monitor_entry_timeline"] for row in trade_rows
+            )
         ),
-        "monitor_exit_timeline": bool(trade_rows) and all(
-            row["checks"]["monitor_exit_timeline"] for row in trade_rows
+        "monitor_exit_timeline": (
+            True
+            if no_trade_day_qualified
+            else bool(trade_rows) and all(
+                row["checks"]["monitor_exit_timeline"] for row in trade_rows
+            )
         ),
-        "broker_integrity": bool(trade_rows) and all(
-            row["checks"]["broker_integrity"] for row in trade_rows
+        "broker_integrity": (
+            no_trade_broker_integrity
+            if no_trade_day_qualified
+            else bool(trade_rows) and all(
+                row["checks"]["broker_integrity"] for row in trade_rows
+            )
         ),
         "baseline_freeze": bool(baseline_hash) and manifest_locked,
     }
@@ -227,7 +275,7 @@ def build_full_chain_start_gate(
     return {
         "schema_version": "q9_full_chain_start_gate.v1",
         "status": "READY" if ready else "NOT_READY",
-        "forward_window_started": False,
+        "forward_window_started": bool(ready),
         "required_coverage": 0.95,
         "coverage": round(coverage, 4),
         "checks": aggregate,
@@ -243,6 +291,23 @@ def build_full_chain_start_gate(
         },
         "trade_count": len(trade_rows),
         "trade_checks": trade_rows,
+        "no_trade_day_qualified": bool(no_trade_day_qualified),
+        "not_applicable_checks": (
+            ["monitor_exit_timeline"]
+            if no_trade_day_qualified
+            else []
+        ),
+        "no_trade_evidence": (
+            {
+                "complete_pabc_window_count": complete_pabc_window_count,
+                "pre_strategist_universe_window_count": pre_strategist_window_count,
+                "full_session_coverage": no_trade_full_session,
+                "post_close_account_snapshot_ok": no_trade_broker_integrity,
+                "q9_day_validity_status": str(validity.get("status") or ""),
+            }
+            if not trade_rows
+            else {}
+        ),
         "baseline_freeze_evidence": {
             "window_id": freeze_manifest.get("window_id"),
             "manifest_status": freeze_manifest.get("status"),

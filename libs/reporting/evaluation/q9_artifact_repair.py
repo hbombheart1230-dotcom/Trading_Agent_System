@@ -42,7 +42,7 @@ def _normalized_generated_at(value: Any) -> tuple[str, int | None]:
 
 
 def _compact_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    out = {
         "symbol": str(row.get("symbol") or ""),
         "rank": row.get("rank"),
         "score_total": row.get("score_total"),
@@ -50,6 +50,99 @@ def _compact_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
         "sources": list(row.get("q9_candidate_sources") or []),
         "source_scores": dict(row.get("q9_candidate_source_scores") or {}),
     }
+    feature_snapshot = row.get("compact_feature_snapshot")
+    if isinstance(feature_snapshot, Mapping) and feature_snapshot:
+        out["compact_feature_snapshot"] = {
+            key: feature_snapshot.get(key)
+            for key in (
+                "skill_quote_price",
+                "engine_close_last",
+                "quote_best_bid",
+                "quote_best_ask",
+                "intraday_change_pct",
+            )
+            if feature_snapshot.get(key) not in (None, "")
+        }
+    return out
+
+
+def _canonical_scanner_candidates(
+    *,
+    reports_root: Path,
+    day: str,
+    run_id: str,
+) -> dict[str, dict[str, Any]]:
+    if not run_id:
+        return {}
+    payload = _read_json(
+        Path(reports_root) / "canonical" / day / run_id / "scanner.json"
+    )
+    rows = payload.get("ranking_table") or payload.get("ranked_candidates") or []
+    candidates = {
+        str(row.get("symbol") or ""): _compact_candidate(row)
+        for row in rows
+        if isinstance(row, Mapping) and str(row.get("symbol") or "")
+    }
+    selected = payload.get("selected_candidate")
+    if isinstance(selected, Mapping):
+        symbol = str(selected.get("symbol") or "")
+        feature_snapshot = selected.get("feature_snapshot")
+        if symbol and isinstance(feature_snapshot, Mapping):
+            candidate = candidates.setdefault(symbol, {"symbol": symbol})
+            compact = {
+                key: feature_snapshot.get(key)
+                for key in (
+                    "skill_quote_price",
+                    "engine_close_last",
+                    "quote_best_bid",
+                    "quote_best_ask",
+                    "intraday_change_pct",
+                )
+                if feature_snapshot.get(key) not in (None, "")
+            }
+            if compact:
+                candidate["compact_feature_snapshot"] = compact
+    return candidates
+
+
+def _enrich_candidates_from_canonical(
+    *,
+    reports_root: Path,
+    day: str,
+    window: dict[str, Any],
+) -> bool:
+    canonical = _canonical_scanner_candidates(
+        reports_root=reports_root,
+        day=day,
+        run_id=str(window.get("run_id") or ""),
+    )
+    if not canonical:
+        return False
+    changed = False
+    for section_name, row_key in (
+        ("scanner_control", "top20"),
+        ("scanner_pre_strategist_universe", "intrinsic_ranked_top20"),
+        ("strategist_selection", "post_strategist_top10"),
+    ):
+        section = window.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        rows = section.get(row_key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            source = canonical.get(str(row.get("symbol") or ""))
+            feature_snapshot = source.get("compact_feature_snapshot") if source else None
+            if (
+                isinstance(feature_snapshot, Mapping)
+                and feature_snapshot
+                and not row.get("compact_feature_snapshot")
+            ):
+                row["compact_feature_snapshot"] = dict(feature_snapshot)
+                changed = True
+    return changed
 
 
 def _ranked_role_rows(payload: Mapping[str, Any], role: str, *, limit: int) -> list[dict[str, Any]]:
@@ -67,6 +160,58 @@ def _ranked_role_rows(payload: Mapping[str, Any], role: str, *, limit: int) -> l
     return rows[:limit]
 
 
+def _monitor_observation_from_shadow(
+    payload: Mapping[str, Any],
+    commander: Mapping[str, Any],
+) -> dict[str, Any]:
+    explicit = commander.get("q9_monitor_observation")
+    if isinstance(explicit, Mapping) and explicit:
+        return dict(explicit)
+    top_pick = next(
+        (
+            row
+            for row in payload.get("candidates") or []
+            if isinstance(row, Mapping)
+            and str(row.get("shadow_role") or "") == "top_pick"
+        ),
+        {},
+    )
+    if not isinstance(top_pick, Mapping) or not top_pick:
+        return {}
+    cost_filter = (
+        dict(top_pick.get("entry_cost_filter"))
+        if isinstance(top_pick.get("entry_cost_filter"), Mapping)
+        else {}
+    )
+    estimate = (
+        dict(top_pick.get("directional_edge_estimate"))
+        if isinstance(top_pick.get("directional_edge_estimate"), Mapping)
+        else {}
+    )
+    return {
+        "intent": "BUY" if bool(top_pick.get("intent_submitted")) else "NOOP",
+        "reason": str(
+            top_pick.get("guard_reason") or top_pick.get("reason") or ""
+        ),
+        "entry_triggered": bool(top_pick.get("triggered")),
+        "entry_guard_blocked": bool(top_pick.get("guard_blocked")),
+        "entry_guard_reason": str(top_pick.get("guard_reason") or ""),
+        "entry_primary_failure_axis": str(
+            top_pick.get("primary_failure_axis") or ""
+        ),
+        "entry_lane": str(top_pick.get("entry_lane") or ""),
+        "cost_floor_state": str(
+            top_pick.get("entry_quant_cost_floor_state") or ""
+        ),
+        "cost_filter_passed": bool(cost_filter.get("passed")),
+        "cost_filter_fail_reasons": [
+            str(value) for value in list(cost_filter.get("fail_reasons") or [])[:12]
+        ],
+        "directional_edge_estimate": estimate,
+        "recovery_source": "quant_shadow_candidates.top_pick",
+    }
+
+
 def _window_from_shadow(payload: Mapping[str, Any]) -> dict[str, Any]:
     decision_id = str(payload.get("q9_decision_id") or "").strip()
     if not decision_id:
@@ -82,6 +227,7 @@ def _window_from_shadow(payload: Mapping[str, Any]) -> dict[str, Any]:
         and str(row.get("q9_decision_role") or "") == "C_COMMANDER_FINAL"
     ]
     commander = commander_rows[0] if commander_rows else {}
+    monitor_observation = _monitor_observation_from_shadow(payload, commander)
     decision = str(commander.get("q9_commander_decision") or "noop").lower()
     candidate_symbol = str(commander.get("symbol") or "")
     window: dict[str, Any] = {
@@ -130,6 +276,17 @@ def _window_from_shadow(payload: Mapping[str, Any]) -> dict[str, Any]:
             "veto": decision == "reject",
             "no_trade": bool(commander.get("q9_commander_no_trade")) or decision != "approve",
             "reason": str(commander.get("reason") or ""),
+            "monitor_intent": str(
+                commander.get("q9_monitor_intent")
+                or monitor_observation.get("intent")
+                or "NOOP"
+            ),
+            "monitor_reason": str(
+                commander.get("q9_monitor_reason")
+                or monitor_observation.get("reason")
+                or ""
+            ),
+            "monitor_observation": monitor_observation,
             "authority_scope": "final_approval_or_veto",
             "evidence_class": "TRUSTED_SHADOW",
             "source": "recovered_q9_shadow_role",
@@ -174,6 +331,19 @@ def _merge_shadow_windows(
             if key not in existing and key in recovered:
                 existing[key] = recovered[key]
                 changed = True
+        existing_commander = existing.get("commander_final")
+        recovered_commander = recovered.get("commander_final")
+        if isinstance(existing_commander, dict) and isinstance(
+            recovered_commander, Mapping
+        ):
+            for key in (
+                "monitor_intent",
+                "monitor_reason",
+                "monitor_observation",
+            ):
+                if not existing_commander.get(key) and recovered_commander.get(key):
+                    existing_commander[key] = recovered_commander[key]
+                    changed = True
         if changed:
             existing.setdefault("recovery", recovered.get("recovery"))
             existing["window_type"] = (
@@ -212,6 +382,7 @@ def repair_q9_day_artifacts(*, reports_root: Path, day: str) -> dict[str, Any]:
         windows=windows,
     )
     normalized_windows = 0
+    canonical_enriched_windows = 0
     windows_by_id: dict[str, dict[str, Any]] = {}
     for row in windows:
         before = json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
@@ -225,6 +396,12 @@ def repair_q9_day_artifacts(*, reports_root: Path, day: str) -> dict[str, Any]:
             row["generated_at"] = generated_at
         if row.get("decision_epoch") is None and epoch is not None:
             row["decision_epoch"] = epoch
+        if _enrich_candidates_from_canonical(
+            reports_root=Path(reports_root),
+            day=normalized_day,
+            window=row,
+        ):
+            canonical_enriched_windows += 1
         if json.dumps(row, ensure_ascii=False, sort_keys=True, default=str) != before:
             normalized_windows += 1
         decision_id = str(row.get("decision_id") or "")
@@ -240,6 +417,7 @@ def repair_q9_day_artifacts(*, reports_root: Path, day: str) -> dict[str, Any]:
             "source": "quant_shadow_candidates",
             "recovered_window_count": recovered_windows,
             "enriched_window_count": enriched_windows,
+            "canonical_enriched_window_count": canonical_enriched_windows,
             "repaired_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         _write_json_atomic(decision_path, decision_payload)
@@ -282,6 +460,7 @@ def repair_q9_day_artifacts(*, reports_root: Path, day: str) -> dict[str, Any]:
         "window_count": len(windows),
         "recovered_window_count": recovered_windows,
         "enriched_window_count": enriched_windows,
+        "canonical_enriched_window_count": canonical_enriched_windows,
         "normalized_window_count": normalized_windows,
         "shadow_payload_repaired_count": repaired_payloads,
         "shadow_payload_complete_count": complete_payloads,

@@ -56,7 +56,11 @@ from libs.runtime.canonical_artifacts import (
 )
 from libs.runtime.regime import classify_regime_v2
 from libs.runtime.strategist_explanation import build_strategist_explanation_fields
-from libs.runtime.strategy_horizon_feedback import build_commander_horizon_policy, build_strategy_horizon_feedback
+from libs.runtime.strategy_horizon_feedback import (
+    build_commander_horizon_policy,
+    build_horizon_context,
+    build_strategy_horizon_feedback,
+)
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
 from libs.strategies.contracts import StrategistOutput, coerce_strategist_output
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
@@ -6291,16 +6295,7 @@ def _build_commander_context_summary(
             live_validation_mode=True,
             source="strategist_commander_context",
         )
-    horizon_context = {
-        "owner": "commander",
-        "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
-        "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
-        "observability_only": True,
-        "allow_behavior_translation": bool(commander_horizon_policy.get("allow_behavior_translation")),
-        "do_not_force_hold": True,
-        "decision_reason": str(commander_horizon_policy.get("decision_reason") or ""),
-        "behavior_translation": dict(commander_horizon_policy.get("behavior_translation") or {}),
-    }
+    horizon_context = build_horizon_context(commander_horizon_policy)
     strategist_refresh_context = {
         **dict(strategist_refresh_context or {}),
         "commander_horizon_policy": dict(commander_horizon_policy),
@@ -7993,14 +7988,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         live_validation_mode=True,
         source="strategist_node_commander_context",
     )
-    horizon_context = {
-        "owner": "commander",
-        "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
-        "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
-        "observability_only": True,
-        "do_not_force_hold": True,
-        "decision_reason": str(commander_horizon_policy.get("decision_reason") or ""),
-    }
+    horizon_context = build_horizon_context(commander_horizon_policy)
     commander_context = dict(commander_context)
     strategist_refresh_context = (
         dict(commander_context.get("strategist_refresh_context") or {})

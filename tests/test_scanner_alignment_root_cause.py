@@ -73,6 +73,33 @@ def test_scanner_alignment_root_cause_classifies_scanner_ranking_failure() -> No
     summary = {row["root_cause"]: row for row in result["cause_summary"]}
     assert summary["Scanner Ranking Failure"]["trade_count"] == 1
     assert summary["Scanner Ranking Failure"]["avg_return_pct"] == -0.3
+    assert summary["Scanner Ranking Failure"]["diagnostic_kind"] == "outcome_conditioned"
+    assert summary["Scanner Ranking Failure"]["causal_eligible"] is False
+    assert result["rows"][0]["diagnostic_kind"] == "outcome_conditioned"
+    assert result["largest_structural_root_cause"] == {}
+
+
+def test_scanner_alignment_root_cause_identifies_structural_cause_separately() -> None:
+    result = build_scanner_alignment_root_cause_report(
+        day="2026-07-06",
+        models=[
+            _model("T1", selected="A", rank=1, top="A", ret=-0.3),
+            _model("T2", selected="B", rank=2, top="A", ret=-0.2),
+        ],
+        evaluations=[
+            _evaluation("T1", -0.3),
+            _evaluation("T2", -0.2),
+        ],
+        selection_authority={
+            "rows": [
+                _row("T1", raw="A", post="A", selected="A", executed="A"),
+                _row("T2", raw="A", post="A", selected="B", executed="B"),
+            ]
+        },
+    )
+
+    assert result["largest_behavior_root_cause"]["root_cause"] == "Scanner Ranking Failure"
+    assert result["largest_structural_root_cause"]["root_cause"] == "Candidate Filtering"
 
 
 def test_scanner_alignment_excludes_trade_absent_from_authority_audit() -> None:

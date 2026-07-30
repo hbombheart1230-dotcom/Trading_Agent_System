@@ -202,6 +202,9 @@ def build_monitor_exit_payload(
         "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
         "strategy_horizon": str(frame_applied.get("strategy_horizon") or ""),
         "source_strategy_horizon": str(frame_applied.get("source_strategy_horizon") or ""),
+        "commander_horizon_policy": dict(
+            frame_applied.get("commander_horizon_policy") or {}
+        ),
         "horizon_behavior_translation": dict(frame_applied.get("horizon_behavior_translation") or {}),
         "position_strategy_context_applied": bool(frame_applied.get("position_strategy_context_applied")),
         "position_strategy_context_symbol": str(frame_applied.get("position_strategy_context_symbol") or ""),

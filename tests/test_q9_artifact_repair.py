@@ -115,3 +115,113 @@ def test_repair_reconstructs_missing_decision_window_from_shadow(tmp_path) -> No
     assert window["scanner_control"]["top1_symbol"] == "005930"
     assert window["strategist_selection"]["selected_symbol"] == "005930"
     assert window["commander_final"]["decision"] == "approve"
+
+
+def test_repair_enriches_candidate_price_from_canonical_scanner(tmp_path) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-07-24"
+    _write(
+        reports / "operator_summary" / "daily" / day / "q9_decision_windows.json",
+        {
+            "windows": [{
+                "decision_id": "D1",
+                "run_id": "run-1",
+                "generated_at": "2026-07-24T00:05:00+00:00",
+                "scanner_control": {
+                    "top20": [{"symbol": "005930", "rank": 1}],
+                },
+            }]
+        },
+    )
+    _write(
+        reports / "canonical" / day / "run-1" / "scanner.json",
+        {
+            "ranking_table": [{"symbol": "005930", "rank": 1}],
+            "selected_candidate": {
+                "symbol": "005930",
+                "feature_snapshot": {
+                    "skill_quote_price": 70100,
+                    "engine_close_last": 70000,
+                },
+            },
+        },
+    )
+
+    result = repair_q9_day_artifacts(reports_root=reports, day=day)
+    payload = json.loads(
+        (
+            reports
+            / "operator_summary"
+            / "daily"
+            / day
+            / "q9_decision_windows.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert result["canonical_enriched_window_count"] == 1
+    candidate = payload["windows"][0]["scanner_control"]["top20"][0]
+    assert candidate["compact_feature_snapshot"]["skill_quote_price"] == 70100
+
+
+def test_repair_backfills_monitor_noop_reason_from_shadow_top_pick(tmp_path) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-07-28"
+    _write(
+        reports / "operator_summary" / "daily" / day / "q9_decision_windows.json",
+        {
+            "windows": [{
+                "decision_id": "D1",
+                "generated_at": "2026-07-28T00:05:00+00:00",
+                "commander_final": {
+                    "decision": "approve",
+                    "candidate_symbol": "005930",
+                    "monitor_intent": "NOOP",
+                },
+            }]
+        },
+    )
+    shadow = (
+        tmp_path
+        / "data"
+        / "logs"
+        / "quant_shadow_candidates"
+        / day
+        / "sample.json"
+    )
+    _write(
+        shadow,
+        {
+            "q9_decision_id": "D1",
+            "generated_at": "2026-07-28T00:05:00+00:00",
+            "q9_decision_candidates": [{
+                "symbol": "005930",
+                "q9_decision_role": "C_COMMANDER_FINAL",
+                "q9_commander_decision": "approve",
+            }],
+            "candidates": [{
+                "symbol": "005930",
+                "shadow_role": "top_pick",
+                "triggered": True,
+                "guard_blocked": True,
+                "guard_reason": "quant_entry_block:cost_edge_fail",
+                "entry_quant_cost_floor_state": "not_met",
+            }],
+        },
+    )
+
+    repair_q9_day_artifacts(reports_root=reports, day=day)
+
+    payload = json.loads(
+        (
+            reports
+            / "operator_summary"
+            / "daily"
+            / day
+            / "q9_decision_windows.json"
+        ).read_text(encoding="utf-8")
+    )
+    commander = payload["windows"][0]["commander_final"]
+    assert commander["monitor_reason"] == "quant_entry_block:cost_edge_fail"
+    assert commander["monitor_observation"]["recovery_source"] == (
+        "quant_shadow_candidates.top_pick"
+    )

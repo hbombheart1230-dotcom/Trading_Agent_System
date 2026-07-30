@@ -50,7 +50,15 @@ def test_m13_e2e_once(tmp_path: Path, monkeypatch):
         return state
 
     dt = datetime(2026, 2, 11, 15, 36, tzinfo=KST)
-    out = run_m13_once({}, dt=dt, load_state_fn=load_fn, save_state_fn=save_fn, tick_fn=lambda s, dt=None: tick_fn(s, dt=dt), eod_fn=lambda s, dt=None: eod_fn(s, dt=dt))
+    out = run_m13_once(
+        {},
+        dt=dt,
+        load_state_fn=load_fn,
+        save_state_fn=save_fn,
+        tick_fn=lambda s, dt=None: tick_fn(s, dt=dt),
+        eod_fn=lambda s, dt=None: eod_fn(s, dt=dt),
+        market_status_fn=lambda state: state,
+    )
 
     assert calls == ["load", "tick", "eod", "save"]
     assert out["loaded"] is True

@@ -77,12 +77,13 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
     q8_path = reports_root / "operator_summary" / "daily" / day / "q8_shadow_blocker_review.json"
     q8_review = read_json(q8_path)
     baseline_hash = _baseline_hash()
+    day_validity = build_q9_day_validity(day=day, inventory=inventory)
     start_gate = build_full_chain_start_gate(
         models=models,
         inventory=inventory,
         baseline_hash=baseline_hash,
+        day_validity=day_validity,
     )
-    day_validity = build_q9_day_validity(day=day, inventory=inventory)
     scorecard = build_daily_scorecard(
         day=day,
         inventory=inventory,
@@ -189,6 +190,19 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         daily_out / "q16_proxy_rejection_review.md",
         render_q16_proxy_rejection_review(q16_proxy_rejection),
     )
+    from libs.reporting.quant_trade_diagnosis.writer import (
+        write_quant_trade_diagnoses_for_day,
+    )
+
+    quant_trade_diagnosis = write_quant_trade_diagnoses_for_day(
+        reports_root=reports_root,
+        day=day,
+        models=models,
+        evaluations=evaluations,
+        attributions=attributions,
+        root_cause_report=scanner_alignment_root_cause,
+        entry_timing_report=entry_timing,
+    )
 
     daily_scorecards: list[dict[str, Any]] = []
     for path in sorted((evaluation_root / "daily").glob("*/daily_scorecard.json")):
@@ -244,6 +258,7 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         "no_trade_attribution_report": str(daily_out / "no_trade_attribution_report.json"),
         "cost_basis_comparison": str(daily_out / "cost_basis_comparison.json"),
         "q16_proxy_rejection_review": str(daily_out / "q16_proxy_rejection_review.json"),
+        "quant_trade_diagnosis": quant_trade_diagnosis,
         "full_chain_start_gate": str(daily_out / "full_chain_start_gate.json"),
         "q9_day_validity": str(daily_out / "q9_day_validity.json"),
         "rolling_scorecards": rolling_outputs,

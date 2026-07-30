@@ -87,6 +87,46 @@ def test_start_gate_reports_specific_q9_not_ready_reasons() -> None:
     ]
 
 
+def test_start_gate_accepts_valid_no_trade_day_from_daily_q9_evidence() -> None:
+    gate = build_full_chain_start_gate(
+        models=[],
+        inventory={
+            "daily_artifacts": {
+                "q9_decision_windows": {
+                    "exists": True,
+                    "schema_version": "q9_decision_windows.v1",
+                    "expected_schema_version": "q9_decision_windows.v1",
+                    "schema_match": True,
+                    "complete_abc_window_count": 457,
+                    "complete_pabc_window_count": 457,
+                    "pre_strategist_universe_window_count": 453,
+                    "pre_strategist_forward_candidate_count": 1887,
+                    "forward_observed_candidate_count": 1611,
+                    "forward_pending_candidate_count": 268,
+                    "missing_selected_candidate_count": 0,
+                    "full_session_coverage": True,
+                    "post_close_account_snapshot_coverage": True,
+                    "post_close_account_snapshot_ok": True,
+                }
+            }
+        },
+        baseline_hash="abc123",
+        day_validity={
+            "status": "VALID",
+            "counts_as_formal_day": True,
+            "checks": {"full_session_coverage": True},
+        },
+    )
+
+    assert gate["status"] == "READY"
+    assert gate["forward_window_started"] is True
+    assert gate["no_trade_day_qualified"] is True
+    assert gate["missing"] == []
+    assert gate["not_ready_reasons"] == []
+    assert gate["not_applicable_checks"] == ["monitor_exit_timeline"]
+    assert all(gate["checks"].values())
+
+
 def test_scanner_payload_labels_pre_adjust_ranking_as_reconstructed() -> None:
     payload = build_candidate_ranking_table_payload([
         {

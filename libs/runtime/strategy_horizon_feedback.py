@@ -30,8 +30,6 @@ _DEFAULT_EXIT_GUIDANCE = {
     ],
 }
 
-_LONG_HORIZONS = {"overnight_probe", "1_2day_swing"}
-
 _HORIZON_ALIASES = {
     "scalp_intraday": "scalp",
     "scalping": "scalp",
@@ -385,9 +383,9 @@ def build_commander_horizon_policy(
 ) -> dict[str, Any]:
     """Build the Commander-owned operational horizon policy.
 
-    Strategist proposes a horizon; Commander decides the operational horizon
-    Monitor/Reporter should use. This is still observability-only and must not
-    force hold behavior or change thresholds.
+    Strategist proposes a horizon; Commander publishes the canonical operating
+    window consumed by Monitor and evaluation. Hard exits and the independent
+    overnight carry review remain authoritative over this policy.
     """
 
     context = _as_dict(commander_context)
@@ -405,17 +403,6 @@ def build_commander_horizon_policy(
     source_horizon = str(proposal.get("strategy_horizon") or "intraday")
     operational_horizon = source_horizon if source_horizon in _ALLOWED_HORIZONS else "intraday"
     memory_adjustments: list[dict[str, Any]] = []
-    if bool(live_validation_mode) and operational_horizon in _LONG_HORIZONS:
-        operational_horizon = "intraday"
-        memory_adjustments.append(
-            {
-                "type": "live_validation_cap",
-                "from_horizon": source_horizon,
-                "to_horizon": operational_horizon,
-                "reason": "long_horizon_requires_more_post_exit_shadow_samples_before_behavior_change",
-                "behavior_change": False,
-            }
-        )
     commander_memory_policy = _as_dict(context.get("commander_memory_policy"))
     active_layers = _as_list(commander_memory_policy.get("active_layers"), limit=8)
     if not active_layers:
@@ -446,9 +433,10 @@ def build_commander_horizon_policy(
                 "behavior_change": False,
             }
         )
-    expected_hold_window = dict(proposal.get("expected_hold_window") or {})
-    if operational_horizon != source_horizon or not expected_hold_window:
-        expected_hold_window = dict(_DEFAULT_WINDOWS.get(operational_horizon, _DEFAULT_WINDOWS["intraday"]))
+    source_expected_hold_window = dict(proposal.get("expected_hold_window") or {})
+    expected_hold_window = dict(
+        _DEFAULT_WINDOWS.get(operational_horizon, _DEFAULT_WINDOWS["intraday"])
+    )
     behavior_translation = _build_horizon_behavior_translation(
         operational_horizon,
         source_horizon=source_horizon,
@@ -456,18 +444,18 @@ def build_commander_horizon_policy(
         applied=True,
         live_validation_mode=live_validation_mode,
     )
-    decision_reason = "commander_accepts_strategist_horizon_proposal_observability_only"
-    if operational_horizon != source_horizon:
-        decision_reason = "commander_caps_long_horizon_during_live_validation_observability_only"
-    elif not strategist_horizon_feedback:
+    decision_reason = "commander_accepts_strategist_horizon_as_operational_policy"
+    if not strategist_horizon_feedback:
         decision_reason = "commander_default_intraday_horizon_without_strategist_proposal"
     return {
         "schema_version": "commander_horizon_policy.v1",
         "owner": "commander",
-        "observability_only": True,
-        "allow_behavior_change": False,
+        "observability_only": False,
+        "allow_behavior_change": True,
         "allow_behavior_translation": True,
         "do_not_force_hold": True,
+        "min_hold_enforced": True,
+        "target_hold_forced": False,
         "live_validation_mode": bool(live_validation_mode),
         "strategy_horizon": operational_horizon,
         "expected_hold_window": expected_hold_window,
@@ -488,7 +476,7 @@ def build_commander_horizon_policy(
             "source_strategy_horizon": source_horizon,
         },
         "source_strategy_horizon": source_horizon,
-        "source_expected_hold_window": dict(proposal.get("expected_hold_window") or {}),
+        "source_expected_hold_window": source_expected_hold_window,
         "strategist_horizon_proposal": dict(proposal),
         "proposal": dict(proposal),
         "memory_adjustments": memory_adjustments,
@@ -505,6 +493,88 @@ def build_commander_horizon_policy(
         },
         "source": str(source or "commander_runtime"),
     }
+
+
+def build_horizon_context(
+    commander_horizon_policy: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    policy = _as_dict(commander_horizon_policy)
+    return {
+        "owner": "commander",
+        "strategy_horizon": str(policy.get("strategy_horizon") or ""),
+        "source_strategy_horizon": str(policy.get("source_strategy_horizon") or ""),
+        "observability_only": bool(policy.get("observability_only")),
+        "allow_behavior_change": bool(policy.get("allow_behavior_change")),
+        "allow_behavior_translation": bool(policy.get("allow_behavior_translation")),
+        "do_not_force_hold": bool(policy.get("do_not_force_hold", True)),
+        "min_hold_enforced": bool(policy.get("min_hold_enforced")),
+        "target_hold_forced": bool(policy.get("target_hold_forced")),
+        "expected_hold_window": dict(policy.get("expected_hold_window") or {}),
+        "decision_reason": str(policy.get("decision_reason") or ""),
+        "behavior_translation": dict(policy.get("behavior_translation") or {}),
+    }
+
+
+def normalize_operational_commander_horizon_policy(
+    commander_horizon_policy: Mapping[str, Any] | None,
+    *,
+    source: str = "runtime_policy_normalization",
+) -> dict[str, Any]:
+    """Upgrade persisted Commander policies to the current runtime contract."""
+
+    policy = _as_dict(commander_horizon_policy)
+    if not policy:
+        return {}
+    owner = str(policy.get("owner") or "").strip().lower()
+    schema_version = str(policy.get("schema_version") or "").strip()
+    if owner != "commander" and not schema_version.startswith("commander_horizon_policy"):
+        return policy
+
+    original = dict(policy)
+    horizon = (
+        _normalize_strategy_horizon_value(
+            policy.get("strategy_horizon")
+            or policy.get("source_strategy_horizon")
+            or _as_dict(policy.get("strategist_horizon_proposal")).get("strategy_horizon")
+        )
+        or "intraday"
+    )
+    policy["schema_version"] = "commander_horizon_policy.v1"
+    policy["owner"] = "commander"
+    policy["strategy_horizon"] = horizon
+    policy["source_strategy_horizon"] = str(
+        policy.get("source_strategy_horizon") or horizon
+    )
+    if not isinstance(policy.get("source_expected_hold_window"), Mapping):
+        policy["source_expected_hold_window"] = dict(
+            _as_dict(policy.get("expected_hold_window"))
+        )
+    policy["expected_hold_window"] = dict(
+        _DEFAULT_WINDOWS.get(horizon, _DEFAULT_WINDOWS["intraday"])
+    )
+    policy["observability_only"] = False
+    policy["allow_behavior_change"] = True
+    policy["allow_behavior_translation"] = True
+    policy["do_not_force_hold"] = True
+    policy["min_hold_enforced"] = True
+    policy["target_hold_forced"] = False
+    policy["behavior_translation"] = _build_horizon_behavior_translation(
+        horizon,
+        source_horizon=str(policy.get("source_strategy_horizon") or horizon),
+        owner="commander",
+        applied=True,
+        live_validation_mode=bool(policy.get("live_validation_mode", True)),
+    )
+    changed = policy != original
+    policy["operational_contract_normalized"] = True
+    policy["operational_contract_migrated"] = bool(changed)
+    policy["operational_contract_source"] = str(source or "runtime_policy_normalization")
+    if changed:
+        policy["prior_decision_reason"] = str(original.get("decision_reason") or "")
+        policy["decision_reason"] = (
+            "commander_horizon_policy_normalized_for_runtime_execution"
+        )
+    return policy
 
 
 def extract_commander_horizon_policy(surface: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -638,7 +708,9 @@ def build_exit_vs_strategy_intent(
     sell_submitted: bool,
 ) -> dict[str, Any]:
     exit_obj = _as_dict(exit_info)
-    commander_horizon = extract_commander_horizon_policy_from_state(state)
+    commander_horizon = extract_commander_horizon_policy(exit_obj)
+    if not commander_horizon:
+        commander_horizon = extract_commander_horizon_policy_from_state(state)
     horizon = commander_horizon or extract_strategy_horizon_feedback_from_state(state)
     horizon_owner = "commander" if commander_horizon else "strategist"
     strategist_proposal = (
@@ -674,6 +746,10 @@ def build_exit_vs_strategy_intent(
     return {
         "schema_version": "exit_vs_strategy_intent.v1",
         "observability_only": True,
+        "policy_behavior_active": bool(
+            commander_horizon.get("allow_behavior_change")
+            and commander_horizon.get("allow_behavior_translation")
+        ),
         "horizon_owner": horizon_owner,
         "strategy_horizon": str(horizon.get("strategy_horizon") or "intraday"),
         "source_strategy_horizon": str(

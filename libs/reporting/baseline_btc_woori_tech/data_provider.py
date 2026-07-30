@@ -23,6 +23,7 @@ def load_woori_candles(
         day=day,
         symbols=(TARGET_SYMBOL,),
         allow_fresh_fetch=allow_fresh_fetch,
+        run_id_prefix="baseline_btc_woori_tech",
     ).get(TARGET_SYMBOL, [])
 
 

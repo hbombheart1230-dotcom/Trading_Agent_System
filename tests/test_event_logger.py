@@ -71,7 +71,9 @@ def test_event_logger_appends_multiple_lines(tmp_path: Path) -> None:
 def test_resolve_event_log_path_uses_pytest_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("EVENT_LOG_PATH", raising=False)
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_event_logger.py::test_dummy")
-    assert str(resolve_event_log_path()).endswith("data\\logs\\dev\\testing\\pytest_events.jsonl")
+    path = resolve_event_log_path()
+    assert path.name == "events.jsonl"
+    assert "trading_agent_system_pytest" in str(path)
 
 
 def test_resolve_event_log_path_prefers_explicit_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -89,7 +91,20 @@ def test_event_logger_redirects_canonical_operator_log_during_pytest(
 
     logger = EventLogger(log_path=Path("data/logs/events.jsonl"))
 
-    assert str(logger.log_path).endswith("data\\logs\\dev\\testing\\pytest_events.jsonl")
+    assert logger.log_path.name == "events.jsonl"
+    assert "trading_agent_system_pytest" in str(logger.log_path)
+
+
+def test_explicit_canonical_env_is_still_isolated_during_pytest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_event_logger.py::test_dummy")
+    monkeypatch.setenv("EVENT_LOG_PATH", "data/logs/events.jsonl")
+
+    path = resolve_event_log_path()
+
+    assert path.name == "events.jsonl"
+    assert "trading_agent_system_pytest" in str(path)
 
 
 def test_event_logger_keeps_explicit_tmp_log_during_pytest(

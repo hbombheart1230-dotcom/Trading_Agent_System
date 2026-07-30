@@ -5,6 +5,9 @@ from typing import Any, Dict, List
 from libs.core.symbols import normalize_symbol
 
 from libs.runtime.monitor_exit.price_resolution import position_mark_price, resolve_price
+from libs.runtime.strategy_horizon_feedback import (
+    normalize_operational_commander_horizon_policy,
+)
 from libs.strategies.contracts import coerce_strategist_output
 
 
@@ -79,7 +82,10 @@ def extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, Any]:
         strategist_output.get("commander_horizon_policy"),
     ):
         if isinstance(candidate, dict) and candidate:
-            commander_horizon_policy = dict(candidate)
+            commander_horizon_policy = normalize_operational_commander_horizon_policy(
+                candidate,
+                source="monitor_strategy_frame",
+            )
             break
     return {
         "playbook": str(
@@ -390,12 +396,23 @@ def apply_monitor_strategy_frame(
         if isinstance(horizon_policy.get("behavior_translation"), dict)
         else {}
     )
+    expected_hold_window = (
+        dict(horizon_policy.get("expected_hold_window") or {})
+        if isinstance(horizon_policy.get("expected_hold_window"), dict)
+        else {}
+    )
     strategy_horizon = str(
         horizon_policy.get("strategy_horizon")
         or frame.get("strategy_horizon")
         or behavior_translation.get("strategy_horizon")
         or ""
     ).strip().lower()
+    horizon_behavior_enabled = bool(
+        str(horizon_policy.get("owner") or "").strip().lower() == "commander"
+        and horizon_policy.get("allow_behavior_change")
+        and horizon_policy.get("allow_behavior_translation")
+        and behavior_translation.get("applied")
+    )
     if not mode:
         if playbook == "breakout":
             mode = "hold_through_noise"
@@ -440,9 +457,11 @@ def apply_monitor_strategy_frame(
         confirm = max(1, confirm - 1)
         adjustments.append("trade_aggressiveness:high")
 
-    if bool(behavior_translation.get("applied")) or strategy_horizon:
+    if horizon_behavior_enabled:
+        horizon_min_hold = _to_int(expected_hold_window.get("min_sec"))
+        if horizon_min_hold > 0:
+            min_hold = horizon_min_hold
         if strategy_horizon == "scalp":
-            min_hold = max(0, min(min_hold, 180))
             confirm = 1
             cooldown = max(30, min(cooldown, 120))
             adjustments.append("strategy_horizon:scalp_hold_controls")
@@ -450,7 +469,6 @@ def apply_monitor_strategy_frame(
             confirm = max(1, min(confirm, 3))
             adjustments.append("strategy_horizon:intraday_hold_controls")
         elif strategy_horizon in {"overnight_probe", "1_2day_swing"}:
-            min_hold += 600 if strategy_horizon == "overnight_probe" else 900
             confirm = max(confirm, 2)
             cooldown += 120
             adjustments.append(f"strategy_horizon:{strategy_horizon}_hold_controls")
@@ -472,6 +490,8 @@ def apply_monitor_strategy_frame(
         "source_strategy_horizon": str(horizon_policy.get("source_strategy_horizon") or frame.get("source_strategy_horizon") or ""),
         "commander_horizon_policy": dict(horizon_policy),
         "horizon_behavior_translation": dict(behavior_translation),
+        "horizon_behavior_enabled": bool(horizon_behavior_enabled),
+        "expected_hold_window": dict(expected_hold_window),
         "position_strategy_context_applied": bool(frame.get("position_strategy_context_applied")),
         "position_strategy_context_symbol": str(frame.get("position_strategy_context_symbol") or ""),
         "position_strategy_context_source": str(frame.get("position_strategy_context_source") or ""),
@@ -578,15 +598,29 @@ def apply_exit_policy_strategy_frame(
         adjustments.append("strategist_exit_policy_override")
 
     commander_horizon_policy = {}
-    for candidate in (
+    horizon_candidates = (
+        (
+            frame.get("commander_horizon_policy")
+            if isinstance(frame, dict)
+            else {}
+        ),
+    ) if position_strategy_pinned else (
         state.get("commander_horizon_policy"),
         strategy_policy.get("commander_horizon_policy"),
         strategy_monitor_policy.get("commander_horizon_policy"),
         strategy_monitor_policy.get("horizon_policy"),
         frame.get("commander_horizon_policy") if isinstance(frame, dict) else {},
-    ):
+    )
+    for candidate in horizon_candidates:
         if isinstance(candidate, dict) and candidate:
-            commander_horizon_policy = dict(candidate)
+            commander_horizon_policy = normalize_operational_commander_horizon_policy(
+                candidate,
+                source=(
+                    "position_strategy_context"
+                    if position_strategy_pinned
+                    else "monitor_exit_policy"
+                ),
+            )
             break
     behavior_translation = (
         dict(commander_horizon_policy.get("behavior_translation") or {})
@@ -672,28 +706,38 @@ def apply_exit_policy_strategy_frame(
         if isinstance(commander_horizon_policy.get("expected_hold_window"), dict)
         else {}
     )
-    if bool(behavior_translation.get("applied")) or strategy_horizon:
+    horizon_behavior_enabled = bool(
+        str(commander_horizon_policy.get("owner") or "").strip().lower() == "commander"
+        and commander_horizon_policy.get("allow_behavior_change")
+        and commander_horizon_policy.get("allow_behavior_translation")
+        and behavior_translation.get("applied")
+    )
+    if horizon_behavior_enabled:
+        window_target = _to_int(expected_window.get("target_sec"))
+        window_max = _to_int(expected_window.get("max_sec"))
         if strategy_horizon == "scalp":
             take_profit_pct *= 0.88
             trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.85)
             if risk_reward_take_profit_r > 0.0:
                 risk_reward_take_profit_r = min(risk_reward_take_profit_r, 0.85)
-            profit_time_stop_sec = 300 if profit_time_stop_sec <= 0 else min(profit_time_stop_sec, 300)
-            max_hold_sec = 900 if max_hold_sec <= 0 else min(max_hold_sec, 900)
+            if window_target > 0:
+                profit_time_stop_sec = window_target
+            if window_max > 0:
+                max_hold_sec = window_max
             adjustments.append("strategy_horizon:scalp_exit_policy")
         elif strategy_horizon == "intraday":
-            if profit_time_stop_sec <= 0:
-                profit_time_stop_sec = 900
-            window_max = _to_int(expected_window.get("max_sec"))
+            if window_target > 0:
+                profit_time_stop_sec = window_target
             if window_max > 0:
-                max_hold_sec = window_max if max_hold_sec <= 0 else min(max_hold_sec, window_max)
+                max_hold_sec = window_max
             adjustments.append("strategy_horizon:intraday_exit_policy")
         elif strategy_horizon in {"overnight_probe", "1_2day_swing"}:
             take_profit_pct *= 1.10 if strategy_horizon == "overnight_probe" else 1.18
             trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.70)
-            window_max = _to_int(expected_window.get("max_sec"))
+            if window_target > 0:
+                profit_time_stop_sec = window_target
             if window_max > 0:
-                max_hold_sec = max(max_hold_sec, window_max)
+                max_hold_sec = window_max
             out["allow_overnight_from_strategy_horizon"] = bool(behavior_translation.get("overnight_allowed"))
             adjustments.append(f"strategy_horizon:{strategy_horizon}_exit_policy")
 
@@ -798,6 +842,14 @@ def apply_exit_policy_strategy_frame(
     if hard_stop_pct > 0.0:
         adjustments.append(f"strategy_policy:hard_stop_pct:{hard_stop_pct:.4f}")
 
+    if horizon_behavior_enabled:
+        window_target = _to_int(expected_window.get("target_sec"))
+        window_max = _to_int(expected_window.get("max_sec"))
+        if window_target > 0:
+            profit_time_stop_sec = window_target
+        if window_max > 0:
+            max_hold_sec = window_max
+
     out["hard_stop_pct"] = float(hard_stop_pct)
     out["stop_loss_pct"] = float(stop_loss_pct)
     out["take_profit_pct"] = float(take_profit_pct)
@@ -814,8 +866,9 @@ def apply_exit_policy_strategy_frame(
     if strategy_horizon:
         out["strategy_horizon"] = strategy_horizon
         out["source_strategy_horizon"] = str(commander_horizon_policy.get("source_strategy_horizon") or frame.get("source_strategy_horizon") or "")
-        out["horizon_behavior_translation_applied"] = bool(behavior_translation.get("applied"))
+        out["horizon_behavior_translation_applied"] = bool(horizon_behavior_enabled)
         out["horizon_exit_policy_bias"] = str(behavior_translation.get("exit_policy_bias") or "")
+        out["expected_hold_window"] = dict(expected_window)
     if position_strategy_pinned:
         out["position_strategy_context_applied"] = True
         out["position_strategy_context_symbol"] = str(frame.get("position_strategy_context_symbol") or "")

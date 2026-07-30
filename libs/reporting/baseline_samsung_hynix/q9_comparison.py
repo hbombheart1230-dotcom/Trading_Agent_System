@@ -50,6 +50,7 @@ def _load_q9_rows(
         day=day,
         symbols=symbols,
         allow_fresh_fetch=True,
+        run_id_prefix="q9_comparison_forward_recovery",
     )
     return attach_forward_outcomes(rows, minute_rows_by_symbol=candles)
 

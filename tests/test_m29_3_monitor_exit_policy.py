@@ -5,6 +5,11 @@ import pytest
 from graphs.nodes.monitor_node import monitor_node
 
 
+@pytest.fixture(autouse=True)
+def _isolate_broker_cost_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("BROKER_COST_PROFILE_PATH", str(tmp_path / "missing_broker_cost_profile.json"))
+
+
 def _baseline_applied_policy(*, use_exit_policy: bool, block_buy_when_open_position: bool = True):
     return {
         "monitor": {

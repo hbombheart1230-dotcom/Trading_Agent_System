@@ -315,7 +315,10 @@ def _event_health(day: str, *, lookback_min: int = 10) -> dict[str, Any]:
                 counts["strategist_llm_failed"] += 1
         if event == "commander_router.fast_path" and str(payload.get("reason") or "") == "strategist_llm_failed":
             counts["commander_blocked"] += 1
-        if "scanner_selection" in line:
+        if (
+            "scanner_selection" in line
+            or event == "decision_trace.entry_exit_decision"
+        ):
             counts["q9_scanner_selection"] += 1
     status = "PASS"
     blockers: list[dict[str, Any]] = []

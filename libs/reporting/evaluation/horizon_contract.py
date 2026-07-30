@@ -62,10 +62,16 @@ def _walk_dicts(value: Any, path: str = "") -> list[tuple[str, dict[str, Any]]]:
 
 def _candidate_score(path: str, row: Mapping[str, Any]) -> int:
     score = 0
+    owner = str(row.get("owner") or "").strip().lower()
+    schema_version = str(row.get("schema_version") or "").strip()
+    if owner == "commander":
+        score += 200
+    if schema_version == "commander_horizon_policy.v1":
+        score += 150
+    if schema_version == "strategy_horizon_feedback.v1":
+        score += 20
     if isinstance(row.get("commander_horizon_policy"), Mapping):
         score += 40
-    if row.get("schema_version") in {"commander_horizon_policy.v1", "strategy_horizon_feedback.v1"}:
-        score += 35
     if isinstance(row.get("expected_hold_window"), Mapping):
         score += 20
     if row.get("strategy_horizon") or row.get("source_strategy_horizon"):
@@ -73,7 +79,7 @@ def _candidate_score(path: str, row: Mapping[str, Any]) -> int:
     if "commander_horizon_policy" in path:
         score += 10
     if "strategist_horizon_proposal" in path:
-        score += 5
+        score -= 100
     return score
 
 
@@ -158,6 +164,8 @@ def build_horizon_contract(
         "observability_only": _truthy(policy.get("observability_only")),
         "allow_behavior_change": _truthy(policy.get("allow_behavior_change")),
         "do_not_force_hold": _truthy(policy.get("do_not_force_hold")),
+        "min_hold_enforced": _truthy(policy.get("min_hold_enforced")),
+        "target_hold_forced": _truthy(policy.get("target_hold_forced")),
     }
 
 

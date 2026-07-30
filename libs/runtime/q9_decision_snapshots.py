@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
+
 
 SCHEMA_VERSION = "q9_decision_windows.v1"
 KST = ZoneInfo("Asia/Seoul")
@@ -66,6 +68,16 @@ def _compact_scalar(value: Any) -> Any:
     return str(value)
 
 
+def _compact_scalar_mapping(value: Any, *, limit: int = 24) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key)[:80]: _compact_scalar(raw)
+        for key, raw in list(value.items())[:limit]
+        if isinstance(raw, (str, int, float, bool)) or raw is None
+    }
+
+
 def _compact_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
     wanted = (
         "rank",
@@ -86,12 +98,42 @@ def _compact_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
         "would_enter",
         "guard_blocked",
         "cost_floor_state",
+        "entry_quant_cost_floor_state",
         "q9_selected",
         "q9_decision_role",
     )
     out = {key: _compact_scalar(row.get(key)) for key in wanted if key in row}
     if "symbol" not in out and row.get("ticker"):
         out["symbol"] = _compact_scalar(row.get("ticker"))
+    sources = row.get("sources")
+    if isinstance(sources, list):
+        out["sources"] = [str(value)[:80] for value in sources[:8] if str(value)]
+    source_scores = _compact_scalar_mapping(row.get("source_scores"), limit=12)
+    if source_scores:
+        out["source_scores"] = source_scores
+    for key in (
+        "score_breakdown",
+        "scanner_chart_fit",
+        "scanner_macro_chart_fit",
+        "quant_factors",
+        "cost_filter",
+    ):
+        compact = _compact_scalar_mapping(row.get(key))
+        if compact:
+            out[key] = compact
+    feature_snapshot = _mapping(row.get("compact_feature_snapshot"))
+    if feature_snapshot:
+        out["compact_feature_snapshot"] = {
+            key: _compact_scalar(feature_snapshot.get(key))
+            for key in (
+                "skill_quote_price",
+                "engine_close_last",
+                "quote_best_bid",
+                "quote_best_ask",
+                "intraday_change_pct",
+            )
+            if feature_snapshot.get(key) not in (None, "")
+        }
     return out
 
 
@@ -169,8 +211,11 @@ def ensure_q9_decision_id(state: dict[str, Any]) -> str:
 
 
 def _output_path(state: Mapping[str, Any]) -> Path:
-    reports_root = Path(
+    reports_root = isolate_canonical_path_for_pytest(
         str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports") or "reports")
+        ,
+        canonical_path="reports",
+        isolated_name="reports",
     )
     return reports_root / "operator_summary" / "daily" / _day(state) / "q9_decision_windows.json"
 
@@ -339,6 +384,7 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
 
 def capture_commander_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     monitor = _mapping(state.get("monitor_output"))
+    monitor_entry = _mapping(state.get("monitor_entry"))
     intents = state.get("intents") if isinstance(state.get("intents"), list) else []
     first_intent = _mapping(intents[0]) if intents else {}
     decision = str(state.get("decision") or "noop").strip().lower()
@@ -351,6 +397,63 @@ def capture_commander_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]
         or ""
     )
     existing_snapshot = _mapping(state.get("q9_decision_snapshot"))
+    entry_cost_filter = _mapping(
+        monitor.get("entry_cost_filter") or monitor_entry.get("entry_cost_filter")
+    )
+    directional_edge_estimate = _mapping(
+        monitor.get("directional_edge_estimate")
+        or monitor_entry.get("directional_edge_estimate")
+    )
+    monitor_intent = str(
+        monitor.get("intent_side")
+        or first_intent.get("side")
+        or first_intent.get("action")
+        or "NOOP"
+    ).upper()
+    monitor_observation = {
+        "intent": monitor_intent,
+        "reason": str(
+            monitor.get("entry_exit_reason")
+            or monitor_entry.get("guard_reason")
+            or monitor_entry.get("reason")
+            or ""
+        ),
+        "entry_triggered": bool(monitor_entry.get("triggered")),
+        "entry_guard_blocked": bool(monitor_entry.get("guard_blocked")),
+        "entry_guard_reason": str(monitor_entry.get("guard_reason") or ""),
+        "entry_primary_failure_axis": str(
+            monitor_entry.get("primary_failure_axis") or ""
+        ),
+        "entry_lane": str(
+            monitor.get("entry_lane") or monitor_entry.get("entry_lane") or ""
+        ),
+        "cost_floor_state": str(
+            _mapping(monitor_entry.get("entry_quant_decision"))
+            .get("cost_edge", {})
+            .get("cost_floor_state")
+            if isinstance(
+                _mapping(monitor_entry.get("entry_quant_decision")).get("cost_edge"),
+                Mapping,
+            )
+            else ""
+        ),
+        "cost_filter_passed": bool(entry_cost_filter.get("passed")),
+        "cost_filter_fail_reasons": [
+            str(value)
+            for value in list(entry_cost_filter.get("fail_reasons") or [])[:12]
+        ],
+        "directional_edge_estimate": {
+            **_compact_scalar_mapping(directional_edge_estimate),
+            "failed_requirements": [
+                str(value)
+                for value in list(
+                    directional_edge_estimate.get("failed_requirements") or []
+                )[:12]
+            ],
+        }
+        if directional_edge_estimate
+        else {},
+    }
     window_type = (
         "scanner_selection"
         if isinstance(existing_snapshot.get("scanner_control"), Mapping)
@@ -369,12 +472,9 @@ def capture_commander_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]
                 "no_trade": decision in {"noop", "reject", "retry_scan"},
                 "reason": str(state.get("decision_reason") or ""),
                 "detail": str(state.get("decision_detail") or ""),
-                "monitor_intent": str(
-                    monitor.get("intent_side")
-                    or first_intent.get("side")
-                    or first_intent.get("action")
-                    or "NOOP"
-                ).upper(),
+                "monitor_intent": monitor_intent,
+                "monitor_reason": str(monitor_observation.get("reason") or ""),
+                "monitor_observation": monitor_observation,
                 "authority_scope": "final_approval_or_veto",
                 "evidence_class": "REALIZED_DECISION_SNAPSHOT",
             },

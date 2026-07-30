@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from libs.runtime.quant.shadow_candidates import (
     _market_snapshot_for_symbol,
@@ -64,6 +65,11 @@ def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() 
                 "proxy_edge_available": True,
                 "directional_edge_available": False,
                 "allow_triggered_signal_proxy_edge": False,
+            },
+            "directional_edge_estimate": {
+                "available": False,
+                "reason": "evidence_not_eligible",
+                "failed_requirements": ["coverage_below_minimum"],
             },
             "quant_factor_snapshot": {"vwap_distance_pct": 0.2},
             "entry_quant_decision": {
@@ -131,6 +137,7 @@ def test_build_quant_shadow_candidate_payload_captures_top_runner_and_skipped() 
     assert top["entry_quant_cost_floor_state"] == "not_met"
     assert top["entry_cost_filter"]["proxy_edge_available"] is True
     assert top["entry_cost_filter"]["allow_triggered_signal_proxy_edge"] is False
+    assert top["directional_edge_estimate"]["reason"] == "evidence_not_eligible"
     assert top["quant_tactic_id"] == "pullback_reclaim"
     runner = payload["candidates"][1]
     assert runner["symbol"] == "000660"
@@ -492,6 +499,25 @@ def test_save_quant_shadow_candidate_payload_writes_day_file_and_latest(tmp_path
     assert saved["latest_path"] == str(path)
 
 
+def test_save_quant_shadow_candidate_payload_isolates_default_runtime_root() -> None:
+    payload = {
+        "schema_version": "quant_shadow_candidates.v1",
+        "run_id": "pytest-default-root",
+        "day": "2026-05-24",
+        "candidates": [{"symbol": "005930", "shadow_role": "top_pick"}],
+    }
+
+    result = save_quant_shadow_candidate_payload(payload)
+
+    path = Path(result["latest_path"])
+    assert result["status"] == "ok"
+    assert path.exists()
+    assert "trading_agent_system_pytest" in str(path)
+    assert path.resolve() != (
+        Path("data/logs/quant_shadow_candidates/2026-05-24/latest.json").resolve()
+    )
+
+
 def test_save_quant_shadow_candidate_payload_skips_empty_payload(tmp_path) -> None:
     result = save_quant_shadow_candidate_payload({"day": "2026-05-24", "candidates": []}, root=tmp_path)
 
@@ -582,6 +608,9 @@ def test_q9_candidate_uses_scanner_feature_price_when_minute_baseline_is_missing
                         {
                             "symbol": "005930",
                             "rank": 1,
+                            "sources": ["top_value"],
+                            "source_scores": {"top_value": 0.8},
+                            "score_breakdown": {"trading_value": 0.2},
                             "compact_feature_snapshot": {
                                 "engine_close_last": 85000,
                             },
@@ -601,3 +630,6 @@ def test_q9_candidate_uses_scanner_feature_price_when_minute_baseline_is_missing
     assert row["shadow_forward_base"]["available"] is True
     assert row["shadow_forward_base"]["baseline_price"] == 85000
     assert row["shadow_forward_base"]["source"] == "scanner_feature_snapshot"
+    assert row["q9_candidate_sources"] == ["top_value"]
+    assert row["q9_candidate_source_scores"] == {"top_value": 0.8}
+    assert row["score_breakdown"] == {"trading_value": 0.2}

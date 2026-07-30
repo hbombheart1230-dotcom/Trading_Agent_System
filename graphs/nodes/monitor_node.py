@@ -42,6 +42,9 @@ from libs.runtime.monitor_entry_cost_filter import (
     evaluate_entry_cost_filter as _evaluate_entry_cost_filter,
     resolve_entry_cost_filter_config as _resolve_entry_cost_filter_config,
 )
+from libs.runtime.monitor_directional_edge import (
+    apply_horizon_directional_edge as _apply_horizon_directional_edge,
+)
 from libs.runtime.monitor_entry_controls import (
     features_pending_order_count as _features_pending_order_count,
     pending_buy_symbols_from_account_orders as _pending_buy_symbols_from_account_orders,
@@ -125,6 +128,7 @@ from libs.runtime.monitor_memory_bias import (
     apply_monitor_memory_bias_to_entry_policy,
     summarize_monitor_memory_bias,
 )
+from libs.runtime.same_symbol_loss_reentry import evaluate_same_symbol_loss_reentry
 from libs.runtime.monitor_minute_ohlcv import (
     _ensure_monitor_minute_ohlcv_for_symbol,
     _extract_monitor_minute_rows,
@@ -635,6 +639,12 @@ def _evaluate_monitor_entry_candidate(
         entry_policy_input=entry_policy_input,
         commander_entry_control=commander_entry_control,
     )
+    _apply_horizon_directional_edge(
+        state=state,
+        selected=selected,
+        entry_info=entry_info,
+        strategy_frame=strategy_frame,
+    )
     entry_cost_filter = _evaluate_entry_cost_filter(
         entry_info=entry_info,
         selected=selected,
@@ -756,11 +766,23 @@ def _evaluate_monitor_entry_candidate(
     entry_info["intent_cooldown_until"] = int(cooldown_until) if cooldown_until > 0 else None
 
     max_positions_reached = bool(open_position_count >= max_positions)
+    same_symbol_loss_reentry_control = evaluate_same_symbol_loss_reentry(
+        state,
+        symbol=symbol,
+        now_epoch=int(now_epoch_for_entry),
+    )
+    entry_info["same_symbol_loss_reentry_control"] = dict(
+        same_symbol_loss_reentry_control
+    )
     forced_entry_block_reason = _entry_forced_block_reason_for_open_carry(
         state,
         all_pos_map,
         now_epoch=int(now_epoch_for_entry),
     )
+    if not forced_entry_block_reason and bool(
+        same_symbol_loss_reentry_control.get("blocked")
+    ):
+        forced_entry_block_reason = "same_symbol_loss_reentry_blocked"
     entry_guard = evaluate_entry_guard(
         entry_info=entry_info,
         entry_quality_gate=entry_quality_gate,
@@ -1241,6 +1263,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "minute_cache_fallback_used": runner_metrics.get("minute_cache_fallback_used"),
                         "guard_blocked": bool(runner_result.get("entry_guard_blocked")),
                         "guard_reason": str(runner_result.get("entry_guard_reason") or ""),
+                        "entry_cost_filter": dict(
+                            runner_entry.get("entry_cost_filter") or {}
+                        ),
+                        "directional_edge_estimate": dict(
+                            runner_entry.get("directional_edge_estimate") or {}
+                        ),
                         "intent_submitted": bool(runner_entry.get("intent_submitted")),
                         "buy_blocked_open_position": bool(runner_result.get("buy_blocked_open_position")),
                         "buy_blocked_same_symbol": bool(runner_result.get("buy_blocked_same_symbol")),
@@ -2117,6 +2145,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
         "entry_lane": str(entry_info.get("entry_lane") or "strict"),
         "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+        "directional_edge_estimate": dict(
+            entry_info.get("directional_edge_estimate") or {}
+        ),
         "entry_quality_gate": dict(entry_info.get("entry_quality_gate") or {}),
         "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
         "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),
@@ -2208,6 +2239,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_candidate_cascade": dict(entry_candidate_cascade),
         "entry_lane": str(entry_info.get("entry_lane") or "strict"),
         "entry_cost_filter": dict(entry_info.get("entry_cost_filter") or {}),
+        "directional_edge_estimate": dict(
+            entry_info.get("directional_edge_estimate") or {}
+        ),
         "entry_quality_gate": dict(entry_info.get("entry_quality_gate") or {}),
         "cost_adjusted_edge_ok": bool(entry_info.get("cost_adjusted_edge_ok")),
         "cost_adjusted_edge_pct": entry_info.get("cost_adjusted_edge_pct"),

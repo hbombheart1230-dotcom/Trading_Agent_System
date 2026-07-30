@@ -122,6 +122,7 @@ def run_m13_once(
     save_state_fn: Optional[NodeFn] = None,
     tick_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     eod_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    market_status_fn: Optional[NodeFn] = None,
 ) -> Dict[str, Any]:
     """M13-3: one-iteration live loop (test-first).
 
@@ -145,9 +146,12 @@ def run_m13_once(
     # Load persisted state first (state_store_path is read from env by node)
     state = load_state_fn(state)
     try:
-        from libs.runtime.market_status_closeout import apply_market_status_closeout_events
+        if market_status_fn is None:
+            from libs.runtime.market_status_closeout import (
+                apply_market_status_closeout_events as market_status_fn,
+            )
 
-        state = apply_market_status_closeout_events(state)
+        state = market_status_fn(state)
     except Exception as exc:
         state["market_status_closeout_error"] = f"{type(exc).__name__}: {exc}"[:300]
     # Each tick should produce a fresh runtime/decision/report trace.

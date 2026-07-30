@@ -4,6 +4,7 @@ import os
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, List
 
+from libs.core.http_client import HttpClientError
 from libs.core.symbols import normalize_symbol
 
 
@@ -65,15 +66,28 @@ def _fresh_monitor_skill_runner() -> tuple[Any, str]:
 
 
 def _run_monitor_minute_skill(*, runner: Any, run_id: str, symbol: str, timeframe_minutes: int) -> Dict[str, Any]:
-    raw = runner.run(
-        run_id=run_id,
-        skill="market.minute_ohlcv",
-        args={
-            "symbol": symbol,
-            "timeframe_minutes": max(1, int(timeframe_minutes or 1)),
-            "adjusted_price": "1",
-        },
-    )
+    try:
+        raw = runner.run(
+            run_id=run_id,
+            skill="market.minute_ohlcv",
+            args={
+                "symbol": symbol,
+                "timeframe_minutes": max(1, int(timeframe_minutes or 1)),
+                "adjusted_price": "1",
+            },
+        )
+    except HttpClientError as exc:
+        return {
+            "result": {
+                "action": "error",
+                "question": "market.minute_ohlcv transport unavailable",
+                "meta": {
+                    "reason": "minute_ohlcv_transport_error",
+                    "error_type": type(exc).__name__,
+                    "transient": True,
+                },
+            }
+        }
     rec = _monitor_skill_output_to_record(raw)
     return dict(rec) if isinstance(rec, dict) else {}
 

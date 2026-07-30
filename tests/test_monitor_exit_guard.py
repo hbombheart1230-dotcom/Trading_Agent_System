@@ -6,6 +6,18 @@ from libs.skills.runner import SkillRunResult
 from graphs.nodes.monitor_node import _evaluate_entry_cost_filter, _extract_monitor_strategy_frame, monitor_node
 from libs.contracts.agent_outputs import build_monitor_output_artifact
 from libs.runtime.monitor_entry_cost_filter import resolve_entry_cost_filter_config
+from libs.runtime.strategy_horizon_feedback import build_commander_horizon_policy
+
+
+def _horizon_policy(horizon: str) -> dict:
+    return build_commander_horizon_policy(
+        {"strategy_horizon": horizon},
+        live_validation_mode=True,
+    )
+
+
+def _overnight_horizon_policy() -> dict:
+    return _horizon_policy("overnight_probe")
 
 
 class _FakeMinuteSkillRunner:
@@ -264,18 +276,9 @@ def test_monitor_exit_requires_confirmation_ticks(monkeypatch):
 
 def test_monitor_sell_records_exit_vs_strategy_intent_without_changing_sell_decision(monkeypatch):
     state = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=0, confirm_ticks=1)
-    state["commander_horizon_policy"] = {
-        "schema_version": "commander_horizon_policy.v1",
-        "owner": "commander",
-        "observability_only": True,
-        "allow_behavior_change": False,
-        "do_not_force_hold": True,
-        "strategy_horizon": "intraday",
-        "source_strategy_horizon": "1_2day_swing",
-        "expected_hold_window": {"min_sec": 300, "target_sec": 1800, "max_sec": 14400},
-        "source_expected_hold_window": {"min_sec": 3600, "target_sec": 86400, "max_sec": 172800},
-        "decision_reason": "test_commander_policy",
-    }
+    state["portfolio_snapshot"]["positions"][0]["hold_sec"] = 600
+    state["commander_horizon_policy"] = _horizon_policy("intraday")
+    state["commander_horizon_policy"]["source_strategy_horizon"] = "1_2day_swing"
     state["strategist_output"] = {
         "strategy_horizon_feedback": {
             "strategy_horizon": "1_2day_swing",
@@ -290,11 +293,12 @@ def test_monitor_sell_records_exit_vs_strategy_intent_without_changing_sell_deci
     assert out["monitor_exit"]["triggered"] is True
     exit_vs_strategy = out["monitor_exit"]["exit_vs_strategy_intent"]
     assert exit_vs_strategy["observability_only"] is True
+    assert exit_vs_strategy["policy_behavior_active"] is True
     assert exit_vs_strategy["horizon_owner"] == "commander"
     assert exit_vs_strategy["strategy_horizon"] == "intraday"
     assert exit_vs_strategy["source_strategy_horizon"] == "1_2day_swing"
-    assert exit_vs_strategy["early_exit_flag"] is True
-    assert exit_vs_strategy["exit_alignment"] == "early_unproven"
+    assert exit_vs_strategy["early_exit_flag"] is False
+    assert exit_vs_strategy["exit_alignment"] == "aligned"
     assert out["monitor_output"]["exit_vs_strategy_intent"] == exit_vs_strategy
     assert intents[0]["meta"]["exit_vs_strategy_intent"] == exit_vs_strategy
     artifact = build_monitor_output_artifact(out)
@@ -2021,6 +2025,7 @@ def test_monitor_can_approve_overnight_carry_near_close(monkeypatch):
 
     state = {
         "plan": {"thesis": "test"},
+        "commander_horizon_policy": _overnight_horizon_policy(),
         "selected": {
             "symbol": "005930",
             "price": 100.6,
@@ -2112,6 +2117,7 @@ def test_monitor_flattens_near_close_when_overnight_carry_is_not_approved(monkey
 
     state = {
         "plan": {"thesis": "test"},
+        "commander_horizon_policy": _horizon_policy("intraday"),
         "selected": {
             "symbol": "005930",
             "price": 99.1,
@@ -2140,6 +2146,9 @@ def test_monitor_flattens_near_close_when_overnight_carry_is_not_approved(monkey
     exit_info = out.get("monitor_exit") or {}
     assert exit_info.get("eod_carry_evaluated") is True
     assert exit_info.get("eod_carry_approved") is False
+    assert "strategy_horizon_disallows_overnight:intraday" in list(
+        exit_info.get("eod_carry_blockers") or []
+    )
     assert str(exit_info.get("reason") or "") == "eod_flat"
 
 
@@ -2153,6 +2162,7 @@ def test_monitor_evaluates_overnight_carry_when_selected_missing_but_position_op
 
     state = {
         "plan": {"thesis": "test"},
+        "commander_horizon_policy": _overnight_horizon_policy(),
         "selected": None,
         "portfolio_snapshot": {
             "cash": 2_000_000.0,
@@ -2204,6 +2214,7 @@ def test_monitor_persists_eod_carry_decisions_for_all_open_positions(monkeypatch
 
     state = {
         "plan": {"thesis": "test"},
+        "commander_horizon_policy": _overnight_horizon_policy(),
         "selected": {
             "symbol": "005930",
             "price": 100.7,
@@ -3674,12 +3685,9 @@ def test_monitor_exit_uses_position_strategy_context_for_open_position(monkeypat
         "selected": {"symbol": "AAA", "price": 102.0},
         "strategist_output": {
             "strategy_horizon": "scalp",
-            "commander_horizon_policy": {
-                "strategy_horizon": "scalp",
-                "expected_hold_window": {"max_sec": 900},
-                "behavior_translation": {"applied": True, "strategy_horizon": "scalp"},
-            },
+            "commander_horizon_policy": _horizon_policy("scalp"),
         },
+        "commander_horizon_policy": _horizon_policy("scalp"),
         "portfolio_snapshot": {
             "cash": 2_000_000.0,
             "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 1200}],
@@ -3691,16 +3699,7 @@ def test_monitor_exit_uses_position_strategy_context_for_open_position(monkeypat
                         "playbook": "pullback",
                         "monitor_guidance": "hold_through_noise",
                         "strategy_horizon": "intraday",
-                        "commander_horizon_policy": {
-                            "strategy_horizon": "intraday",
-                            "source_strategy_horizon": "intraday",
-                            "expected_hold_window": {"max_sec": 14400},
-                            "behavior_translation": {
-                                "applied": True,
-                                "strategy_horizon": "intraday",
-                                "exit_policy_bias": "cost_aware_intraday_profit_capture",
-                            },
-                        },
+                        "commander_horizon_policy": _horizon_policy("intraday"),
                     },
                     "generated_epoch": 1000,
                     "source": "buy_execution",
@@ -3730,6 +3729,10 @@ def test_monitor_exit_uses_position_strategy_context_for_open_position(monkeypat
     assert exit_info.get("position_strategy_context_applied") is True
     assert exit_info.get("position_strategy_context_symbol") == "AAA"
     assert exit_info.get("strategy_horizon") == "intraday"
+    assert (
+        (exit_info.get("exit_vs_strategy_intent") or {}).get("strategy_horizon")
+        == "intraday"
+    )
     thresholds = exit_info.get("thresholds") or {}
     assert int(thresholds.get("max_hold_sec") or 0) == 14400
     assert "position_strategy_context_pinned:AAA" in (exit_info.get("strategy_frame_adjustments") or [])

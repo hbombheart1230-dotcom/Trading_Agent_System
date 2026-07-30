@@ -1,5 +1,45 @@
 # Quant Trade Diagnosis Report Plan
 
+## Implementation Status
+
+`IMPLEMENTED_2026_07_30`
+
+The report is implemented as an independent reporting module:
+
+```text
+libs/reporting/quant_trade_diagnosis/
+  builder.py
+  markdown.py
+  writer.py
+```
+
+Backfill and manual runner:
+
+```text
+python scripts/run_quant_trade_diagnosis.py --day YYYY-MM-DD
+python scripts/run_quant_trade_diagnosis.py --start YYYY-MM-DD --end YYYY-MM-DD
+```
+
+The Q9 daily evaluation pipeline also generates the JSON and Markdown files
+for every discovered trade. This integration is reporting-only and does not
+call Scanner, Strategist, Commander, Monitor, order, or execution code.
+
+Initial backfill:
+
+- range: 2026-06-01 through 2026-07-29
+- trade directories: 107
+- JSON artifacts written: 107
+- Markdown artifacts written: 107
+- JSON parse errors: 0
+- Markdown encoding replacement characters: 0
+- finite broker/read-model outcomes: 101
+- unresolved outcomes retained as unavailable: 6
+- historical strategy-option score surfaces available: 0
+
+Historical strategy-option scores were not retained in the authoritative
+artifacts. The report therefore emits `INSUFFICIENT_EVIDENCE` and never
+reconstructs or invents those scores.
+
 ## Purpose
 
 `ai_trade_summary.md` is useful for trade facts and operator review, but it is not enough to quickly answer:

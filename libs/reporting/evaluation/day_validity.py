@@ -184,6 +184,9 @@ def build_q9_day_validity(
             "last_runtime_evidence_kst": decision.get("last_q9_runtime_evidence_kst"),
             "session_coverage_source": decision.get("session_coverage_source"),
             "synthetic_window_count": synthetic_count,
+            "post_session_window_count": int(
+                decision.get("post_session_window_count") or 0
+            ),
             "missing_selected_candidate_count": missing_selected,
             "forward_candidate_count": forward_total,
             "forward_observed_candidate_count": observed_forward,

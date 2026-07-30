@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
+
 
 def new_run_id() -> str:
     """Create a unique run id for a single cycle/run."""
@@ -41,11 +43,12 @@ def resolve_event_log_path(default: str = "./data/logs/events.jsonl") -> Path:
     local test runs do not pollute live operator artifacts.
     """
     raw = str(os.getenv("EVENT_LOG_PATH", "") or "").strip()
-    if raw:
-        return Path(raw)
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        return Path("./data/logs/dev/testing/pytest_events.jsonl")
-    return Path(default)
+    candidate = Path(raw or default)
+    return isolate_canonical_path_for_pytest(
+        candidate,
+        canonical_path=Path("data") / "logs" / "events.jsonl",
+        isolated_name="events.jsonl",
+    )
 
 
 def _is_canonical_operator_event_log_path(path: Path) -> bool:
@@ -544,13 +547,11 @@ class EventLogger:
     log_path: Path
 
     def __post_init__(self) -> None:
-        self.log_path = Path(self.log_path)
-        if (
-            os.getenv("PYTEST_CURRENT_TEST")
-            and not str(os.getenv("EVENT_LOG_PATH", "") or "").strip()
-            and _is_canonical_operator_event_log_path(self.log_path)
-        ):
-            self.log_path = resolve_event_log_path()
+        self.log_path = isolate_canonical_path_for_pytest(
+            self.log_path,
+            canonical_path=Path("data") / "logs" / "events.jsonl",
+            isolated_name="events.jsonl",
+        )
 
     def log(
         self,

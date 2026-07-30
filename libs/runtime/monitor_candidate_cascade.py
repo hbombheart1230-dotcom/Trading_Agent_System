@@ -9,6 +9,7 @@ _CASCADE_ELIGIBLE_REASONS = {
     "breakout_not_ready",
     "below_vwap_reclaim_not_ready",
     "pullback_below_vwap_reclaim_not_ready",
+    "same_symbol_loss_reentry_blocked",
 }
 
 _HARD_BLOCK_CASCADE_REASONS = {
@@ -145,6 +146,9 @@ def build_entry_candidate_cascade_plan(
     selected_sym = normalize_symbol(selected_symbol)
     reason = str(entry_reason or "").strip()
     guard_reason = str(entry_guard_reason or "").strip()
+    candidate_specific_reentry_block = bool(
+        guard_reason == "same_symbol_loss_reentry_blocked"
+    )
     max_positions = max(1, int(max_positions or 1))
     max_runner_ups = max(0, int(max_runner_ups))
     if not bool(cascade_enabled):
@@ -156,6 +160,8 @@ def build_entry_candidate_cascade_plan(
     if q15_runner_up_gate_enabled:
         max_runner_ups = min(max_runner_ups, max(0, max_priority_rank - 1))
     allowed_reasons = _normalize_reason_set(cascade_allowed_reasons) or set(_CASCADE_ELIGIBLE_REASONS)
+    if candidate_specific_reentry_block:
+        allowed_reasons.add("same_symbol_loss_reentry_blocked")
     blocked_reasons = _normalize_reason_set(cascade_blocked_reasons)
     plan: Dict[str, Any] = {
         "attempted": False,
@@ -183,6 +189,7 @@ def build_entry_candidate_cascade_plan(
         "max_positions": int(max_positions),
         "capacity_remaining": max(0, int(max_positions) - int(open_position_count)),
         "entry_guard_reason": guard_reason,
+        "candidate_specific_reentry_block": candidate_specific_reentry_block,
     }
     if not selected_sym:
         plan["blocked_reason"] = "missing_selected_symbol"
@@ -205,19 +212,20 @@ def build_entry_candidate_cascade_plan(
                 "override_reason": str(hard_block_override_reason or ""),
             }
         )
-    if entry_guard_blocked:
+    if entry_guard_blocked and not candidate_specific_reentry_block:
         plan["blocked_reason"] = "entry_guard_blocked"
         return plan
-    if entry_triggered:
+    if entry_triggered and not candidate_specific_reentry_block:
         plan["blocked_reason"] = "top_pick_triggered"
         return plan
     if not bool(cascade_enabled) or max_runner_ups <= 0:
         plan["blocked_reason"] = "cascade_disabled_by_entry_control"
         return plan
-    if reason in blocked_reasons:
+    cascade_reason = guard_reason if candidate_specific_reentry_block else reason
+    if cascade_reason in blocked_reasons:
         plan["blocked_reason"] = "reason_cascade_blocked_by_policy"
         return plan
-    if reason not in allowed_reasons:
+    if cascade_reason not in allowed_reasons:
         plan["blocked_reason"] = "reason_not_cascade_eligible"
         return plan
 
@@ -227,6 +235,8 @@ def build_entry_candidate_cascade_plan(
         for symbol in list(excluded_symbols or [])
         if normalize_symbol(symbol)
     }
+    if candidate_specific_reentry_block:
+        excluded.add(selected_sym)
     selected_score = None
     for index, row in enumerate(list(ranked_candidates or []), start=1):
         if not isinstance(row, Mapping):

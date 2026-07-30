@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from libs.reporting.quant_shadow_forward_outcomes import attach_forward_outcomes
+import json
+
+from libs.reporting.quant_shadow_forward_outcomes import (
+    attach_forward_outcomes,
+    load_minute_rows_from_state,
+)
 
 
 def test_attach_forward_outcomes_classifies_missing_minute_rows_as_unavailable() -> None:
@@ -15,6 +20,42 @@ def test_attach_forward_outcomes_classifies_missing_minute_rows_as_unavailable()
     )
 
     assert out[0]["shadow_forward_outcome"]["reason"] == "minute_rows_unavailable"
+
+
+def test_attach_forward_outcomes_uses_q9_snapshot_price_series_fallback() -> None:
+    candidates = [
+        {
+            "symbol": "005930",
+            "shadow_forward_base": {
+                "available": True,
+                "baseline_epoch": 1782172800,
+                "baseline_price": 100.0,
+            },
+        },
+        {
+            "symbol": "005930",
+            "shadow_forward_base": {
+                "available": True,
+                "baseline_epoch": 1782173100,
+                "baseline_price": 101.0,
+            },
+        },
+        {
+            "symbol": "005930",
+            "shadow_forward_base": {
+                "available": True,
+                "baseline_epoch": 1782173700,
+                "baseline_price": 102.0,
+            },
+        },
+    ]
+
+    out = attach_forward_outcomes(candidates, minute_rows_by_symbol={})
+
+    assert out[0]["shadow_forward_outcome"]["available"] is True
+    assert out[0]["shadow_forward_outcome"]["observation_source"] == "q9_scanner_snapshot_series"
+    assert out[0]["shadow_forward_outcome"]["checkpoints"]["+5m"]["return_pct"] == 1.0
+    assert out[0]["shadow_forward_outcome"]["checkpoints"]["+15m"]["return_pct"] == 2.0
 
 
 def test_attach_forward_outcomes_rejects_cross_day_target_row() -> None:
@@ -148,3 +189,53 @@ def test_attach_forward_outcomes_rejects_stale_baseline_day() -> None:
 
     assert out[0]["shadow_forward_outcome"]["available"] is False
     assert out[0]["shadow_forward_outcome"]["reason"] == "stale_baseline_cross_day"
+
+
+def test_minute_state_cache_invalidates_when_state_file_changes(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "recent_minute_ohlcv_by_symbol": {
+                    "005930": {
+                        "rows": [
+                            {
+                                "ts": 100,
+                                "close": 70000,
+                                "high": 70100,
+                                "low": 69900,
+                            }
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = load_minute_rows_from_state(state_path)
+    assert first["005930"][0]["close"] == 70000.0
+
+    state_path.write_text(
+        json.dumps(
+            {
+                "recent_minute_ohlcv_by_symbol": {
+                    "005930": {
+                        "rows": [
+                            {
+                                "ts": 101,
+                                "close": 71000,
+                                "high": 71100,
+                                "low": 70900,
+                            }
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    second = load_minute_rows_from_state(state_path)
+
+    assert second["005930"][0]["ts"] == 101
+    assert second["005930"][0]["close"] == 71000.0

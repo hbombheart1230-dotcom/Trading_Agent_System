@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 
@@ -118,9 +119,15 @@ def _normalize_rows(value: Any) -> list[Dict[str, Any]]:
     return rows
 
 
-def load_minute_rows_from_state(state_path: Path = Path("data/state.json")) -> Dict[str, list[Dict[str, Any]]]:
+@lru_cache(maxsize=4)
+def _load_minute_rows_from_state_cached(
+    resolved_path: str,
+    mtime_ns: int,
+    size: int,
+) -> Dict[str, list[Dict[str, Any]]]:
+    del mtime_ns, size
     try:
-        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+        state = json.loads(Path(resolved_path).read_text(encoding="utf-8"))
     except Exception:
         return {}
     if not isinstance(state, Mapping):
@@ -140,20 +147,60 @@ def load_minute_rows_from_state(state_path: Path = Path("data/state.json")) -> D
     return {str(symbol): _normalize_rows(rows) for symbol, rows in root.items()}
 
 
+def load_minute_rows_from_state(state_path: Path = Path("data/state.json")) -> Dict[str, list[Dict[str, Any]]]:
+    path = Path(state_path)
+    try:
+        stat = path.stat()
+        resolved_path = str(path.resolve())
+    except Exception:
+        return {}
+    return _load_minute_rows_from_state_cached(
+        resolved_path,
+        int(stat.st_mtime_ns),
+        int(stat.st_size),
+    )
+
+
 def attach_forward_outcomes(
     candidates: Iterable[Mapping[str, Any]],
     *,
     minute_rows_by_symbol: Mapping[str, list[Mapping[str, Any]]] | None = None,
 ) -> list[Dict[str, Any]]:
+    candidate_rows = [dict(candidate) for candidate in candidates]
     rows_by_symbol = minute_rows_by_symbol if minute_rows_by_symbol is not None else load_minute_rows_from_state()
+    snapshot_rows: dict[str, dict[int, Dict[str, Any]]] = {}
+    for candidate in candidate_rows:
+        symbol = _text(candidate.get("symbol"))
+        base = candidate.get("shadow_forward_base")
+        base = base if isinstance(base, Mapping) else {}
+        epoch = _to_int(base.get("baseline_epoch"), 0)
+        price = _to_float(base.get("baseline_price"), None)
+        if not symbol or epoch <= 0 or price is None or price <= 0:
+            continue
+        snapshot_rows.setdefault(symbol, {})[epoch] = {
+            "ts": epoch,
+            "close": float(price),
+            "high": float(price),
+            "low": float(price),
+            "raw_ts": _text(base.get("baseline_raw_ts")),
+        }
     out: list[Dict[str, Any]] = []
-    for candidate in candidates:
+    for candidate in candidate_rows:
         row = dict(candidate)
         symbol = _text(row.get("symbol"))
         base = row.get("shadow_forward_base") if isinstance(row.get("shadow_forward_base"), Mapping) else {}
         base_epoch = _to_int(base.get("baseline_epoch"), 0) if isinstance(base, Mapping) else 0
         base_price = _to_float(base.get("baseline_price"), None) if isinstance(base, Mapping) else None
         minute_rows = list(rows_by_symbol.get(symbol) or [])
+        observation_source = "state.minute_ohlcv_by_symbol"
+        if not minute_rows:
+            fallback_rows = sorted(
+                (snapshot_rows.get(symbol) or {}).values(),
+                key=lambda item: int(item.get("ts") or 0),
+            )
+            if len(fallback_rows) >= 2:
+                minute_rows = fallback_rows
+                observation_source = "q9_scanner_snapshot_series"
         generated_epoch = _parse_epoch(row.get("_payload_generated_at") or row.get("generated_at"))
         generated_day = _kst_day_from_epoch(generated_epoch)
         if (base_epoch <= 0 or base_price is None or base_price <= 0) and minute_rows:
@@ -304,6 +351,7 @@ def attach_forward_outcomes(
             "observed_checkpoint_count": observed,
             "baseline_price": base_price,
             "baseline_epoch": base_epoch,
+            "observation_source": observation_source,
             "checkpoints": checkpoints,
             "behavior_effect": "evaluation_only",
         }

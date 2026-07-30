@@ -121,6 +121,28 @@ def test_candidate_cascade_hard_blocks_held_top_pick_even_when_capacity_remains(
     assert plan["hard_blocked_reason"] == "same_symbol_position_open"
 
 
+def test_loss_reentry_block_excludes_top_pick_but_keeps_runner_review() -> None:
+    plan = build_entry_candidate_cascade_plan(
+        selected_symbol="005930",
+        ranked_candidates=[
+            {"symbol": "005930", "rank": 1, "score_total": 1.00},
+            {"symbol": "000660", "rank": 2, "score_total": 0.95},
+        ],
+        scanner_output={},
+        open_position_count=0,
+        max_positions=3,
+        entry_guard_blocked=True,
+        entry_guard_reason="same_symbol_loss_reentry_blocked",
+        entry_triggered=True,
+        entry_reason="pullback_structure_above_vwap_with_volume_confirmation",
+        max_runner_ups=2,
+    )
+
+    assert plan["candidate_specific_reentry_block"] is True
+    assert plan["attempted"] is True
+    assert [row["symbol"] for row in plan["runner_rows"]] == ["000660"]
+
+
 def test_candidate_cascade_skips_runner_ups_above_rank_limit() -> None:
     candidates = [
         {"symbol": "005930", "rank": 1},

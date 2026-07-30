@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
@@ -9,6 +10,7 @@ from libs.reporting.quant_shadow_forward_outcomes import attach_forward_outcomes
 
 
 Q9_DECISION_SCHEMA = "q9_decision_windows.v1"
+_KRX_SYMBOL_RE = re.compile(r"^\d{6}$")
 
 
 def _synthetic_identity(row: dict[str, Any]) -> bool:
@@ -16,7 +18,46 @@ def _synthetic_identity(row: dict[str, Any]) -> bool:
         str(row.get(key) or "").lower()
         for key in ("decision_id", "q9_decision_id", "run_id", "candidate_pool_id")
     )
-    return any(marker in identity for marker in ("test", "fixture", "synthetic"))
+    if any(marker in identity for marker in ("test", "fixture", "synthetic")):
+        return True
+    symbols: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in {
+                    "symbol",
+                    "ticker",
+                    "selected_symbol",
+                    "top1_symbol",
+                    "candidate_symbol",
+                }:
+                    text = str(child or "").strip()
+                    if text:
+                        symbols.append(text)
+                elif isinstance(child, (dict, list)):
+                    collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(row)
+    return any(not _KRX_SYMBOL_RE.fullmatch(symbol) for symbol in symbols)
+
+
+def _regular_session_window(row: dict[str, Any]) -> bool:
+    parsed = _parse_window_kst(row.get("generated_at"))
+    if parsed is None:
+        return True
+    return (9, 0) <= (parsed.hour, parsed.minute) <= (15, 30)
+
+
+def is_synthetic_evaluation_row(row: dict[str, Any]) -> bool:
+    return _synthetic_identity(row)
+
+
+def is_regular_session_evaluation_row(row: dict[str, Any]) -> bool:
+    return _regular_session_window(row)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -56,7 +97,16 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
     windows = [row for row in payload.get("windows") or [] if isinstance(row, dict)]
     scanner_windows = [row for row in windows if isinstance(row.get("scanner_control"), dict)]
     synthetic_windows = [row for row in scanner_windows if _synthetic_identity(row)]
-    trusted_scanner_windows = [row for row in scanner_windows if row not in synthetic_windows]
+    post_session_windows = [
+        row
+        for row in scanner_windows
+        if row not in synthetic_windows and not _regular_session_window(row)
+    ]
+    trusted_scanner_windows = [
+        row
+        for row in scanner_windows
+        if row not in synthetic_windows and row not in post_session_windows
+    ]
     shadow_root = Path(reports_root).parent / "data" / "logs" / "quant_shadow_candidates" / day
     shadow_payloads: list[dict[str, Any]] = []
     if shadow_root.exists():
@@ -77,9 +127,11 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
             ):
                 continue
             row = dict(raw)
-            if _synthetic_identity(row):
-                continue
             row.setdefault("_payload_generated_at", generated_at)
+            if _synthetic_identity(row) or not _regular_session_window(
+                {"generated_at": generated_at}
+            ):
+                continue
             pre_rows.append(row)
     observed_rows = attach_forward_outcomes(pre_rows) if pre_rows else []
     forward_observed = sum(
@@ -207,6 +259,7 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
                 and not str((row.get("strategist_selection") or {}).get("selected_symbol") or "")
             ),
             "synthetic_window_count": len(synthetic_windows),
+            "post_session_window_count": len(post_session_windows),
             "first_scanner_window_kst": first_window.isoformat() if first_window else "",
             "last_scanner_window_kst": last_window.isoformat() if last_window else "",
             "last_q9_runtime_evidence_kst": (

@@ -5,6 +5,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
 
+from libs.reporting.evaluation.artifact_inventory import (
+    is_regular_session_evaluation_row,
+    is_synthetic_evaluation_row,
+)
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -44,7 +49,13 @@ def _top(counter: Counter[str], limit: int = 10) -> list[dict[str, Any]]:
 
 def _q9_windows(reports_root: Path, day: str) -> list[dict[str, Any]]:
     payload = _read_json(reports_root / "operator_summary" / "daily" / day / "q9_decision_windows.json")
-    return [row for row in payload.get("windows") or [] if isinstance(row, dict)]
+    return [
+        row
+        for row in payload.get("windows") or []
+        if isinstance(row, dict)
+        and not is_synthetic_evaluation_row(row)
+        and is_regular_session_evaluation_row(row)
+    ]
 
 
 def _baseline_samsung(reports_root: Path, day: str) -> dict[str, Any]:
@@ -144,6 +155,7 @@ def build_no_trade_attribution_report(
     commander_reasons: Counter[str] = Counter()
     commander_details: Counter[str] = Counter()
     monitor_intents: Counter[str] = Counter()
+    monitor_noop_reasons: Counter[str] = Counter()
     scanner_top1: Counter[str] = Counter()
     strategist_selected: Counter[str] = Counter()
     commander_selected: Counter[str] = Counter()
@@ -167,6 +179,14 @@ def build_no_trade_attribution_report(
         if detail:
             commander_details[detail[:160]] += 1
         monitor_intents[intent] += 1
+        monitor_observation = _mapping(commander.get("monitor_observation"))
+        monitor_reason = str(
+            commander.get("monitor_reason")
+            or monitor_observation.get("reason")
+            or ""
+        )
+        if intent == "NOOP" and monitor_reason:
+            monitor_noop_reasons[monitor_reason] += 1
         if decision == "approve" and intent == "NOOP":
             approve_noop += 1
         if decision == "approve" and intent == "BUY":
@@ -180,8 +200,17 @@ def build_no_trade_attribution_report(
             no_trade_class = "MISSING_Q9_EVIDENCE"
             primary_issue = "q9_windows_missing"
         elif approve_noop > 0:
-            no_trade_class = "OVER_FILTERING_CANDIDATE"
-            primary_issue = "commander_approved_but_monitor_noop"
+            q11_avg_net = _num(q11.get("avg_net_return_pct"))
+            if int(q11.get("virtual_trades") or 0) > 0 and (
+                q11_avg_net is not None and q11_avg_net > 0
+            ):
+                no_trade_class = "POSSIBLE_OVER_FILTERING"
+                primary_issue = "positive_net_shadow_blocked_after_commander_approval"
+            else:
+                no_trade_class = "FILTERING_REVIEW_REQUIRED"
+                primary_issue = (
+                    "commander_approved_monitor_noop_requires_forward_review"
+                )
         elif commander_decisions.get("reject", 0) > 0:
             no_trade_class = "UPSTREAM_REJECTED"
             primary_issue = "commander_rejected_candidates"
@@ -217,6 +246,7 @@ def build_no_trade_attribution_report(
         "commander_reasons": _top(commander_reasons),
         "commander_details": _top(commander_details),
         "monitor_intents": _top(monitor_intents),
+        "monitor_noop_reasons": _top(monitor_noop_reasons),
         "scanner_top1": _top(scanner_top1),
         "strategist_selected": _top(strategist_selected),
         "commander_selected": _top(commander_selected),
@@ -251,6 +281,7 @@ def render_no_trade_attribution_report(payload: Mapping[str, Any]) -> str:
         ("Commander Reasons", "commander_reasons"),
         ("Commander Details", "commander_details"),
         ("Monitor Intents", "monitor_intents"),
+        ("Monitor NOOP Reasons", "monitor_noop_reasons"),
         ("Scanner Top1", "scanner_top1"),
         ("Strategist Selected", "strategist_selected"),
     ):
