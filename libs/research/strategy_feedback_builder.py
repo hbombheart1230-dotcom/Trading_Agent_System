@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from .strategy_memory_store import load_recent_strategy_feedback
@@ -30,13 +31,18 @@ def _append_unique(out: List[str], value: Any, *, limit: int = 8) -> None:
 
 
 def aggregate_theme_performance(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Summarize reporter theme frequency without inventing return attribution.
+
+    A reporter record contains run-level realized PnL, not a theme-level return.
+    Assigning that amount to every proposed theme made the legacy feedback look
+    like percentage performance. Keep this surface qualitative only.
+    """
+
     buckets: Dict[str, Dict[str, Any]] = {}
     for record in records:
         strategist_eval = record.get("strategist_evaluation") if isinstance(record.get("strategist_evaluation"), dict) else {}
         themes = strategist_eval.get("themes_proposed") if isinstance(strategist_eval.get("themes_proposed"), list) else []
         alignment = str(strategist_eval.get("theme_alignment_status") or "").strip().lower()
-        performance = record.get("performance_summary") if isinstance(record.get("performance_summary"), dict) else {}
-        pnl = _safe_float(performance.get("estimated_realized_pnl_total"), 0.0)
         for theme in themes:
             name = str(theme or "").strip().lower()
             if not name:
@@ -45,17 +51,12 @@ def aggregate_theme_performance(records: List[Dict[str, Any]]) -> Dict[str, Dict
                 name,
                 {
                     "appearance_count": 0,
-                    "win_count": 0,
                     "alignment_count": 0,
-                    "pnl_total": 0.0,
                     "trade_count_total": 0,
                 },
             )
             bucket["appearance_count"] += 1
             bucket["trade_count_total"] += _safe_int((record.get("trade_summary") or {}).get("trade_count"), 0)
-            bucket["pnl_total"] += pnl
-            if pnl > 0:
-                bucket["win_count"] += 1
             if alignment == "aligned":
                 bucket["alignment_count"] += 1
 
@@ -64,39 +65,63 @@ def aggregate_theme_performance(records: List[Dict[str, Any]]) -> Dict[str, Dict
         appearances = max(1, _safe_int(bucket.get("appearance_count"), 1))
         out[theme] = {
             "appearance_count": int(appearances),
-            "win_rate": round(_safe_int(bucket.get("win_count"), 0) / appearances, 4),
-            "avg_return": round(_safe_float(bucket.get("pnl_total"), 0.0) / appearances, 6),
             "alignment_rate": round(_safe_int(bucket.get("alignment_count"), 0) / appearances, 4),
             "trade_count_total": int(_safe_int(bucket.get("trade_count_total"), 0)),
+            "performance_metric_usable": False,
+            "metric_basis": "qualitative_reporter_frequency_only",
         }
     return dict(sorted(out.items(), key=lambda kv: (-_safe_int(kv[1].get("appearance_count"), 0), kv[0]))[:8])
 
 
 def aggregate_playbook_performance(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Summarize playbook mention frequency without treating PnL as return."""
+
     buckets: Dict[str, Dict[str, Any]] = {}
     for record in records:
         frame = record.get("strategy_frame_summary") if isinstance(record.get("strategy_frame_summary"), dict) else {}
         playbook_counts = frame.get("playbook_top") if isinstance(frame.get("playbook_top"), dict) else {}
-        performance = record.get("performance_summary") if isinstance(record.get("performance_summary"), dict) else {}
-        pnl = _safe_float(performance.get("estimated_realized_pnl_total"), 0.0)
         for playbook, count in playbook_counts.items():
             name = str(playbook or "").strip().lower()
             if not name:
                 continue
-            bucket = buckets.setdefault(name, {"appearance_count": 0, "win_count": 0, "pnl_total": 0.0})
+            bucket = buckets.setdefault(name, {"appearance_count": 0, "report_count": 0})
             bucket["appearance_count"] += _safe_int(count, 0)
-            bucket["pnl_total"] += pnl
-            if pnl > 0:
-                bucket["win_count"] += 1
+            bucket["report_count"] += 1
     out: Dict[str, Dict[str, Any]] = {}
     for playbook, bucket in buckets.items():
         appearances = max(1, _safe_int(bucket.get("appearance_count"), 1))
         out[playbook] = {
             "appearance_count": int(appearances),
-            "win_rate": round(_safe_int(bucket.get("win_count"), 0) / appearances, 4),
-            "avg_return": round(_safe_float(bucket.get("pnl_total"), 0.0) / appearances, 6),
+            "report_count": _safe_int(bucket.get("report_count"), 0),
+            "performance_metric_usable": False,
+            "metric_basis": "qualitative_reporter_frequency_only",
         }
     return dict(sorted(out.items(), key=lambda kv: (-_safe_int(kv[1].get("appearance_count"), 0), kv[0]))[:8])
+
+
+def _record_day(record: Dict[str, Any]) -> str:
+    raw = str(record.get("day") or "").strip()
+    if len(raw) >= 10:
+        try:
+            return date.fromisoformat(raw[:10]).isoformat()
+        except ValueError:
+            pass
+    timestamp = str(record.get("timestamp") or "").strip().replace("Z", "+00:00")
+    if timestamp:
+        try:
+            return datetime.fromisoformat(timestamp).date().isoformat()
+        except ValueError:
+            pass
+    return ""
+
+
+def _age_days(*, latest_day: str, as_of_day: str) -> int | None:
+    if not latest_day or not as_of_day:
+        return None
+    try:
+        return max(0, (date.fromisoformat(as_of_day[:10]) - date.fromisoformat(latest_day[:10])).days)
+    except ValueError:
+        return None
 
 
 def aggregate_monitor_issues(records: List[Dict[str, Any]]) -> List[str]:
@@ -221,8 +246,17 @@ def build_recent_strategy_feedback(
     *,
     path: Optional[str] = None,
     records: Optional[List[Dict[str, Any]]] = None,
+    as_of_day: Optional[str] = None,
+    max_age_days: int = 7,
 ) -> Dict[str, Any]:
     rows = list(records) if isinstance(records, list) else load_recent_strategy_feedback(last_n_runs, path=path)
+    record_days = sorted(day for day in (_record_day(row) for row in rows) if day)
+    latest_feedback_day = record_days[-1] if record_days else ""
+    feedback_age_days = _age_days(
+        latest_day=latest_feedback_day,
+        as_of_day=str(as_of_day or ""),
+    )
+    stale = feedback_age_days is not None and feedback_age_days > max(0, int(max_age_days))
     theme_perf = aggregate_theme_performance(rows)
     playbook_perf = aggregate_playbook_performance(rows)
     monitor_issues = aggregate_monitor_issues(rows)
@@ -235,7 +269,24 @@ def build_recent_strategy_feedback(
     report_focus = _suggested_report_focus(monitor_issues, scanner_issues, guard_patterns, overtrading_patterns)
 
     return {
+        "schema_version": "recent_strategy_feedback.v2",
+        "status": "stale" if stale else "ok" if rows else "empty",
         "feedback_window_size": int(len(rows)),
+        "latest_feedback_day": latest_feedback_day,
+        "as_of_day": str(as_of_day or ""),
+        "age_days": feedback_age_days,
+        "max_age_days": max(0, int(max_age_days)),
+        "performance_authority": "reports.performance.strategy_memory",
+        "legacy_reporter_feedback_role": "qualitative_only",
+        "performance_metric_usable": False,
+        "quality_flags": [
+            "legacy_reporter_pnl_not_return_pct",
+            *(
+                ["legacy_reporter_feedback_stale"]
+                if stale
+                else []
+            ),
+        ],
         "recent_theme_performance": theme_perf,
         "recent_playbook_performance": playbook_perf,
         "recent_monitor_issues": monitor_issues,

@@ -230,8 +230,14 @@ def _load_recent_strategy_feedback(state: Dict[str, Any], policy: Dict[str, Any]
     else:
         raw_window = 12
     last_n_runs = max(1, _to_int(raw_window, 12))
-    feedback = build_recent_strategy_feedback(last_n_runs)
-    feedback["status"] = "ok" if int(feedback.get("feedback_window_size") or 0) > 0 else "empty"
+    feedback = build_recent_strategy_feedback(
+        last_n_runs,
+        as_of_day=_resolve_state_day(state),
+    )
+    feedback.setdefault(
+        "status",
+        "ok" if int(feedback.get("feedback_window_size") or 0) > 0 else "empty",
+    )
     feedback["requested_window_size"] = int(last_n_runs)
     feedback["policy_source"] = str(policy_source)
     return feedback
@@ -1822,12 +1828,14 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         else (
             "You MUST use the provided deterministic memory packets as primary constraints: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
             "You MUST convert those inputs into explicit strategy adjustment directives. "
+            "When recent_strategy_feedback is stale, empty, disabled, or performance_metric_usable=false, exclude it from performance inference and use strategy_memory plus memory_packets as the performance authority. "
             "For Stage 1, use broad daily/weekly/monthly performance memory only and do not infer symbol-specific bias unless a selected-symbol refresh is requested. "
         )
         if call_kind == "market_strategy_frame"
         else (
             "You MUST use the provided deterministic memory packets as primary constraints: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
             "You MUST convert those inputs into explicit strategy adjustment directives. "
+            "When recent_strategy_feedback is stale, empty, disabled, or performance_metric_usable=false, exclude it from performance inference and use strategy_memory plus memory_packets as the performance authority. "
         )
     )
     memory_user_instruction = (
@@ -1836,6 +1844,7 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         else (
             "The memory packets are not optional background. They are the main basis for strategic adjustment. "
             "Input packets: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
+            "Treat recent_strategy_feedback as qualitative-only and exclude it when stale or marked performance_metric_usable=false. "
         )
     )
     memory_sensitive_directives = (
@@ -2255,24 +2264,76 @@ def _compact_performance_summary_map(raw: Any, *, max_items: int = 3) -> Dict[st
     rows.sort(key=lambda item: (-item[1], item[0]))
     out: Dict[str, Any] = {}
     for name, _priority, item in rows[: max(0, int(max_items))]:
-        out[name] = {
+        compact_item = {
             "appearance_count": int(item.get("appearance_count") or 0),
-            "win_rate": _round_optional(item.get("win_rate"), 4),
-            "avg_return": _round_optional(item.get("avg_return"), 4),
+            "metric_basis": str(item.get("metric_basis") or ""),
+            "performance_metric_usable": bool(
+                item.get("performance_metric_usable")
+            ),
         }
+        if bool(item.get("performance_metric_usable")):
+            compact_item["win_rate"] = _round_optional(item.get("win_rate"), 4)
+            compact_item["avg_return_pct"] = _round_optional(
+                item.get("avg_return_pct"),
+                4,
+            )
+        out[name] = compact_item
     return out
 
 
 def _compact_recent_strategy_feedback_for_llm(feedback: Any) -> Dict[str, Any]:
     src = feedback if isinstance(feedback, dict) else {}
+    status = str(src.get("status") or "")
+    if status in {"stale", "disabled", "empty"}:
+        return {
+            "schema_version": str(
+                src.get("schema_version") or "recent_strategy_feedback.v2"
+            ),
+            "status": status,
+            "feedback_window_size": int(src.get("feedback_window_size") or 0),
+            "latest_feedback_day": str(src.get("latest_feedback_day") or ""),
+            "age_days": src.get("age_days"),
+            "performance_authority": str(
+                src.get("performance_authority")
+                or "reports.performance.strategy_memory"
+            ),
+            "legacy_reporter_feedback_role": "excluded_from_strategy_input",
+            "quality_flags": [
+                str(value)
+                for value in list(src.get("quality_flags") or [])[:4]
+                if str(value or "").strip()
+            ],
+            "advisory_only": True,
+        }
     return {
+        "schema_version": str(
+            src.get("schema_version") or "recent_strategy_feedback.v2"
+        ),
+        "status": status or "ok",
         "feedback_window_size": int(src.get("feedback_window_size") or 0),
+        "latest_feedback_day": str(src.get("latest_feedback_day") or ""),
+        "age_days": src.get("age_days"),
+        "performance_authority": str(
+            src.get("performance_authority")
+            or "reports.performance.strategy_memory"
+        ),
+        "legacy_reporter_feedback_role": str(
+            src.get("legacy_reporter_feedback_role") or "qualitative_only"
+        ),
+        "performance_metric_usable": bool(
+            src.get("performance_metric_usable")
+        ),
         "top_recent_strengths": [str(x or "") for x in list(src.get("top_recent_strengths") or [])[:3]],
         "top_recent_weaknesses": [str(x or "") for x in list(src.get("top_recent_weaknesses") or [])[:4]],
         "recent_reporter_summary": [str(x or "") for x in list(src.get("recent_reporter_summary") or [])[:2]],
         "suggested_report_focus": [str(x or "") for x in list(src.get("suggested_report_focus") or [])[:4]],
         "recent_theme_performance": _compact_performance_summary_map(src.get("recent_theme_performance"), max_items=3),
         "recent_playbook_performance": _compact_performance_summary_map(src.get("recent_playbook_performance"), max_items=3),
+        "quality_flags": [
+            str(value)
+            for value in list(src.get("quality_flags") or [])[:4]
+            if str(value or "").strip()
+        ],
         "advisory_only": bool(src.get("advisory_only", True)),
     }
 

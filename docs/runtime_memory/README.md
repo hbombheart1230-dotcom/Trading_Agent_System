@@ -71,6 +71,12 @@ Use `docs/runtime_memory` for:
 - keeps existing strategy-memory gates and deterministic bias sources intact
 - exposes the same curated summaries to strategist prompt context, artifacts, and commander quality diagnostics
 
+8. `memory_integrity_cleanup_2026-07-30.md`
+- fixes the authority and unit boundary between canonical performance memory and legacy Reporter feedback
+- defines freshness exclusion for legacy qualitative feedback
+- separates context visibility from deterministic scanner/monitor delta application in `memory_usage_trace`
+- removes package import-order dependence from the runtime-memory test surface
+
 Current additive implementation:
 
 - Commander now surfaces raw memory packets in `commander_decision`

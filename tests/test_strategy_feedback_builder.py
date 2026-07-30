@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from graphs.nodes.strategist_node import _compact_recent_strategy_feedback_for_llm
 from libs.research.strategy_feedback_builder import build_recent_strategy_feedback
 
 
@@ -72,3 +73,44 @@ def test_strategy_feedback_builder_aggregates_recent_patterns() -> None:
     assert "max_notional" in out["recent_guard_patterns"]
     assert isinstance(out["recent_reporter_summary"], list)
     assert out["advisory_only"] is True
+    assert out["performance_metric_usable"] is False
+    assert out["recent_playbook_performance"]["breakout"]["metric_basis"] == (
+        "qualitative_reporter_frequency_only"
+    )
+    assert "avg_return" not in out["recent_playbook_performance"]["breakout"]
+    assert "win_rate" not in out["recent_playbook_performance"]["breakout"]
+
+
+def test_stale_reporter_feedback_is_excluded_from_llm_input() -> None:
+    records = [
+        {
+            "run_id": "reporter-old",
+            "day": "2026-06-18",
+            "timestamp": "2026-06-18T07:00:00+00:00",
+            "strategy_frame_summary": {"playbook_top": {"pullback": 140}},
+            "performance_summary": {
+                "estimated_realized_pnl_total": 123456.0,
+            },
+            "monitor_evaluation": {
+                "monitor_status": "stable",
+                "assessment": "legacy assessment",
+            },
+        }
+    ]
+
+    feedback = build_recent_strategy_feedback(
+        12,
+        records=records,
+        as_of_day="2026-07-21",
+    )
+    compact = _compact_recent_strategy_feedback_for_llm(feedback)
+
+    assert feedback["status"] == "stale"
+    assert feedback["age_days"] == 33
+    assert compact["status"] == "stale"
+    assert compact["legacy_reporter_feedback_role"] == (
+        "excluded_from_strategy_input"
+    )
+    assert "recent_playbook_performance" not in compact
+    assert "top_recent_weaknesses" not in compact
+    assert "legacy_reporter_feedback_stale" in compact["quality_flags"]

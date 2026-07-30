@@ -117,9 +117,25 @@ def test_strategist_explanation_fields_capture_memory_and_role_boundary() -> Non
     assert fields["strategy_thesis"]["selected_playbook"] == "pullback"
     assert fields["memory_usage_trace"]["layer_decisions"]["daily"]["used"] is True
     assert fields["memory_usage_trace"]["layer_decisions"]["daily"]["effect"] == "primary_strategy_memory+scanner_delta+monitor_delta"
+    assert fields["memory_usage_trace"]["layer_decisions"]["daily"]["use_kind"] == "context_and_deterministic_delta"
+    assert fields["memory_usage_trace"]["layer_decisions"]["daily"]["deterministic_delta_applied"] is True
+    assert fields["memory_usage_trace"]["application_summary"] == {
+        "context_used": True,
+        "context_layer_count": 1,
+        "scanner_delta_applied": True,
+        "monitor_delta_applied": True,
+        "deterministic_delta_applied": True,
+        "llm_memory_usage_status": "not_reported",
+        "causal_strategy_change_attributed": False,
+    }
+    assert (
+        fields["memory_usage_trace"]["applied_to_strategy"]["playbook_effect"]
+        == "memory_context_visible_no_attributed_playbook_change"
+    )
     assert fields["memory_usage_trace"]["scanner_application"]["source_delta_keys"] == ["top_change_rate"]
     assert fields["memory_usage_trace"]["monitor_application"]["entry_delta_keys"] == ["volume_ratio_min_delta"]
     assert fields["memory_usage_trace"]["layer_decisions"]["symbol"]["used"] is False
+    assert fields["memory_usage_trace"]["layer_decisions"]["symbol"]["use_kind"] == "blocked"
     assert fields["memory_usage_trace"]["layer_decisions"]["symbol"]["gate_reason"] == "insufficient_trade_count"
     assert fields["memory_usage_trace"]["layer_decisions"]["symbol"]["effect"] == "blocked:insufficient_trade_count"
     assert fields["news_usage_trace"]["source_event"] == "strategist.news_evidence_ranked"

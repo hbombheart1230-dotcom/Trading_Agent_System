@@ -220,6 +220,9 @@ def build_memory_usage_trace(
         )
         if str(x or "").strip()
     ]
+    scanner_delta_applied = bool(scanner_delta_keys or scanner_symbol_adjustments)
+    monitor_delta_applied = bool(monitor_delta_keys)
+    deterministic_delta_applied = bool(scanner_delta_applied or monitor_delta_applied)
 
     layer_to_packet_key = {
         "daily": "daily_strategy_memory",
@@ -247,6 +250,18 @@ def build_memory_usage_trace(
             "active": bool(packet.get("active")) if packet else False,
             "visible": bool(packet),
             "used": bool(used),
+            "use_kind": (
+                "unavailable"
+                if not packet
+                else "blocked"
+                if not used
+                else "context_and_deterministic_delta"
+                if layer == "daily" and deterministic_delta_applied
+                else "context_only"
+            ),
+            "deterministic_delta_applied": bool(
+                used and layer == "daily" and deterministic_delta_applied
+            ),
             "confidence": _packet_confidence(packet),
             "operator_summary": _operator_summary_ref(packet),
             "effect": effect,
@@ -268,16 +283,31 @@ def build_memory_usage_trace(
         layer_decisions[layer] = decision
 
     policy_signals = _dict(commander_policy.get("policy_signals"))
+    raw_memory_usage = _dict(strategist_output.get("memory_usage"))
+    llm_memory_usage_status = _text(
+        raw_memory_usage.get("status")
+        or raw_memory_usage.get("usage_status")
+        or raw_memory_usage.get("decision"),
+        max_len=40,
+    )
     applied_to_strategy = {
         "playbook_effect": (
             "memory_disabled_no_playbook_effect"
             if memory_disabled
-            else f"maintain_{_text(strategist_output.get('playbook'), max_len=40) or 'current'}"
+            else "memory_context_visible_no_attributed_playbook_change"
         ),
         "risk_posture_effect": (
             "memory_disabled_no_risk_posture_effect"
             if memory_disabled
-            else _text(policy_signals.get("preferred_risk_posture") or strategist_output.get("risk_tone"), max_len=40)
+            else "context_preferred_risk_posture:"
+            + (
+                _text(
+                    policy_signals.get("preferred_risk_posture")
+                    or strategist_output.get("risk_tone"),
+                    max_len=40,
+                )
+                or "unspecified"
+            )
         ),
         "scanner_guidance_effect": (
             "memory_disabled_no_scanner_effect"
@@ -331,6 +361,16 @@ def build_memory_usage_trace(
             + ("; unused visible layers: " + "; ".join(unused) if unused else "")
         )
     )
+    context_layer_count = sum(1 for row in layer_decisions.values() if row.get("used"))
+    application_summary = {
+        "context_used": bool(context_layer_count),
+        "context_layer_count": context_layer_count,
+        "scanner_delta_applied": scanner_delta_applied,
+        "monitor_delta_applied": monitor_delta_applied,
+        "deterministic_delta_applied": deterministic_delta_applied,
+        "llm_memory_usage_status": llm_memory_usage_status or "not_reported",
+        "causal_strategy_change_attributed": False,
+    }
     return {
         "schema_version": "strategist.memory_usage_trace.v1",
         "memory_usage_disabled": bool(memory_disabled),
@@ -338,6 +378,7 @@ def build_memory_usage_trace(
         "active_layers": active_layers,
         "priority_order": priority_order,
         "layer_decisions": layer_decisions,
+        "application_summary": application_summary,
         "applied_to_strategy": applied_to_strategy,
         "scanner_application": scanner_application,
         "monitor_application": monitor_application,

@@ -186,8 +186,12 @@ def test_numeric_consumers_read_applied_policy_without_env(monkeypatch) -> None:
 def test_strategy_memory_recent_runs_reads_commander_applied_policy(monkeypatch) -> None:
     captured: Dict[str, Any] = {}
 
-    def fake_build_recent_strategy_feedback(last_n_runs: int) -> Dict[str, Any]:
+    def fake_build_recent_strategy_feedback(
+        last_n_runs: int,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
         captured["last_n_runs"] = int(last_n_runs)
+        captured["as_of_day"] = str(kwargs.get("as_of_day") or "")
         return {"feedback_window_size": int(last_n_runs)}
 
     monkeypatch.setattr("graphs.nodes.strategist_node.build_recent_strategy_feedback", fake_build_recent_strategy_feedback)
@@ -208,5 +212,6 @@ def test_strategy_memory_recent_runs_reads_commander_applied_policy(monkeypatch)
     )
 
     assert captured["last_n_runs"] == 9
+    assert captured["as_of_day"]
     assert feedback["requested_window_size"] == 9
     assert feedback["policy_source"] == "commander_applied_policy"
