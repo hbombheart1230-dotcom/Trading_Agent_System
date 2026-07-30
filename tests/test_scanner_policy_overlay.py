@@ -115,8 +115,9 @@ def test_diversification_tie_break():
     result = scanner_node(state)
     
     scanner_output = result.get("scanner_output", {})
-    assert scanner_output.get("diversification_applied") is False
-    assert result.get("selected", {}).get("symbol") in {"AAPL", "MSFT"}
+    assert scanner_output.get("diversification_applied") is True
+    assert scanner_output.get("diversification_bonus_value") == 0.03
+    assert result.get("selected", {}).get("symbol") == "MSFT"
 
 def test_regression_safety():
     scanner_policy = {}

@@ -26,3 +26,11 @@ Current research:
   - validation: July 2026
   - result: `REJECT`
   - no live behavior change
+
+- `alpha_hypothesis_competition_v1_contract_2026-07-30.md`
+  - frozen comparison contract for three independent hypotheses
+
+- `alpha_hypothesis_competition_v1_result_2026-07-30.md`
+  - 102/102 historical symbols complete
+  - all three hypotheses rejected
+  - no shadow or live integration
