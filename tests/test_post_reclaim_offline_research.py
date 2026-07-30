@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from libs.research.post_reclaim_alpha.episodes import build_independent_episodes
@@ -12,6 +13,10 @@ from libs.research.post_reclaim_alpha.evaluator import (
 )
 from libs.research.post_reclaim_alpha.kiwoom_history import (
     KiwoomHistoricalMinuteReader,
+)
+from libs.research.post_reclaim_alpha.executable_policy import (
+    apply_executable_filter,
+    evaluate_executable_policy,
 )
 
 
@@ -207,3 +212,84 @@ def test_kiwoom_history_retries_global_rate_limit(monkeypatch) -> None:
     assert len(rows) == 1
     assert meta["page_count"] == 1
     assert meta["error"] == ""
+
+
+def test_executable_filter_uses_only_pre_entry_prints() -> None:
+    base = 1785369600
+    episodes = [
+        {
+            "episode_id": "e1",
+            "day": "2026-07-30",
+            "symbol": "005930",
+            "baseline_epoch": base,
+        }
+    ]
+    candles = {
+        "005930": [
+            {"ts": base - minute * 60}
+            for minute in range(1, 13)
+        ]
+        + [{"ts": base + minute * 60} for minute in range(0, 20)]
+    }
+
+    result = apply_executable_filter(
+        episodes,
+        minute_rows_by_symbol=candles,
+    )
+
+    policy = result[0]["executable_policy"]
+    assert policy["prior_print_minutes"] == 12
+    assert policy["eligible"] is True
+
+
+def test_executable_policy_decision_is_deterministic() -> None:
+    kst = timezone(timedelta(hours=9))
+    episodes = []
+    candles: dict[str, list[dict]] = {}
+    for index in range(25):
+        day = "2026-06-10" if index < 8 else "2026-07-10"
+        symbol = f"{index:06d}"
+        epoch = int(
+            datetime.fromisoformat(f"{day}T10:{index:02d}:00").replace(
+                tzinfo=kst
+            ).timestamp()
+        )
+        episodes.append(
+            {
+                "episode_id": f"e{index}",
+                "day": day,
+                "symbol": symbol,
+                "baseline_epoch": epoch,
+                "checkpoints": {
+                    "+30m": {
+                        "status": "observed",
+                        "live_net_return_pct": 0.5,
+                    }
+                },
+            }
+        )
+        candles[symbol] = [
+            {"ts": epoch - minute * 60}
+            for minute in range(1, 13)
+        ]
+
+    first = evaluate_executable_policy(
+        episodes,
+        minute_rows_by_symbol=candles,
+    )
+    second = evaluate_executable_policy(
+        episodes,
+        minute_rows_by_symbol=candles,
+    )
+
+    assert first == second
+    assert first["decision"] == "REJECT"
+    assert first["gate_results"]["validation_day_concentration"] is False
+
+
+def test_executable_policy_rejects_insufficient_samples() -> None:
+    payload = evaluate_executable_policy([], minute_rows_by_symbol={})
+
+    assert payload["decision"] == "REJECT"
+    assert payload["gate_results"]["train_observed_count"] is False
+    assert payload["gate_results"]["validation_observed_count"] is False

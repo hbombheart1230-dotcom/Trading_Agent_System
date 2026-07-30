@@ -174,3 +174,28 @@ after observing the result.
 See:
 
 - `../offline_alpha/post_reclaim_offline_research_2026-07-30.md`
+
+## Executable Policy Follow-Up
+
+The final offline executable-policy check is also closed.
+
+Frozen policy:
+
+- at least 12 distinct one-minute prints in the 15 minutes before entry
+- +30-minute exit
+- 0.28% live cost
+- June train / July validation
+
+Result:
+
+- June train: 5 observations, +0.4330% expectancy, PF 3.1540
+- July validation: 6 observations, -0.1642% expectancy, PF 0.3886
+- decision: `REJECT`
+
+The promising unfiltered aggregate did not survive the held-out executable
+liquidity check. No runtime adoption or additional live validation phase is
+authorized.
+
+See:
+
+- `../offline_alpha/post_reclaim_executable_policy_v0_2026-07-30.md`

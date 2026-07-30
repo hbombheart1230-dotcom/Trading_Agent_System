@@ -19,3 +19,10 @@ Current research:
   - result: `RETAIN_SHADOW`
   - performance gates passed
   - fixed +30m forward coverage gate failed at 85.71%
+
+- `post_reclaim_executable_policy_v0_2026-07-30.md`
+  - frozen policy: 12/15 pre-entry print density and +30m exit
+  - train: June 2026
+  - validation: July 2026
+  - result: `REJECT`
+  - no live behavior change

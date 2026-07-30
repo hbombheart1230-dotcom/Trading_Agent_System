@@ -13,6 +13,8 @@ from .evaluator import (
     scanner_baseline_for_days,
     summarize_horizon,
 )
+from .executable_policy import evaluate_executable_policy
+from .executable_report import render_executable_policy_markdown
 from .kiwoom_history import (
     KiwoomHistoricalMinuteReader,
     load_or_fetch_symbol_history,
@@ -121,10 +123,26 @@ def run_post_reclaim_offline_research(
         "promotion_decision": decision,
         "episodes": evaluated,
     }
+    executable_policy = evaluate_executable_policy(
+        evaluated,
+        minute_rows_by_symbol=minute_rows_by_symbol,
+    )
     output_dir = output_root / f"{start}_{end}"
     json_path = output_dir / "post_reclaim_offline_research.json"
     md_path = output_dir / "post_reclaim_offline_research.md"
+    policy_json_path = output_dir / "post_reclaim_executable_policy_v0.json"
+    policy_md_path = output_dir / "post_reclaim_executable_policy_v0.md"
     _write_json(json_path, payload)
+    _write_json(policy_json_path, executable_policy)
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(render_markdown(payload), encoding="utf-8")
-    return {"json": str(json_path), "markdown": str(md_path)}
+    policy_md_path.write_text(
+        render_executable_policy_markdown(executable_policy),
+        encoding="utf-8",
+    )
+    return {
+        "json": str(json_path),
+        "markdown": str(md_path),
+        "executable_policy_json": str(policy_json_path),
+        "executable_policy_markdown": str(policy_md_path),
+    }
