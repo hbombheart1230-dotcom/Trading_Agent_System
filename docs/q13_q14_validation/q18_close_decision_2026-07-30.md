@@ -12,6 +12,10 @@ canonical artifacts do not retain episode-level forward outcomes required for
 promotion. Waiting five more days without changing that artifact contract
 would not repair the historical evidence gap.
 
+Independent verification:
+
+- `q18_validation_audit_2026-07-30.md`
+
 ## Independent Episode Reconstruction
 
 Source:
@@ -75,8 +79,9 @@ profit factor and drawdown required by the fixed Q18 contract.
 - The 35 reconstructed episodes have no persisted per-episode forward result.
 - The 26 aggregate observations cannot be reliably joined back to the 35
   episodes.
-- Episode win rate, average loss, profit factor, MDD, and outcome concentration
-  are therefore unavailable.
+- Production forward reconstruction recovers only 11 of 35 +30m episode
+  outcomes, or 31.43%, versus the fixed 90% coverage requirement.
+- The limited reconstructed sample is cost-negative at +5m, +15m, and +60m.
 - Reconstructing or distributing daily averages across episodes would invent
   evidence.
 

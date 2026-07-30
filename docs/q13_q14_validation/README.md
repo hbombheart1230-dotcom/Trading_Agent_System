@@ -315,6 +315,7 @@ closes without extension.
 Q18 closed immediately as `RETAIN SHADOW`:
 
 - `q18_close_decision_2026-07-30.md`
+- `q18_validation_audit_2026-07-30.md`
 
 The optional five-day extension was not started. No Q19 evaluation phase is
 authorized by the result.
