@@ -5,6 +5,17 @@ from typing import Any, Dict, List, Tuple
 from libs.core.symbols import normalize_symbol
 
 
+MARKET_NATIVE_SOURCES = frozenset(
+    {
+        "top_value",
+        "top_volume",
+        "top_change_rate",
+        "condition_search",
+        "operator_watchlist",
+    }
+)
+
+
 def to_float(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)
@@ -19,6 +30,11 @@ def candidate_theme_match(row: Dict[str, Any]) -> Any:
     if "sector_theme" in sources:
         return True
     return bool(to_float(components.get("theme_boost_component")) > 0.0)
+
+
+def candidate_has_market_native_source(row: Dict[str, Any]) -> bool:
+    sources = row.get("sources") if isinstance(row.get("sources"), list) else []
+    return bool(MARKET_NATIVE_SOURCES.intersection(str(source or "").strip() for source in sources))
 
 
 def extract_themes(state: Dict[str, Any]) -> List[str]:
@@ -170,7 +186,17 @@ def apply_theme_filter(
             "theme_matched_symbols": sorted(list(allowed)),
         }
 
-    filtered = [r for r in rows if normalize_symbol(r.get("symbol")) in allowed]
+    theme_matched = [r for r in rows if normalize_symbol(r.get("symbol")) in allowed]
+    market_native = [
+        r
+        for r in rows
+        if normalize_symbol(r.get("symbol")) not in allowed and candidate_has_market_native_source(r)
+    ]
+    filtered = [
+        row
+        for row in rows
+        if normalize_symbol(row.get("symbol")) in allowed or candidate_has_market_native_source(row)
+    ]
     if not filtered:
         return rows, {
             "theme_filter_applied": False,
@@ -184,6 +210,11 @@ def apply_theme_filter(
         "theme_filter_reason": "",
         "matched_theme_count": int(matched_theme_count),
         "theme_matched_symbols": sorted(list(allowed)),
+        "theme_filtered_count": int(len(theme_matched)),
+        "market_native_bypass_count": int(len(market_native)),
+        "market_native_bypass_symbols": sorted(
+            normalize_symbol(row.get("symbol")) for row in market_native if normalize_symbol(row.get("symbol"))
+        ),
     }
 
 

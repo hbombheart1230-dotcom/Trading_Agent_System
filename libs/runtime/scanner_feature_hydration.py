@@ -270,21 +270,23 @@ def hydrate_scanner_feature_map(
     if not candidate_symbols:
         return {}, "none", feature_errors
 
+    direct_existing: Dict[str, Dict[str, Any]] = {}
     direct = state.get("scanner_features")
     if isinstance(direct, dict) and not refresh_existing:
-        out = {}
         for symbol in candidate_symbols:
             value = direct.get(symbol)
             if isinstance(value, dict):
-                out[symbol] = dict(value)
-        if out:
-            return out, "state.scanner_features", feature_errors
+                direct_existing[symbol] = dict(value)
+        if len(direct_existing) == len(candidate_symbols):
+            return direct_existing, "state.scanner_features", feature_errors
 
     fe_root = state.get("feature_engine") if isinstance(state.get("feature_engine"), dict) else {}
     fe_by_symbol = fe_root.get("by_symbol") if isinstance(fe_root.get("by_symbol"), dict) else {}
-    out_existing: Dict[str, Dict[str, Any]] = {}
+    out_existing: Dict[str, Dict[str, Any]] = dict(direct_existing)
     missing_symbols: List[str] = []
     for symbol in candidate_symbols:
+        if symbol in out_existing:
+            continue
         value = fe_by_symbol.get(symbol)
         if isinstance(value, dict) and value:
             out_existing[symbol] = dict(value)
@@ -308,7 +310,8 @@ def hydrate_scanner_feature_map(
     refresh_sec = max(60, _to_int(policy.get("scanner_feature_seed_refresh_sec") or os.getenv("SCANNER_FEATURE_SEED_REFRESH_SEC", "1800"), 1800))
     fetched_sources: List[str] = []
 
-    for symbol in candidate_symbols:
+    hydration_symbols = list(candidate_symbols if refresh_existing else missing_symbols)
+    for symbol in hydration_symbols:
         raw_rows = ohlcv_root.get(symbol)
         rows = _normalize_ohlcv_rows(raw_rows) if isinstance(raw_rows, list) else []
         cache_meta = cache_root.get(symbol) if isinstance(cache_root.get(symbol), dict) else {}
@@ -344,7 +347,7 @@ def hydrate_scanner_feature_map(
 
     candidate_ohlcv = {
         symbol: ohlcv_root.get(symbol)
-        for symbol in candidate_symbols
+        for symbol in hydration_symbols
         if isinstance(ohlcv_root.get(symbol), list) and ohlcv_root.get(symbol)
     }
     if not candidate_ohlcv:
@@ -372,6 +375,7 @@ def hydrate_scanner_feature_map(
 
     merged = dict(fe_root)
     merged_by_symbol = dict(fe_by_symbol)
+    merged_by_symbol.update(direct_existing)
     normalized_built = {_norm_symbol(symbol): dict(value) for symbol, value in built.items() if _norm_symbol(symbol) and isinstance(value, dict)}
     merged_by_symbol.update(normalized_built)
     merged["by_symbol"] = merged_by_symbol

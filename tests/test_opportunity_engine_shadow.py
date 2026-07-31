@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 
 from libs.research.opportunity_engine.contracts import PROHIBITED_RUNTIME_DEPENDENCIES
+from libs.research.opportunity_engine.data_provider import load_market_timeline
 from libs.research.opportunity_engine.engine import build_signal_timeline
+from libs.research.opportunity_engine.features import build_market_features, build_symbol_features
 from libs.research.opportunity_engine.pipeline import build_opportunity_engine_artifacts
 from libs.research.opportunity_engine.simulator import simulate_probe_v0
 
@@ -76,6 +78,47 @@ def test_probe_fail_reasons_and_near_miss_are_recorded() -> None:
     assert all("probe_fail_reasons" in row["opportunity"] for row in signals)
     assert all("market_data_missing" in row["opportunity"] for row in signals)
     assert any(row["opportunity"]["market_data_missing"] for row in signals)
+
+
+def test_untrusted_kospi200_move_is_preserved_but_excluded_from_relative_strength(tmp_path: Path) -> None:
+    day = "2026-07-31"
+    day_dir = tmp_path / day
+    day_dir.mkdir()
+    (day_dir / "090100_macro_indicators.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-07-31T00:01:00+00:00",
+                "index_moves": {"kospi200_pct": 16.29},
+                "korea_indices": {"breadth": 0.2},
+                "korea_index_sanity": {
+                    "status": "warning",
+                    "warnings": [
+                        {
+                            "index": "KOSPI200",
+                            "code": "extreme_index_change_pct",
+                            "requires_confirmation": True,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    timeline = load_market_timeline(day=day, macro_root=tmp_path)
+    market = build_market_features(timeline[0], {})
+    symbol = build_symbol_features(
+        _candles("009150", start=timeline[0]["ts"], step=0.5)["009150"],
+        as_of_epoch=timeline[0]["ts"] + 19 * 60,
+        market_features=market,
+    )
+
+    assert timeline[0]["kospi200_pct"] is None
+    assert timeline[0]["kospi200_pct_raw"] == 16.29
+    assert market["kospi200_trusted"] is False
+    assert market["kospi200_pct"] == 0.0
+    assert symbol["market_relative_strength_reference"] == "market_neutral_fallback"
+    assert symbol["market_relative_strength_proxy_pct"] == symbol["open_return_pct"]
 
 
 def test_signal_timeline_is_limited_to_opening_hour() -> None:

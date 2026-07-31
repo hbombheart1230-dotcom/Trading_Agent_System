@@ -126,7 +126,7 @@ def test_build_kiwoom_candidate_rows_exposes_condition_search_diagnostics(monkey
     assert meta["condition_search_reason"] == "kiwoom_condition_websocket_not_integrated"
 
 
-def test_scanner_node_uses_kiwoom_candidates_and_theme_filter():
+def test_scanner_node_theme_filter_preserves_market_native_candidates():
     state = {
         "themes": ["semiconductor"],
         "theme_map": {
@@ -144,11 +144,13 @@ def test_scanner_node_uses_kiwoom_candidates_and_theme_filter():
 
     out = scanner_node(state)
     rows = out.get("scan_results") or []
-    assert [r["symbol"] for r in rows] == ["005930"]
-    assert out["top_stock"] == "005930"
+    assert {r["symbol"] for r in rows} == {"005930", "000660"}
+    assert out["top_stock"] == "000660"
     scanner_output = out.get("scanner_output") or {}
     assert scanner_output.get("candidate_source") == "kiwoom_market_data"
     assert bool(scanner_output.get("theme_filter_applied")) is True
+    assert scanner_output.get("market_native_bypass_count") == 1
+    assert scanner_output.get("market_native_bypass_symbols") == ["000660"]
 
 
 def test_scanner_node_falls_back_to_strategist_candidates_when_kiwoom_pool_empty():

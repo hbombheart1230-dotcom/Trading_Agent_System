@@ -114,13 +114,35 @@ def load_market_timeline(
             epoch = 0
         moves = payload.get("index_moves") if isinstance(payload.get("index_moves"), Mapping) else {}
         korea = payload.get("korea_indices") if isinstance(payload.get("korea_indices"), Mapping) else {}
+        sanity = payload.get("korea_index_sanity") if isinstance(payload.get("korea_index_sanity"), Mapping) else {}
+        sanity_warnings = sanity.get("warnings") if isinstance(sanity.get("warnings"), list) else []
+        kospi200_warning = next(
+            (
+                warning
+                for warning in sanity_warnings
+                if isinstance(warning, Mapping)
+                and str(warning.get("index") or "").strip().upper() == "KOSPI200"
+                and bool(warning.get("requires_confirmation"))
+            ),
+            None,
+        )
+        kospi200_raw = _number(moves.get("kospi200_pct"))
+        kospi200_trusted = kospi200_warning is None
         rows.append(
             {
                 "ts": epoch,
                 "source_path": str(path),
                 "kospi_pct": _number(moves.get("kospi_pct")),
                 "kosdaq_pct": _number(moves.get("kosdaq_pct")),
-                "kospi200_pct": _number(moves.get("kospi200_pct")),
+                "kospi200_pct": kospi200_raw if kospi200_trusted else None,
+                "kospi200_pct_raw": kospi200_raw,
+                "kospi200_trusted": kospi200_trusted,
+                "market_sanity_status": str(sanity.get("status") or "unknown"),
+                "market_sanity_reason": (
+                    str(kospi200_warning.get("code") or "confirmation_required")
+                    if kospi200_warning is not None
+                    else ""
+                ),
                 "breadth": _number(korea.get("breadth")),
                 "rising": int(_number(korea.get("rising")) or 0),
                 "falling": int(_number(korea.get("falling")) or 0),
@@ -142,4 +164,3 @@ def market_pair_at(
     if not eligible:
         return {}, {}
     return eligible[-1], eligible[-2] if len(eligible) >= 2 else {}
-

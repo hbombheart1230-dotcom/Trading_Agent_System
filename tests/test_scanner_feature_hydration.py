@@ -173,6 +173,41 @@ def test_hydrate_scanner_feature_map_keeps_existing_fast_path_without_refresh():
     assert rows[-1]["close"] == 100.0
 
 
+def test_hydrate_scanner_feature_map_fills_symbols_missing_from_partial_direct_cache():
+    state = {
+        "scanner_features": {
+            "AAA": {
+                "engine_trend_strength": 0.2,
+                "engine_vwap_distance": 0.0,
+            }
+        },
+        "ohlcv_by_symbol": {
+            "BBB": [
+                {"ts": 100, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000.0},
+                {"ts": 200, "open": 101.0, "high": 102.0, "low": 100.0, "close": 101.0, "volume": 1100.0},
+            ]
+        },
+        "now_epoch": 300,
+    }
+
+    out, source, errors = hydrate_scanner_feature_map(
+        state=state,
+        candidates=[{"symbol": "AAA"}, {"symbol": "BBB"}],
+        skill_quotes={"BBB": {"symbol": "BBB", "price": 102.0, "volume": 1200.0}},
+        policy={
+            "scanner_feature_min_rows": 2,
+            "scanner_feature_series_max_rows": 10,
+            "scanner_feature_seed_with_yf": False,
+        },
+    )
+
+    assert errors == []
+    assert source == "scanner_candidate_hydration"
+    assert out["AAA"]["engine_trend_strength"] == 0.2
+    assert "BBB" in out
+    assert state["feature_engine"]["by_symbol"]["AAA"]["engine_trend_strength"] == 0.2
+
+
 def test_hydrate_scanner_feature_map_caches_yfinance_empty_seed(monkeypatch):
     calls = {"count": 0}
 

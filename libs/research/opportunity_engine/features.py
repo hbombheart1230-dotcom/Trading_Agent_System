@@ -16,8 +16,10 @@ def build_market_features(
     current: Mapping[str, Any],
     previous: Mapping[str, Any],
 ) -> dict[str, Any]:
+    kospi200_trusted = bool(current.get("kospi200_trusted", current.get("kospi200_pct") is not None))
     kospi200 = float(current.get("kospi200_pct") or 0.0)
-    prior_kospi200 = float(previous.get("kospi200_pct") or kospi200)
+    previous_trusted = bool(previous.get("kospi200_trusted", previous.get("kospi200_pct") is not None))
+    prior_kospi200 = float(previous.get("kospi200_pct") or kospi200) if previous_trusted else kospi200
     breadth = float(current.get("breadth") or 0.0)
     prior_breadth = float(previous.get("breadth") or breadth)
     impulse = kospi200 - prior_kospi200
@@ -49,6 +51,9 @@ def build_market_features(
         "state": state,
         "transition_score": round(transition_score, 6),
         "kospi200_pct": round(kospi200, 6),
+        "kospi200_pct_raw": current.get("kospi200_pct_raw", current.get("kospi200_pct")),
+        "kospi200_trusted": kospi200_trusted,
+        "market_data_quality_reason": str(current.get("market_sanity_reason") or ""),
         "kospi200_impulse_pct": round(impulse, 6),
         "breadth": round(breadth, 6),
         "breadth_impulse": round(breadth_impulse, 6),
@@ -99,7 +104,11 @@ def build_symbol_features(
         float(usable[-3].get("close") or close),
     )
     prior_high = max(float(row.get("high") or close) for row in usable[-6:-1])
-    market_return = float(market_features.get("kospi200_pct") or 0.0)
+    market_return = (
+        float(market_features.get("kospi200_pct") or 0.0)
+        if bool(market_features.get("kospi200_trusted", True))
+        else 0.0
+    )
     open_return = _pct(close, session_open)
     relative_strength_proxy = open_return - market_return
     ranges = [
@@ -122,6 +131,9 @@ def build_symbol_features(
         "momentum_5m_pct": round(momentum_5m, 6),
         "price_acceleration_pct": round(momentum_1m - prior_momentum_1m, 6),
         "market_relative_strength_proxy_pct": round(relative_strength_proxy, 6),
+        "market_relative_strength_reference": (
+            "kospi200" if bool(market_features.get("kospi200_trusted", True)) else "market_neutral_fallback"
+        ),
         "vwap": round(vwap, 6),
         "vwap_distance_pct": round(_pct(close, vwap), 6),
         "raw_volume_ratio": round(raw_volume_ratio, 6),

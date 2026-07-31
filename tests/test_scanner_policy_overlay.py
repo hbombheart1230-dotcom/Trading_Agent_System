@@ -103,21 +103,23 @@ def test_diversification_tie_break():
         "reentry_score_gap_threshold": 0.02,
     }
     mock_results = {
-        "AAPL": {"score": 0.80, "confidence": 0.9, "risk_score": 0.1, "compatibility_bias": 0.0},
-        "MSFT": {"score": 0.79, "confidence": 0.8, "risk_score": 0.2, "compatibility_bias": 0.0},
+        "005930": {"score": 0.80, "confidence": 0.9, "risk_score": 0.1, "compatibility_bias": 0.0},
+        "000660": {"score": 0.79, "confidence": 0.8, "risk_score": 0.1, "compatibility_bias": 0.0},
     }
     state = _mock_state_for_scanner(
         open_position_count=0,
-        last_trade_symbol="AAPL",
+        last_trade_symbol="005930",
         scanner_policy=scanner_policy,
         mock_scan_results=mock_results,
     )
+    state["scanner_features"] = _neutral_scanner_features(*mock_results)
+    state["mock_candidate_metrics"] = _flat_candidate_metrics(*mock_results)
     result = scanner_node(state)
     
     scanner_output = result.get("scanner_output", {})
     assert scanner_output.get("diversification_applied") is True
     assert scanner_output.get("diversification_bonus_value") == 0.03
-    assert result.get("selected", {}).get("symbol") == "MSFT"
+    assert result.get("selected", {}).get("symbol") == "000660"
 
 def test_regression_safety():
     scanner_policy = {}
