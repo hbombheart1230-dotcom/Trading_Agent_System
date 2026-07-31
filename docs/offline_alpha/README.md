@@ -58,3 +58,15 @@ Current research:
 - `structural_alpha_search_closure_2026-07-30.md`
   - finite six-hypothesis search closed
   - zero eligible candidates, five rejects, one not testable
+
+- `existing_evidence_mining_contract_2026-07-31.md`
+  - fixed contract for exhausting retained Q9, quant-shadow, minute-cache, and
+    actual-trade evidence before collecting another broad live window
+
+- `existing_evidence_mining_result_2026-07-31.md`
+  - 13,388 Q9 windows, 5,292 reconstructed episodes, 1,966 quant-shadow
+    episodes, and 105 realized trades reviewed
+  - broad captured candidate universe remains negative after 0.28% cost
+  - one bounded discovery candidate retained:
+    `OPEN_0_20_RANK1_30M`
+  - candidate is future-confirmation-only; no runtime behavior change
