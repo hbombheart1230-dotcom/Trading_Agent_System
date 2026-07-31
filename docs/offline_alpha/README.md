@@ -64,9 +64,17 @@ Current research:
     actual-trade evidence before collecting another broad live window
 
 - `existing_evidence_mining_result_2026-07-31.md`
-  - 13,388 Q9 windows, 5,292 reconstructed episodes, 1,966 quant-shadow
+  - 13,174 Q9 windows, 5,292 reconstructed episodes, 1,937 quant-shadow
     episodes, and 105 realized trades reviewed
+  - entry uses the first minute candle strictly after the decision
   - broad captured candidate universe remains negative after 0.28% cost
   - one bounded discovery candidate retained:
     `OPEN_0_20_RANK1_30M`
   - candidate is future-confirmation-only; no runtime behavior change
+
+- `opening_rank1_prospective_validation_2026-07-31.md`
+  - freezes the prospective definition and decision gates for
+    `OPEN_0_20_RANK1_30M`
+  - first eligible day: 2026-08-03
+  - minimum evidence: 25 observed episodes across at least 10 trading days
+  - a pass authorizes controlled shadow review only

@@ -82,12 +82,13 @@ def _decision_summary(
         and float(opening.get("coverage") or 0.0) >= 0.90
         and float(opening_metrics.get("expectancy_pct") or 0.0) > 0.0
         and float(opening_metrics.get("profit_factor") or 0.0) >= 1.20
+        and float(opening.get("positive_day_ratio") or 0.0) >= 0.55
     )
     if opening_candidate:
         candidate = (
-            "The only bounded discovery candidate is OPEN_0_20_RANK1_30M. It remains positive in the "
-            "retrospective split after 0.28% cost, but retrospective positive-day consistency is below the "
-            "55% promotion gate. Freeze it as FUTURE_CONFIRMATION_REQUIRED; do not change runtime behavior."
+            "The only bounded discovery candidate is OPEN_0_20_RANK1_30M. It passes the retrospective "
+            "screening gates after the conservative next-minute entry correction and 0.28% cost. July was "
+            "already inspected, so freeze it as FUTURE_CONFIRMATION_REQUIRED; do not change runtime behavior."
         )
     elif native_count >= 25 and float(native_metrics.get("expectancy_pct") or 0.0) > 0.0:
         candidate = (

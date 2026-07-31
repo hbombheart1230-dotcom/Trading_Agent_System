@@ -167,7 +167,7 @@ def test_cross_sectional_ranking_and_entry_are_deterministic() -> None:
     assert first == second
     assert len(first) == 1
     assert first[0]["symbol"] == "B"
-    assert first[0]["baseline_epoch"] == _epoch("2026-07-10T10:00:00")
+    assert first[0]["baseline_epoch"] == _epoch("2026-07-10T10:01:00")
 
 
 def test_strategy_evaluation_applies_cost_and_small_sample_rejects() -> None:

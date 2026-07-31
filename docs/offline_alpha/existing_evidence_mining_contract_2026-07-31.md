@@ -60,7 +60,7 @@ remain authoritative.
 - primary diagnostic horizon: +30m
 - repeated Q9 windows: one episode per symbol every 15 minutes
 - candidate ranks: Top 10 when available
-- entry price: next available minute open
+- entry price: first one-minute candle open strictly after the decision
 - same-bar target and stop collision: stop first
 
 ## Required Outputs
@@ -86,3 +86,12 @@ This study cannot directly promote policy.
 A positive result may create at most one future-confirmation candidate. A
 negative result closes the candidate without another automatic observation
 extension.
+
+## Integrity Correction
+
+The first implementation used the open of the already-started decision candle.
+That was not tradable after the decision timestamp. On 2026-07-31 the shared
+offline entry helper was corrected to use the first candle timestamp strictly
+after the decision, and the complete result was regenerated through the fixed
+2026-07-30 close. The implementation day is not part of the retrospective
+sample.

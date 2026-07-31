@@ -16,7 +16,7 @@ from libs.research.existing_evidence_mining import run_existing_evidence_mining
 def main() -> int:
     parser = argparse.ArgumentParser(description="Mine existing Q9-Q18 evidence offline.")
     parser.add_argument("--start", default="2026-06-01")
-    parser.add_argument("--end", default="2026-07-31")
+    parser.add_argument("--end", default="2026-07-30")
     parser.add_argument("--allow-fetch", action="store_true")
     parser.add_argument("--max-pages", type=int, default=18)
     args = parser.parse_args()

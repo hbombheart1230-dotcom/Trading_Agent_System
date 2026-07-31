@@ -6,11 +6,15 @@ Batch 2 is closed.
 
 | Hypothesis | Calibration +30m | Retrospective +30m | Decision |
 | --- | ---: | ---: | --- |
-| H7 Market Shock Relative-Strength Reversal | 30 observations, +0.1583%, PF 1.1952 | 38 observations, -0.0657%, PF 0.9280 | REJECT |
-| H8 Oversold Mean Reversion | 58 observations, -0.0372%, PF 0.9440 | 53 observations, -0.8934%, PF 0.2797 | REJECT |
-| H9 Trend Pullback Resumption | 66 observations, -0.4552%, PF 0.3754 | 85 observations, -0.4285%, PF 0.3767 | REJECT |
+| H7 Market Shock Relative-Strength Reversal | 31 observations, -0.3242%, PF 0.7065 | 37 observations, -0.2455%, PF 0.7492 | REJECT |
+| H8 Oversold Mean Reversion | 58 observations, -0.0777%, PF 0.8777 | 53 observations, -0.9343%, PF 0.2480 | REJECT |
+| H9 Trend Pullback Resumption | 62 observations, -0.4228%, PF 0.3747 | 83 observations, -0.3966%, PF 0.4134 | REJECT |
 
 All results include the fixed 0.28% live cost assumption.
+
+These values were regenerated on 2026-07-31 after correcting the shared
+offline entry helper to use the first minute candle strictly after the
+decision timestamp. All three rejection decisions remain unchanged.
 
 H7 did not generalize from calibration to the retrospective period. Its
 retrospective expectancy, profit factor, positive-day ratio, drawdown, and

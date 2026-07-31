@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import statistics
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
@@ -44,13 +44,14 @@ def entry_bar(
     day: str,
     timestamps: Sequence[int] | None = None,
 ) -> Mapping[str, Any] | None:
-    current_minute = (int(decision_epoch) // 60) * 60
     epochs = (
         timestamps
         if timestamps is not None
         else [int(row.get("ts") or 0) for row in rows]
     )
-    index = bisect_left(epochs, current_minute)
+    # A point-in-time decision cannot be filled at the open of a candle that
+    # has already started. Use the first complete timestamp after the decision.
+    index = bisect_right(epochs, int(decision_epoch))
     if index >= len(rows):
         return None
     row = rows[index]

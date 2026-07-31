@@ -238,6 +238,34 @@ def run_closeout_maintenance(
             "error": str(exc),
         }
 
+    try:
+        from libs.reporting.opening_rank1_shadow import (
+            build_opening_rank1_shadow,
+        )
+
+        opening_rank1 = build_opening_rank1_shadow(
+            day=normalized_day,
+            reports_root=reports_root,
+            state_path=state_path or Path("data/state.json"),
+            allow_fresh_fetch=True,
+        )
+        out["steps"]["opening_rank1_prospective_shadow"] = {
+            "ok": bool(opening_rank1.get("ok")),
+            "day_status": opening_rank1.get("day_status"),
+            "episode_count": opening_rank1.get("episode_count"),
+            "observed_30m_count": opening_rank1.get("observed_30m_count"),
+            "promotion_status": opening_rank1.get("promotion_status"),
+            "report_json_path": opening_rank1.get("daily_json_path"),
+            "report_md_path": opening_rank1.get("daily_md_path"),
+            "cumulative_json_path": opening_rank1.get("cumulative_json_path"),
+            "cumulative_md_path": opening_rank1.get("cumulative_md_path"),
+        }
+    except Exception as exc:
+        out["steps"]["opening_rank1_prospective_shadow"] = {
+            "ok": False,
+            "error": str(exc),
+        }
+
     out["ok"] = all(bool(step.get("ok")) for step in out["steps"].values() if isinstance(step, dict))
     out["artifacts"] = {
         name: {

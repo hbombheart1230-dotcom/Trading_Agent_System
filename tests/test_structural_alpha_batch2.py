@@ -107,12 +107,12 @@ def test_market_shock_selection_is_deterministic() -> None:
         "229200": _candles(start=start, prices=market),
         "A": _candles(
             start=start,
-            prices=[100.0] * 24 + [100.0 + index * 0.2 for index in range(7)],
+            prices=[100.0] * 24 + [100.0 + index * 0.2 for index in range(8)],
             volume=200.0,
         ),
         "B": _candles(
             start=start,
-            prices=[100.0] * 24 + [100.0 + index * 0.1 for index in range(7)],
+            prices=[100.0] * 24 + [100.0 + index * 0.1 for index in range(8)],
             volume=200.0,
         ),
     }
@@ -130,7 +130,7 @@ def test_market_shock_selection_is_deterministic() -> None:
 
     assert first == second
     assert first[0]["symbol"] == "A"
-    assert first[0]["baseline_epoch"] == _epoch("2026-07-10T10:00:00")
+    assert first[0]["baseline_epoch"] == _epoch("2026-07-10T10:01:00")
 
 
 def test_oversold_episode_spacing_is_global() -> None:

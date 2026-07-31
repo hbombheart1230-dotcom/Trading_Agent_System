@@ -20,6 +20,12 @@ The candidate is `FUTURE_CONFIRMATION_REQUIRED`. It is not promoted and does
 not change Scanner, Strategist, Commander, Monitor, entry, exit, or execution
 behavior.
 
+The first generated result incorrectly used the open of the candle containing
+the decision timestamp. That price was not tradable after the decision. The
+shared offline entry helper now uses the first candle timestamp strictly after
+the decision, and every number below was regenerated through 2026-07-30.
+The 2026-07-31 implementation day is excluded.
+
 A second, weaker cohort is retained only as insufficient evidence:
 
 `BREAKOUT_VWAP_HOLD_VOLUME_CONFIRMED`
@@ -31,21 +37,21 @@ guard.
 
 | Evidence | Count |
 | --- | ---: |
-| Raw Q9 Scanner windows | 13,388 |
-| Canonical valid windows | 12,835 |
-| Trading days | 29 |
+| Raw Q9 Scanner windows | 13,174 |
+| Canonical valid windows | 12,622 |
+| Trading days | 28 |
 | Point-in-time Scanner symbols | 327 |
-| Total symbols requiring minute history | 398 |
+| Total symbols requiring minute history | 387 |
 | Complete minute-history symbols | 233 |
 | Reconstructed Scanner episodes | 5,292 |
-| Quant-shadow source files | 21,077 |
-| Deterministic 15-minute snapshots read | 1,143 |
-| Quant-shadow 15-minute episodes | 1,966 |
+| Quant-shadow source files | 20,863 |
+| Deterministic 15-minute snapshots read | 1,131 |
+| Quant-shadow 15-minute episodes | 1,937 |
 | Realized trade evaluations | 105 |
 
 The complete machine-readable output is:
 
-`reports/evaluation/offline_alpha/existing_evidence_mining/2026-06-01_2026-07-31/existing_evidence_mining.json`
+`reports/evaluation/offline_alpha/existing_evidence_mining/2026-06-01_2026-07-30/existing_evidence_mining.json`
 
 ## Main Findings
 
@@ -55,10 +61,10 @@ At +30 minutes after 0.28% cost:
 
 | Rank | Observed | Win Rate | Average Net | Profit Factor |
 | --- | ---: | ---: | ---: | ---: |
-| Rank 1 | 913 | 34.8% | -0.2500% | 0.6882 |
-| Rank 2-3 | 1,477 | 35.1% | -0.3251% | 0.5793 |
-| Rank 4-5 | 1,146 | 30.9% | -0.3025% | 0.5854 |
-| Rank 6-10 | 1,060 | 35.8% | -0.2982% | 0.6104 |
+| Rank 1 | 896 | 35.7% | -0.2774% | 0.6562 |
+| Rank 2-3 | 1,456 | 35.0% | -0.3637% | 0.5444 |
+| Rank 4-5 | 1,135 | 30.1% | -0.3082% | 0.5713 |
+| Rank 6-10 | 1,051 | 35.6% | -0.2958% | 0.6147 |
 
 Selecting rank 1 is better than selecting lower ranks, but rank 1 is still
 negative when all decision times are combined.
@@ -69,11 +75,11 @@ At +30 minutes after cost:
 
 | Decision Time | Observed | Win Rate | Average Net | Profit Factor |
 | --- | ---: | ---: | ---: | ---: |
-| 09:00-09:20 | 381 | 53.3% | +0.5608% | 1.5343 |
-| 09:20-10:00 | 571 | 39.2% | -0.3913% | 0.6095 |
-| 10:00-12:00 | 1,541 | 29.3% | -0.4863% | 0.3995 |
-| 12:00-14:00 | 1,416 | 32.9% | -0.3054% | 0.5105 |
-| 14:00-close | 687 | 32.8% | -0.2614% | 0.5697 |
+| 09:00-09:20 | 378 | 51.1% | +0.3882% | 1.3615 |
+| 09:20-10:00 | 571 | 39.1% | -0.3933% | 0.6102 |
+| 10:00-12:00 | 1,532 | 29.8% | -0.5018% | 0.3822 |
+| 12:00-14:00 | 1,404 | 33.1% | -0.2947% | 0.5238 |
+| 14:00-close | 653 | 31.9% | -0.2734% | 0.5678 |
 
 The broad historical system selected candidates throughout the day, but only
 the first 20 minutes showed positive aggregate expectancy.
@@ -82,14 +88,15 @@ the first 20 minutes showed positive aggregate expectancy.
 
 | Split | Observed | Win Rate | Average Net | Profit Factor | Positive Days |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Overall | 65 | 61.5% | +1.0240% | 1.9814 | 58.3% |
-| Calibration through 07-10 | 25 | 68.0% | +1.3562% | 2.5637 | 72.7% |
-| Retrospective from 07-13 | 40 | 57.5% | +0.8165% | 1.7078 | 46.2% |
+| Overall | 65 | 61.5% | +0.7502% | 1.7727 | 62.5% |
+| Calibration through 07-10 | 25 | 64.0% | +1.0330% | 2.7504 | 63.6% |
+| Retrospective from 07-13 | 40 | 60.0% | +0.5735% | 1.4744 | 61.5% |
 
 The retrospective trade metrics remain positive, but the result was discovered
-after outcome inspection and the retrospective positive-day ratio is below the
-55% promotion gate. EOD performance is negative, so this is specifically a
-short intraday path candidate.
+after outcome inspection. It passes the retrospective screening gates after
+the conservative entry correction, but cannot be treated as an untouched
+holdout. EOD performance is negative, so this is specifically a short
+intraday path candidate.
 
 ### 4. Tight fixed exits destroy the opening signal
 
@@ -97,10 +104,10 @@ Opening rank 1 path simulation:
 
 | Target / Stop / Time | Count | Average Net | Profit Factor |
 | --- | ---: | ---: | ---: |
-| 1.0% / 0.5% / 30m | 69 | -0.2670% | 0.4667 |
-| 1.5% / 0.75% / 30m | 69 | -0.1251% | 0.7807 |
-| 2.0% / 1.0% / 30m | 69 | +0.0970% | 1.1630 |
-| Fixed +30m observation | 65 | +1.0240% | 1.9814 |
+| 1.0% / 0.5% / 30m | 69 | -0.2821% | 0.4365 |
+| 1.5% / 0.75% / 30m | 69 | -0.2140% | 0.6490 |
+| 2.0% / 1.0% / 30m | 69 | -0.0226% | 0.9650 |
+| Fixed +30m observation | 65 | +0.7502% | 1.7727 |
 
 The evidence does not support another tighter stop/target patch. Same-bar
 target/stop collisions were conservatively scored as stop first.
@@ -143,15 +150,15 @@ primary alpha repair.
 
 - July outcomes were already inspected. This is retrospective discovery, not
   untouched validation.
-- 76.2% of historical candidate rows have no retained source, so source-level
+- 78.3% of historical candidate rows have no retained source, so source-level
   attribution is weak.
-- Only 6.2% of windows contain a retained market-native candidate.
-- 19.2% of valid windows are sector-theme-only.
+- Only 4.8% of windows contain a retained market-native candidate.
+- 19.6% of valid windows are sector-theme-only.
 - Q9 pre-Strategist ranking is a control inside the captured candidate
   universe, not a full-market control.
 - The corrected current Scanner universe differs from parts of the historical
   universe.
-- Complete cached minute history exists for 233 of 398 requested symbols.
+- Complete cached minute history exists for 233 of 387 requested symbols.
   Horizon metrics report observed coverage and do not impute missing prices.
 
 ## Closed Interpretations

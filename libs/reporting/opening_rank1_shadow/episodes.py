@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+from libs.research.post_reclaim_alpha.evaluator import evaluate_episodes
+from libs.research.structural_alpha.features import entry_bar
+
+from .contracts import COHORT_ID, EPISODE_GAP_SEC
+
+
+def build_opening_rank1_episodes(
+    windows: list[Mapping[str, Any]],
+    *,
+    minute_rows_by_symbol: Mapping[str, list[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    timestamps = {
+        symbol: [int(row.get("ts") or 0) for row in rows]
+        for symbol, rows in minute_rows_by_symbol.items()
+    }
+    last_epoch: dict[tuple[str, str], int] = {}
+    episodes: list[dict[str, Any]] = []
+    for window in windows:
+        day = str(window.get("day") or "")
+        decision_epoch = int(window.get("decision_epoch") or 0)
+        candidate = next(
+            (
+                row
+                for row in window.get("candidates") or []
+                if isinstance(row, Mapping)
+                and int(row.get("rank") or 999) == 1
+            ),
+            None,
+        )
+        if candidate is None:
+            continue
+        symbol = str(candidate.get("symbol") or "")
+        key = (day, symbol)
+        if not symbol or decision_epoch - int(last_epoch.get(key) or 0) < EPISODE_GAP_SEC:
+            continue
+        bar = entry_bar(
+            minute_rows_by_symbol.get(symbol) or [],
+            decision_epoch=decision_epoch,
+            day=day,
+            timestamps=timestamps.get(symbol),
+        )
+        if not bar:
+            continue
+        baseline_price = float(bar.get("open") or bar.get("close") or 0.0)
+        if baseline_price <= 0.0:
+            continue
+        episodes.append(
+            {
+                "episode_id": (
+                    f"{COHORT_ID}:{day.replace('-', '')}:{symbol}:{decision_epoch}"
+                ),
+                "cohort_id": COHORT_ID,
+                "day": day,
+                "symbol": symbol,
+                "decision_id": str(window.get("decision_id") or ""),
+                "decision_epoch": decision_epoch,
+                "baseline_epoch": int(bar.get("ts") or 0),
+                "baseline_price": baseline_price,
+                "rank": 1,
+                "score_total": candidate.get("score_total"),
+                "risk_score": candidate.get("risk_score"),
+                "sources": [
+                    str(value)
+                    for value in candidate.get("sources") or []
+                ],
+                "score_breakdown": dict(candidate.get("score_breakdown") or {}),
+                "evidence_class": "PROSPECTIVE_POINT_IN_TIME_Q9",
+            }
+        )
+        last_epoch[key] = decision_epoch
+    return evaluate_episodes(
+        episodes,
+        minute_rows_by_symbol=minute_rows_by_symbol,
+    )

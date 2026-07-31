@@ -97,6 +97,16 @@ def _eod_checkpoint(
     if not same_day:
         return {"status": "missing", "reason": "eod_price_missing"}
     observed = same_day[-1]
+    observed_time = datetime.fromtimestamp(
+        int(observed.get("ts") or 0),
+        tz=KST,
+    ).time()
+    if observed_time < datetime.strptime("15:20", "%H:%M").time():
+        return {
+            "status": "missing",
+            "reason": "eod_close_window_not_reached",
+            "latest_observed_epoch": int(observed.get("ts") or 0),
+        }
     close = float(observed.get("close") or 0.0)
     high = max(float(row.get("high") or row.get("close") or 0.0) for row in same_day)
     low = min(float(row.get("low") or row.get("close") or 0.0) for row in same_day)

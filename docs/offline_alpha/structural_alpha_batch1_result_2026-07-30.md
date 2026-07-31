@@ -6,9 +6,9 @@ Batch 1 is closed.
 
 | Hypothesis | Calibration +30m | Retrospective +30m | Decision |
 | --- | ---: | ---: | --- |
-| H4 Cross-Sectional Relative Strength | 160 observations, -0.1939%, PF 0.7492 | 167 observations, -0.5484%, PF 0.3664 | REJECT |
+| H4 Cross-Sectional Relative Strength | 162 observations, -0.2404%, PF 0.6852 | 168 observations, -0.5002%, PF 0.4029 | REJECT |
 | H5 Point-in-Time Sector Leader | Not measurable | Not measurable | NOT_TESTABLE |
-| H6 Volatility Contraction Breakout | 46 observations, -0.6059%, PF 0.2489 | 50 observations, -0.5746%, PF 0.2752 | REJECT |
+| H6 Volatility Contraction Breakout | 45 observations, -0.5459%, PF 0.3092 | 49 observations, -0.6561%, PF 0.2060 | REJECT |
 
 H4 and H6 failed in both fixed evaluation splits after the 0.28% live cost
 assumption. Neither hypothesis is eligible for threshold tuning, shadow
@@ -17,6 +17,11 @@ integration, or controlled adoption.
 H5 was not backtested. Historical Q9 artifacts do not preserve point-in-time
 sector membership and sector breadth. Applying the current sector mapping to
 past dates would introduce look-ahead and survivorship bias.
+
+These values were regenerated on 2026-07-31 after correcting the shared
+offline entry helper. Entry now uses the first minute candle strictly after
+the decision timestamp rather than the already-started decision candle. The
+decisions remain unchanged.
 
 ## Fixed Contract
 

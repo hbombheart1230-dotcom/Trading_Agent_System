@@ -4,7 +4,7 @@ from __future__ import annotations
 SCHEMA_VERSION = "existing_evidence_mining.v1"
 BEHAVIOR_EFFECT = "research_only"
 START = "2026-06-01"
-END = "2026-07-31"
+END = "2026-07-30"
 LIVE_COST_PCT = 0.28
 EPISODE_GAP_SEC = 15 * 60
 TOP_K = 10
