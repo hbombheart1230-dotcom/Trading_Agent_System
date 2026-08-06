@@ -46,6 +46,11 @@ from libs.runtime.monitor_policy import (
 from libs.llm.model_catalog import resolve_execution_profile, resolve_model_profile
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.scanner_policy import normalize_scanner_source_type
+from libs.runtime.position_horizon_revision import (
+    apply_strategist_horizon_revision,
+    ensure_horizon_state,
+    position_review_due,
+)
 from libs.runtime.strategy_horizon_feedback import (
     build_commander_horizon_policy,
     build_horizon_context,
@@ -890,6 +895,7 @@ def _build_open_position_strategist_refresh_context(override_assessment: Dict[st
         "active_exit_axis": str(selected_position.get("active_exit_axis") or ""),
         "position_qty": int(selected_position.get("qty") or 0),
         "position_age_seconds": selected_position.get("position_age_seconds"),
+        "position_horizon_state": dict(selected_position.get("position_horizon_state") or {}),
         "carry_state": carry_state,
         "carry_risk_bias": carry_risk_bias,
         "carry_risk_reason": carry_risk_reason,
@@ -1860,6 +1866,10 @@ def _attach_commander_reporter_feedback_policy(
 
 
 def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
+    state = apply_strategist_horizon_revision(
+        state,
+        now_epoch=_runtime_now_epoch(state),
+    )
     policy_meta = _resolve_commander_applied_policy(state)
     applied_policy = dict(policy_meta.get("applied_policy") or {})
     commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
@@ -3003,7 +3013,6 @@ def _build_commander_decision(
         str(phase_value or "").strip().lower() == "preopen"
         and open_position_count > 0
         and commander_carry_risk_bias in {"elevated", "urgent_exit_review"}
-        and not strategist_refresh_requested
     ):
         strategist_refresh_requested = True
         strategist_refresh_reason = "preopen_carry_risk_review"
@@ -3040,12 +3049,13 @@ def _build_commander_decision(
         command_intent = "MANAGE_OPEN_RISK"
         scanner_mission = "Deprioritize new candidate exploration while carried-position risk is under urgent exit review."
         monitor_mission = "Prioritize carried-position exit review and failed session-open recovery before new entries."
-        if not strategist_refresh_requested and str(flow_instruction or "").strip() in {
+        if str(flow_instruction or "").strip() in {
             "",
             "HOLD_OBSERVE",
             "NO_ACTION",
             "REUSE_STRATEGY_FRAME",
             "allow_current_flow",
+            "RUN_STRATEGIST_REFRESH",
         }:
             flow_instruction = "REDUCE_CARRY_RISK_FIRST"
         if not strategist_refresh_requested:
@@ -4568,6 +4578,11 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         if isinstance(persisted.get("position_peak_price"), dict)
         else {}
     )
+    position_strategy_context = (
+        persisted.get("position_strategy_context")
+        if isinstance(persisted.get("position_strategy_context"), dict)
+        else {}
+    )
     last_exit_sweep_by_symbol = (
         persisted.get("commander_pre_entry_exit_sweep_last_checked_by_symbol")
         if isinstance(persisted.get("commander_pre_entry_exit_sweep_last_checked_by_symbol"), dict)
@@ -4702,6 +4717,18 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 }
             )
         position_age_seconds = _resolve_position_age_seconds(state, row, symbol)
+        horizon_review_due = position_review_due(
+            position_strategy_context.get(symbol)
+            if isinstance(position_strategy_context, dict)
+            else {},
+            position_age_seconds=position_age_seconds,
+            now_epoch=now_epoch,
+        )
+        position_horizon_state = ensure_horizon_state(
+            position_strategy_context.get(symbol)
+            if isinstance(position_strategy_context, dict)
+            else {}
+        )
         carry_control = _assess_position_carry_control(
             state=state,
             symbol=symbol,
@@ -4742,6 +4769,8 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 "active_exit_axis": str(previous_active_exit_axis or ""),
                 "entry_state": _compact_monitor_entry_state_for_refresh(previous_entry_state),
                 "position_age_seconds": position_age_seconds,
+                "horizon_review_due": bool(horizon_review_due),
+                "position_horizon_state": dict(position_horizon_state),
                 "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
                 "refresh_cooldown_remaining_sec": max(0, int(refresh_cooldown_until - now_epoch))
                 if refresh_cooldown_until > now_epoch
@@ -4766,7 +4795,16 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
     closeout_unresolved_found = any(
         bool(row.get("closeout_unresolved_flatten_required")) for row in rows_summary if isinstance(row, dict)
     )
-    override_triggered = bool(closeout_unresolved_found or anomaly_found or risk_found or max_hold_repeat >= 3)
+    horizon_review_found = any(
+        bool(row.get("horizon_review_due")) for row in rows_summary if isinstance(row, dict)
+    )
+    override_triggered = bool(
+        closeout_unresolved_found
+        or anomaly_found
+        or risk_found
+        or max_hold_repeat >= 3
+        or horizon_review_found
+    )
     override_action = ""
     override_reason = ""
     override_suppressed = False
@@ -4793,7 +4831,10 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         for item in rows_summary:
             if not isinstance(item, dict):
                 continue
-            if _coerce_int(item.get("hold_repeat_count"), 0) < 3:
+            if (
+                _coerce_int(item.get("hold_repeat_count"), 0) < 3
+                and not bool(item.get("horizon_review_due"))
+            ):
                 continue
             if require_loss and _row_loss_value(item) > -0.01:
                 continue
@@ -4830,7 +4871,13 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
             )
             refresh_cooldown_symbol = str(selected_row.get("symbol") or "")
             refresh_cooldown_until = max(0, _coerce_int(selected_row.get("refresh_cooldown_until"), 0))
-            refresh_trigger = "loss_threshold_exceeded" if risk_found else "repeated_hold_monitor_only"
+            refresh_trigger = (
+                "loss_threshold_exceeded"
+                if risk_found
+                else "horizon_review_due"
+                if bool(selected_row.get("horizon_review_due"))
+                else "repeated_hold_monitor_only"
+            )
             if selected_row and refresh_cooldown_until > now_epoch:
                 refresh_cooldown_remaining_sec = max(0, int(refresh_cooldown_until - now_epoch))
                 override_suppressed = True
@@ -5017,6 +5064,16 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
             else {},
         }
     )
+    if str(override_assessment.get("carry_risk_bias") or "").strip().lower() == "urgent_exit_review":
+        payload.update(
+            {
+                "override_triggered": bool(override_assessment.get("override_triggered")),
+                "override_reason": str(override_assessment.get("override_reason") or ""),
+                "override_action": str(override_assessment.get("override_action") or ""),
+            }
+        )
+        payload["reason"] = "holding_position_carry_risk_monitor_only"
+        return True, payload
     if bool(override_assessment.get("override_triggered")):
         override_action = str(override_assessment.get("override_action") or "").strip().lower()
         if override_action == "strategist_refresh":
@@ -5101,6 +5158,9 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
     if str(override_assessment.get("carry_risk_bias") or "").strip().lower() == "urgent_exit_review":
         payload["reason"] = "holding_position_carry_risk_monitor_only"
         return True, payload
+    if str(override_assessment.get("override_action") or "").strip().lower() == "strategist_refresh":
+        payload["reason"] = "open_position_horizon_review_due"
+        return False, payload
     if entry_capacity_available:
         payload["reason"] = "multi_position_capacity_available"
         return False, payload
@@ -5430,6 +5490,7 @@ def _build_stage4_carry_review_context(
         "active_exit_axis": str(focus.get("active_exit_axis") or ""),
         "position_qty": int(focus.get("qty") or 0),
         "position_age_seconds": focus.get("position_age_seconds"),
+        "position_horizon_state": dict(focus.get("position_horizon_state") or {}),
         "carry_state": carry_state,
         "carry_risk_bias": carry_risk_bias,
         "carry_risk_reason": carry_risk_reason,
@@ -5451,6 +5512,7 @@ def _build_stage4_carry_review_context(
                 "effective_loss_ratio": row.get("effective_loss_ratio"),
                 "hold_repeat_count": int(row.get("hold_repeat_count") or 0),
                 "position_age_seconds": row.get("position_age_seconds"),
+                "position_horizon_state": dict(row.get("position_horizon_state") or {}),
             }
             for row in positions[:5]
         ],

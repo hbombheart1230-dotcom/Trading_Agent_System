@@ -6,6 +6,7 @@ import time
 
 from libs.core.symbols import normalize_symbol
 from libs.reporting.reasoning_trace import build_reasoning_provenance, build_reasoning_trace_from_summaries
+from libs.runtime.position_horizon_revision import initialize_horizon_state
 from libs.runtime.same_symbol_loss_reentry import record_same_symbol_exit
 
 POST_EXIT_SHADOW_WATCH_WINDOW_SEC = 90 * 60
@@ -585,6 +586,10 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
                 "output": dict(strategy_snapshot),
                 "generated_epoch": _as_int(time.time(), 0),
                 "source": "buy_execution",
+                "horizon_state": initialize_horizon_state(
+                    strategy_snapshot,
+                    now_epoch=now_epoch,
+                ),
             }
         entry_risk = _extract_entry_risk_from_order(order, symbol=symbol, now_epoch=now_epoch)
         if entry_risk:

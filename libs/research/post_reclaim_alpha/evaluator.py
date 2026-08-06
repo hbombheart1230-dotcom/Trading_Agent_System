@@ -43,15 +43,43 @@ def _checkpoint(
         None,
     )
     if observed is None:
-        return {"status": "missing", "reason": "forward_price_missing"}
+        prior = [
+            row
+            for row in same_day
+            if int(row.get("ts") or 0) <= target_epoch
+        ]
+        observed = prior[-1] if prior else None
+        if observed is None:
+            return {"status": "missing", "reason": "forward_price_missing"}
     observed_epoch = int(observed.get("ts") or 0)
     delay = observed_epoch - target_epoch
+    observation_method = "at_or_after_target"
     if delay > FORWARD_MAX_DELAY_SEC:
-        return {
-            "status": "missing",
-            "reason": "forward_observation_delay_exceeded",
-            "delay_sec": delay,
-        }
+        prior = [
+            row
+            for row in same_day
+            if int(row.get("ts") or 0) <= target_epoch
+            and target_epoch - int(row.get("ts") or 0)
+            <= FORWARD_MAX_DELAY_SEC
+        ]
+        if not prior:
+            return {
+                "status": "missing",
+                "reason": "forward_observation_delay_exceeded",
+                "delay_sec": delay,
+            }
+        observed = prior[-1]
+        observed_epoch = int(observed.get("ts") or 0)
+        delay = observed_epoch - target_epoch
+        observation_method = "last_price_carried_forward"
+    elif delay < 0:
+        if abs(delay) > FORWARD_MAX_DELAY_SEC:
+            return {
+                "status": "missing",
+                "reason": "forward_price_missing",
+                "delay_sec": delay,
+            }
+        observation_method = "last_price_carried_forward"
     window = [
         row
         for row in same_day
@@ -64,6 +92,7 @@ def _checkpoint(
         "status": "observed",
         "observed_epoch": observed_epoch,
         "delay_sec": delay,
+        "observation_method": observation_method,
         "price": close,
         "gross_return_pct": round((close / baseline_price - 1.0) * 100.0, 4),
         "live_net_return_pct": round(

@@ -2,6 +2,15 @@
 
 This folder documents the strategy-horizon and post-exit feedback loop.
 
+Current cross-domain evaluation decision:
+
+- `docs/quant_trade_diagnosis/integrated_selection_horizon_sequence_evaluation_2026-07-31.md`
+- Strategy Horizon Feedback remains the operational time contract.
+- Quant Trade Diagnosis remains the per-trade evidence adapter.
+- Selection, horizon, exit, delayed reactivation, and same-symbol sequences are
+  evaluated together by the integrated read model; they are not independent
+  promotion programs.
+
 The goal is to separate three things that are currently easy to mix together:
 
 - strategist proposal: what kind of trade the strategist thinks this could be
@@ -14,6 +23,7 @@ Current active design:
 - `multi_position_minimal_patch_plan_2026-05-08.md`
 - `strategist_4stage_llm_flow_draft_2026-05-08.md`
 - `strategy_horizon_and_post_exit_shadow_tracking_2026-04-25.md`
+- `position_horizon_revision_contract_2026-08-05.md`
 
 Important active-scope clarification:
 
@@ -61,11 +71,11 @@ This folder does not own:
 The original implementation was observability-only. That rollout state is
 historical and is no longer the active runtime contract.
 
-As of `2026-07-24`, Strategist proposes the horizon and Commander publishes the
-authoritative operational policy. The position stores that policy when the BUY
-is filled, and Monitor must use the stored position policy until the position
-is closed. A later Strategist or Commander cycle must not silently replace the
-horizon of an open position.
+As of `2026-08-05`, Strategist proposes the horizon and Commander publishes the
+authoritative operational policy. The position stores immutable
+`entry_horizon` provenance and a mutable `active_horizon`. Monitor consumes the
+active horizon. An unrelated strategy cycle cannot replace it; only an explicit
+Stage 3 same-session review or Stage 4 closeout review can revise it.
 
 Canonical windows:
 
@@ -115,8 +125,10 @@ Stage 3/4 contract update:
 
 - Stage 3 and Stage 4 are conditional LLM calls, not every-cycle calls.
 - Stage 3 is for stale intraday hold review only. Commander should schedule it from a persisted review artifact using strategy horizon, elapsed hold time, thesis status, market state, and review cadence.
+- Stage 3 may revise `active_horizon` only between `scalp` and `intraday`; it cannot authorize overnight carry.
 - Stage 3 must not wait in front of hard deterministic exits such as stop loss, price/PnL anomaly, broker truth mismatch, or closeout hard flat.
 - Stage 4 is for closeout/overnight carry review only. It should run near the carry window only when a held position is a plausible carry candidate and qualitative overnight risk matters.
+- New positions require explicit per-symbol Stage 4 approval before Monitor can carry them overnight.
 - Weekend/holiday carry blocks remain hard Commander/Monitor policy. LLM may explain risk but cannot bypass them.
 
 Historical checkpoint: as of `2026-04-28 12:38 KST`, the inspected live monitor

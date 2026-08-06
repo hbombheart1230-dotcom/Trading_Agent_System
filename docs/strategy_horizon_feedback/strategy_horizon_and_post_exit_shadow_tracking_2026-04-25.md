@@ -1,5 +1,10 @@
 # Strategy Horizon and Post-Exit Shadow Tracking
 
+> Historical design note. The active operational contract is
+> `horizon_operational_contract_fix_2026-07-24.md`. In particular, the current
+> Commander horizon is no longer observability-only. Retain this document for
+> the post-exit evidence definitions, not as the authority for runtime behavior.
+
 > 2026-05-08 update: current operating design is minimal multi-position.
 > The system should not pre-assign trades into `short_term` / `long_hold`
 > slots for the next patch. Older horizon labels such as `scalp`,

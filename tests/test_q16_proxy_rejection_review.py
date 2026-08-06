@@ -136,6 +136,57 @@ def test_q16_ready_markdown_reports_final_decision() -> None:
     assert "RETAIN/ROLL_BACK is unavailable" not in rendered
 
 
+def test_q16_post_close_report_keeps_frozen_retain_decision(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-07-25"
+    base = int(
+        datetime(2026, 7, 25, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")).timestamp()
+    )
+    minute_rows = [{"ts": base, "close": 100.0}]
+    candidates = []
+    for index in range(20):
+        candidate_base = base + index * 60
+        minute_rows.append({"ts": candidate_base + 1800, "close": 102.0})
+        candidates.append(
+            {
+                "symbol": "005930",
+                "shadow_role": "top_pick",
+                "q9_decision_id": f"D{index}",
+                "triggered": True,
+                "guard_blocked": True,
+                "entry_cost_filter": {
+                    "passed": False,
+                    "proxy_edge_available": True,
+                    "directional_edge_available": False,
+                    "allow_triggered_signal_proxy_edge": False,
+                },
+                "shadow_forward_base": {
+                    "baseline_epoch": candidate_base,
+                    "baseline_price": 100.0,
+                },
+            }
+        )
+    _write(
+        tmp_path / "data" / "state.json",
+        {"recent_minute_ohlcv_by_symbol": {"005930": minute_rows}},
+    )
+    _write(
+        tmp_path / "data" / "logs" / "quant_shadow_candidates" / day / "sample.json",
+        {
+            "generated_at": datetime.fromtimestamp(base, tz=ZoneInfo("UTC")).isoformat(),
+            "candidates": candidates,
+        },
+    )
+
+    payload = build_q16_proxy_rejection_review(reports_root=reports, day=day)
+
+    assert payload["decision"] == "RETAIN"
+    assert payload["decision_authority"]["status"] == "FINAL_CLOSED"
+    assert payload["decision_authority"]["source"].endswith(
+        "q16_close_decision_2026-07-24.md"
+    )
+
+
 def test_q17_separates_below_cost_unavailable_and_missing_artifact(
     tmp_path: Path,
 ) -> None:

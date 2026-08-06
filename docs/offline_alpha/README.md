@@ -14,6 +14,13 @@ Rules:
 
 Current research:
 
+- `canonical_execution_plan_2026-08-06.md`
+  - authoritative operating schedule after the June-July reconstruction
+  - closes the old three-day integration check
+  - fixes the active five-session decision window at 2026-08-03 through 2026-08-07
+  - keeps the separate 25-episode/10-day broad Rank-1 control gate in the background
+  - permits at most one behavior-patch candidate after the five-session close
+
 - `post_reclaim_offline_research_2026-07-30.md`
   - target: `confirmed_post_reclaim_pullback`
   - result: `RETAIN_SHADOW`
@@ -78,3 +85,6 @@ Current research:
   - first eligible day: 2026-08-03
   - minimum evidence: 25 observed episodes across at least 10 trading days
   - a pass authorizes controlled shadow review only
+
+The prospective broad-control gate above does not extend the five-session decision
+window. See `canonical_execution_plan_2026-08-06.md` for the schedule boundary.

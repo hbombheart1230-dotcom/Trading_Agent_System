@@ -49,6 +49,22 @@ def load_q9_windows(
     return found
 
 
+def load_all_q9_windows(
+    reports_root: Path,
+    days: set[str],
+) -> dict[str, dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+    for day in sorted(days):
+        payload = load_json(reports_root / "operator_summary" / "daily" / day / "q9_decision_windows.json")
+        for window in list(payload.get("windows") or []):
+            if not isinstance(window, dict):
+                continue
+            decision_id = str(window.get("decision_id") or "")
+            if decision_id:
+                found[decision_id] = window
+    return found
+
+
 def _snapshot_epoch(path: Path, payload: dict[str, Any]) -> int:
     raw = str(payload.get("generated_at") or "")
     if raw:

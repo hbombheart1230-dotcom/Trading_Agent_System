@@ -7,10 +7,19 @@ from pathlib import Path
 from libs.reporting.opening_rank1_shadow.episodes import (
     build_opening_rank1_episodes,
 )
+from libs.reporting.opening_rank1_shadow.candle_provider import (
+    load_opening_candles,
+)
 from libs.reporting.opening_rank1_shadow.extraction import (
     extract_opening_rank1_windows,
 )
 from libs.reporting.opening_rank1_shadow.metrics import evaluate_promotion
+from libs.reporting.opening_rank1_shadow.latent_watch import (
+    build_latent_reactivation_watch,
+)
+from libs.reporting.opening_rank1_shadow.five_session_review import (
+    evaluate_five_session_review,
+)
 from libs.reporting.opening_rank1_shadow.pipeline import (
     build_opening_rank1_shadow,
 )
@@ -151,6 +160,164 @@ def test_episode_spacing_and_next_minute_entry_are_deterministic() -> None:
     assert len(episodes) == 2
     assert episodes[0]["baseline_epoch"] == _epoch(day, 9, 1)
     assert episodes[1]["baseline_epoch"] == _epoch(day, 9, 17)
+    first_observation = episodes[0]["opening_observability"]
+    assert first_observation["exact_opening_09_00_04"] is True
+    assert first_observation["completed_bar_count_at_decision"] == 0
+    assert first_observation["completed_volume_status"] == "UNAVAILABLE_FIRST_MINUTE"
+    assert first_observation["reference_entry_delay_sec"] == 30
+    assert first_observation["candidate_snapshot"]["score_total"] is None
+
+
+def test_recurrent_rank_lane_uses_only_prior_windows_and_completed_bar() -> None:
+    day = "2026-08-03"
+    windows = [
+        {
+            "day": day,
+            "decision_id": "D1",
+            "decision_epoch": _epoch(day, 9, 0, 30),
+            "candidates": [{"rank": 1, "symbol": "005930"}],
+        },
+        {
+            "day": day,
+            "decision_id": "D2",
+            "decision_epoch": _epoch(day, 9, 14, 30),
+            "candidates": [{"rank": 1, "symbol": "005930"}],
+        },
+        {
+            "day": day,
+            "decision_id": "D3",
+            "decision_epoch": _epoch(day, 9, 16, 30),
+            "candidates": [{"rank": 1, "symbol": "005930"}],
+        },
+    ]
+
+    episodes = build_opening_rank1_episodes(
+        windows,
+        minute_rows_by_symbol={"005930": _candles(day, "005930")},
+    )
+
+    assert len(episodes) == 2
+    lane = episodes[1]["opening_observability"]["conditional_lanes"][
+        "CONFIRMED_RECURRENT_RANK"
+    ]
+    assert lane["eligible"] is True
+    assert lane["evidence"]["prior_rank1_observations_5m"] == 1
+    assert lane["evidence"]["completed_return_1m_pct"] > 0.0
+
+
+def test_latent_watch_records_fresh_reappearance_without_behavior_effect(
+    tmp_path: Path,
+) -> None:
+    reports_root = tmp_path / "reports"
+    output_root = reports_root / "evaluation" / "opening_rank1_shadow"
+    initial_day = "2026-08-03"
+    next_day = "2026-08-04"
+    initial_path = output_root / initial_day / "opening_rank1_shadow_daily.json"
+    initial_path.parent.mkdir(parents=True)
+    initial_path.write_text(
+        json.dumps(
+            {
+                "day_status": "VALID",
+                "episodes": [
+                    {
+                        "episode_id": "E1",
+                        "day": initial_day,
+                        "symbol": "005930",
+                        "checkpoints": {
+                            "+30m": {
+                                "status": "observed",
+                                "live_net_return_pct": -0.5,
+                            }
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    reappearance = _window(next_day, 9, 5, "005930")
+    candidate = reappearance["scanner_pre_strategist_universe"][
+        "intrinsic_ranked_top20"
+    ][1]
+    candidate["score_breakdown"] = {
+        "volume_surge": 0.1,
+        "vwap_alignment": 0.1,
+        "momentum": 0.1,
+        "intraday_strength": 0.1,
+    }
+    later_reappearance = _window(next_day, 9, 6, "005930")
+    _write_q9(reports_root, next_day, [reappearance, later_reappearance])
+
+    paths = build_latent_reactivation_watch(
+        reports_root=reports_root,
+        opening_output_root=output_root,
+        through_day=next_day,
+    )
+    payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+
+    assert payload["behavior_effect"] == "observation_only"
+    assert payload["summary"]["watch_count"] == 1
+    assert payload["rows"][0]["watch_status"] == "REDETECTED_WITH_SIGNAL_EVIDENCE"
+    assert payload["rows"][0]["redetections"][0]["rank"] == 1
+    assert len(payload["rows"][0]["redetections"]) == 1
+    assert payload["rows"][0]["redetections"][0]["observation_count"] == 2
+
+
+def test_historical_cache_prevents_past_artifact_shrink(tmp_path: Path) -> None:
+    day = "2026-08-03"
+    state_path = tmp_path / "state.json"
+    cache_root = tmp_path / "minute_cache"
+    state_path.write_text("{}", encoding="utf-8")
+    cache_root.mkdir(parents=True)
+    cache_root.joinpath("005930.json").write_text(
+        json.dumps({"rows": _candles(day, "005930")}),
+        encoding="utf-8",
+    )
+
+    candles, meta = load_opening_candles(
+        state_path=state_path,
+        day=day,
+        symbols=("005930",),
+        allow_fresh_fetch=False,
+        cache_root=cache_root,
+    )
+
+    assert len(candles["005930"]) > 300
+    assert meta["complete_symbol_count"] == 1
+    assert meta["historical_fallback"]["005930"]["source"] == "cache"
+
+
+def test_five_session_review_selects_only_recurrent_rank_candidate() -> None:
+    summary = {
+        "conditional_lane_summaries": {
+            "IMMEDIATE_OPENING_PROBE": {
+                "eligible_episode_count": 8,
+                "horizons": {"+15m": {"live_net": {"count": 8, "average_return_pct": 1.0}}},
+            },
+            "CONFIRMED_RECURRENT_RANK": {
+                "eligible_episode_count": 5,
+                "horizons": {"+30m": {"live_net": {"count": 5, "average_return_pct": 0.4}}},
+            },
+            "DISLOCATION_REBOUND": {
+                "eligible_episode_count": 2,
+                "horizons": {"+60m": {"live_net": {"count": 2, "average_return_pct": 2.0}}},
+            },
+        }
+    }
+    result = evaluate_five_session_review(
+        through_day="2026-08-07",
+        cumulative_summary=summary,
+        session_rows=[
+            {"day": f"2026-08-0{day}", "status": "VALID"}
+            for day in range(3, 8)
+        ],
+        latent_summary={"watch_count": 6, "signal_evidence_count": 4},
+    )
+
+    assert result["status"] == "SELECT_BEHAVIOR_CANDIDATE"
+    assert result["selected_behavior_candidate"] == "CONFIRMED_RECURRENT_RANK_PRESERVATION"
+    assert result["lane_results"]["DISLOCATION_REBOUND"]["outcome"] == "RETAIN_LANE_SHADOW_ONLY"
+    assert result["behavior_change_authorized"] is False
 
 
 def test_eod_requires_close_window_observation() -> None:

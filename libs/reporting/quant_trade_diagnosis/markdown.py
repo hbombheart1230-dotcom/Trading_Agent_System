@@ -63,6 +63,8 @@ def render_quant_trade_diagnosis(payload: Mapping[str, Any]) -> str:
     outcome = _mapping(payload.get("trade_outcome"))
     root = _mapping(payload.get("root_cause_attribution"))
     quant = _mapping(payload.get("quant_interpretation"))
+    conditional = _mapping(payload.get("conditional_alpha_context"))
+    conditional_returns = _mapping(conditional.get("forward_returns_pct"))
 
     lines = [
         "# Quant Trade Diagnosis",
@@ -276,6 +278,34 @@ def render_quant_trade_diagnosis(payload: Mapping[str, Any]) -> str:
             f"- Status: `{_fmt(root.get('status'))}`",
             f"- Primary: `{_fmt(root.get('primary'))}`",
             f"- Labels: {_join(root.get('labels'))}",
+            "",
+            "## Conditional Alpha Context",
+            "",
+            *_table(
+                ["Match", "Authority", "Archetype", "Stage Root Cause", "Cohorts"],
+                [[
+                    conditional.get("match_status"),
+                    conditional.get("authority"),
+                    conditional.get("opening_archetype"),
+                    conditional.get("stage_root_cause"),
+                    _join(conditional.get("cohort_ids")),
+                ]],
+            ),
+            "",
+            *_table(
+                ["5m", "15m", "30m", "60m", "EOD", "MFE 30m", "MAE 30m"],
+                [[
+                    _pct(conditional_returns.get("5m")),
+                    _pct(conditional_returns.get("15m")),
+                    _pct(conditional_returns.get("30m")),
+                    _pct(conditional_returns.get("60m")),
+                    _pct(conditional_returns.get("EOD")),
+                    _pct(conditional.get("mfe_30m_pct")),
+                    _pct(conditional.get("mae_30m_pct")),
+                ]],
+            ),
+            "",
+            f"- Evidence warning: {conditional.get('warning') or 'none'}",
             "",
             "## Quant Interpretation",
             "",

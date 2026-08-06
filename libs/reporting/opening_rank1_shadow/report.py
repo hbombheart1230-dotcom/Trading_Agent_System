@@ -27,6 +27,31 @@ def _horizon_table(summary: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _lane_table(summary: Mapping[str, Any]) -> list[str]:
+    lines = [
+        "| Lane | Eligible | Evidence states | +15m Avg | +30m Avg | +60m Avg |",
+        "| --- | ---: | --- | ---: | ---: | ---: |",
+    ]
+    for lane_name, raw in sorted(
+        (summary.get("conditional_lane_summaries") or {}).items()
+    ):
+        lane = raw if isinstance(raw, Mapping) else {}
+        horizons = lane.get("horizons") or {}
+
+        def average(horizon: str) -> str:
+            metrics = ((horizons.get(horizon) or {}).get("live_net") or {})
+            if not int(metrics.get("count") or 0):
+                return "-"
+            return f"{float(metrics.get('average_return_pct') or 0.0):+.4f}%"
+
+        lines.append(
+            f"| {lane_name} | {int(lane.get('eligible_episode_count') or 0)} | "
+            f"`{lane.get('evidence_status_counts') or {}}` | {average('+15m')} | "
+            f"{average('+30m')} | {average('+60m')} |"
+        )
+    return lines
+
+
 def render_daily(payload: Mapping[str, Any]) -> str:
     summary = payload.get("summary") or {}
     lines = [
@@ -45,11 +70,13 @@ def render_daily(payload: Mapping[str, Any]) -> str:
         "",
         "## Episodes",
         "",
-        "| Decision KST | Symbol | Entry KST | Entry Price | +5m | +15m | +30m | +60m | EOD |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Decision KST | Symbol | Open sec | Entry delay | Entry vs open | Volume status | Quote status | +5m | +15m | +30m | +60m | EOD |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in payload.get("episodes") or []:
         checkpoints = row.get("checkpoints") or {}
+        observation = row.get("opening_observability") or {}
+        quote = observation.get("quote_snapshot") or {}
 
         def value(horizon: str) -> str:
             checkpoint = checkpoints.get(horizon) or {}
@@ -59,10 +86,29 @@ def render_daily(payload: Mapping[str, Any]) -> str:
 
         lines.append(
             f"| {row.get('decision_time_kst')} | {row.get('symbol')} | "
-            f"{row.get('entry_time_kst')} | {float(row.get('baseline_price') or 0.0):,.2f} | "
+            f"{int(observation.get('decision_from_open_sec') or 0)} | "
+            f"{int(observation.get('reference_entry_delay_sec') or 0)} | "
+            f"{float(observation.get('reference_entry_vs_open_pct') or 0.0):+.4f}% | "
+            f"{observation.get('completed_volume_status') or 'MISSING'} | "
+            f"{quote.get('status') or 'MISSING'} | "
             f"{value('+5m')} | {value('+15m')} | {value('+30m')} | "
             f"{value('+60m')} | {value('EOD')} |"
         )
+    lines.extend(
+        [
+            "",
+        "## Observability Coverage",
+        "",
+        f"- Subgroups: `{summary.get('subgroup_counts') or {}}`",
+        f"- Evidence states: `{summary.get('observability_counts') or {}}`",
+        f"- Exposure directions: `{summary.get('exposure_counts') or {}}`",
+        f"- Execution evidence: `{summary.get('execution_evidence_counts') or {}}`",
+        "",
+        "## Conditional Lanes",
+        "",
+        *_lane_table(summary),
+    ]
+    )
     lines.extend(
         [
             "",
@@ -115,6 +161,14 @@ def render_cumulative(payload: Mapping[str, Any]) -> str:
             "",
             "## Interpretation",
             "",
+        ]
+    )
+    lines.extend(
+        [
+            "",
+            "## Observer-Only Conditional Lanes",
+            "",
+            *_lane_table(summary),
         ]
     )
     if decision.get("status") == "COLLECTING":

@@ -1,10 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 import json
+import os
 import time
+
+
+KST = timezone(timedelta(hours=9))
+
+
+def _expiry_epoch(payload: Dict[str, Any], fallback: int = 0) -> int:
+    raw = dict(payload.get("raw") or {})
+    expires_dt = str(raw.get("expires_dt") or "").strip()
+    if len(expires_dt) == 14 and expires_dt.isdigit():
+        try:
+            return int(datetime.strptime(expires_dt, "%Y%m%d%H%M%S").replace(tzinfo=KST).timestamp())
+        except ValueError:
+            pass
+    return int(payload.get("expires_at_epoch") or fallback or 0)
 
 
 @dataclass
@@ -38,7 +54,7 @@ class TokenRecord:
         return TokenRecord(
             access_token=str(d.get("access_token", "")),
             token_type=str(d.get("token_type", "Bearer")),
-            expires_at_epoch=int(d.get("expires_at_epoch", 0)),
+            expires_at_epoch=_expiry_epoch(d),
             raw=dict(d.get("raw", {}) or {}),
         )
 
@@ -67,4 +83,9 @@ class TokenCache:
 
     def save(self, rec: TokenRecord) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(rec.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary = self.path.with_suffix(self.path.suffix + f".{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps(rec.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(self.path)

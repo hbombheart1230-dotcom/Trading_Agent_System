@@ -15,6 +15,11 @@ from libs.runtime.broker_cost_profile import load_broker_cost_profile
 
 
 Q16_START_DAY = "2026-07-22"
+Q16_CLOSE_DAY = "2026-07-24"
+Q16_FINAL_DECISION = "RETAIN"
+Q16_FINAL_DECISION_SOURCE = (
+    "docs/q13_q14_validation/q16_close_decision_2026-07-24.md"
+)
 Q17_START_DAY = "2026-07-27"
 Q16_HORIZONS = ("+15m", "+30m")
 Q16_MIN_EXACT_SAMPLES = 20
@@ -271,10 +276,16 @@ def build_q16_proxy_rejection_review(
         next(row for row in horizons if row["horizon"] == "+30m")["exact_proxy_only"]["live"]["gross"]["count"]
     )
     daily_exact = _daily_exact_metrics(exact, live_drag)
-    decision_ready, decision, observed_day_count, positive_30m_day_count = _q16_decision(
+    decision_ready, rolling_diagnostic_decision, observed_day_count, positive_30m_day_count = _q16_decision(
         observed_30m,
         daily_exact,
     )
+    decision_is_final = day >= Q16_CLOSE_DAY
+    decision = (
+        Q16_FINAL_DECISION if decision_is_final else rolling_diagnostic_decision
+    )
+    if decision_is_final:
+        decision_ready = True
     return {
         "schema_version": "q16_proxy_rejection_review.v1",
         "behavior_effect": "evaluation_only",
@@ -282,6 +293,18 @@ def build_q16_proxy_rejection_review(
         "end_day": day,
         "evidence_status": "DECISION_READY" if decision_ready else "INSUFFICIENT_EVIDENCE",
         "decision": decision,
+        "decision_authority": {
+            "status": "FINAL_CLOSED" if decision_is_final else "ACTIVE_WINDOW",
+            "close_day": Q16_CLOSE_DAY,
+            "source": Q16_FINAL_DECISION_SOURCE,
+            "rolling_diagnostic_decision": rolling_diagnostic_decision,
+            "note": (
+                "Post-close samples update diagnostics only and cannot reopen or "
+                "reverse the frozen Q16 policy decision."
+                if decision_is_final
+                else "The fixed Q16 validation window has not closed yet."
+            ),
+        },
         "decision_rule": {
             "minimum_exact_proxy_only_samples": Q16_MIN_EXACT_SAMPLES,
             "minimum_days": Q16_MIN_DAYS,
@@ -328,12 +351,15 @@ def build_q16_proxy_rejection_review(
 
 def render_q16_proxy_rejection_review(payload: Mapping[str, Any]) -> str:
     counts = payload.get("counts") or {}
+    authority = payload.get("decision_authority") or {}
     lines = [
         "# Q16 Proxy-Only Rejection Review",
         "",
         f"- Window: `{payload.get('start_day')}` to `{payload.get('end_day')}`",
         f"- Evidence: **{payload.get('evidence_status')}**",
         f"- Decision: **{payload.get('decision')}**",
+        f"- Decision authority: `{authority.get('status', 'LEGACY')}`",
+        f"- Rolling diagnostic decision: `{authority.get('rolling_diagnostic_decision', payload.get('decision'))}`",
         f"- Exact proxy-only rejections: {counts.get('exact_proxy_only_rejection_count', 0)}",
         f"- Exact +30m observations: {counts.get('exact_observed_30m_count', 0)}",
         f"- Exact observed days: {counts.get('exact_observed_day_count', 0)}",
@@ -374,7 +400,13 @@ def render_q16_proxy_rejection_review(payload: Mapping[str, Any]) -> str:
         "Legacy rows are shown for context only. They cannot prove that the rejected edge was proxy-only.",
     ]
     if payload.get("evidence_status") == "DECISION_READY":
-        lines.append(f"Q16 decision is final under the fixed sample contract: **{payload.get('decision')}**.")
+        if authority.get("status") == "FINAL_CLOSED":
+            lines.append(
+                "Q16 is closed. Later samples update diagnostics only; the authoritative "
+                f"policy decision remains **{payload.get('decision')}**."
+            )
+        else:
+            lines.append(f"Q16 decision is final under the fixed sample contract: **{payload.get('decision')}**.")
     else:
         lines.append("Q16 RETAIN/ROLL_BACK is unavailable until exact post-patch fields meet the sample contract.")
     q17 = payload.get("q17_directional_edge_validation") or {}

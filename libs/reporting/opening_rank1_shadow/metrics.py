@@ -18,7 +18,51 @@ def summarize_episodes(episodes: list[Mapping[str, Any]]) -> dict[str, Any]:
     by_day: dict[str, list[float]] = defaultdict(list)
     day_counts: Counter[str] = Counter()
     symbol_counts: Counter[str] = Counter()
+    subgroup_counts: Counter[str] = Counter()
+    observability_counts: Counter[str] = Counter()
+    exposure_counts: Counter[str] = Counter()
+    execution_evidence_counts: Counter[str] = Counter()
+    lane_rows: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    lane_status_counts: dict[str, Counter[str]] = defaultdict(Counter)
     for row in episodes:
+        observation = row.get("opening_observability")
+        observation = (
+            observation
+            if isinstance(observation, Mapping)
+            else {}
+        )
+        for key in (
+            "exact_opening_09_00_04",
+            "opening_chase_7pct",
+            "late_09_15_19_no_chase",
+        ):
+            if observation.get(key) is True:
+                subgroup_counts[key] += 1
+        observability_counts[
+            str(observation.get("completed_volume_status") or "MISSING")
+        ] += 1
+        quote = observation.get("quote_snapshot")
+        quote = quote if isinstance(quote, Mapping) else {}
+        observability_counts[
+            f"quote:{quote.get('status') or 'MISSING'}"
+        ] += 1
+        asset = observation.get("asset_observation")
+        asset = asset if isinstance(asset, Mapping) else {}
+        exposure_counts[str(asset.get("exposure_direction") or "UNKNOWN")] += 1
+        execution = observation.get("execution_evidence")
+        execution = execution if isinstance(execution, Mapping) else {}
+        execution_evidence_counts[
+            str(execution.get("status") or "MISSING")
+        ] += 1
+        lanes = observation.get("conditional_lanes")
+        lanes = lanes if isinstance(lanes, Mapping) else {}
+        for lane_name, lane_value in lanes.items():
+            lane = lane_value if isinstance(lane_value, Mapping) else {}
+            lane_status_counts[str(lane_name)][
+                str(lane.get("status") or "MISSING")
+            ] += 1
+            if lane.get("eligible") is True:
+                lane_rows[str(lane_name)].append(row)
         checkpoints = row.get("checkpoints")
         checkpoints = checkpoints if isinstance(checkpoints, Mapping) else {}
         checkpoint = checkpoints.get(PRIMARY_HORIZON)
@@ -56,6 +100,24 @@ def summarize_episodes(episodes: list[Mapping[str, Any]]) -> dict[str, Any]:
             if observed_count
             else 0.0
         ),
+        "subgroup_counts": dict(subgroup_counts),
+        "observability_counts": dict(observability_counts),
+        "exposure_counts": dict(exposure_counts),
+        "execution_evidence_counts": dict(execution_evidence_counts),
+        "conditional_lane_summaries": {
+            lane_name: {
+                "eligible_episode_count": len(lane_rows.get(lane_name, [])),
+                "evidence_status_counts": dict(lane_status_counts[lane_name]),
+                "horizons": {
+                    horizon: summarize_horizon(
+                        lane_rows.get(lane_name, []),
+                        horizon,
+                    )
+                    for horizon in HORIZONS
+                },
+            }
+            for lane_name in sorted(lane_status_counts)
+        },
         "horizons": horizons,
     }
 

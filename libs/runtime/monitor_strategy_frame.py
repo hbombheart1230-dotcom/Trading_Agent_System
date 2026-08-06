@@ -5,6 +5,8 @@ from typing import Any, Dict, List
 from libs.core.symbols import normalize_symbol
 
 from libs.runtime.monitor_exit.price_resolution import position_mark_price, resolve_price
+from libs.runtime.position_horizon_revision import overlay_active_horizon_on_output
+from libs.runtime.position_horizon_revision import ensure_horizon_state
 from libs.runtime.strategy_horizon_feedback import (
     normalize_operational_commander_horizon_policy,
 )
@@ -141,6 +143,7 @@ def position_strategy_frame_for_symbol(
     output = row.get("output") if isinstance(row.get("output"), dict) else {}
     if not output:
         return dict(base_frame or {})
+    output = overlay_active_horizon_on_output(output, row)
     pinned_state = dict(state)
     pinned_state["strategist_output"] = dict(output)
     for key in ("playbook", "monitor_guidance", "risk_tone", "trade_aggressiveness"):
@@ -169,6 +172,13 @@ def position_strategy_frame_for_symbol(
     out["position_strategy_context_source"] = str(row.get("source") or "position_strategy_context")
     out["position_strategy_context_generated_epoch"] = _to_int(row.get("generated_epoch"))
     out["position_strategy_context_output"] = dict(output)
+    horizon_state = ensure_horizon_state(row)
+    out["position_horizon_state"] = dict(horizon_state)
+    out["entry_horizon"] = str(horizon_state.get("entry_horizon") or "")
+    out["active_horizon"] = str(horizon_state.get("active_horizon") or "")
+    out["stage4_carry_approved"] = bool(horizon_state.get("stage4_carry_approved"))
+    out["last_stage3_decision"] = dict(horizon_state.get("last_stage3_decision") or {})
+    out["last_stage4_decision"] = dict(horizon_state.get("last_stage4_decision") or {})
     return out
 
 

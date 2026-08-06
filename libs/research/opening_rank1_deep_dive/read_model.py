@@ -87,6 +87,7 @@ def build_case(
 
     row = {
         "episode_id": episode.get("episode_id"),
+        "decision_id": episode.get("decision_id"),
         "day": episode.get("day"),
         "symbol": symbol,
         "symbol_name": metadata.get("name") or "",

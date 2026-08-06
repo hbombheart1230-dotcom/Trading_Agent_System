@@ -1,5 +1,9 @@
 # Q9 Evaluation Layer
 
+Current compact Q9-Q18 authority map:
+
+- `q9_q18_operating_status_2026-08-05.md`
+
 This folder owns the post-Q8 evaluation layer.
 
 ## Current Authority

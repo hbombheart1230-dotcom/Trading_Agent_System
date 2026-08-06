@@ -93,9 +93,10 @@ def test_gap_threshold_exceeded():
     result = scanner_node(state)
     
     scanner_output = result.get("scanner_output", {})
-    # Gap is 0.05 > 0.01, penalty not applied
+    # The optional Commander overlay is not applied. The independent core
+    # repeat-symbol guard still penalizes the most recently traded symbol.
     assert scanner_output.get("reentry_penalty_applied") is False
-    assert result.get("selected", {}).get("symbol") == "AAPL"
+    assert result.get("selected", {}).get("symbol") == "MSFT"
 
 def test_diversification_tie_break():
     scanner_policy = {
@@ -140,7 +141,8 @@ def test_regression_safety():
     assert scanner_output.get("diversification_applied") is False
     assert scanner_output.get("entry_bias_cap_applied") is False
     assert scanner_output.get("ranking_before_policy") == scanner_output.get("ranking_after_policy")
-    assert result.get("selected", {}).get("symbol") == "AAPL"
+    # Empty overlay policy does not disable the core repeat-symbol guard.
+    assert result.get("selected", {}).get("symbol") == "MSFT"
 
 
 def test_market_representative_guard_promotes_confirmed_runner_up_when_top_value_only(tmp_path):

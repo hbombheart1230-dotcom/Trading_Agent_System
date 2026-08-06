@@ -166,6 +166,13 @@ def evaluate_overnight_carry_decision(
         blockers.append(
             f"strategy_horizon_disallows_overnight:{horizon or 'unavailable'}"
         )
+    horizon_state_present = bool(frame.get("position_horizon_state"))
+    if bool(frame.get("stage4_carry_approved")):
+        positives.append("stage4_carry_approved")
+    elif horizon_state_present:
+        blockers.append("stage4_carry_not_approved")
+    else:
+        positives.append("legacy_position_horizon_compatibility")
     if bool(risk_decision.get("triggered")):
         risk_reason = str(risk_decision.get("reason") or "unknown")
         if is_soft_profit_exit_reason(risk_reason):

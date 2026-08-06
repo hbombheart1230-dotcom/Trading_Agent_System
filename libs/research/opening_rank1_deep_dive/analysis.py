@@ -45,6 +45,26 @@ NUMERIC_FEATURES = (
     "score_entry_compatibility_bias",
     "score_macro_chart_fit_bias",
     "score_risk_penalty",
+    "baseline_delay_sec",
+    "opening_gap_pct",
+    "entry_vs_prior_close_pct",
+    "path_high_vs_prior_close_pct",
+    "open_to_entry_pct",
+    "precompleted_return_1m_pct",
+    "precompleted_return_3m_pct",
+    "precompleted_return_5m_pct",
+    "opening_relative_volume",
+    "entry_bar_volume",
+    "rank1_rank2_gap",
+    "rank1_rank2_confidence_delta",
+    "rank1_rank2_risk_delta",
+    "rank1_score_rank",
+    "rank_candidate_count",
+    "rank1_age_sec",
+    "rank1_forward_persistence_sec",
+    "rank1_prev5m_observations",
+    "rank1_next5m_observations",
+    "rank1_score_change_from_prior",
 )
 
 
@@ -76,7 +96,10 @@ def grouped(rows: list[dict[str, Any]], field: str) -> dict[str, dict[str, Any]]
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         value = row.get(field)
-        key = "|".join(value) if isinstance(value, list) else str(value or "MISSING")
+        if isinstance(value, list):
+            key = "|".join(value) if value else "MISSING"
+        else:
+            key = "MISSING" if value in (None, "") else str(value)
         groups[key].append(row)
     return {
         key: _summary(value)
@@ -135,6 +158,73 @@ def daily_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def hypothesis_screens(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    def minute(row: dict[str, Any]) -> int:
+        try:
+            return int(str(row.get("decision_time_kst") or "")[14:16])
+        except ValueError:
+            return -1
+
+    predicates = {
+        "OPENING_09_00_04": lambda row: 0 <= minute(row) < 5,
+        "EARLY_RELATIVE_VOLUME_1X_NOT_OVEREXTENDED": lambda row: (
+            1 <= minute(row) < 5
+            and row.get("opening_relative_volume") is not None
+            and float(row["opening_relative_volume"]) >= 1.0
+            and row.get("entry_vs_prior_close_pct") is not None
+            and float(row["entry_vs_prior_close_pct"]) < 20.0
+        ),
+        "EARLY_RELATIVE_VOLUME_2X_NOT_OVEREXTENDED": lambda row: (
+            1 <= minute(row) < 5
+            and row.get("opening_relative_volume") is not None
+            and float(row["opening_relative_volume"]) >= 2.0
+            and row.get("entry_vs_prior_close_pct") is not None
+            and float(row["entry_vs_prior_close_pct"]) < 20.0
+        ),
+        "LATE_09_15_19_NO_CHASE": lambda row: (
+            15 <= minute(row) < 20
+            and row.get("open_to_entry_pct") is not None
+            and float(row["open_to_entry_pct"]) < 7.0
+        ),
+        "PRIOR_RANK_CONFIRMATION_NO_CHASE": lambda row: (
+            int(row.get("rank1_prev5m_observations") or 0) >= 1
+            and row.get("open_to_entry_pct") is not None
+            and float(row["open_to_entry_pct"]) < 7.0
+        ),
+        "CRASH_DISLOCATION_ENTRY": lambda row: (
+            row.get("entry_vs_prior_close_pct") is not None
+            and float(row["entry_vs_prior_close_pct"]) <= -10.0
+        ),
+    }
+    result: dict[str, Any] = {}
+    for name, predicate in predicates.items():
+        selected = [row for row in rows if predicate(row)]
+        returns = sorted(_values(selected, "net_return_30m_pct"), reverse=True)
+        days = {str(row.get("day") or "") for row in selected}
+        symbols = {str(row.get("symbol") or "") for row in selected}
+        summary = _summary(selected)
+        summary.update(
+            {
+                "day_count": len(days),
+                "symbol_count": len(symbols),
+                "avg_without_top3_pct": round(sum(returns[3:]) / len(returns[3:]), 4)
+                if len(returns) > 3
+                else None,
+                "winsorized_5pct_avg": round(
+                    sum(max(-5.0, min(5.0, value)) for value in returns) / len(returns),
+                    4,
+                )
+                if returns
+                else None,
+                "evidence_status": "SCREENABLE"
+                if len(selected) >= 15 and len(days) >= 10
+                else "INSUFFICIENT_EVIDENCE",
+            }
+        )
+        result[name] = summary
+    return result
+
+
 def winner_loser_comparison(rows: list[dict[str, Any]]) -> dict[str, Any]:
     winners = [row for row in rows if row.get("outcome") == "WIN"]
     losers = [row for row in rows if row.get("outcome") == "LOSS"]
@@ -184,12 +274,52 @@ def _market_bucket(row: dict[str, Any]) -> str:
     return "SHARP_DOWN"
 
 
+def _numeric_bucket(value: Any, cuts: tuple[float, ...], labels: tuple[str, ...]) -> str:
+    if value is None:
+        return "MISSING"
+    number = float(value)
+    for cut, label in zip(cuts, labels):
+        if number < cut:
+            return label
+    return labels[-1]
+
+
 def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
     enriched = []
     for row in rows:
         copy = dict(row)
         copy["decision_5m_bucket"] = _minute_bucket(str(row.get("decision_time_kst") or ""))
         copy["market_bucket"] = _market_bucket(row)
+        copy["baseline_delay_bucket"] = _numeric_bucket(
+            row.get("baseline_delay_sec"),
+            (31, 61, 121, float("inf")),
+            ("<=30s", "31-60s", "61-120s", ">120s"),
+        )
+        copy["open_to_entry_bucket"] = _numeric_bucket(
+            row.get("open_to_entry_pct"),
+            (-1.0, 1.0, 3.0, 7.0, float("inf")),
+            ("<-1%", "-1~1%", "1~3%", "3~7%", ">=7%"),
+        )
+        copy["opening_gap_bucket"] = _numeric_bucket(
+            row.get("opening_gap_pct"),
+            (-2.0, 0.0, 2.0, 5.0, float("inf")),
+            ("<-2%", "-2~0%", "0~2%", "2~5%", ">=5%"),
+        )
+        copy["opening_relative_volume_bucket"] = _numeric_bucket(
+            row.get("opening_relative_volume"),
+            (0.75, 1.25, 2.0, 4.0, float("inf")),
+            ("<0.75x", "0.75~1.25x", "1.25~2x", "2~4x", ">=4x"),
+        )
+        copy["rank_gap_bucket"] = _numeric_bucket(
+            row.get("rank1_rank2_gap"),
+            (0.05, 0.15, 0.30, float("inf")),
+            ("<0.05", "0.05~0.15", "0.15~0.30", ">=0.30"),
+        )
+        copy["rank_age_bucket"] = _numeric_bucket(
+            row.get("rank1_age_sec"),
+            (1, 61, 181, float("inf")),
+            ("new", "<=60s", "61~180s", ">180s"),
+        )
         enriched.append(copy)
     fade = [
         row
@@ -222,6 +352,15 @@ def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "by_scenario": grouped(enriched, "strategist_scenario"),
         "by_market_bucket": grouped(enriched, "market_bucket"),
         "by_above_vwap": grouped(enriched, "above_vwap"),
+        "by_path_type": grouped(enriched, "path_type"),
+        "by_price_arc": grouped(enriched, "price_arc"),
+        "by_baseline_delay": grouped(enriched, "baseline_delay_bucket"),
+        "by_open_to_entry": grouped(enriched, "open_to_entry_bucket"),
+        "by_opening_gap": grouped(enriched, "opening_gap_bucket"),
+        "by_opening_relative_volume": grouped(enriched, "opening_relative_volume_bucket"),
+        "by_rank_gap": grouped(enriched, "rank_gap_bucket"),
+        "by_rank1_highest_score": grouped(enriched, "rank1_is_highest_score"),
+        "by_rank_age": grouped(enriched, "rank_age_bucket"),
         "by_symbol": grouped(enriched, "symbol"),
         "by_theme": grouped(
             [{**row, "primary_theme": (row.get("themes") or ["MISSING"])[0]} for row in enriched],
@@ -235,6 +374,7 @@ def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "outlier_sensitivity": outlier_sensitivity(enriched),
         "daily": daily_summary(enriched),
+        "hypothesis_screens": hypothesis_screens(enriched),
         "concentration": {
             "symbol_counts": dict(Counter(str(row.get("symbol") or "") for row in enriched).most_common()),
             "day_counts": dict(Counter(str(row.get("day") or "") for row in enriched).most_common()),

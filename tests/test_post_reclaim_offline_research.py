@@ -89,6 +89,34 @@ def test_forward_evaluation_applies_fixed_live_and_mock_costs() -> None:
     assert checkpoint["mae_pct"] == -1.0
 
 
+def test_forward_evaluation_carries_recent_price_across_sparse_bar() -> None:
+    base = 1785369600
+    episodes = [
+        {
+            "episode_id": "sparse",
+            "day": "2026-07-30",
+            "symbol": "005930",
+            "baseline_epoch": base,
+            "baseline_price": 100.0,
+        }
+    ]
+    candles = {
+        "005930": [
+            {"ts": base, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+            {"ts": base + 29 * 60, "open": 101.0, "high": 101.0, "low": 101.0, "close": 101.0},
+            {"ts": base + 35 * 60, "open": 102.0, "high": 102.0, "low": 102.0, "close": 102.0},
+        ]
+    }
+
+    result = evaluate_episodes(episodes, minute_rows_by_symbol=candles)
+    checkpoint = result[0]["checkpoints"]["+30m"]
+
+    assert checkpoint["status"] == "observed"
+    assert checkpoint["delay_sec"] == -60
+    assert checkpoint["observation_method"] == "last_price_carried_forward"
+    assert checkpoint["live_net_return_pct"] == 0.72
+
+
 def test_scanner_baseline_filters_to_episode_days() -> None:
     review = {
         "episode_scanner_review": {

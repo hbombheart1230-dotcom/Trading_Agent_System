@@ -5,8 +5,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from libs.reporting.baseline_samsung_hynix.data_provider import load_existing_candles
+from libs.reporting.baseline_samsung_hynix.data_provider import (
+    load_market_change_pct,
+)
 
+from .candle_provider import (
+    load_historical_reference_rows,
+    load_opening_candles,
+)
 from .contracts import (
     BEHAVIOR_EFFECT,
     COHORT_ID,
@@ -15,9 +21,15 @@ from .contracts import (
     SCHEMA_VERSION,
 )
 from .extraction import extract_opening_rank1_windows
+from .latent_watch import build_latent_reactivation_watch
+from .five_session_review import build_five_session_review
 from .episodes import build_opening_rank1_episodes
 from .metrics import evaluate_promotion, summarize_episodes
 from .report import render_cumulative, render_daily
+from .symbol_metadata import (
+    enrich_windows_with_symbol_metadata,
+    load_or_refresh_symbol_metadata,
+)
 
 
 KST = timezone(timedelta(hours=9))
@@ -92,26 +104,41 @@ def build_opening_rank1_shadow(
     )
     windows = list(extraction.get("windows") or [])
     symbols = tuple(str(value) for value in extraction.get("symbols") or [])
-    candles = load_existing_candles(
+    metadata, metadata_provider = load_or_refresh_symbol_metadata(
+        symbols=symbols,
+        cache_path=(
+            state_path.parent
+            / "research"
+            / "opening_rank1_shadow"
+            / "symbol_metadata.json"
+        ),
+        allow_refresh=allow_fresh_fetch,
+    )
+    windows = enrich_windows_with_symbol_metadata(windows, metadata)
+    minute_cache_root = (
+        state_path.parent
+        / "research"
+        / "opening_rank1_shadow"
+        / "minute_cache"
+    )
+    candles, candle_provider = load_opening_candles(
         state_path=state_path,
         day=normalized_day,
         symbols=symbols,
-        allow_fresh_fetch=False,
-        run_id_prefix="opening_rank1_shadow",
+        allow_fresh_fetch=allow_fresh_fetch,
+        cache_root=minute_cache_root,
     )
-    fresh_fetch_used = False
-    if allow_fresh_fetch and not _candles_complete_for_close(candles, symbols):
-        candles = load_existing_candles(
-            state_path=state_path,
-            day=normalized_day,
-            symbols=symbols,
-            allow_fresh_fetch=True,
-            run_id_prefix="opening_rank1_shadow",
-        )
-        fresh_fetch_used = True
     episodes = build_opening_rank1_episodes(
         windows,
         minute_rows_by_symbol=candles,
+        market_return_pct=load_market_change_pct(
+            day=normalized_day,
+            macro_root=(state_path.parent / "logs" / "macro_indicators"),
+        ),
+        volume_reference_rows_by_symbol=load_historical_reference_rows(
+            cache_root=minute_cache_root,
+            symbols=symbols,
+        ),
     )
     for row in episodes:
         row["cohort_id"] = COHORT_ID
@@ -162,7 +189,11 @@ def build_opening_rank1_shadow(
             "requested_symbol_count": len(symbols),
             "symbols_with_rows": sum(1 for value in candles.values() if value),
             "fresh_fetch_allowed": bool(allow_fresh_fetch),
-            "fresh_fetch_used": fresh_fetch_used,
+            "fresh_fetch_used": bool(
+                candle_provider.get("historical_fallback_requested_symbols")
+            ),
+            "candle_provider": candle_provider,
+            "symbol_metadata": metadata_provider,
         },
         "summary": summary,
         "episodes": episodes,
@@ -191,6 +222,17 @@ def build_opening_rank1_shadow(
     cumulative_md = output_root / "opening_rank1_shadow_cumulative.md"
     _write_json(cumulative_json, cumulative_payload)
     cumulative_md.write_text(render_cumulative(cumulative_payload), encoding="utf-8")
+    latent_watch = build_latent_reactivation_watch(
+        reports_root=Path(reports_root),
+        opening_output_root=output_root,
+        through_day=normalized_day,
+    )
+    five_session_review = build_five_session_review(
+        opening_output_root=output_root,
+        through_day=normalized_day,
+        cumulative_summary=cumulative_summary,
+        latent_summary=latent_watch["summary"],
+    )
     return {
         "ok": True,
         "day_status": day_status,
@@ -201,4 +243,8 @@ def build_opening_rank1_shadow(
         "daily_md_path": str(daily_md),
         "cumulative_json_path": str(cumulative_json),
         "cumulative_md_path": str(cumulative_md),
+        "latent_watch_json_path": latent_watch["json"],
+        "latent_watch_md_path": latent_watch["markdown"],
+        "five_session_review_json_path": five_session_review["json"],
+        "five_session_review_md_path": five_session_review["markdown"],
     }

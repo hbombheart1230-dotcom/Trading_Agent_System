@@ -511,6 +511,7 @@ def build_quant_trade_diagnosis(
     attribution: Mapping[str, Any] | None = None,
     root_cause_report: Mapping[str, Any] | None = None,
     entry_timing_report: Mapping[str, Any] | None = None,
+    conditional_alpha_context: Mapping[str, Any] | None = None,
     all_models: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     trade_dir = Path(trade_dir)
@@ -603,6 +604,7 @@ def build_quant_trade_diagnosis(
         "trade_outcome": outcome,
         "same_symbol_sequence": sequence,
         "root_cause_attribution": root_cause,
+        "conditional_alpha_context": dict(conditional_alpha_context or {}),
         "selection_counterfactual": dict(attribution or {}),
         "quant_interpretation": quant_interpretation,
         "next_evaluation_questions": [

@@ -14,3 +14,16 @@ def test_token_cache_roundtrip(tmp_path):
     assert loaded is not None
     assert loaded.access_token == "abc"
     assert loaded.raw["x"] == 1
+
+
+def test_token_cache_prefers_kiwoom_expiry_datetime(tmp_path):
+    path = tmp_path / "token.json"
+    path.write_text(
+        '{"access_token":"abc","expires_at_epoch":1,"raw":{"expires_dt":"20300102123456"}}',
+        encoding="utf-8",
+    )
+
+    loaded = TokenCache(path).load()
+
+    assert loaded is not None
+    assert loaded.expires_at_epoch > 1

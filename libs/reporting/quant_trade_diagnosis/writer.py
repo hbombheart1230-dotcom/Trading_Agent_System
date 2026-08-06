@@ -10,6 +10,10 @@ from libs.reporting.evaluation.trade_evaluator import evaluate_trade
 from libs.reporting.evaluation.trade_read_model import build_q9_trade_read_model
 
 from .builder import build_quant_trade_diagnosis
+from .conditional_alpha import (
+    load_conditional_alpha_episodes,
+    resolve_conditional_alpha_context,
+)
 from .markdown import render_quant_trade_diagnosis
 
 
@@ -50,6 +54,7 @@ def write_quant_trade_diagnoses_for_day(
     attributions: Iterable[Mapping[str, Any]] | None = None,
     root_cause_report: Mapping[str, Any] | None = None,
     entry_timing_report: Mapping[str, Any] | None = None,
+    conditional_alpha_episodes: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     reports_root = Path(reports_root)
     resolved_dirs = list(trade_dirs or iter_trade_dirs(reports_root, day))
@@ -79,6 +84,18 @@ def write_quant_trade_diagnoses_for_day(
         if entry_timing_report is not None
         else read_json(daily / "entry_timing_attribution_report.json")
     )
+    episode_path = (
+        reports_root
+        / "evaluation"
+        / "offline_alpha"
+        / "conditional_alpha_diagnosis"
+        / "conditional_alpha_episode_contexts.json"
+    )
+    episodes = (
+        [dict(row) for row in conditional_alpha_episodes]
+        if conditional_alpha_episodes is not None
+        else load_conditional_alpha_episodes(episode_path)
+    )
 
     written = []
     for trade_dir, model, evaluation, attribution in zip(
@@ -94,6 +111,9 @@ def write_quant_trade_diagnoses_for_day(
             attribution=attribution,
             root_cause_report=root_cause,
             entry_timing_report=entry_timing,
+            conditional_alpha_context=resolve_conditional_alpha_context(
+                model, episodes
+            ),
             all_models=resolved_models,
         )
         paths = write_quant_trade_diagnosis(trade_dir=trade_dir, payload=payload)

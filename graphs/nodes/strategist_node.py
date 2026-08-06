@@ -761,8 +761,18 @@ def _normalize_stage3_hold_review(raw: Dict[str, Any]) -> Dict[str, Any]:
         "schema_version": "strategist.stage3.stale_intraday_hold_review.v1",
         "stage_name": "stale_intraday_hold_review",
         "hold_review_decision": decision,
+        "horizon_action": str(raw.get("horizon_action") or "maintain").strip().lower(),
+        "current_horizon": str(raw.get("current_horizon") or "").strip().lower(),
+        "proposed_horizon": str(raw.get("proposed_horizon") or "").strip().lower(),
+        "revised_hold_window": (
+            dict(raw.get("revised_hold_window") or {})
+            if isinstance(raw.get("revised_hold_window"), dict)
+            else {}
+        ),
         "exit_pressure": exit_pressure,
         "thesis_status": thesis_status,
+        "evidence_confidence": str(raw.get("evidence_confidence") or "low").strip().lower(),
+        "data_quality": str(raw.get("data_quality") or "insufficient").strip().lower(),
         "monitor_adjustment": {
             "tighten_stop": _stage_bool(adjustment_raw.get("tighten_stop")),
             "tighten_time_decay": _stage_bool(adjustment_raw.get("tighten_time_decay")),
@@ -1006,8 +1016,9 @@ def _stage_specific_task_requirement(call_kind: str) -> str:
         )
     if call_kind == "stale_intraday_hold_review":
         return (
-            "Your role is to review whether the held position thesis is still intact, whether exit pressure is rising, and whether Monitor should tighten exits or wait for the next check. "
-            "Output hold_review_decision, exit_pressure, thesis_status, monitor_adjustment, priority_exit_triggers, next_check_minutes, and reason. "
+            "Your role is to review whether the held position thesis is still intact, whether exit pressure is rising, and whether the current operating horizon should be maintained, shortened, or extended for this symbol. "
+            "Do not blindly preserve the entry horizon. Stage 3 may revise only same-session horizons; overnight carry remains a Stage 4 decision. "
+            "Output hold_review_decision, horizon_action, current_horizon, proposed_horizon, revised_hold_window, exit_pressure, thesis_status, evidence_confidence, data_quality, monitor_adjustment, priority_exit_triggers, next_check_minutes, and reason. "
         )
     if call_kind == "end_of_day_carry_review":
         return (
@@ -1032,6 +1043,7 @@ def _stage_specific_user_requirement(call_kind: str) -> str:
         return (
             "Decision requirements: return the Stage 3 stale intraday hold review contract only. "
             "Decide hold, tighten_exit, exit_now, or wait_until_next_check using the held position thesis, net PnL, VWAP, drawdown, time decay, and market context. "
+            "Explicitly decide whether the active same-session horizon should be maintained, shortened, or extended. Do not authorize overnight carry in Stage 3. "
             "Keep the reason tied to the held symbol under review and do not attribute unrelated candidate or market theme labels to that position. "
             "Do not output a direct SELL order. "
         )
@@ -1095,8 +1107,14 @@ def _stage_specific_llm_contract(call_kind: str, base_contract: Dict[str, Any]) 
     if call_kind == "stale_intraday_hold_review":
         return {
             "hold_review_decision": "hold|tighten_exit|exit_now|wait_until_next_check",
+            "horizon_action": "maintain|shorten|extend|request_exit",
+            "current_horizon": "scalp|intraday|overnight_probe|1_2day_swing",
+            "proposed_horizon": "scalp|intraday|overnight_probe|1_2day_swing",
+            "revised_hold_window": {"min_sec": 300, "target_sec": 1800, "max_sec": 14400},
             "exit_pressure": "low|medium|high",
             "thesis_status": "intact|weakened|broken",
+            "evidence_confidence": "low|medium|high",
+            "data_quality": "ok|partial|insufficient|stale",
             "monitor_adjustment": {
                 "tighten_stop": True,
                 "tighten_time_decay": True,
@@ -3484,6 +3502,7 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
             if str(reason or "").strip()
         ],
         "entry_state": dict(commander_refresh_context.get("entry_state") or {}),
+        "position_horizon_state": dict(commander_refresh_context.get("position_horizon_state") or {}),
         "carry_state": str(commander_refresh_context.get("carry_state") or ""),
         "carry_risk_bias": str(commander_refresh_context.get("carry_risk_bias") or ""),
         "carry_risk_reason": str(commander_refresh_context.get("carry_risk_reason") or "")[:220],
@@ -3525,6 +3544,8 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
         "requires_policy_delta": bool(commander_refresh_context.get("requires_policy_delta")),
         "selected_symbol_memory": dict(commander_refresh_context.get("selected_symbol_memory") or {}),
     }
+    if not compact["commander_refresh_context"].get("position_horizon_state"):
+        compact["commander_refresh_context"].pop("position_horizon_state", None)
     compact["strategy_refresh_trace_input"] = {
         "initial_frame": {
             "market_regime": str(compact.get("market_regime_hint") or ""),

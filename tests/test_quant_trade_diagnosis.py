@@ -169,6 +169,11 @@ def test_quant_trade_diagnosis_is_deterministic_and_broker_authoritative(
             "rows": [{"trade_id": "TRD_1", "label": "ENTRY_APPROPRIATE"}]
         },
         "all_models": [_model()],
+        "conditional_alpha_context": {
+            "match_status": "EXACT_DECISION_ID",
+            "authority": "AUTHORITATIVE_POINT_IN_TIME_LINK",
+            "cohort_ids": ["CONFIRMED_RANK_POSITIVE_1M"],
+        },
     }
 
     first = build_quant_trade_diagnosis(**kwargs)
@@ -189,6 +194,7 @@ def test_quant_trade_diagnosis_is_deterministic_and_broker_authoritative(
     )
     assert first["quant_interpretation"]["thesis_statistically_plausible"] is None
     assert first["quant_interpretation"]["primary_failure_axis"] is None
+    assert first["conditional_alpha_context"]["match_status"] == "EXACT_DECISION_ID"
     assert (
         first["quant_interpretation"]["primary_attribution_axis"]
         == "Aligned / No Alignment Issue"
