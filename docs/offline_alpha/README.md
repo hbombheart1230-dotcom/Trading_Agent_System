@@ -14,8 +14,36 @@ Rules:
 
 Current research:
 
+- `active_research_register_2026-08-07.md`
+  - current authority for active work and stopping rules
+  - Priority 1: latent-reactivation fresh-trigger forwards, decision at 12
+  - Priority 2: same-symbol reentry provenance, decision at 10 clean profit reentries
+  - opening conditional lanes continue as non-blocking background observation
+
+- `five_session_closure_2026-08-07.md`
+  - closes the fixed 2026-08-03 through 2026-08-07 window without extension
+  - rejects broad opening Rank-1 entry as a live behavior
+  - retains the three conditional lanes as observer evidence only
+  - completes Monitor-NOOP attribution with 188 episodes and 96.81% coverage
+  - selects `RETAIN_CURRENT_MONITOR_GATES`; no behavior patch and no P3 run
+
+- `reports/evaluation/offline_alpha/monitor_noop_attribution/`
+  - deduplicates 363 repeated Q9 cycles into contiguous decision episodes
+  - compares gross, live-cost, and mock-cost outcomes by blocker
+  - adds first-day-symbol sensitivity metrics to prevent repeated-symbol inflation
+  - is observation-only and reproducible from its frozen candle cache
+
+- `reports/evaluation/opening_rank1_shadow/latent_watch/latent_reactivation_forward.*`
+  - anchors a later fresh signal to the next tradable one-minute open
+  - records gross/live/mock +5m/+15m/+30m/+60m/EOD outcomes
+  - excludes trigger days whose opening evidence is not `VALID`
+
+- `reports/evaluation/same_symbol_sequences/`
+  - records day-symbol trade order, cumulative PnL, giveback, and Q9 provenance
+  - counts only profit reentries that the current loss-reentry block would permit
+
 - `canonical_execution_plan_2026-08-06.md`
-  - authoritative operating schedule after the June-July reconstruction
+  - frozen definitions and historical operating schedule after reconstruction
   - closes the old three-day integration check
   - fixes the active five-session decision window at 2026-08-03 through 2026-08-07
   - keeps the separate 25-episode/10-day broad Rank-1 control gate in the background
@@ -86,5 +114,7 @@ Current research:
   - minimum evidence: 25 observed episodes across at least 10 trading days
   - a pass authorizes controlled shadow review only
 
-The prospective broad-control gate above does not extend the five-session decision
-window. See `canonical_execution_plan_2026-08-06.md` for the schedule boundary.
+The prospective broad-control gate above does not extend the now-closed five-session
+decision window. See `canonical_execution_plan_2026-08-06.md` for the schedule
+boundary, `five_session_closure_2026-08-07.md` for the final decision, and
+`active_research_register_2026-08-07.md` for the current queue.

@@ -122,6 +122,13 @@ def _candidate_reappearances(
                     "score_total": candidate.get("score_total"),
                     "confidence": candidate.get("confidence"),
                     "risk_score": candidate.get("risk_score"),
+                    "reference_price": (
+                        candidate.get("compact_feature_snapshot") or {}
+                    ).get("engine_close_last"),
+                    "score_breakdown": dict(candidate.get("score_breakdown") or {}),
+                    "compact_feature_snapshot": dict(
+                        candidate.get("compact_feature_snapshot") or {}
+                    ),
                     "signal_evidence": _candidate_signal_evidence(candidate),
                 }
             )
@@ -223,6 +230,8 @@ def build_latent_reactivation_watch(
     reports_root: Path,
     opening_output_root: Path,
     through_day: str,
+    state_path: Path = Path("data/state.json"),
+    allow_fresh_fetch: bool = True,
 ) -> dict[str, Any]:
     calendar = _trading_days(reports_root, through_day)
     rows = []
@@ -286,8 +295,19 @@ def build_latent_reactivation_watch(
     _write_json(json_path, payload)
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(_render_markdown(payload), encoding="utf-8")
+    from .latent_forward import build_latent_reactivation_forward
+
+    forward = build_latent_reactivation_forward(
+        watch_payload=payload,
+        state_path=state_path,
+        output_root=latent_root,
+        allow_fresh_fetch=allow_fresh_fetch,
+    )
     return {
         "json": str(json_path),
         "markdown": str(markdown_path),
         "summary": payload["summary"],
+        "forward_json": forward["json"],
+        "forward_markdown": forward["markdown"],
+        "forward_summary": forward["summary"],
     }

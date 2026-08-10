@@ -28,7 +28,10 @@ def test_scanner_consumes_global_sentiment_emitted_by_strategist():
 
     assert out["selected"]["symbol"] == "AAA"
     selected = out["selected"]
-    # M31+: scanner score now also includes strategist rank_score contribution.
-    # Keep this test focused on "global sentiment is consumed end-to-end".
-    assert float(selected["score"]) > 0.70
+    # Final score also includes current macro/chart and rank adjustments. Assert the
+    # end-to-end sentiment contract directly instead of assuming an absolute score.
+    components = selected["components"]
+    assert float(components["global_sentiment"]) == 1.0
+    assert float(components["weight_global"]) == 0.20
+    assert float(selected["score"]) > 0.50
     assert float((selected.get("components") or {}).get("global_sentiment") or 0.0) == 1.0

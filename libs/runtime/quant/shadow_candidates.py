@@ -699,11 +699,25 @@ def _q9_decision_candidate_rows(
     scanner_control = _as_dict(snapshot.get("scanner_control"))
     strategist = _as_dict(snapshot.get("strategist_selection"))
     commander = _as_dict(snapshot.get("commander_final"))
+    refresh = _as_dict(snapshot.get("post_scanner_strategist_refresh"))
     pre_strategist_universe = _as_dict(snapshot.get("scanner_pre_strategist_universe"))
     specifications = [
         ("A_SCANNER_CONTROL", _as_list(scanner_control.get("top10"))),
-        ("B_STRATEGIST_RANKED", _as_list(strategist.get("post_strategist_top10"))),
+        (
+            "B_STRATEGIST_RANKED",
+            _as_list(
+                strategist.get("strategy_weighted_top10")
+                or strategist.get("post_strategist_top10")
+            ),
+        ),
     ]
+    if refresh.get("status") == "OBSERVED":
+        specifications.extend(
+            [
+                ("R1_PRE_REFRESH_SCANNER", _as_list(refresh.get("before_top10"))),
+                ("R2_POST_REFRESH_SCANNER", _as_list(refresh.get("after_top10"))),
+            ]
+        )
     pre_strategist_rows = _as_list(
         pre_strategist_universe.get("intrinsic_ranked_top20")
         or pre_strategist_universe.get("source_universe_top20")
@@ -749,6 +763,22 @@ def _q9_decision_candidate_rows(
                     "rank": candidate.get("rank") or index,
                     "q9_decision_id": decision_id,
                     "q9_decision_role": role,
+                    "q9_semantic_role": {
+                        "P_SCANNER_PRE_STRATEGIST_UNIVERSE": "STRATEGY_GUIDED_SOURCE_UNIVERSE_INTRINSIC_VIEW",
+                        "A_SCANNER_CONTROL": "SCANNER_INTRINSIC_SAME_UNIVERSE",
+                        "B_STRATEGIST_RANKED": "STRATEGY_WEIGHTED_SCANNER_RANKING",
+                        "R1_PRE_REFRESH_SCANNER": "SCANNER_BEFORE_POST_SCANNER_STRATEGIST_REFRESH",
+                        "R2_POST_REFRESH_SCANNER": "SCANNER_AFTER_POST_SCANNER_STRATEGIST_REFRESH",
+                        "C_COMMANDER_FINAL": "COMMANDER_FINAL_APPROVAL_OR_VETO",
+                    }.get(role, role),
+                    "q9_control_scope": (
+                        "same_candidate_universe_ranking_only"
+                        if role in {"P_SCANNER_PRE_STRATEGIST_UNIVERSE", "A_SCANNER_CONTROL"}
+                        else "post_scanner_refresh_pair"
+                        if role in {"R1_PRE_REFRESH_SCANNER", "R2_POST_REFRESH_SCANNER"}
+                        else "production_decision"
+                    ),
+                    "q9_full_strategist_control_available": False,
                     "q9_selected": bool(
                         role == "B_STRATEGIST_RANKED"
                         and _symbol(candidate) == _text(strategist.get("selected_symbol"))

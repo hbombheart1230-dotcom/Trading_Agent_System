@@ -28,8 +28,9 @@ another.
 ```text
 Market and news context
   -> Strategist scenario and policy
-  -> Scanner candidate universe and ranking
-  -> Commander selection, override, or no-trade
+  -> strategy-guided Scanner candidate universe and ranking
+  -> optional post-Scanner Strategist tactical refresh and Scanner rerun
+  -> Commander approval, veto, or no-trade
   -> Monitor entry timing or block
   -> Execution
   -> Monitor exit timing
@@ -48,16 +49,20 @@ Measure:
 - whether no-trade or defensive recommendations avoided losses
 - whether Strategist repeatedly pushed the system toward losing patterns
 
-Required comparison:
+Required comparisons:
 
 ```text
-raw Scanner ranking before Strategist
-vs
-ranking and candidate after Strategist
+same-universe intrinsic Scanner ranking
+vs strategy-weighted Scanner ranking
+
+first Scanner result
+vs optional post-Scanner Strategist refresh result
 ```
 
-The Strategist is useful only if it improves cost-adjusted expectancy,
-drawdown, or opportunity selection beyond the raw Scanner baseline.
+The runtime invokes Strategist before Scanner. The same-universe intrinsic
+control isolates ranking-weight effects only; candidate sourcing may already
+contain Strategist influence. Full Strategist value requires a shadow-only
+strategy-neutral candidate-source control and remains unavailable until then.
 
 ### 2. Scanner Universe And Ranking
 
@@ -184,9 +189,9 @@ decision_id
 decision_epoch
 candidate_pool_id
 market_regime
-raw Scanner Top-10
-post-Strategist Top-10
-Strategist selection
+same-universe intrinsic Scanner Top-10
+strategy-weighted Scanner Top-10
+optional post-Scanner Strategist refresh result
 Commander final selection or veto
 Monitor entry eligibility timeline
 actual execution
@@ -208,8 +213,8 @@ The fixed forward evaluation window must not start until all items pass:
 
 | Gate | Required state |
 | --- | --- |
-| Raw Scanner snapshot | pre-Strategist Top-10 or full available ranking persisted |
-| Strategist snapshot | post-Strategist ranking and selection persisted |
+| Scanner control snapshot | same-universe intrinsic Top-10 persisted with its Strategist-source limitation |
+| Strategist snapshot | initial frame, strategy-weighted ranking, and optional post-Scanner refresh persisted |
 | Commander snapshot | final selection, veto, and reason persisted |
 | Monitor entry timeline | selected baseline, eligible time, actual entry/block persisted |
 | Monitor exit timeline | actual exit plus MFE/MAE and post-exit joins available |
@@ -359,7 +364,7 @@ does not restart automatically.
 
 Q9 is complete only when it answers all of the following:
 
-1. Does Strategist improve raw Scanner output?
+1. Does the Strategist frame predict useful conditions, and do its observable ranking/refresh effects improve Scanner output?
 2. Does Scanner contain and rank worthwhile candidates?
 3. Does Commander improve final selection or no-trade decisions?
 4. Does Monitor improve entry timing?

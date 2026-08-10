@@ -109,6 +109,8 @@ def test_q9_pipeline_writes_read_only_outputs(tmp_path: Path) -> None:
     assert Path(result["full_chain_start_gate"]).exists()
     assert Path(result["no_trade_attribution_report"]).exists()
     assert Path(result["q16_proxy_rejection_review"]).exists()
+    assert Path(result["agent_effectiveness_scorecard"]["json_path"]).exists()
+    assert Path(result["agent_effectiveness_scorecard"]["markdown_path"]).exists()
     assert (reports / "evaluation" / "trades" / "2026-06-19" / "TRD_1" / "trade_evaluation.json").exists()
     assert result["quant_trade_diagnosis"]["written_count"] == 1
     assert (trade / "reports" / "quant_trade_diagnosis.json").exists()

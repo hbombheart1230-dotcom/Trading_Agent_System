@@ -226,6 +226,8 @@ def build_opening_rank1_shadow(
         reports_root=Path(reports_root),
         opening_output_root=output_root,
         through_day=normalized_day,
+        state_path=Path(state_path),
+        allow_fresh_fetch=allow_fresh_fetch,
     )
     five_session_review = build_five_session_review(
         opening_output_root=output_root,
@@ -245,6 +247,8 @@ def build_opening_rank1_shadow(
         "cumulative_md_path": str(cumulative_md),
         "latent_watch_json_path": latent_watch["json"],
         "latent_watch_md_path": latent_watch["markdown"],
+        "latent_forward_json_path": latent_watch["forward_json"],
+        "latent_forward_md_path": latent_watch["forward_markdown"],
         "five_session_review_json_path": five_session_review["json"],
         "five_session_review_md_path": five_session_review["markdown"],
     }

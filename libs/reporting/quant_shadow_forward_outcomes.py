@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
+from copy import deepcopy
 import json
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -185,6 +187,10 @@ def attach_forward_outcomes(
             "raw_ts": _text(base.get("baseline_raw_ts")),
         }
     out: list[Dict[str, Any]] = []
+    outcome_cache: dict[tuple[str, int, float, str], Dict[str, Any]] = {}
+    same_day_rows_cache: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    same_day_epochs_cache: dict[tuple[str, str], list[int]] = {}
+    symbol_epochs_cache: dict[str, list[int]] = {}
     for candidate in candidate_rows:
         row = dict(candidate)
         symbol = _text(row.get("symbol"))
@@ -257,19 +263,48 @@ def attach_forward_outcomes(
             }
             out.append(row)
             continue
+        cache_key = (symbol, int(base_epoch), float(base_price), base_day)
+        cached_outcome = outcome_cache.get(cache_key)
+        if cached_outcome is not None:
+            row["shadow_forward_outcome"] = deepcopy(cached_outcome)
+            out.append(row)
+            continue
         checkpoints: Dict[str, Any] = {}
         observed = 0
-        same_day_rows = [r for r in minute_rows if not base_day or _row_day(r) == base_day]
+        day_cache_key = (symbol, base_day)
+        same_day_rows = same_day_rows_cache.get(day_cache_key)
+        if same_day_rows is None:
+            same_day_rows = sorted(
+                [r for r in minute_rows if not base_day or _row_day(r) == base_day],
+                key=lambda item: int(item.get("ts") or 0),
+            )
+            same_day_rows_cache[day_cache_key] = same_day_rows
+            same_day_epochs_cache[day_cache_key] = [
+                int(item.get("ts") or 0) for item in same_day_rows
+            ]
+        same_day_epochs = same_day_epochs_cache.get(day_cache_key) or []
+        start_index = bisect_left(same_day_epochs, base_epoch)
         for minutes in CHECKPOINT_MINUTES:
             target = int(base_epoch + minutes * 60)
-            future = [
-                r
-                for r in same_day_rows
-                if int(r.get("ts") or 0) >= base_epoch and int(r.get("ts") or 0) <= target
-            ]
-            target_row = next((r for r in same_day_rows if int(r.get("ts") or 0) >= target), None)
+            target_index = bisect_left(same_day_epochs, target)
+            target_row = (
+                same_day_rows[target_index]
+                if target_index < len(same_day_rows)
+                else None
+            )
+            future_end = bisect_right(same_day_epochs, target)
+            future = same_day_rows[start_index:future_end]
             if target_row is None:
-                stale_row = next((r for r in minute_rows if int(r.get("ts") or 0) >= target), None)
+                symbol_epochs = symbol_epochs_cache.get(symbol)
+                if symbol_epochs is None:
+                    symbol_epochs = [int(item.get("ts") or 0) for item in minute_rows]
+                    symbol_epochs_cache[symbol] = symbol_epochs
+                stale_index = bisect_left(symbol_epochs, target)
+                stale_row = (
+                    minute_rows[stale_index]
+                    if stale_index < len(minute_rows)
+                    else None
+                )
                 stale_day = _row_day(stale_row) if isinstance(stale_row, Mapping) else ""
                 if stale_row is not None and base_day and stale_day and stale_day != base_day:
                     checkpoints[f"+{minutes}m"] = {
@@ -313,20 +348,11 @@ def attach_forward_outcomes(
                 "observed_ts": target_row.get("raw_ts") or target_row.get("ts"),
             }
             observed += 1
-        eod_rows = [
-            row
-            for row in same_day_rows
-            if int(row.get("ts") or 0) >= base_epoch
-            and _kst_time_tuple(row) >= EOD_READY_TIME
-        ]
-        if eod_rows:
-            eod_row = eod_rows[-1]
+        eod_index = len(same_day_rows) - 1
+        eod_row = same_day_rows[eod_index] if eod_index >= start_index else None
+        if eod_row is not None and _kst_time_tuple(eod_row) >= EOD_READY_TIME:
             eod_close = _to_float(eod_row.get("close"), base_price) or base_price
-            eod_window = [
-                row
-                for row in same_day_rows
-                if base_epoch <= int(row.get("ts") or 0) <= int(eod_row.get("ts") or 0)
-            ] or [eod_row]
+            eod_window = same_day_rows[start_index : eod_index + 1] or [eod_row]
             checkpoints["EOD"] = {
                 "status": "observed",
                 "return_pct": round(((eod_close / base_price) - 1.0) * 100.0, 4),
@@ -355,5 +381,6 @@ def attach_forward_outcomes(
             "checkpoints": checkpoints,
             "behavior_effect": "evaluation_only",
         }
+        outcome_cache[cache_key] = deepcopy(row["shadow_forward_outcome"])
         out.append(row)
     return out

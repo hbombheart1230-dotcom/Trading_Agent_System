@@ -348,12 +348,16 @@ def _decision_window_attribution(
     by_horizon: list[dict[str, Any]] = []
     for horizon in HORIZONS:
         strategist_deltas: list[float] = []
+        refresh_deltas: list[float] = []
         commander_deltas: list[float] = []
         strategist_days: set[str] = set()
+        refresh_days: set[str] = set()
         commander_days: set[str] = set()
         for roles in grouped.values():
             a_row = _q9_role_row(roles, "A_SCANNER_CONTROL")
             b_row = _q9_role_row(roles, "B_STRATEGIST_RANKED")
+            r1_row = _q9_role_row(roles, "R1_PRE_REFRESH_SCANNER")
+            r2_row = _q9_role_row(roles, "R2_POST_REFRESH_SCANNER")
             c_row = _q9_role_row(roles, "C_COMMANDER_FINAL")
             a_value = _checkpoint_return(a_row, horizon) if a_row else None
             b_value = _checkpoint_return(b_row, horizon) if b_row else None
@@ -362,6 +366,13 @@ def _decision_window_attribution(
                 day = candidate_day(b_row)
                 if day:
                     strategist_days.add(day)
+            r1_value = _checkpoint_return(r1_row, horizon) if r1_row else None
+            r2_value = _checkpoint_return(r2_row, horizon) if r2_row else None
+            if r1_value is not None and r2_value is not None:
+                refresh_deltas.append(r2_value - r1_value)
+                day = candidate_day(r2_row)
+                if day:
+                    refresh_days.add(day)
             if b_value is None or not c_row:
                 continue
             if c_row.get("q9_commander_no_trade"):
@@ -391,6 +402,30 @@ def _decision_window_attribution(
                     if strategist_deltas
                     else None
                 ),
+                "strategy_ranking_overlay_comparison_count": len(strategist_deltas),
+                "strategy_ranking_overlay_day_count": len(strategist_days),
+                "average_strategy_ranking_overlay_delta_pct": (
+                    round(sum(strategist_deltas) / len(strategist_deltas), 4)
+                    if strategist_deltas
+                    else None
+                ),
+                "strategy_ranking_overlay_positive_delta_rate": (
+                    round(sum(value > 0 for value in strategist_deltas) / len(strategist_deltas), 4)
+                    if strategist_deltas
+                    else None
+                ),
+                "post_scanner_refresh_comparison_count": len(refresh_deltas),
+                "post_scanner_refresh_day_count": len(refresh_days),
+                "average_post_scanner_refresh_delta_pct": (
+                    round(sum(refresh_deltas) / len(refresh_deltas), 4)
+                    if refresh_deltas
+                    else None
+                ),
+                "post_scanner_refresh_positive_delta_rate": (
+                    round(sum(value > 0 for value in refresh_deltas) / len(refresh_deltas), 4)
+                    if refresh_deltas
+                    else None
+                ),
                 "commander_comparison_count": len(commander_deltas),
                 "commander_day_count": len(commander_days),
                 "average_commander_delta_pct": (
@@ -407,6 +442,15 @@ def _decision_window_attribution(
         )
     return {
         "schema_version": "q9_decision_window_attribution.v1",
+        "role_semantics": {
+            "A_SCANNER_CONTROL": "same-universe intrinsic Scanner ranking; not a full pre-Strategist control",
+            "B_STRATEGIST_RANKED": "strategy-weighted Scanner ranking",
+            "R1_PRE_REFRESH_SCANNER": "first Scanner result before optional tactical refresh",
+            "R2_POST_REFRESH_SCANNER": "Scanner result after optional tactical refresh",
+            "C_COMMANDER_FINAL": "Commander final approval or veto",
+        },
+        "full_strategist_contribution_status": "NOT_MEASURABLE",
+        "full_strategist_missing_control": "strategy-neutral candidate sourcing and ranking shadow",
         "decision_window_count": len(grouped),
         "candidate_row_count": sum(
             len(rows) for roles in grouped.values() for rows in roles.values()
@@ -658,8 +702,8 @@ def build_full_chain_component_review(
         "strategist": _attribution_component(
             attribution=decision_attribution,
             component="strategist",
-            question="Does Strategist improve raw Scanner output?",
-            missing_comparison="trusted pre-Strategist Scanner Top-10 joined to post-Strategist outcomes",
+            question="Does the strategy ranking overlay improve the same-universe intrinsic Scanner ranking?",
+            missing_comparison="same-universe intrinsic and strategy-weighted Scanner outcomes",
             availability=availability,
         ),
         "commander": _attribution_component(
@@ -728,6 +772,56 @@ def build_full_chain_component_review(
             ),
             "behavior_change_authorized": False,
         },
+    }
+    components["strategist"]["scope"] = "ranking_overlay_only"
+    components["strategist"]["full_strategist_contribution"] = _unavailable_component(
+        question="Does the complete Strategist improve a strategy-neutral Scanner pipeline?",
+        missing_comparison="parallel strategy-neutral candidate sourcing and ranking shadow",
+        availability=availability,
+    )
+    refresh_primary = next(
+        (
+            row
+            for row in decision_attribution.get("by_horizon") or []
+            if row.get("horizon") == "+30m"
+        ),
+        {},
+    )
+    refresh_count = int(refresh_primary.get("post_scanner_refresh_comparison_count") or 0)
+    refresh_days = int(refresh_primary.get("post_scanner_refresh_day_count") or 0)
+    refresh_delta = _number(refresh_primary.get("average_post_scanner_refresh_delta_pct"))
+    refresh_positive_rate = _number(refresh_primary.get("post_scanner_refresh_positive_delta_rate"))
+    refresh_enough = refresh_count >= DIRECTIONAL_MIN_OBSERVATIONS and refresh_days >= DIRECTIONAL_MIN_DAYS
+    refresh_material = bool(
+        refresh_enough
+        and refresh_delta is not None
+        and refresh_positive_rate is not None
+        and refresh_delta >= MIN_MATERIAL_RANKING_DELTA_PCT
+        and refresh_positive_rate >= MIN_POSITIVE_RANKING_DELTA_RATE
+    )
+    components["strategist"]["post_scanner_refresh"] = {
+        "decision": (
+            DecisionClass.PROMOTION_CANDIDATE.value
+            if refresh_material
+            else DecisionClass.ADJUST_AND_RETEST.value
+            if refresh_enough
+            else DecisionClass.INSUFFICIENT_EVIDENCE.value
+        ),
+        "question": "Does the optional post-Scanner Strategist refresh improve the first Scanner result?",
+        "finding": (
+            f"Observed {refresh_count} paired +30m refresh windows across {refresh_days} day(s)."
+        ),
+        "missing_comparison": (
+            None
+            if refresh_count >= DIRECTIONAL_MIN_OBSERVATIONS and refresh_days >= DIRECTIONAL_MIN_DAYS
+            else f"at least {DIRECTIONAL_MIN_OBSERVATIONS} refresh pairs across {DIRECTIONAL_MIN_DAYS} days"
+        ),
+        "metrics": {
+            key: value
+            for key, value in refresh_primary.items()
+            if "post_scanner_refresh" in key or key == "horizon"
+        },
+        "behavior_change_authorized": False,
     }
     return {
         "schema_version": "q9_full_chain_component_review.v1",
@@ -831,7 +925,7 @@ def render_full_chain_component_review(payload: Mapping[str, Any]) -> str:
     scanner_quality = ((payload.get("evidence") or {}).get("scanner_quality") or {})
     lines += [
         "",
-        "## Scanner: Pre-Strategist Top-K Forward Performance",
+        "## Scanner: Same-Universe Intrinsic Top-K Forward Performance",
         "",
         "| Top-K | Horizon | Windows/Days | Gross Expectancy | Net Expectancy |",
         "|---:|---|---:|---:|---:|",
@@ -874,10 +968,10 @@ def render_full_chain_component_review(payload: Mapping[str, Any]) -> str:
         "## Attribution Availability",
         "",
         f"- trade models: {availability.get('trade_model_count')}",
-        f"- trusted raw Scanner controls: {availability.get('raw_scanner_control_count')}",
+        f"- same-universe intrinsic Scanner controls: {availability.get('raw_scanner_control_count')}",
         f"- Strategist snapshots: {availability.get('strategist_snapshot_count')}",
         f"- Commander snapshots: {availability.get('commander_snapshot_count')}",
-        f"- Scanner vs Strategist comparable: {availability.get('scanner_vs_strategist_comparable_count')}",
+        f"- intrinsic vs strategy-weighted comparable: {availability.get('scanner_vs_strategist_comparable_count')}",
         f"- Strategist vs Commander comparable: {availability.get('strategist_vs_commander_comparable_count')}",
         f"- Q9 decision windows with forward candidates: {attribution.get('decision_window_count')}",
         f"- Q9 A/B/C forward candidate rows: {attribution.get('candidate_row_count')}",

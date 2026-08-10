@@ -73,7 +73,7 @@ def evaluate_five_session_review(
         elif count < MINIMUM_NEW_EPISODES:
             outcome = "RETAIN_LANE_SHADOW_ONLY"
         elif average > 0.0:
-            outcome = "HISTORICAL_DIRECTION_CONFIRMED"
+            outcome = "HISTORICAL_DIRECTION_CONFIRMED_SHADOW_ONLY"
         else:
             outcome = "REJECT_CANDIDATE"
         lane_results[lane_name] = {
@@ -87,7 +87,7 @@ def evaluate_five_session_review(
     if not window_closed:
         selected = "NONE"
         status = "COLLECTING"
-    elif recurrent["outcome"] == "HISTORICAL_DIRECTION_CONFIRMED":
+    elif recurrent["outcome"] == "HISTORICAL_DIRECTION_CONFIRMED_SHADOW_ONLY":
         selected = "CONFIRMED_RECURRENT_RANK_PRESERVATION"
         status = "SELECT_BEHAVIOR_CANDIDATE"
     else:
@@ -106,6 +106,11 @@ def evaluate_five_session_review(
         },
         "status": status,
         "selected_behavior_candidate": selected,
+        "behavior_candidate_scope": "CONFIRMED_RECURRENT_RANK_ONLY",
+        "selection_policy": (
+            "A positive historical lane remains shadow-only. Only the predeclared "
+            "CONFIRMED_RECURRENT_RANK lane may become the single behavior candidate."
+        ),
         "invalid_artifact_days": invalid_days,
         "lane_results": lane_results,
         "latent_watch": {
@@ -126,6 +131,7 @@ def _render_markdown(payload: Mapping[str, Any]) -> str:
         f"- Window: `{window.get('start_day')}` through `{window.get('end_day')}`",
         f"- Status: **{payload.get('status')}**",
         f"- Selected behavior candidate: `{payload.get('selected_behavior_candidate')}`",
+        f"- Behavior candidate scope: `{payload.get('behavior_candidate_scope')}`",
         f"- Invalid artifact days: `{payload.get('invalid_artifact_days') or []}`",
         "- Behavior change authorized by this report: **false**",
         "",
@@ -142,6 +148,8 @@ def _render_markdown(payload: Mapping[str, Any]) -> str:
         )
     lines.extend(
         [
+            "",
+            "Historical direction confirmation is shadow evidence, not promotion authority.",
             "",
             "This review closes on the fixed end date and cannot extend the whole analysis or change trading behavior.",
             "",

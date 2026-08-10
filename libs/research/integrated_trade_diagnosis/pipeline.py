@@ -35,7 +35,19 @@ def _opening_day_statuses(
     return statuses
 
 
-def _decision_readiness(opening: dict[str, Any]) -> dict[str, Any]:
+def _decision_readiness(
+    opening: dict[str, Any], validation: dict[str, Any]
+) -> dict[str, Any]:
+    if str(validation.get("status") or "") == "COMPLETE":
+        return {
+            "status": "SUPERSEDED_BY_FIVE_SESSION_CLOSURE",
+            "leading_candidate": "NONE",
+            "reason": (
+                "the prospective integration gate completed; the fixed five-session "
+                "review closed with no behavior candidate"
+            ),
+            "authority": "docs/offline_alpha/five_session_closure_2026-08-07.md",
+        }
     candidates = []
     for name, payload in opening.items():
         metrics = payload.get("performance") or {}
@@ -146,7 +158,7 @@ def run_integrated_trade_diagnosis(
         "reentry_policies": reentry_policy_summary(sequences),
         "horizon_policies": horizon_summary(trades),
         "reactivation": reactivation_summary(events),
-        "decision_readiness": _decision_readiness(opening),
+        "decision_readiness": _decision_readiness(opening, validation),
         "runtime_validation_contract": {
             "required_full_trading_days": 3,
             "behavior_changes_allowed": False,

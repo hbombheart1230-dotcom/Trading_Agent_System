@@ -9,6 +9,7 @@ from typing import Any
 from libs.reporting.broker_closed_trade_reconciler import reconcile_broker_closed_trade_reports
 
 from .artifact_inventory import build_artifact_inventory, iter_trade_dirs, read_json
+from .agent_effectiveness_scorecard import write_agent_effectiveness_scorecard
 from .attribution_score_v0 import build_attribution_score_v0, render_attribution_score_v0
 from .counterfactuals import build_selection_attribution
 from .cost_basis_comparison import (
@@ -245,6 +246,12 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
     feedback["source_days"] = evaluation_days
     _write_json(evaluation_root / "strategist" / day / "strategist_effectiveness.json", strategist)
     _write_json(evaluation_root / "feedback" / day / "feedback_effectiveness.json", feedback)
+    agent_effectiveness = write_agent_effectiveness_scorecard(
+        reports_root=reports_root,
+        start=day,
+        end=day,
+        output_dir=evaluation_root / "agent_effectiveness" / day,
+    )
     return {
         "day": day,
         "trade_count": len(models),
@@ -264,4 +271,5 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         "rolling_scorecards": rolling_outputs,
         "strategist_effectiveness": str(evaluation_root / "strategist" / day / "strategist_effectiveness.json"),
         "feedback_effectiveness": str(evaluation_root / "feedback" / day / "feedback_effectiveness.json"),
+        "agent_effectiveness_scorecard": agent_effectiveness,
     }

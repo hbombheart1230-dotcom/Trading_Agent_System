@@ -15,12 +15,17 @@ def build_selection_attribution(trade_model: dict[str, Any]) -> dict[str, Any]:
     raw_baseline_available = bool(top1_symbol)
     return {
         "schema_version": "q9_selection_attribution.v1",
+        "runtime_order": "strategist_initial_frame_then_scanner",
+        "full_strategist_contribution_status": "NOT_MEASURABLE",
+        "full_strategist_missing_control": "strategy-neutral candidate sourcing and ranking shadow",
         "scanner_baseline": {
             "symbol": top1_symbol,
             "rank": raw_top1.get("rank") or 1 if top1_symbol else None,
             "forward_return_pct": None,
             "evidence_class": EvidenceClass.UNAVAILABLE.value,
             "available": raw_baseline_available,
+            "semantic_role": "SCANNER_INTRINSIC_SAME_UNIVERSE",
+            "scope": str(selection.get("raw_scanner_control_scope") or "same_candidate_universe_ranking_only"),
         },
         "strategist_selected": {
             "symbol": selected_symbol,
@@ -28,6 +33,8 @@ def build_selection_attribution(trade_model: dict[str, Any]) -> dict[str, Any]:
             "changed_scanner_top1": bool(raw_baseline_available and selected_symbol and not same_symbol),
             "forward_return_pct": None,
             "evidence_class": EvidenceClass.UNAVAILABLE.value,
+            "semantic_role": "STRATEGY_WEIGHTED_SCANNER_RANKING",
+            "scope": "ranking_overlay_only",
         },
         "commander_final": {
             "symbol": selected_symbol,
@@ -37,13 +44,15 @@ def build_selection_attribution(trade_model: dict[str, Any]) -> dict[str, Any]:
         },
         "deltas": {
             "strategist_delta_pct": None,
+            "strategy_ranking_overlay_delta_pct": None,
             "commander_delta_pct": None,
             "system_delta_pct": None,
         },
         "limitations": [
-            "pre-Strategist raw Scanner Top-1 snapshot is unavailable"
+            "same-universe intrinsic Scanner Top-1 snapshot is unavailable"
             if not raw_baseline_available
-            else "alternate forward outcomes require matching Q8 decision-window evidence",
+            else "same-universe alternate forward outcomes require matching decision-window evidence",
+            "Strategist runs before Scanner; this comparison cannot measure full Strategist contribution",
             "Commander alternative selection or veto outcome is unavailable",
         ],
     }

@@ -259,9 +259,34 @@ def run_closeout_maintenance(
             "report_md_path": opening_rank1.get("daily_md_path"),
             "cumulative_json_path": opening_rank1.get("cumulative_json_path"),
             "cumulative_md_path": opening_rank1.get("cumulative_md_path"),
+            "latent_forward_json_path": opening_rank1.get("latent_forward_json_path"),
+            "latent_forward_md_path": opening_rank1.get("latent_forward_md_path"),
         }
     except Exception as exc:
         out["steps"]["opening_rank1_prospective_shadow"] = {
+            "ok": False,
+            "error": str(exc),
+        }
+
+    try:
+        from libs.reporting.evaluation.same_symbol_sequences import (
+            build_same_symbol_sequence_artifacts,
+        )
+
+        sequences = build_same_symbol_sequence_artifacts(
+            reports_root=reports_root,
+            day=normalized_day,
+        )
+        out["steps"]["same_symbol_sequence_provenance"] = {
+            "ok": True,
+            "report_json_path": sequences.get("daily_json"),
+            "report_md_path": sequences.get("daily_markdown"),
+            "cumulative_json_path": sequences.get("cumulative_json"),
+            "cumulative_md_path": sequences.get("cumulative_markdown"),
+            "summary": dict(sequences.get("summary") or {}),
+        }
+    except Exception as exc:
+        out["steps"]["same_symbol_sequence_provenance"] = {
             "ok": False,
             "error": str(exc),
         }

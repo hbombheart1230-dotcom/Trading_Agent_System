@@ -1,7 +1,7 @@
 # Strategist Effectiveness Review
 
-Purpose: measure whether Strategist decisions create measurable value beyond
-raw Scanner output.
+Purpose: measure whether Strategist decisions create measurable value through
+scenario quality, strategy-guided Scanner influence, and post-Scanner refresh.
 
 This document defines evaluation methodology only. It does not change runtime
 strategy, scanner selection, monitor behavior, guard logic, prompt content, or
@@ -12,9 +12,20 @@ execution behavior.
 Does the Strategist improve trading results, or does it merely add complexity
 after the Scanner has already identified the opportunity set?
 
-The review must compare Strategist-influenced decisions against a raw Scanner
-baseline using the same market day, same candidate pool, and same available
-artifact evidence.
+The runtime invokes Strategist before Scanner. Therefore a same-pool
+`scanner_intrinsic_control` is not a fully raw pre-Strategist baseline: candidate
+sourcing may already reflect Strategist guidance. The review must keep the
+following comparisons separate:
+
+- scenario/horizon proposal versus subsequent market behavior;
+- same-universe intrinsic ranking versus strategy-weighted ranking;
+- first Scanner result versus an optional post-Scanner Strategist refresh;
+- future shadow-only strategy-neutral Scanner versus the production
+  strategy-guided Scanner.
+
+Only the final comparison can estimate the Strategist's complete incremental
+contribution. Until it exists, do not label the full Strategist positive or
+negative from the same-universe ranking control.
 
 ## Required Inputs
 
@@ -71,14 +82,14 @@ Status values:
 
 ## Q2: Does Strategist Outperform Raw Scanner Ranking?
 
-Compare two paths for each decision window:
+Compare observable ranking influence for each decision window:
 
-- A: Scanner Top-1 candidate
-- B: Final candidate after Strategist influence
+- A: same-universe intrinsic Scanner Top-1
+- B: strategy-weighted Scanner Top-1
 
-The comparison should use actual trade results for the selected candidate and
-shadow/forward outcomes for the unselected Scanner Top-1 candidate whenever
-available.
+The comparison should use paired shadow/forward outcomes. It measures the
+strategy weighting overlay only. It does not measure candidate-source effects
+because Strategist ran before both rankings.
 
 Comparison metrics:
 
@@ -91,22 +102,25 @@ Comparison metrics:
 
 Decision review table:
 
-| Window | Scanner Top-1 | Final Candidate | Strategist Influence | Top-1 Outcome | Final Outcome | Value Add |
+| Window | Intrinsic Same-Universe Top-1 | Strategy-Weighted Candidate | Observable Strategist Influence | Intrinsic Outcome | Weighted Outcome | Value Add |
 | --- | --- | --- | --- | --- | --- | --- |
 |  |  |  |  |  |  |  |
 
 Value Add values:
 
-- `positive`: final candidate outperformed the raw Scanner Top-1 baseline.
+- `positive`: strategy-weighted candidate outperformed the same-universe intrinsic control.
 - `neutral`: final candidate was similar to baseline.
 - `negative`: final candidate underperformed baseline.
 - `unknown`: missing baseline or forward outcome evidence.
 
-Evaluation rule:
+Evaluation rules:
 
-If Strategist influence repeatedly moves away from Scanner Top-1 and produces
-negative expectancy delta, it should be treated as complexity until proven
-otherwise.
+- If the strategy weighting overlay repeatedly moves away from the intrinsic
+  same-universe Top-1 and produces negative expectancy delta, that overlay is
+  `DEGRADING`.
+- Do not generalize this result to the full Strategist without a neutral
+  candidate-source control.
+- Evaluate post-Scanner Strategist refresh separately from the initial frame.
 
 ## Q3: Which Strategist Recommendations Consistently Fail?
 
@@ -143,7 +157,7 @@ Recurring failure patterns to detect:
 
 Recurring success patterns to detect:
 
-- Scanner Top-1 and Strategist scenario agree
+- intrinsic and strategy-weighted Scanner Top-1 agree under a successful scenario
 - strong theme plus volume confirmation
 - pullback quality improves before entry
 - cost floor has sufficient target buffer

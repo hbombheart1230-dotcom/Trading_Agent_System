@@ -136,7 +136,9 @@ def test_decision_window_attribution_joins_roles_by_decision_id(monkeypatch) -> 
     result = _decision_window_attribution(payloads, cost_pct=1.0)
     row = next(item for item in result["by_horizon"] if item["horizon"] == "+30m")
     assert row["average_strategist_delta_pct"] == 0.5
+    assert row["average_strategy_ranking_overlay_delta_pct"] == 0.5
     assert row["average_commander_delta_pct"] == 0.0
+    assert result["full_strategist_contribution_status"] == "NOT_MEASURABLE"
 
 
 def test_empty_realized_range_is_insufficient_not_rejected(tmp_path) -> None:

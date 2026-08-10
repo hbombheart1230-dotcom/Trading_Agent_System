@@ -141,6 +141,39 @@ def _compact_candidates(rows: list[dict[str, Any]], *, limit: int) -> list[dict[
     return [_compact_candidate(row) for row in rows[:limit]]
 
 
+def capture_pre_refresh_scanner_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+    """Preserve the first Scanner result before a post-Scanner Strategist refresh."""
+    current = _mapping(state.get("q9_decision_snapshot"))
+    strategist = _mapping(current.get("strategist_selection"))
+    scanner = _mapping(state.get("scanner_output"))
+    rows = _rows(
+        strategist.get("strategy_weighted_top10")
+        or strategist.get("post_strategist_top10")
+        or scanner.get("ranked_candidates")
+        or state.get("ranked_candidates")
+    )
+    selected = _mapping(state.get("selected"))
+    snapshot = {
+        "schema_version": "q9_post_scanner_refresh_stage.v1",
+        "behavior_effect": "observation_only",
+        "captured_at": _generated_at(state),
+        "strategist_run_id": str(
+            strategist.get("strategist_run_id")
+            or _mapping(state.get("strategist_output")).get("run_id")
+            or ""
+        ),
+        "selected_symbol": str(
+            selected.get("symbol")
+            or scanner.get("top_stock")
+            or (rows[0] if rows else {}).get("symbol")
+            or ""
+        ),
+        "top10": _compact_candidates(rows, limit=10),
+    }
+    state["q9_pre_refresh_scanner_snapshot"] = snapshot
+    return snapshot
+
+
 def _compact_mapping(value: Mapping[str, Any], *, list_limit: int = 20) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, raw in value.items():
@@ -328,6 +361,44 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         _compact_candidates(_rows(pre_strategist_universe.get("intrinsic_ranked_top20"), limit=20), limit=20)
         or _compact_candidates(intrinsic, limit=20)
     )
+    pre_refresh = _mapping(state.get("q9_pre_refresh_scanner_snapshot"))
+    refresh_context = _mapping(
+        _mapping(state.get("commander_shadow_runtime")).get("post_scanner_refresh_context")
+    )
+    refresh_reason = str(
+        _mapping(state.get("runtime_fast_path")).get("strategist_refresh_reason")
+        or _mapping(state.get("commander_shadow_runtime")).get("post_scanner_refresh_reason")
+        or ""
+    )
+    before_rows = _rows(pre_refresh.get("top10"))
+    refresh_observation = {
+        "schema_version": "q9_post_scanner_refresh_observation.v1",
+        "behavior_effect": "observation_only",
+        "status": "OBSERVED" if pre_refresh else "NOT_APPLICABLE",
+        "requested": bool(pre_refresh),
+        "reason": refresh_reason,
+        "context": _compact_mapping(refresh_context),
+        "before_strategist_run_id": str(pre_refresh.get("strategist_run_id") or ""),
+        "after_strategist_run_id": str(
+            scanner.get("strategist_run_id")
+            or strategist.get("run_id")
+            or strategist.get("strategist_run_id")
+            or ""
+        ),
+        "before_selected_symbol": str(pre_refresh.get("selected_symbol") or ""),
+        "after_selected_symbol": str(
+            selected.get("symbol") or scanner.get("top_stock") or ""
+        ),
+        "before_top10": _compact_candidates(before_rows, limit=10),
+        "after_top10": _compact_candidates(post, limit=10),
+        "changed_top1": bool(
+            before_rows
+            and post
+            and str(before_rows[0].get("symbol") or "")
+            != str(post[0].get("symbol") or "")
+        ),
+        "evidence_class": "TRUSTED_SHADOW" if pre_refresh else "UNAVAILABLE",
+    }
     return _upsert(
         state,
         {
@@ -335,6 +406,7 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
             "candidate_pool_id": str(scanner.get("candidate_pool_id") or ensure_q9_decision_id(state)),
             "scanner_control": {
                 "scope": "same_candidate_universe_ranking_only",
+                "semantic_role": "SCANNER_INTRINSIC_SAME_UNIVERSE",
                 "source": "scanner_intrinsic_control_snapshot",
                 "evidence_class": "TRUSTED_SHADOW",
                 "top10": _compact_candidates(intrinsic, limit=10),
@@ -375,9 +447,12 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
                     or ""
                 ),
                 "post_strategist_top10": _compact_candidates(post, limit=10),
+                "strategy_weighted_top10": _compact_candidates(post, limit=10),
+                "semantic_role": "STRATEGY_WEIGHTED_SCANNER_RANKING",
                 "selected_symbol": str(selected.get("symbol") or scanner.get("top_stock") or ""),
                 "evidence_class": "REALIZED_DECISION_SNAPSHOT",
             },
+            "post_scanner_strategist_refresh": refresh_observation,
         },
     )
 

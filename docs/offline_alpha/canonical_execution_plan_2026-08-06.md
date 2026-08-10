@@ -9,6 +9,10 @@ and the separate 25-episode/10-day broad Rank-1 promotion gate.
 No item in this plan authorizes an order or changes Scanner, Strategist, Commander,
 Monitor, entry, exit, sizing, or execution behavior.
 
+Schedule status after 2026-08-07 is governed by
+`active_research_register_2026-08-07.md`. This document remains authoritative for
+the frozen definitions of the three opening lanes.
+
 ## What Is Complete
 
 - June-July integrated historical reconstruction
@@ -42,13 +46,16 @@ breakout evidence. It never means carrying the original position.
 The old three-day gate verified that historical reconstruction and daily artifacts
 could be generated. That engineering check is closed and is not a promotion window.
 
-### Active: Five-Session Decision Window
+### Closed: Five-Session Decision Window
 
 - sessions: 2026-08-03 through 2026-08-07, assuming regular market sessions
 - purpose: select at most one next behavior-patch candidate
 - no extension of the whole analysis after the fifth session
 - no threshold or lane changes during the window
 - no behavior changes during collection
+
+The window closed on 2026-08-07. The final decision is recorded in
+`five_session_closure_2026-08-07.md`. It is not extended.
 
 An episode counts for a lane only when the lane's point-in-time evidence is present.
 A broad opening Rank-1 episode does not automatically count as a recurrent-rank or
@@ -77,7 +84,7 @@ The existing `OPEN_0_20_RANK1_30M` broad control keeps its frozen promotion gate
 This background control does not delay the five-session candidate-selection decision.
 Passing it authorizes controlled shadow review only, not live execution.
 
-## Behavior-Patch Priority
+## Historical Behavior-Patch Priority
 
 ### Priority 1: Confirmed Recurrent Rank Preservation
 
@@ -144,3 +151,6 @@ At the five-session close, the system must produce one of four outcomes for each
 - `INSUFFICIENT_EVIDENCE_ARTIFACT_DEFECT`
 
 Exactly one behavior candidate may be selected. All other broad analysis work closes.
+
+The final selection was `NONE`. The current work queue is latent fresh-trigger
+forward attribution followed by same-symbol provenance; neither changes behavior.

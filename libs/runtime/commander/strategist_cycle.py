@@ -170,6 +170,9 @@ def run_post_scanner_refresh_cycle(
                 "strategist_refresh_reason": str(post_scanner_decision.get("strategist_refresh_reason") or ""),
             },
         )
+        from libs.runtime.q9_decision_snapshots import capture_pre_refresh_scanner_snapshot
+
+        capture_pre_refresh_scanner_snapshot(state)
         state = attach_reporter_feedback_policy_fn(state, selected_route="full_cycle", phase="session")
         state = attach_applied_policy_fn(state)
         state = strategist_node_fn(state)
