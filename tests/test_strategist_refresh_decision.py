@@ -1,6 +1,7 @@
 from libs.runtime.commander.strategist_refresh_decision import (
     assess_pre_buy_strategist_refresh_need,
     force_selected_symbol_tactical_refresh_decision,
+    resolve_risk_max_positions,
 )
 
 
@@ -35,6 +36,13 @@ def _base_state(*, selected_symbol: str = "005930", cache_age_sec: int = 400) ->
             }
         },
     }
+
+
+def test_risk_max_positions_uses_same_environment_fallback_as_monitor(monkeypatch) -> None:
+    monkeypatch.setenv("RISK_MAX_POSITIONS", "3")
+
+    assert resolve_risk_max_positions({}) == 3
+    assert resolve_risk_max_positions({"risk_context": {"max_positions": 2}}) == 2
 
 
 def test_selected_symbol_refresh_is_suppressed_when_cached_frame_covers_symbol() -> None:

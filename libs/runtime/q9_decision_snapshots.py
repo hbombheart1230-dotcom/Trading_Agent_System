@@ -111,6 +111,31 @@ def _compact_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
     source_scores = _compact_scalar_mapping(row.get("source_scores"), limit=12)
     if source_scores:
         out["source_scores"] = source_scores
+    source_observations = row.get("source_observations")
+    if isinstance(source_observations, Mapping):
+        top_change = source_observations.get("top_change_rate")
+        if isinstance(top_change, Mapping):
+            out["source_observations"] = {
+                "top_change_rate": {
+                    "schema_version": str(top_change.get("schema_version") or ""),
+                    "behavior_effect": str(top_change.get("behavior_effect") or ""),
+                    "source": "top_change_rate",
+                    "api_id": str(top_change.get("api_id") or "ka10027"),
+                    "source_rank": top_change.get("source_rank"),
+                    "captured_epoch": top_change.get("captured_epoch"),
+                    "captured_at": str(top_change.get("captured_at") or ""),
+                    "point_in_time": bool(top_change.get("point_in_time")),
+                    "request_filters": _compact_scalar_mapping(
+                        top_change.get("request_filters"), limit=12
+                    ),
+                    "raw_fields": _compact_scalar_mapping(
+                        top_change.get("raw_fields"), limit=16
+                    ),
+                    "normalized": _compact_scalar_mapping(
+                        top_change.get("normalized"), limit=16
+                    ),
+                }
+            }
     for key in (
         "score_breakdown",
         "scanner_chart_fit",

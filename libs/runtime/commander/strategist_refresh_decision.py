@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 
 from libs.runtime.commander.env_overrides import is_trueish
@@ -30,6 +31,7 @@ def resolve_risk_max_positions(state: Dict[str, Any] | None = None) -> int:
     for value in (
         ((obj.get("risk_context") or {}).get("max_positions") if isinstance(obj.get("risk_context"), dict) else None),
         ((obj.get("risk") or {}).get("max_positions") if isinstance(obj.get("risk"), dict) else None),
+        os.getenv("RISK_MAX_POSITIONS"),
     ):
         try:
             if value not in (None, ""):

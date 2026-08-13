@@ -97,33 +97,64 @@ def _evidence_strength(
     return "none"
 
 
-def _resolve_symbol_memory(state: Dict[str, Any]) -> tuple[str, Dict[str, Any], str]:
+def _resolve_expected_symbol(state: Dict[str, Any]) -> str:
+    def mapping(value: Any) -> Dict[str, Any]:
+        return value if isinstance(value, dict) else {}
+
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    decision_refresh = (
+        commander_decision.get("strategist_refresh_context")
+        if isinstance(commander_decision.get("strategist_refresh_context"), dict)
+        else {}
+    )
+    open_refresh = mapping(state.get("commander_open_position_refresh_context"))
+    open_override = mapping(state.get("commander_open_position_override"))
+    open_override_refresh = mapping(open_override.get("strategist_refresh_context"))
+    strategist_refresh = mapping(state.get("strategist_refresh_context"))
+    selected = mapping(state.get("selected"))
+    monitor = mapping(state.get("monitor"))
+    candidates = [
+        open_refresh.get("selected_symbol"),
+        open_override_refresh.get("selected_symbol"),
+        decision_refresh.get("selected_symbol"),
+        strategist_refresh.get("selected_symbol"),
+        selected.get("symbol"),
+        monitor.get("selected_symbol"),
+    ]
+    for value in candidates:
+        symbol = _text(value).upper()
+        if symbol:
+            return symbol
+    return ""
+
+
+def _resolve_symbol_memory(state: Dict[str, Any]) -> tuple[str, Dict[str, Any], str, str]:
+    expected_symbol = _resolve_expected_symbol(state)
     candidates = [
         ("state.selected_symbol_memory", state.get("selected_symbol_memory")),
         ("state.commander_open_position_refresh_context.selected_symbol_memory", (state.get("commander_open_position_refresh_context") or {}).get("selected_symbol_memory")),
         ("state.commander_open_position_override.strategist_refresh_context.selected_symbol_memory", ((state.get("commander_open_position_override") or {}).get("strategist_refresh_context") or {}).get("selected_symbol_memory")),
         ("state.strategist_output.selected_symbol_memory", (state.get("strategist_output") or {}).get("selected_symbol_memory")),
     ]
+    first_mismatched_symbol = ""
     for source, value in candidates:
         if isinstance(value, dict) and value:
-            symbol = str(
+            memory_symbol = str(
                 value.get("symbol")
-                or ((state.get("commander_open_position_refresh_context") or {}).get("selected_symbol"))
-                or ((state.get("selected") or {}).get("symbol"))
+                or expected_symbol
                 or ""
-            ).strip()
-            return symbol, dict(value), source
-    symbol = str(
-        ((state.get("commander_open_position_refresh_context") or {}).get("selected_symbol"))
-        or ((state.get("selected") or {}).get("symbol"))
-        or ((state.get("monitor") or {}).get("selected_symbol"))
-        or ""
-    ).strip()
-    return symbol, {}, "unavailable"
+            ).strip().upper()
+            if expected_symbol and memory_symbol and memory_symbol != expected_symbol:
+                first_mismatched_symbol = first_mismatched_symbol or memory_symbol
+                continue
+            return expected_symbol or memory_symbol, dict(value), source, ""
+    if expected_symbol and first_mismatched_symbol:
+        return expected_symbol, {}, "rejected_symbol_mismatch", first_mismatched_symbol
+    return expected_symbol, {}, "unavailable", ""
 
 
 def build_symbol_memory_packet(*, state: Dict[str, Any]) -> Dict[str, Any]:
-    symbol, row, source = _resolve_symbol_memory(state)
+    symbol, row, source, mismatched_symbol = _resolve_symbol_memory(state)
     reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
     operator_summary = load_operator_symbol_summary(reports_root=reports_root, symbol=symbol) if symbol else {
         "available": False,
@@ -147,23 +178,31 @@ def build_symbol_memory_packet(*, state: Dict[str, Any]) -> Dict[str, Any]:
     data_source = _text(data_quality.get("data_source"))
     unknown_fields_ratio = _safe_float(data_quality.get("unknown_fields_ratio"))
     pattern_signal_count = _pattern_signal_count(row)
-    override_gate_reason = _resolve_override_gate_reason(
-        symbol=symbol,
-        trade_count=trade_count,
-        closed_trade_count=closed_trade_count,
-        unknown_fields_ratio=unknown_fields_ratio,
-        pattern_signal_count=pattern_signal_count,
-        recency_days=recency_days,
+    override_gate_reason = (
+        "symbol_memory_mismatch"
+        if mismatched_symbol
+        else _resolve_override_gate_reason(
+            symbol=symbol,
+            trade_count=trade_count,
+            closed_trade_count=closed_trade_count,
+            unknown_fields_ratio=unknown_fields_ratio,
+            pattern_signal_count=pattern_signal_count,
+            recency_days=recency_days,
+        )
     )
     override_eligible = not bool(override_gate_reason)
-    status = "ok" if row else ("empty" if symbol else "unavailable")
+    status = "mismatch" if mismatched_symbol else "ok" if row else ("empty" if symbol else "unavailable")
     return {
         "schema_version": "commander.memory_packet.v1",
         "layer": "symbol",
         "status": status,
         "source": source,
-        "active": bool(symbol),
+        "active": bool(row) and not bool(mismatched_symbol),
         "symbol": symbol,
+        "expected_symbol": symbol,
+        "memory_symbol": _text(row.get("symbol")).upper() if row else mismatched_symbol,
+        "symbol_consistent": not bool(mismatched_symbol),
+        "mismatched_symbol": mismatched_symbol,
         "trade_count": trade_count,
         "closed_trade_count": closed_trade_count,
         "win_rate": _safe_float(row.get("win_rate")),

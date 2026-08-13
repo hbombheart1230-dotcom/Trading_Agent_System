@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Set, Tuple
 
 from libs.core.symbols import normalize_symbol
 from libs.read.kiwoom_condition_reader import KiwoomConditionReader
 from libs.runtime.scanner_policy import resolve_scanner_runtime_policy
+from libs.strategies.candidates.rank_source_observation import (
+    build_top_change_rate_observation,
+)
 
 
 def _is_trueish(v: Any) -> bool:
@@ -318,6 +322,8 @@ def _add_ranked_source(
     source: str,
     weight: float,
     decay: float = 0.02,
+    captured_epoch: int | None = None,
+    captured_at: str = "",
 ) -> None:
     w = float(max(0.01, weight))
     d = float(max(0.0, decay))
@@ -336,6 +342,19 @@ def _add_ranked_source(
         src_score = row.get("source_scores") if isinstance(row.get("source_scores"), dict) else {}
         src_score[source] = float(src_score.get(source) or 0.0) + score_add
         row["source_scores"] = src_score
+        if source == "top_change_rate" and raw_row:
+            observations = (
+                row.get("source_observations")
+                if isinstance(row.get("source_observations"), dict)
+                else {}
+            )
+            observations[source] = build_top_change_rate_observation(
+                raw_row,
+                source_rank=idx + 1,
+                captured_epoch=captured_epoch,
+                captured_at=captured_at,
+            )
+            row["source_observations"] = observations
         if raw_row:
             for key in (
                 "name",
@@ -388,6 +407,11 @@ def build_kiwoom_candidate_rows(
     top_volume_rows = get_top_volume_rows(state, topk=pool_k) if bool(include_top_volume) else []
     top_value_rows = get_top_value_rows(state, topk=pool_k) if bool(include_top_value) else []
     top_change_rows = get_top_change_rate_rows(state, topk=pool_k) if bool(include_change_rate) else []
+    capture_now = datetime.now(timezone.utc)
+    top_change_captured_epoch = (
+        _to_int(state.get("now_epoch"), 0) or int(capture_now.timestamp())
+    )
+    top_change_captured_at = str(state.get("ts") or capture_now.isoformat())
     top_volume = _extract_symbols_from_rank_rows(top_volume_rows)
     top_value = _extract_symbols_from_rank_rows(top_value_rows)
     top_change = _extract_symbols_from_rank_rows(top_change_rows)
@@ -421,7 +445,15 @@ def build_kiwoom_candidate_rows(
     if bool(include_watchlist) and float(source_weight_map.get("operator_watchlist", 0.8)) > 0.0:
         _add_ranked_source(rows, symbols=watch_rows, source="operator_watchlist", weight=float(source_weight_map.get("operator_watchlist", 0.8)), decay=0.01)
     if bool(include_change_rate) and float(source_weight_map.get("top_change_rate", 1.3)) > 0.0:
-        _add_ranked_source(rows, symbols=top_change_rows or top_change, source="top_change_rate", weight=float(source_weight_map.get("top_change_rate", 1.3)), decay=0.02)
+        _add_ranked_source(
+            rows,
+            symbols=top_change_rows or top_change,
+            source="top_change_rate",
+            weight=float(source_weight_map.get("top_change_rate", 1.3)),
+            decay=0.02,
+            captured_epoch=top_change_captured_epoch,
+            captured_at=top_change_captured_at,
+        )
 
     out = list(rows.values())
     out.sort(
@@ -447,6 +479,7 @@ def build_kiwoom_candidate_rows(
                 "why": "+".join(srcs[:3]) if srcs else "kiwoom_market_data",
                 "sources": srcs,
                 "source_scores": dict(row.get("source_scores") or {}),
+                "source_observations": dict(row.get("source_observations") or {}),
                 "source_count": len(srcs),
                 "name": str(row.get("name") or row.get("stk_nm") or row.get("isu_nm") or ""),
                 "stk_nm": str(row.get("stk_nm") or ""),

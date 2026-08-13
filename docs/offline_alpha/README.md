@@ -14,6 +14,31 @@ Rules:
 
 Current research:
 
+- `canonical_rank1_feature_mart_2026-08-11.md`
+  - freezes one June-August Rank-1 feature and horizon contract
+  - separates Scanner suitability, Monitor entry timing, and Strategist horizon evidence
+  - permits at most two prospective shadow candidates and no runtime behavior change
+
+- `rank1_fixed_candidate_prospective_shadow_2026-08-11.md`
+  - freezes the selected branches and contract hash through 2026-08-11
+  - starts a five-valid-day prospective window on 2026-08-12
+  - integrates observation-only generation into normal closeout
+  - never enables a behavior patch automatically
+
+- `rank1_fresh_change_activation_shadow_2026-08-12.md`
+  - keeps the 2026-08-11 fixed candidate contract unchanged
+  - adds a separate `R1_FRESH_CHANGE_ACTIVATION_V1` observer
+  - restores canonical Strategist/Scanner and point-in-time chart provenance
+  - requires 5 independent day-symbols and stops after at most 10 valid days
+  - keeps theme, breadth, chart, recurrence, and quote fields descriptive only
+
+- `rank1_strategy_choice_observability_2026-08-12.md`
+  - separates deterministic, LLM-requested, and final market playbooks
+  - exposes all 12 tactic options and identifies unscored catalog tactics
+  - records whether the selected tactic is only the playbook default
+  - compares market tactic family with the observed Rank-1 candidate setup
+  - writes daily and cumulative alignment reports without behavior changes
+
 - `active_research_register_2026-08-07.md`
   - current authority for active work and stopping rules
   - Priority 1: latent-reactivation fresh-trigger forwards, decision at 12

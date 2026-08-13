@@ -70,12 +70,21 @@ def load_strategy_memory_window_rows(
     max_days: int,
 ) -> List[Dict[str, Any]]:
     days = list_available_performance_days(reports_root=reports_root, end_day=end_day)
-    selected_days = days[-max_days:] if max_days > 0 else days
     out: List[Dict[str, Any]] = []
-    for day in selected_days:
+    # Select the most recent evidence-bearing days, not merely the most recent
+    # artifact directories. Empty no-trade days must not crowd valid memories
+    # out of weekly/monthly windows or make stale evidence appear current.
+    for day in reversed(days):
         memory_path = Path(reports_root) / "performance" / day / "strategy_memory.json"
         row = _read_json_dict(memory_path)
-        if not row:
+        if not row or not (
+            row.get("best_playbooks")
+            or row.get("worst_playbooks")
+            or row.get("recent_failures")
+            or row.get("recent_success_patterns")
+            or row.get("playbook_performance_snapshot")
+            or row.get("pattern_performance_snapshot")
+        ):
             continue
         normalized = dict(row)
         normalized.setdefault("day", day)
@@ -85,7 +94,9 @@ def load_strategy_memory_window_rows(
             Path(reports_root) / "dev" / "analysis" / "reporter_analysis" / f"reporter_analysis_{day}.json"
         )
         out.append(normalized)
-    return out
+        if max_days > 0 and len(out) >= max_days:
+            break
+    return list(reversed(out))
 
 
 def _tally_items(rows: Iterable[Mapping[str, Any]], key: str, *, limit: int) -> List[str]:
@@ -457,6 +468,28 @@ def build_window_strategy_memory_packet(
     recent_failures = _tally_items(rows, "recent_failures", limit=4)
     recent_success_patterns = _tally_items(rows, "recent_success_patterns", limit=4)
     playbook_snapshot = _collect_playbook_snapshot(rows, limit=4)
+    overlap = {name.lower() for name in best_playbooks}.intersection(
+        {name.lower() for name in worst_playbooks}
+    )
+    if overlap:
+        best_by_lower = {name.lower(): name for name in best_playbooks}
+        worst_by_lower = {name.lower(): name for name in worst_playbooks}
+        for normalized_name in overlap:
+            display_name = best_by_lower.get(normalized_name) or worst_by_lower.get(normalized_name) or normalized_name
+            stats = dict(playbook_snapshot.get(display_name) or {})
+            usage_count = int(float(stats.get("usage_count") or 0))
+            win_rate = _safe_float(stats.get("win_rate"))
+            avg_return = _safe_float(stats.get("avg_return"))
+            if usage_count < 2:
+                best_playbooks = [name for name in best_playbooks if name.lower() != normalized_name]
+                worst_playbooks = [name for name in worst_playbooks if name.lower() != normalized_name]
+            elif win_rate >= 0.5 and avg_return >= 0.0:
+                worst_playbooks = [name for name in worst_playbooks if name.lower() != normalized_name]
+            elif win_rate <= 0.4 or avg_return < 0.0:
+                best_playbooks = [name for name in best_playbooks if name.lower() != normalized_name]
+            else:
+                best_playbooks = [name for name in best_playbooks if name.lower() != normalized_name]
+                worst_playbooks = [name for name in worst_playbooks if name.lower() != normalized_name]
     pattern_snapshot = _collect_pattern_snapshot(rows)
     sample_quality = build_sample_quality(
         rows=rows,
@@ -491,7 +524,12 @@ def build_window_strategy_memory_packet(
     sample_day_count = len(contributing_days)
     confidence_floor = 0.5 if layer == "weekly" else 0.45
     usable = bool(sample_quality.get("usable"))
-    active = usable and float(sample_quality.get("confidence") or 0.0) >= confidence_floor
+    max_age_days = int(float(sample_quality.get("max_age_days") or 0))
+    active = (
+        usable
+        and float(sample_quality.get("confidence") or 0.0) >= confidence_floor
+        and max_age_days <= max_days
+    )
     summary_detail = build_window_summary(
         layer=layer,
         contributing_days=contributing_days,

@@ -77,6 +77,12 @@ Use `docs/runtime_memory` for:
 - separates context visibility from deterministic scanner/monitor delta application in `memory_usage_trace`
 - removes package import-order dependence from the runtime-memory test surface
 
+9. `memory_integrity_correction_2026-08-13.md`
+- blocks selected-symbol memory from crossing into a different Stage-2 target
+- makes daily best/worst playbook guidance evidence-qualified and mutually exclusive
+- prevents empty no-trade days from distorting memory windows and freshness
+- adds symbol consistency and decision-effect linkage to `memory_usage_trace`
+
 Current additive implementation:
 
 - Commander now surfaces raw memory packets in `commander_decision`

@@ -2266,6 +2266,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "symbol": _norm_symbol(item.get("symbol")) if isinstance(item, dict) else _norm_symbol(item),
                 "sources": list(item.get("sources") or [])[:8] if isinstance(item, dict) else [],
                 "source_scores": dict(item.get("source_scores") or {}) if isinstance(item, dict) else {},
+                "source_observations": dict(item.get("source_observations") or {}) if isinstance(item, dict) else {},
                 "rank_score": _to_float(item.get("rank_score")) if isinstance(item, dict) else 0.0,
                 "universe_score": _to_float(item.get("universe_score")) if isinstance(item, dict) else 0.0,
                 "why": str(item.get("why") or "") if isinstance(item, dict) else "",
@@ -2966,12 +2967,14 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["detection_field"] = str(candidate_meta.get("detection_field") or "")
         row["excluded_by_asset_policy"] = bool(candidate_meta.get("excluded_by_asset_policy"))
         row["exclusion_reason"] = str(candidate_meta.get("exclusion_reason") or "")
+        row["source_observations"] = dict(candidate_meta.get("source_observations") or {})
         row["candidate"] = {
             "source_why": str(candidate_meta.get("why") or ""),
             "sources": list(candidate_meta.get("sources") or []),
             "rank_score": float(candidate_rank_score),
             "universe_score": float(candidate_universe_score),
             "source_scores": dict(candidate_meta.get("source_scores") or {}),
+            "source_observations": dict(candidate_meta.get("source_observations") or {}),
             "source_count": int(candidate_meta.get("source_count") or len(list(candidate_meta.get("sources") or []))),
             "asset_class_detected": str(candidate_meta.get("asset_class_detected") or ""),
             "detection_source": str(candidate_meta.get("detection_source") or ""),

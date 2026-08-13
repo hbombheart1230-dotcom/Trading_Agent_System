@@ -343,7 +343,20 @@ def _load_strategy_memory_advisory(state: Dict[str, Any], policy: Dict[str, Any]
     out.setdefault("playbook_performance_snapshot", {})
     out.setdefault("pattern_performance_snapshot", {})
     out.setdefault("advisory_only", True)
-    return _neutralize_ambiguous_playbook_memory(out)
+    out = _neutralize_ambiguous_playbook_memory(out)
+    age_days = _to_int(out.get("age_days"), 0)
+    if age_days > 7:
+        # Preserve the artifact for audit, but do not let old daily evidence
+        # become the current directional authority after a no-trade stretch.
+        out["status"] = "stale"
+        out["directional_bias_usable"] = False
+        out["best_playbooks"] = []
+        out["worst_playbooks"] = []
+        out["recent_failures"] = []
+        out["recent_success_patterns"] = []
+    else:
+        out["directional_bias_usable"] = True
+    return out
 
 
 def _resolve_top_n_candidates(policy: Dict[str, Any]) -> int:
@@ -2635,7 +2648,7 @@ def _compact_strategy_memory_for_llm(memory: Any) -> Dict[str, Any]:
         for x in list(market_bias.get("avoid_regimes") or [])[:3]
         if str(x or "").strip()
     ]
-    return {
+    compact = {
         "status": str(src.get("status") or ""),
         "day": str(src.get("day") or ""),
         "best_playbooks": [str(x or "") for x in list(src.get("best_playbooks") or [])[:3] if str(x or "").strip()],
@@ -2677,6 +2690,20 @@ def _compact_strategy_memory_for_llm(memory: Any) -> Dict[str, Any]:
         },
         "advisory_only": bool(src.get("advisory_only", True)),
     }
+    if (
+        src.get("requested_day")
+        or src.get("resolved_day")
+        or src.get("freshness_status")
+        or src.get("directional_bias_usable") is False
+    ):
+        compact["freshness"] = {
+            "requested_day": str(src.get("requested_day") or ""),
+            "resolved_day": str(src.get("resolved_day") or src.get("day") or ""),
+            "age_days": _to_int(src.get("age_days"), 0),
+            "status": str(src.get("freshness_status") or ""),
+            "directional_bias_usable": bool(src.get("directional_bias_usable", True)),
+        }
+    return compact
 
 
 def _compact_pattern_performance_for_llm(snapshot: Any) -> Dict[str, Any]:
@@ -6334,7 +6361,13 @@ def _build_commander_context_summary(
         else {}
     )
     try:
-        memory_packets = load_commander_memory_packets(state=state)
+        memory_state = {
+            **dict(state),
+            "commander_decision": dict(raw),
+            "strategist_refresh_context": dict(strategist_refresh_context),
+            "commander_open_position_refresh_context": dict(open_position_refresh_context),
+        }
+        memory_packets = load_commander_memory_packets(state=memory_state)
         commander_memory_policy = build_commander_memory_policy(
             session_bias=str(raw.get("session_bias") or runtime_phase or "session"),
             memory_packets=memory_packets,
@@ -8312,6 +8345,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         strategist_output["runner_up_order"] = list(ai_overrides.get("runner_up_order") or [])
         strategist_output["monitor_instruction"] = dict(ai_overrides.get("monitor_instruction") or {})
         strategist_output["entry_policy_delta"] = dict(ai_overrides.get("entry_policy_delta") or {})
+        strategist_output["memory_usage"] = dict(ai_overrides.get("memory_usage") or {})
         strategist_output["market_regime_rail"] = str(
             ai_overrides.get("market_regime_rail") or strategist_output.get("market_regime_rail") or ""
         )

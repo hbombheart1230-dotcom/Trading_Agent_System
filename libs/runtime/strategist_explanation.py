@@ -204,6 +204,27 @@ def build_memory_usage_trace(
     memory_disabled = bool(commander_policy.get("disabled")) or str(
         commander_policy.get("application_mode") or ""
     ).strip().lower() == "disabled"
+    selected_review = _dict(strategist_output.get("selected_symbol_tactical_review"))
+    refresh_context = _dict(
+        strategist_output.get("commander_refresh_context")
+        or _dict(strategist_output.get("commander_context_ref")).get("strategist_refresh_context")
+        or _dict(state.get("commander_decision")).get("strategist_refresh_context")
+    )
+    target_symbol = _text(
+        strategist_output.get("target_symbol")
+        or selected_review.get("target_symbol")
+        or refresh_context.get("selected_symbol"),
+        max_len=24,
+    ).upper()
+    symbol_packet = _dict(memory_packets.get("symbol_memory_packet"))
+    memory_symbol = _text(
+        symbol_packet.get("memory_symbol") or symbol_packet.get("symbol"),
+        max_len=24,
+    ).upper()
+    symbol_consistent = bool(
+        symbol_packet.get("symbol_consistent", True)
+        and (not target_symbol or not memory_symbol or target_symbol == memory_symbol)
+    )
 
     scanner_delta = _dict(scanner_bias.get("source_weight_delta"))
     scanner_symbol_adjustments = _dict(scanner_bias.get("symbol_adjustments"))
@@ -234,7 +255,11 @@ def build_memory_usage_trace(
     for layer in ("daily", "weekly", "monthly", "symbol"):
         packet = _dict(memory_packets.get(layer_to_packet_key[layer]))
         if layer == "symbol":
-            used = bool(commander_policy.get("symbol_memory_override_enabled")) and layer in active_set
+            used = (
+                bool(commander_policy.get("symbol_memory_override_enabled"))
+                and layer in active_set
+                and symbol_consistent
+            )
         else:
             used = layer in active_set
         reason = _memory_layer_reason(layer=layer, packet=packet, used=used)
@@ -280,10 +305,16 @@ def build_memory_usage_trace(
         if layer == "symbol":
             decision["gate_reason"] = _text(packet.get("override_gate_reason"), max_len=80)
             decision["evidence_strength"] = _text(packet.get("evidence_strength"), max_len=24)
+            decision["target_symbol"] = target_symbol
+            decision["memory_symbol"] = memory_symbol
+            decision["symbol_consistent"] = symbol_consistent
         layer_decisions[layer] = decision
 
     policy_signals = _dict(commander_policy.get("policy_signals"))
-    raw_memory_usage = _dict(strategist_output.get("memory_usage"))
+    raw_memory_usage = _dict(
+        strategist_output.get("memory_usage")
+        or selected_review.get("memory_usage")
+    )
     llm_memory_usage_status = _text(
         raw_memory_usage.get("status")
         or raw_memory_usage.get("usage_status")
@@ -370,6 +401,16 @@ def build_memory_usage_trace(
         "deterministic_delta_applied": deterministic_delta_applied,
         "llm_memory_usage_status": llm_memory_usage_status or "not_reported",
         "causal_strategy_change_attributed": False,
+        "target_symbol": target_symbol,
+        "memory_symbol": memory_symbol,
+        "symbol_consistent": symbol_consistent,
+        "llm_memory_effect": _text(raw_memory_usage.get("effect"), max_len=40) or "not_reported",
+        "llm_memory_reason": _text(raw_memory_usage.get("reason"), max_len=240),
+        "entry_policy_tightened": bool(
+            _dict(strategist_output.get("entry_policy_delta") or selected_review.get("entry_policy_delta")).get(
+                "tighten_confidence_threshold"
+            )
+        ),
     }
     return {
         "schema_version": "strategist.memory_usage_trace.v1",
@@ -382,6 +423,23 @@ def build_memory_usage_trace(
         "applied_to_strategy": applied_to_strategy,
         "scanner_application": scanner_application,
         "monitor_application": monitor_application,
+        "symbol_consistency": {
+            "target_symbol": target_symbol,
+            "memory_symbol": memory_symbol,
+            "consistent": symbol_consistent,
+            "mismatch_blocked": bool(target_symbol and memory_symbol and not symbol_consistent),
+            "gate_reason": _text(symbol_packet.get("override_gate_reason"), max_len=80),
+        },
+        "decision_linkage": {
+            "q9_decision_id": _text(
+                strategist_output.get("q9_decision_id") or state.get("q9_decision_id"),
+                max_len=96,
+            ),
+            "strategist_run_id": _text(
+                strategist_output.get("run_id") or state.get("run_id"),
+                max_len=96,
+            ),
+        },
         "human_summary": human_summary,
     }
 

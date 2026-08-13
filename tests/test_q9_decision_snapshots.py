@@ -59,6 +59,18 @@ def test_q9_snapshot_upserts_scanner_and_commander_under_one_id(tmp_path) -> Non
                         "rank": 1,
                         "sources": ["top_value"],
                         "source_scores": {"top_value": 0.8},
+                        "source_observations": {
+                            "top_change_rate": {
+                                "schema_version": "kiwoom_top_change_rate_observation.v1",
+                                "behavior_effect": "observation_only",
+                                "api_id": "ka10027",
+                                "source_rank": 1,
+                                "captured_epoch": 1782173100,
+                                "point_in_time": True,
+                                "raw_fields": {"flu_rt": "+3.20", "cntr_str": "120.5"},
+                                "normalized": {"change_rate_pct": 3.2, "execution_strength": 120.5},
+                            }
+                        },
                         "score_breakdown": {
                             "trading_value": 0.2,
                             "volume_surge": 0.1,
@@ -109,6 +121,10 @@ def test_q9_snapshot_upserts_scanner_and_commander_under_one_id(tmp_path) -> Non
     first_pre = window["scanner_pre_strategist_universe"]["intrinsic_ranked_top20"][0]
     assert first_pre["sources"] == ["top_value"]
     assert first_pre["source_scores"] == {"top_value": 0.8}
+    top_change = first_pre["source_observations"]["top_change_rate"]
+    assert top_change["api_id"] == "ka10027"
+    assert top_change["raw_fields"]["flu_rt"] == "+3.20"
+    assert top_change["normalized"]["execution_strength"] == 120.5
     assert first_pre["score_breakdown"]["trading_value"] == 0.2
     assert window["strategist_selection"]["selected_symbol"] == "005930"
     assert window["commander_final"]["decision"] == "approve"

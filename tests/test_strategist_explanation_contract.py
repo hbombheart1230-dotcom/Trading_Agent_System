@@ -127,6 +127,12 @@ def test_strategist_explanation_fields_capture_memory_and_role_boundary() -> Non
         "deterministic_delta_applied": True,
         "llm_memory_usage_status": "not_reported",
         "causal_strategy_change_attributed": False,
+        "target_symbol": "005930",
+        "memory_symbol": "005930",
+        "symbol_consistent": True,
+        "llm_memory_effect": "not_reported",
+        "llm_memory_reason": "",
+        "entry_policy_tightened": False,
     }
     assert (
         fields["memory_usage_trace"]["applied_to_strategy"]["playbook_effect"]
@@ -177,3 +183,45 @@ def test_canonical_strategist_artifact_surfaces_explanation_contract() -> None:
     assert artifact["theme_source_status"] == "ok"
     assert artifact["theme_strength_packet"]["top_themes"] == ["semiconductor"]
     assert artifact["strategy_frame"]["theme_strength"] == {"semiconductor": 0.82}
+
+
+def test_memory_usage_trace_blocks_cross_symbol_memory_and_links_decision() -> None:
+    output = _strategist_output()
+    output["target_symbol"] = "001210"
+    output["run_id"] = "strategist-run-1"
+    output["memory_packets"]["symbol_memory_packet"].update(
+        {
+            "status": "mismatch",
+            "active": False,
+            "symbol": "001210",
+            "expected_symbol": "001210",
+            "memory_symbol": "233740",
+            "symbol_consistent": False,
+            "override_gate_reason": "symbol_memory_mismatch",
+        }
+    )
+    output["commander_memory_policy"].update(
+        {"active_layers": ["daily", "symbol"], "symbol_memory_override_enabled": True}
+    )
+    output["memory_usage"] = {
+        "status": "used_as_cautionary_context",
+        "effect": "tighten_entry",
+        "reason": "weak recent expectancy",
+    }
+    output["entry_policy_delta"] = {"tighten_confidence_threshold": True}
+
+    fields = build_strategist_explanation_fields(
+        strategist_output=output,
+        state={"q9_decision_id": "q9-decision-1"},
+        news_evidence_ranked={},
+    )
+    trace = fields["memory_usage_trace"]
+
+    assert trace["layer_decisions"]["symbol"]["used"] is False
+    assert trace["symbol_consistency"]["mismatch_blocked"] is True
+    assert trace["application_summary"]["llm_memory_effect"] == "tighten_entry"
+    assert trace["application_summary"]["entry_policy_tightened"] is True
+    assert trace["decision_linkage"] == {
+        "q9_decision_id": "q9-decision-1",
+        "strategist_run_id": "strategist-run-1",
+    }

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from libs.runtime.monthly_strategy_memory_packet import build_monthly_strategy_memory_packet
+from libs.runtime.strategy_memory_window_common import load_strategy_memory_window_rows
 from libs.runtime.weekly_strategy_memory_packet import build_weekly_strategy_memory_packet
 
 
@@ -201,3 +202,34 @@ def test_monthly_strategy_memory_packet_unavailable_without_artifacts(tmp_path: 
     assert packet["memory_type"] == "monthly"
     assert packet["sample_quality"]["trade_count"] == 0
     assert packet["recommended_bias_inputs"]["scanner"]["source_weight_delta"] == {}
+
+
+def test_memory_window_counts_evidence_days_instead_of_empty_artifact_days(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    _write_json(
+        reports_root / "performance" / "2026-08-01" / "strategy_memory.json",
+        {
+            "day": "2026-08-01",
+            "best_playbooks": ["opening_momentum"],
+            "playbook_performance_snapshot": {
+                "opening_momentum": {
+                    "usage_count": 3,
+                    "win_rate": 0.67,
+                    "avg_return": 0.4,
+                }
+            },
+        },
+    )
+    for day in ("02", "03", "04", "05", "06"):
+        _write_json(
+            reports_root / "performance" / f"2026-08-{day}" / "strategy_memory.json",
+            {"day": f"2026-08-{day}", "best_playbooks": [], "worst_playbooks": []},
+        )
+
+    rows = load_strategy_memory_window_rows(
+        reports_root=reports_root,
+        end_day="2026-08-06",
+        max_days=5,
+    )
+
+    assert [row["day"] for row in rows] == ["2026-08-01"]

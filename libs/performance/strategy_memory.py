@@ -289,8 +289,28 @@ def build_strategy_memory(
             )
         )
     playbook_rows.sort(key=lambda row: (-row[1], -row[2], -row[3], row[0]))
-    best_playbooks = [row[0] for row in playbook_rows[:3] if row[0] and row[0] != "unknown"]
-    worst_playbooks = [row[0] for row in sorted(playbook_rows, key=lambda row: (row[2], row[3], row[1], row[0]))[:3] if row[0] and row[0] != "unknown"]
+    # A sparse day often contains only one playbook. Ranking the same row into
+    # both the top and bottom buckets turns memory into contradictory guidance.
+    # Keep the buckets evidence-qualified and mutually exclusive.
+    best_playbooks = [
+        row[0]
+        for row in playbook_rows
+        if row[0]
+        and row[0] != "unknown"
+        and int(float((playbooks.get(row[0]) or {}).get("usage_count") or 0)) >= 2
+        and row[2] >= 0.0
+        and row[3] >= 0.5
+    ][:3]
+    best_set = {name.lower() for name in best_playbooks}
+    worst_playbooks = [
+        row[0]
+        for row in sorted(playbook_rows, key=lambda row: (row[2], row[3], row[1], row[0]))
+        if row[0]
+        and row[0] != "unknown"
+        and int(float((playbooks.get(row[0]) or {}).get("usage_count") or 0)) >= 2
+        and row[0].lower() not in best_set
+        and (row[2] < 0.0 or row[3] <= 0.4)
+    ][:3]
     playbook_performance_snapshot: Dict[str, Any] = {}
     for name, _stability, _avg_return, _win_rate in playbook_rows[:4]:
         src = playbooks.get(name) if isinstance(playbooks.get(name), dict) else {}
@@ -395,7 +415,10 @@ def write_strategy_memory(
         playbook_obj = write_playbook_stats(root, day=target_day)
     memory = build_strategy_memory(summary_obj, playbook_obj, reporter_digest)
     memory["day"] = str(target_day or summary_obj.get("day") or playbook_obj.get("day") or "")
-    memory["status"] = "ok" if (memory.get("best_playbooks") or memory.get("worst_playbooks")) else "empty"
+    memory["directional_bias_usable"] = bool(
+        memory.get("best_playbooks") or memory.get("worst_playbooks")
+    )
+    memory["status"] = "ok" if _memory_has_directional_evidence(memory) else "empty"
     paths = performance_artifact_paths(root, memory["day"])
     paths["root_dir"].mkdir(parents=True, exist_ok=True)
     memory["artifact_path"] = str(paths["strategy_memory_json"])
@@ -479,6 +502,42 @@ def _resolve_latest_day(performance_root: Path) -> str:
     return sorted(days)[-1]
 
 
+def _memory_has_directional_evidence(memory: Dict[str, Any]) -> bool:
+    if not isinstance(memory, dict):
+        return False
+    return bool(
+        memory.get("best_playbooks")
+        or memory.get("worst_playbooks")
+        or memory.get("recent_failures")
+        or memory.get("recent_success_patterns")
+        or memory.get("playbook_performance_snapshot")
+        or memory.get("pattern_performance_snapshot")
+    )
+
+
+def _resolve_latest_usable_day(performance_root: Path, *, at_or_before: str = "") -> str:
+    if not performance_root.exists():
+        return ""
+    days = sorted(
+        (
+            path.name
+            for path in performance_root.iterdir()
+            if path.is_dir()
+            and len(path.name) == 10
+            and path.name[4:5] == "-"
+            and path.name[7:8] == "-"
+            and (not at_or_before or path.name <= at_or_before)
+        ),
+        reverse=True,
+    )
+    for day in days:
+        paths = performance_artifact_paths(performance_root.parent, day)
+        memory = _read_json_dict(paths["strategy_memory_json"])
+        if _memory_has_directional_evidence(memory):
+            return day
+    return ""
+
+
 def load_strategy_memory_hint(
     *,
     reports_root: Path,
@@ -506,8 +565,11 @@ def load_strategy_memory_hint(
     summary = _read_json_dict(paths["summary_json"])
     playbook = _read_json_dict(paths["playbook_stats_json"])
     memory = _read_json_dict(paths["strategy_memory_json"])
-    if not auto_build and not (summary or playbook or memory):
-        latest_day = _resolve_latest_day(performance_root)
+    if not auto_build and not _memory_has_directional_evidence(memory):
+        latest_day = _resolve_latest_usable_day(
+            performance_root,
+            at_or_before=target_day,
+        )
         if latest_day and latest_day != target_day:
             fallback_paths = performance_artifact_paths(root, latest_day)
             fallback_summary = _read_json_dict(fallback_paths["summary_json"])
@@ -543,10 +605,26 @@ def load_strategy_memory_hint(
             }
     if not isinstance(memory.get("reporter_analysis_digest"), dict) or not (memory.get("reporter_analysis_digest") or {}):
         memory["reporter_analysis_digest"] = dict(reporter_digest)
-    memory["status"] = "ok" if (memory.get("best_playbooks") or memory.get("worst_playbooks")) else "empty"
+    memory["directional_bias_usable"] = bool(
+        memory.get("best_playbooks") or memory.get("worst_playbooks")
+    )
+    memory["status"] = "ok" if _memory_has_directional_evidence(memory) else "empty"
     memory["day"] = target_day
     if requested_day and requested_day != target_day:
         memory["requested_day"] = requested_day
         memory["resolved_day"] = target_day
+        try:
+            from datetime import date
+
+            memory["age_days"] = max(
+                0,
+                (date.fromisoformat(requested_day) - date.fromisoformat(target_day)).days,
+            )
+        except Exception:
+            memory["age_days"] = None
+        memory["freshness_status"] = "stale"
+    else:
+        memory["age_days"] = 0
+        memory["freshness_status"] = "current"
     memory.setdefault("advisory_only", True)
     return memory

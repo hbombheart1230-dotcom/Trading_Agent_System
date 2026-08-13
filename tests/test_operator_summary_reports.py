@@ -1124,7 +1124,9 @@ def test_operator_daily_summary_syncs_strategy_memory_artifacts(tmp_path: Path) 
     memory = json.loads(memory_path.read_text(encoding="utf-8"))
     assert memory["day"] == day
     assert memory["status"] == "ok"
-    assert memory["worst_playbooks"] == ["defensive"]
+    assert memory["worst_playbooks"] == []
+    assert memory["directional_bias_usable"] is False
+    assert memory["playbook_performance_snapshot"]["defensive"]["usage_count"] == 1
     assert "entry_exit:breakout->peak_drawdown" in (
         memory.get("pattern_performance_snapshot", {}).get("problem_patterns") or []
     )

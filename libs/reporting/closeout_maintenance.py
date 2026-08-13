@@ -269,6 +269,55 @@ def run_closeout_maintenance(
         }
 
     try:
+        from libs.research.rank1_feature_mart.pipeline import run as run_rank1_feature_mart
+        from libs.research.rank1_feature_mart.prospective import build_prospective_shadow
+        from libs.research.rank1_feature_mart.activation_shadow import (
+            build_fresh_change_activation_shadow,
+        )
+
+        project_root = Path(reports_root).resolve().parent
+        mart = run_rank1_feature_mart(project_root=project_root)
+        fixed_shadow = build_prospective_shadow(
+            day=normalized_day,
+            reports_root=Path(reports_root),
+            mart_root=Path(str(mart["output_root"])),
+        )
+        activation_shadow = build_fresh_change_activation_shadow(
+            day=normalized_day,
+            reports_root=Path(reports_root),
+            mart_root=Path(str(mart["output_root"])),
+        )
+        out["steps"]["rank1_fixed_candidate_shadow"] = {
+            "ok": bool(fixed_shadow.get("ok")),
+            "day_status": fixed_shadow.get("day_status"),
+            "valid_day_count": fixed_shadow.get("valid_day_count"),
+            "report_json_path": fixed_shadow.get("daily_json_path"),
+            "report_md_path": fixed_shadow.get("daily_md_path"),
+            "cumulative_json_path": fixed_shadow.get("cumulative_json_path"),
+            "cumulative_md_path": fixed_shadow.get("cumulative_md_path"),
+            "strategy_alignment_json_path": (
+                mart.get("strategy_alignment") or {}
+            ).get("cumulative_json_path"),
+            "strategy_alignment_md_path": (
+                mart.get("strategy_alignment") or {}
+            ).get("cumulative_md_path"),
+        }
+        out["steps"]["rank1_fresh_change_activation_shadow"] = {
+            "ok": bool(activation_shadow.get("ok")),
+            "day_status": activation_shadow.get("day_status"),
+            "valid_day_count": activation_shadow.get("valid_day_count"),
+            "decision_status": activation_shadow.get("decision_status"),
+            "report_json_path": activation_shadow.get("daily_json_path"),
+            "cumulative_json_path": activation_shadow.get("cumulative_json_path"),
+            "cumulative_md_path": activation_shadow.get("cumulative_md_path"),
+        }
+    except Exception as exc:
+        out["steps"]["rank1_fixed_candidate_shadow"] = {
+            "ok": False,
+            "error": str(exc),
+        }
+
+    try:
         from libs.reporting.evaluation.same_symbol_sequences import (
             build_same_symbol_sequence_artifacts,
         )

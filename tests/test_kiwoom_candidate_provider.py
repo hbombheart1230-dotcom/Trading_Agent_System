@@ -414,3 +414,81 @@ def test_build_kiwoom_candidate_rows_preserves_rank_row_name_metadata(monkeypatc
     assert by_symbol["233740"]["name"] == "KODEX 코스닥150레버리지"
     assert by_symbol["233740"]["stk_nm"] == "KODEX 코스닥150레버리지"
     assert by_symbol["233740"]["mkt_tp_nm"] == "ETF"
+
+
+def test_build_kiwoom_candidate_rows_preserves_ka10027_observation_without_rank_change(
+    monkeypatch,
+):
+    from libs.strategies.candidates import kiwoom_candidate_provider as provider
+
+    raw_rows = [
+        {
+            "symbol": "001210",
+            "stk_cls": "0",
+            "stk_cd": "001210",
+            "stk_nm": "금호전기",
+            "cur_prc": "+1,500",
+            "pred_pre_sig": "2",
+            "pred_pre": "+120",
+            "flu_rt": "+8.70",
+            "sel_req": "1,200",
+            "buy_req": "2,400",
+            "now_trde_qty": "3,500,000",
+            "cntr_str": "145.60",
+            "cnt": "4",
+        },
+        {"symbol": "005930", "stk_cd": "005930", "flu_rt": "+3.20"},
+    ]
+    monkeypatch.setattr(provider, "get_top_change_rate_rows", lambda state, topk: raw_rows)
+
+    rows, _meta = build_kiwoom_candidate_rows(
+        state={"now_epoch": 1786493100, "ts": "2026-08-12T00:05:00+00:00"},
+        top_pool=2,
+        condition_limit=1,
+        include_top_value=False,
+        include_top_volume=False,
+        include_change_rate=True,
+        include_condition_search=False,
+        include_sector_candidates=False,
+        include_watchlist=False,
+    )
+
+    assert [row["symbol"] for row in rows] == ["001210", "005930"]
+    observation = rows[0]["source_observations"]["top_change_rate"]
+    assert observation["api_id"] == "ka10027"
+    assert observation["behavior_effect"] == "observation_only"
+    assert observation["source_rank"] == 1
+    assert observation["captured_epoch"] == 1786493100
+    assert observation["captured_at"] == "2026-08-12T00:05:00+00:00"
+    assert observation["raw_fields"]["flu_rt"] == "+8.70"
+    assert observation["normalized"]["current_price"] == 1500.0
+    assert observation["normalized"]["change_rate_pct"] == 8.7
+    assert observation["normalized"]["execution_strength"] == 145.6
+    assert observation["normalized"]["rank_entry_count"] == 4
+
+
+def test_top_change_observation_uses_capture_time_when_state_clock_is_missing(
+    monkeypatch,
+):
+    from libs.strategies.candidates import kiwoom_candidate_provider as provider
+
+    monkeypatch.setattr(
+        provider,
+        "get_top_change_rate_rows",
+        lambda state, topk: [{"symbol": "001210", "flu_rt": "+6.47"}],
+    )
+    rows, _meta = build_kiwoom_candidate_rows(
+        state={},
+        top_pool=1,
+        condition_limit=1,
+        include_top_value=False,
+        include_top_volume=False,
+        include_change_rate=True,
+        include_condition_search=False,
+        include_sector_candidates=False,
+        include_watchlist=False,
+    )
+
+    observation = rows[0]["source_observations"]["top_change_rate"]
+    assert int(observation["captured_epoch"] or 0) > 0
+    assert str(observation["captured_at"] or "").endswith("+00:00")

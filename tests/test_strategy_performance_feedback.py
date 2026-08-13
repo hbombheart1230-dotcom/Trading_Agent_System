@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from graphs.nodes.strategist_node import strategist_node
+from graphs.nodes.strategist_node import _load_strategy_memory_advisory, strategist_node
 from libs.performance.performance_aggregator import (
     aggregate_performance_from_reports_root,
     load_lifecycle_bundles,
@@ -492,4 +492,78 @@ def test_load_strategy_memory_hint_falls_back_to_latest_available_day(tmp_path: 
     assert loaded.get("day") == latest_day
     assert loaded.get("requested_day") == missing_day
     assert loaded.get("resolved_day") == latest_day
+    assert loaded.get("age_days") == 1
+    assert loaded.get("freshness_status") == "stale"
     assert "breakout" in list(loaded.get("best_playbooks") or [])
+
+
+def test_strategy_memory_requires_repeated_evidence_and_never_overlaps_buckets() -> None:
+    memory = build_strategy_memory(
+        {},
+        {
+            "playbooks": {
+                "single_win": {
+                    "usage_count": 1,
+                    "win_rate": 1.0,
+                    "avg_return": 1.2,
+                    "stability_score": 0.9,
+                },
+                "confirmed_win": {
+                    "usage_count": 3,
+                    "win_rate": 0.67,
+                    "avg_return": 0.4,
+                    "stability_score": 0.7,
+                },
+                "confirmed_loss": {
+                    "usage_count": 3,
+                    "win_rate": 0.33,
+                    "avg_return": -0.5,
+                    "stability_score": 0.2,
+                },
+            }
+        },
+    )
+
+    assert memory["best_playbooks"] == ["confirmed_win"]
+    assert memory["worst_playbooks"] == ["confirmed_loss"]
+    assert not set(memory["best_playbooks"]).intersection(memory["worst_playbooks"])
+
+
+def test_stale_daily_memory_remains_audit_only_without_directional_bias(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    memory_dir = reports_root / "performance" / "2026-08-01"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "strategy_memory.json").write_text(
+        json.dumps(
+            {
+                "day": "2026-08-01",
+                "status": "ok",
+                "best_playbooks": ["opening_momentum"],
+                "worst_playbooks": ["late_chase"],
+                "recent_failures": ["playbook:late_chase"],
+                "recent_success_patterns": ["playbook:opening_momentum"],
+                "playbook_performance_snapshot": {
+                    "opening_momentum": {
+                        "usage_count": 4,
+                        "win_rate": 0.75,
+                        "avg_return": 0.6,
+                    }
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    memory = _load_strategy_memory_advisory(
+        {"reports_root": str(reports_root), "day": "2026-08-13"},
+        {"use_strategy_performance_memory": True, "strategy_performance_auto_build": False},
+    )
+
+    assert memory["status"] == "stale"
+    assert memory["resolved_day"] == "2026-08-01"
+    assert memory["age_days"] == 12
+    assert memory["directional_bias_usable"] is False
+    assert memory["best_playbooks"] == []
+    assert memory["worst_playbooks"] == []

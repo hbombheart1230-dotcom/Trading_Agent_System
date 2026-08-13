@@ -289,6 +289,33 @@ def test_symbol_memory_packet_blocks_override_when_memory_is_stale() -> None:
     assert "symbol_memory_gate:stale_symbol_memory" in policy["rationale"]
 
 
+def test_symbol_memory_packet_rejects_memory_from_a_different_refresh_target() -> None:
+    packet = build_symbol_memory_packet(
+        state={
+            "selected": {"symbol": "233740"},
+            "selected_symbol_memory": {
+                "symbol": "233740",
+                "trade_count": 12,
+                "closed_trade_count": 10,
+                "dominant_playbook": "opening_momentum",
+                "recent_success_pattern": [{"playbook": "opening_momentum", "count": 4}],
+                "data_quality": {"data_source": "symbol_memory", "unknown_fields_ratio": 0.0},
+            },
+            "commander_decision": {
+                "strategist_refresh_context": {"selected_symbol": "001210"}
+            },
+        }
+    )
+
+    assert packet["status"] == "mismatch"
+    assert packet["active"] is False
+    assert packet["expected_symbol"] == "001210"
+    assert packet["memory_symbol"] == "233740"
+    assert packet["symbol_consistent"] is False
+    assert packet["override_eligible"] is False
+    assert packet["override_gate_reason"] == "symbol_memory_mismatch"
+
+
 def test_commander_memory_policy_can_disable_all_memory_usage_by_env(monkeypatch) -> None:
     monkeypatch.setenv("COMMANDER_MEMORY_USAGE_DISABLED", "true")
 

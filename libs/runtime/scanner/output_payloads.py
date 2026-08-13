@@ -39,6 +39,7 @@ def build_candidate_ranking_table_payload(ranking_table: List[Dict[str, Any]]) -
             "symbol": str(row.get("symbol") or ""),
             "sources": list(row.get("sources") or [])[:8],
             "source_scores": dict(row.get("source_scores") or {}),
+            "source_observations": dict(row.get("source_observations") or {}),
             "rank_score": _to_float(row.get("rank_score")),
             "universe_score": _to_float(row.get("universe_score")),
             "why": str(row.get("why") or ""),
