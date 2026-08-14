@@ -74,7 +74,7 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
         {
             "execution": {"intents_created": 6, "intents_blocked": 4},
             "broker_api": {"api_429_rate": 0.10},
-            "strategist_llm": {"success_rate": 0.80},
+            "strategist_llm": {"total": 5, "success_rate": 0.80},
             "commander_resilience": {"total": 1},
         },
     )
@@ -180,6 +180,7 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert obj["chart_structure_decision_hint_executive_summary"]["applied_examples"][0]["run_id"] == "r3"
     assert any("Policy surface healthy: schema 0.82, invalid spec 0.01" in line for line in obj["executive_summary"]["summary_lines"])
     assert any("Chart structure guard active: applied 1 times" in line for line in obj["executive_summary"]["summary_lines"])
+    assert any("LLM success_rate=80.00% (5 calls)" in line for line in obj["executive_summary"]["summary_lines"])
     assert Path(obj["report_json_path"]).exists()
     assert Path(obj["report_md_path"]).exists()
     assert Path(obj["report_json_path"]) == tmp_path / "operator_summary" / "daily" / day / "operator_summary.json"

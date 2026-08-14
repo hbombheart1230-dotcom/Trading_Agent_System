@@ -140,8 +140,6 @@ def _stage_item(key: str, rows: list[dict[str, Any]]) -> LlmStageUsage:
 
 
 def _role_state(role: str, count: int, successful: int) -> str:
-    if role == "trade_report":
-        return "ROUTING_WARNING"
     if count and successful == count:
         return "ACTIVE"
     return "DEGRADED" if count else "CONFIGURED"

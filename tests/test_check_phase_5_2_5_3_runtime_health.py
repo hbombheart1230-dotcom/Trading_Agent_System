@@ -535,6 +535,79 @@ def test_runtime_health_flags_expected_suspicious_patterns(tmp_path: Path) -> No
     assert "=== Chart Structure Decision Hint Summary (2026-04-03) ===" in chart_summary_text
 
 
+def test_runtime_health_restores_policy_surfaces_from_canonical_monitor(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    events_path = tmp_path / "data" / "logs" / "events.jsonl"
+    day = "2026-04-03"
+    run_dir = reports_root / "canonical" / day / "run-persisted-only"
+    _write_json(
+        run_dir / "monitor.json",
+        {
+            "day": day,
+            "run_id": "run-persisted-only",
+            "symbol": "005930",
+            "decision": "NOOP",
+            "entry_reason": "volume_confirmation_missing",
+            "received_policy_source": "commander_applied_policy",
+            "effective_policy": {
+                "entry_style": "pullback",
+                "required_checks": ["reclaim_gate_ok"],
+                "preferred_checks": ["volume_ok"],
+            },
+            "signal_snapshot": {
+                "entry_evaluated": True,
+                "entry_grouped_logic_trace": {
+                    "reclaim_gate_ok": True,
+                    "breakout_path_ok": False,
+                    "confidence_gate_ok": True,
+                    "extension_ok": True,
+                    "volume_confirmation": {"volume_ok": False},
+                    "policy_aware_gating_available": True,
+                    "policy_aware_gating_applied": False,
+                    "policy_aware_gating_hints": [],
+                    "policy_aware_gating_blocked_by_required": ["volume_ok"],
+                    "chart_structure_decision_hint_available": True,
+                    "chart_structure_decision_hint_applied": False,
+                    "chart_structure_decision_hint_mode": "none",
+                    "chart_structure_decision_hint_blocking_features": [],
+                },
+            },
+            "policy_interpreter_trace": {
+                "available": True,
+                "policy_available": True,
+                "entry_style": "pullback",
+                "check_status": {
+                    "required": [{"name": "reclaim_gate_ok", "status": "pass"}],
+                    "preferred": [{"name": "volume_ok", "status": "fail"}],
+                    "relaxable": [],
+                    "blockers": [],
+                },
+            },
+            "policy_alignment_summary": {
+                "alignment_state": "partial",
+                "primary_blocker": "volume_ok",
+                "secondary_blockers": [],
+            },
+        },
+    )
+
+    out = mod.build_phase_5_2_5_3_runtime_health(
+        reports_root=reports_root,
+        event_log_path=events_path,
+        day=day,
+        limit=10,
+    )
+
+    assert out["run_count"] == 1
+    assert out["structure_presence"]["entry_policy_contract"]["present_count"] == 1
+    assert out["structure_presence"]["signal_evidence"]["present_count"] == 1
+    assert out["policy_schema_available_counts"]["true"] == 1
+    assert out["policy_surface_quality_summary"]["run_count"] == 1
+    assert out["policy_surface_quality_summary"]["schema_available_rate"] == 1.0
+    assert out["policy_surface_quality_summary"]["normalized_policy_rate"] == 1.0
+    assert out["chart_structure_decision_hint_summary"]["available_run_count"] == 1
+
+
 def test_runtime_health_exposes_reclaim_wait_and_deadness_reasons(tmp_path: Path) -> None:
     reports_root = tmp_path / "reports"
     events_path = tmp_path / "data" / "logs" / "events.jsonl"

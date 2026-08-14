@@ -33,6 +33,24 @@ Every new evaluation must show both bases without mixing them:
 
 Closed work is not extended, retuned, or renamed into a new phase.
 
+## Controlled Adoption: Opening Rank-1 Probe
+
+The later cumulative sample through 2026-08-14 does not reverse the rejection of
+broad opening Rank-1 entry. It authorizes one separate, setup-constrained mock
+experiment defined in `opening_rank1_controlled_probe_2026-08-14.md`.
+
+- Window: five full trading days from 2026-08-17; no automatic extension.
+- Candidate: Scanner Rank-1 only.
+- Setup: `DIRECTIONAL_BREADTH` or `FRESH_CHANGE_ACTIVATION` only.
+- Time: 09:00 through 09:20 KST.
+- Size: 25% of normal quantity, maximum one submitted probe per day.
+- Safety: cost, chart hard floor, position/order, closeout, risk-off, and all exit
+  controls remain authoritative.
+- Status: experimental controlled adoption, not official policy.
+
+This is the only active behavior experiment. The research priorities below remain
+observation-only and cannot trigger another concurrent behavior patch.
+
 ## Active Priority 1: Latent Reactivation Fresh Trigger
 
 Purpose: determine whether a failed Rank-1 symbol can be captured later from a new,

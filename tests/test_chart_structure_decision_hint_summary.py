@@ -118,3 +118,28 @@ def test_chart_structure_decision_hint_executive_summary_builds_compact_headline
     assert out["top_blocking_features"] == ["failed_breakout", "momentum_follow_through"]
     assert "applied 2 times" in out["headline"]
     assert build_chart_structure_decision_hint_executive_line(summary) == out["headline"]
+
+
+def test_chart_structure_summary_treats_noop_as_a_blocked_outcome() -> None:
+    out = build_chart_structure_decision_hint_summary(
+        [
+            {
+                "run_id": "run-noop",
+                "legacy_entry_decision": "BUY",
+                "legacy_entry_reason": "pullback_reversal_structure_guard_blocked",
+                "final_decision": "NOOP",
+                "reason": "pullback_reversal_structure_guard_blocked",
+                "chart_structure_decision_hint": {
+                    "available": True,
+                    "applied": True,
+                    "mode": "block",
+                    "entry_style": "pullback",
+                    "blocking_features": ["support_holding=lost"],
+                },
+            }
+        ]
+    )
+
+    assert "applied_without_wait_decision_detected" not in out["notes"]
+    executive = build_chart_structure_decision_hint_executive_summary(out)
+    assert executive["status"] == "active"

@@ -438,9 +438,11 @@ def _story_explanation(story: Dict[str, Any]) -> Dict[str, str]:
 
 def _canonical_report_root(report_dir: Path) -> Path:
     if report_dir.name == "operator_summary":
-        return report_dir
-    if report_dir.name == "daily" and report_dir.parent.name == "operator_summary":
         return report_dir.parent
+    if report_dir.name == "daily" and report_dir.parent.name == "operator_summary":
+        return report_dir.parent.parent
+    if report_dir.parent.name == "daily" and report_dir.parent.parent.name == "operator_summary":
+        return report_dir.parent.parent.parent
     if report_dir.name in {"daily", "metrics"}:
         return report_dir.parent
     if report_dir.name in {"run_cards", "decision_story"}:
@@ -1100,7 +1102,9 @@ def build_operator_daily_summary_payload(
     top_block_reason = blocked_reason_counts.most_common(1)
     run_total = len({str(r.get("run_id") or "").strip() for r in day_rows if str(r.get("run_id") or "").strip()})
     blocked_total = int(sum(int(v) for v in blocked_reason_counts.values()))
-    llm_success_rate = _safe_float((metrics.get("strategist_llm") if isinstance(metrics.get("strategist_llm"), dict) else {}).get("success_rate"), 0.0)
+    llm_metrics = metrics.get("strategist_llm") if isinstance(metrics.get("strategist_llm"), dict) else {}
+    llm_total = _safe_int(llm_metrics.get("total"), 0)
+    llm_success_rate = _safe_float(llm_metrics.get("success_rate"), 0.0)
 
     for story in run_stories:
         action = str(story.get("action") or "").strip().upper()
@@ -1126,10 +1130,15 @@ def build_operator_daily_summary_payload(
             if action:
                 action_counts[action] += 1
 
+    llm_summary = (
+        f"LLM success_rate={llm_success_rate:.2%} ({llm_total} calls)"
+        if llm_total > 0
+        else "LLM success_rate=not_measured (0 metric events)"
+    )
     summary_lines = [
         f"{_health_badge(health)} runs={run_total}, executions={executions_total} (ok={executions_ok}, fail={executions_fail}), blocks={blocked_total}.",
         f"Top guard block: {_humanize_reason(top_block_reason[0][0])} ({top_block_reason[0][1]})" if top_block_reason else "Top guard block: none",
-        f"LLM success_rate={llm_success_rate:.2%}, interventions={operator_intervention_total}, cooldowns={cooldown_transition_total}.",
+        f"{llm_summary}, interventions={operator_intervention_total}, cooldowns={cooldown_transition_total}.",
     ]
     route_selected_total = dict(route_summary.get("route_selected_total") or {})
     if route_selected_total:

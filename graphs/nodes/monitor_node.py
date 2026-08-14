@@ -34,6 +34,12 @@ from libs.runtime.monitor_candidate_cascade import build_entry_candidate_cascade
 from libs.runtime.monitor_runner_up_quality import evaluate_runner_up_entry_quality
 from libs.runtime.commander_memory_application_trace import build_monitor_commander_memory_application_trace
 from libs.runtime.monitor_entry_blockers import evaluate_entry_guard
+from libs.runtime.opening_rank1_controlled_probe import (
+    evaluate_opening_rank1_controlled_probe,
+    load_probe_submissions,
+    record_probe_submission,
+    session_clock as _opening_probe_session_clock,
+)
 from libs.runtime.monitor_entry_quality import (
     classify_vwap_reclaim_pullback_candidate as _classify_vwap_reclaim_pullback_candidate,
     evaluate_entry_quality_gate as _evaluate_entry_quality_gate,
@@ -346,6 +352,7 @@ def _evaluate_monitor_entry_candidate(
     entry_cooldown_map: Dict[str, Any],
     now_epoch_for_entry: int,
     prefer_fresh_minute_runner: bool = False,
+    allow_opening_rank1_controlled_probe: bool = False,
 ) -> Dict[str, Any]:
     symbol = _norm_symbol(selected.get("symbol"))
     qty = 1
@@ -800,6 +807,9 @@ def _evaluate_monitor_entry_candidate(
     entry_info = dict(entry_guard.get("entry_info") or entry_info)
     entry_guard_blocked = bool(entry_guard.get("entry_guard_blocked"))
     entry_guard_reason = str(entry_guard.get("entry_guard_reason") or "")
+    base_entry_guard_blocked = bool(entry_guard_blocked)
+    base_entry_guard_reason = str(entry_guard_reason)
+    original_wait_reason = str(entry_info.get("reason") or "")
     buy_blocked_open_position = bool(entry_guard.get("buy_blocked_open_position"))
     buy_blocked_closeout_window = bool(entry_guard.get("buy_blocked_closeout_window"))
     buy_blocked_same_symbol = bool(entry_guard.get("buy_blocked_same_symbol"))
@@ -846,6 +856,61 @@ def _evaluate_monitor_entry_candidate(
         entry_info["guard_reason"] = entry_guard_reason
         entry_info["reason"] = entry_guard_reason
         entry_info["primary_failure_axis"] = "risk_off_defensive_observe_policy"
+
+    probe_day, _probe_minutes = _opening_probe_session_clock(now_epoch_for_entry)
+    prior_probe_rows = load_probe_submissions(probe_day)
+    last_trade_day = (
+        _opening_probe_session_clock(last_trade_epoch)[0]
+        if last_trade_epoch > 0
+        else ""
+    )
+    same_symbol_reentry_detected = bool(
+        last_trade_side == "SELL"
+        and last_trade_symbol == symbol
+        and last_trade_day == probe_day
+    )
+    opening_rank1_controlled_probe = evaluate_opening_rank1_controlled_probe(
+        selected=selected,
+        entry_info=entry_info,
+        original_wait_reason=original_wait_reason,
+        base_entry_guard_blocked=base_entry_guard_blocked,
+        base_entry_guard_reason=base_entry_guard_reason,
+        entry_quality_gate=entry_quality_gate,
+        entry_cost_filter=entry_cost_filter,
+        quant_entry_enforcement=quant_entry_enforcement,
+        risk_off_policy=risk_off_defensive_policy,
+        now_epoch=now_epoch_for_entry,
+        normal_qty=qty,
+        prior_probe_count=len(prior_probe_rows),
+        is_top_pick=bool(allow_opening_rank1_controlled_probe),
+        same_symbol_reentry_detected=same_symbol_reentry_detected,
+        broker_mode=str(os.getenv("KIWOOM_MODE") or ""),
+    )
+    if bool(opening_rank1_controlled_probe.get("applied")):
+        reservation = record_probe_submission(
+            opening_rank1_controlled_probe,
+            run_id=str(state.get("run_id") or ""),
+            recorded_at=str(state.get("ts") or now_epoch_for_entry),
+        )
+        opening_rank1_controlled_probe["reservation"] = dict(reservation)
+        if bool(reservation.get("recorded")):
+            qty = int(opening_rank1_controlled_probe.get("probe_qty") or 0)
+            entry_guard_blocked = False
+            entry_guard_reason = ""
+            entry_info["triggered"] = True
+            entry_info["guard_blocked"] = False
+            entry_info["guard_reason"] = ""
+            entry_info["reason"] = "opening_rank1_controlled_probe"
+            entry_info["entry_lane"] = "opening_rank1_controlled_probe"
+            sizing_info["qty"] = int(qty)
+            sizing_info["opening_rank1_controlled_probe_applied"] = True
+        else:
+            opening_rank1_controlled_probe["applied"] = False
+            opening_rank1_controlled_probe["reason"] = str(
+                reservation.get("reason") or "probe_reservation_failed"
+            )
+    entry_info["opening_rank1_controlled_probe"] = dict(opening_rank1_controlled_probe)
+    state["opening_rank1_controlled_probe"] = dict(opening_rank1_controlled_probe)
 
     if symbol and qty > 0 and not entry_guard_blocked and bool(entry_info.get("triggered")):
         entry_info["intent_submitted"] = True
@@ -1146,6 +1211,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             entry_cooldown_map=entry_cooldown_map,
             now_epoch_for_entry=now_epoch_for_entry,
             prefer_fresh_minute_runner=False,
+            allow_opening_rank1_controlled_probe=True,
         )
         state = top_pick_result.get("state") if isinstance(top_pick_result.get("state"), dict) else state
         selected = dict(top_pick_result.get("selected") or selected)
@@ -1219,6 +1285,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     entry_cooldown_map=entry_cooldown_map,
                     now_epoch_for_entry=now_epoch_for_entry,
                     prefer_fresh_minute_runner=True,
+                    allow_opening_rank1_controlled_probe=False,
                 )
                 state = runner_result.get("state") if isinstance(runner_result.get("state"), dict) else state
                 entry_cooldown_map = dict(runner_result.get("entry_cooldown_map") or entry_cooldown_map)
@@ -1435,6 +1502,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "market_rail_translation": dict(entry_info.get("market_rail_translation") or {}),
                     "risk_off_defensive_observe_policy": dict(
                         entry_info.get("risk_off_defensive_observe_policy") or {}
+                    ),
+                    "opening_rank1_controlled_probe": dict(
+                        entry_info.get("opening_rank1_controlled_probe") or {}
                     ),
                 },
             }

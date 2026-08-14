@@ -188,12 +188,13 @@ class RealExecutor:
         if self.s.kiwoom_app_secret:
             headers.setdefault("appsecret", self.s.kiwoom_app_secret)
 
+        json_body = req.body if req.body or str(req.method or "").upper() == "POST" else None
         url, resp = self.http.request(
             req.method,
             req.path,
             headers=headers,
             params=req.query,
-            json_body=req.body if req.body else None,
+            json_body=json_body,
             dry_run=False,
         )
         assert resp is not None
@@ -206,7 +207,7 @@ class RealExecutor:
                 req.path,
                 headers=headers,
                 params=req.query,
-                json_body=req.body if req.body else None,
+                json_body=json_body,
                 dry_run=False,
             )
             assert resp is not None

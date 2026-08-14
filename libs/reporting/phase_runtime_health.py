@@ -218,6 +218,142 @@ def _get_surface_from_event_payloads(event_payloads: Mapping[str, Dict[str, Any]
     return {}
 
 
+def _persisted_grouped_logic_trace(monitor: Mapping[str, Any]) -> Dict[str, Any]:
+    evaluation = monitor.get("monitor_evaluation") if isinstance(monitor.get("monitor_evaluation"), Mapping) else {}
+    signal_snapshot = monitor.get("signal_snapshot") if isinstance(monitor.get("signal_snapshot"), Mapping) else {}
+    return _pick_first_dict(
+        monitor.get("entry_grouped_logic_trace"),
+        evaluation.get("entry_grouped_logic_trace"),
+        signal_snapshot.get("entry_grouped_logic_trace"),
+    )
+
+
+def _persisted_monitor_surfaces(monitor: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    trace = _pick_first_dict(monitor.get("policy_interpreter_trace"))
+    alignment = _pick_first_dict(monitor.get("policy_alignment_summary"))
+    grouped = _persisted_grouped_logic_trace(monitor)
+    signal_snapshot = monitor.get("signal_snapshot") if isinstance(monitor.get("signal_snapshot"), Mapping) else {}
+
+    selected_policy = _pick_first_dict(
+        monitor.get("effective_policy"),
+        monitor.get("applied_policy"),
+        monitor.get("received_policy"),
+    )
+    entry_style = str(trace.get("entry_style") or "").strip().lower()
+    policy_for_schema = dict(selected_policy)
+    if entry_style and not policy_for_schema.get("entry_style"):
+        policy_for_schema["entry_style"] = entry_style
+    check_status = trace.get("check_status") if isinstance(trace.get("check_status"), Mapping) else {}
+    for field_name, trace_name in (
+        ("required_checks", "required"),
+        ("preferred_checks", "preferred"),
+        ("relaxable_checks", "relaxable"),
+        ("blockers", "blockers"),
+    ):
+        if policy_for_schema.get(field_name) is not None:
+            continue
+        specs: List[str] = []
+        for row in list(check_status.get(trace_name) or []):
+            if not isinstance(row, Mapping):
+                continue
+            name = str(row.get("name") or "").strip()
+            expected_state = str(row.get("expected_state") or "").strip()
+            spec = f"{name}={expected_state}" if name and expected_state else name
+            if spec and spec not in specs:
+                specs.append(spec)
+        if specs:
+            policy_for_schema[field_name] = specs
+    selected_policy_schema = normalize_monitor_entry_policy_schema(policy_for_schema)
+    invalid_specs = list(selected_policy_schema.get("invalid_policy_specs") or [])
+    normalized_count = sum(
+        len(_safe_list_of_str(selected_policy_schema.get(key), limit=64))
+        for key in ("required_checks", "preferred_checks", "relaxable_checks", "blockers")
+    )
+    selected_source = str(
+        monitor.get("received_policy_source")
+        or monitor.get("effective_policy_source")
+        or monitor.get("policy_source")
+        or "persisted_monitor_policy"
+    ).strip()
+    contract = {}
+    if selected_policy or bool(selected_policy_schema.get("available")):
+        contract = {
+            "selected_source": selected_source,
+            "selected_policy": selected_policy,
+            "selected_policy_schema": selected_policy_schema,
+            "selected_policy_spec_health": {
+                "schema_available": bool(selected_policy_schema.get("available")),
+                "normalized_policy_spec_count": normalized_count,
+                "invalid_policy_spec_count": len(invalid_specs),
+                "spec_validation_notes": list(selected_policy_schema.get("spec_validation_notes") or []),
+                "explicit_fields_used": list(selected_policy_schema.get("explicit_fields_used") or []),
+                "raw_keys": list(selected_policy_schema.get("raw_keys") or []),
+            },
+            "source_priority": [selected_source],
+        }
+
+    interpretation = {}
+    if contract or trace:
+        interpretation = {
+            "interpretation_basis": "persisted_monitor_policy",
+            "policy_schema_available": bool(selected_policy_schema.get("available") or trace.get("policy_available")),
+            "policy_schema_version": str(selected_policy_schema.get("schema_version") or ""),
+            "entry_style": entry_style or selected_policy_schema.get("entry_style"),
+        }
+
+    volume_confirmation = (
+        grouped.get("volume_confirmation")
+        if isinstance(grouped.get("volume_confirmation"), Mapping)
+        else {}
+    )
+    checks = {
+        "reclaim_gate_ok": grouped.get("reclaim_gate_ok"),
+        "breakout_path_ok": grouped.get("breakout_path_ok"),
+        "confidence_ok": grouped.get("confidence_gate_ok"),
+        "volume_ok": volume_confirmation.get("volume_ok"),
+        "extension_ok": grouped.get("extension_ok"),
+    }
+    checks = {key: value for key, value in checks.items() if isinstance(value, bool)}
+    evidence = {"checks": checks, "derived": {}} if checks else {}
+
+    gating = {}
+    if grouped:
+        gating = {
+            "available": bool(grouped.get("policy_aware_gating_available")),
+            "applied": bool(grouped.get("policy_aware_gating_applied")),
+            "applied_hints": list(grouped.get("policy_aware_gating_hints") or []),
+            "required_failures": list(grouped.get("policy_aware_gating_required_failures") or []),
+            "relaxations_considered": list(grouped.get("policy_aware_gating_relaxations_considered") or []),
+            "relaxations_applied": list(grouped.get("policy_aware_gating_relaxations_applied") or []),
+            "blocked_by_required": list(grouped.get("policy_aware_gating_blocked_by_required") or []),
+            "notes": ["restored_from_canonical_monitor"],
+        }
+
+    chart_hint = {}
+    if grouped and bool(grouped.get("chart_structure_decision_hint_available")):
+        chart_hint = {
+            "available": True,
+            "applied": bool(grouped.get("chart_structure_decision_hint_applied")),
+            "mode": str(grouped.get("chart_structure_decision_hint_mode") or "none"),
+            "entry_style": entry_style,
+            "considered_features": [],
+            "matched_features": [],
+            "blocking_features": list(grouped.get("chart_structure_decision_hint_blocking_features") or []),
+            "notes": ["restored_from_canonical_monitor"],
+        }
+
+    return {
+        "entry_policy_contract": contract,
+        "policy_interpretation": interpretation,
+        "signal_evidence": evidence,
+        "policy_interpreter_trace": trace,
+        "policy_alignment_summary": alignment,
+        "policy_aware_gating": gating,
+        "chart_structure_decision_hint": chart_hint,
+        "entry_evaluated": bool(signal_snapshot.get("entry_evaluated")),
+    }
+
+
 def _failed_check_names(rows: Any, *, fail_statuses: Sequence[str]) -> List[str]:
     out: List[str] = []
     if not isinstance(rows, list):
@@ -563,8 +699,12 @@ def _extract_run_health(run_dir: Path, event_payloads: Mapping[str, Dict[str, An
         or str(monitor.get("decision_summary") or "").strip()
     )
 
+    persisted_surfaces = _persisted_monitor_surfaces(monitor)
     surfaces = {
-        key: _get_surface_from_event_payloads(event_payloads, key)
+        key: _pick_first_dict(
+            _get_surface_from_event_payloads(event_payloads, key),
+            persisted_surfaces.get(key),
+        )
         for key in STRUCTURE_KEYS
     }
     contract = surfaces["entry_policy_contract"]
@@ -573,7 +713,10 @@ def _extract_run_health(run_dir: Path, event_payloads: Mapping[str, Dict[str, An
     trace = surfaces["policy_interpreter_trace"]
     alignment = surfaces["policy_alignment_summary"]
     gating = surfaces["policy_aware_gating"]
-    chart_structure_decision_hint = _get_surface_from_event_payloads(event_payloads, "chart_structure_decision_hint")
+    chart_structure_decision_hint = _pick_first_dict(
+        _get_surface_from_event_payloads(event_payloads, "chart_structure_decision_hint"),
+        persisted_surfaces.get("chart_structure_decision_hint"),
+    )
     selected_policy_schema = (
         dict(contract.get("selected_policy_schema") or {})
         if isinstance(contract.get("selected_policy_schema"), Mapping)
@@ -632,8 +775,17 @@ def _extract_run_health(run_dir: Path, event_payloads: Mapping[str, Dict[str, An
     blockers_active = _failed_check_names(((trace.get("check_status") or {}) if isinstance(trace.get("check_status"), Mapping) else {}).get("blockers"), fail_statuses=("active",))
     evidence_checks = evidence.get("checks") if isinstance(evidence.get("checks"), Mapping) else {}
     evidence_derived = evidence.get("derived") if isinstance(evidence.get("derived"), Mapping) else {}
-    legacy_entry_decision = str(_pick_first_value_from_event_payloads(event_payloads, "legacy_entry_decision") or "").strip().upper() or None
-    legacy_entry_reason = str(_pick_first_value_from_event_payloads(event_payloads, "legacy_entry_reason", "entry_reason") or "").strip() or None
+    legacy_entry_decision = str(
+        _pick_first_value_from_event_payloads(event_payloads, "legacy_entry_decision")
+        or monitor.get("legacy_entry_decision")
+        or ""
+    ).strip().upper() or None
+    legacy_entry_reason = str(
+        _pick_first_value_from_event_payloads(event_payloads, "legacy_entry_reason", "entry_reason")
+        or monitor.get("legacy_entry_reason")
+        or monitor.get("entry_reason")
+        or ""
+    ).strip() or None
     suspicious = _build_suspicious_flags(
         final_decision=final_decision,
         alignment_summary=alignment,
@@ -648,6 +800,7 @@ def _extract_run_health(run_dir: Path, event_payloads: Mapping[str, Dict[str, An
         "monitor_json_path": str(monitor_json_path),
         "final_decision": final_decision or "UNKNOWN",
         "reason": reason,
+        "policy_evaluable": bool(persisted_surfaces.get("entry_evaluated")) or any(structure_presence.values()),
         "structures": structure_presence,
         "selected_source": selected_source or None,
         "selected_policy_present": bool(selected_policy),
@@ -836,7 +989,9 @@ def build_phase_5_2_5_3_runtime_health(
         "suspicious_runs": suspicious_runs,
         "buy_runs": buy_runs,
         "reclaim_wait_runs": reclaim_wait_runs,
-        "policy_surface_quality_summary": _build_policy_surface_quality_summary(run_rows),
+        "policy_surface_quality_summary": _build_policy_surface_quality_summary(
+            [row for row in run_rows if bool(row.get("policy_evaluable"))]
+        ),
         "runs": run_rows,
     }
     return out

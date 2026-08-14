@@ -18,6 +18,10 @@ _AUTH_FAILURE_TOKENS = (
     "805004",
     "인증에 실패",
 )
+_UNSUPPORTED_TOKENS = (
+    "모의투자에서는 해당업무가 제공되지 않습니다",
+    "RC9000",
+)
 
 
 def _utc_now() -> datetime:
@@ -40,6 +44,32 @@ def _payload_has_auth_failure(payload: object) -> bool:
     return any(token.lower() in lower for token in _AUTH_FAILURE_TOKENS)
 
 
+def _payload_call_result(payload: object) -> tuple[str, str]:
+    if not isinstance(payload, dict) or not payload:
+        return "error", "empty_response_payload"
+
+    message = str(payload.get("message") or payload.get("return_msg") or payload.get("error") or "").strip()
+    if _payload_has_auth_failure(payload):
+        return "error", message or "authentication_failure"
+
+    try:
+        http_status = int(payload.get("status"))
+    except (TypeError, ValueError):
+        http_status = 0
+    if http_status >= 400:
+        return "error", f"http_status={http_status}: {message or 'request_failed'}"
+
+    if "return_code" in payload:
+        return_code = str(payload.get("return_code") or "").strip()
+        if return_code not in {"", "0"}:
+            combined = json.dumps(payload, ensure_ascii=False)
+            if any(token.lower() in combined.lower() for token in _UNSUPPORTED_TOKENS):
+                return "unsupported", f"return_code={return_code}: {message or 'unsupported'}"
+            return "error", f"return_code={return_code}: {message or 'api_error'}"
+
+    return "ok", ""
+
+
 def _snapshot_latest_eligible(snapshot: Dict[str, Any]) -> bool:
     calls = snapshot.get("calls") if isinstance(snapshot.get("calls"), list) else []
     if not calls:
@@ -54,6 +84,39 @@ def _snapshot_latest_eligible(snapshot: Dict[str, Any]) -> bool:
         if isinstance(payload, dict) and str(payload.get("return_code")) == "0":
             saw_success = True
     return saw_success
+
+
+def _day_trade_symbols(payload: object) -> List[str]:
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("tdy_trde_diary")
+    if not isinstance(rows, list):
+        return []
+    symbols: List[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("stk_cd") or "").strip()
+        if symbol.startswith("A") and len(symbol) == 7:
+            symbol = symbol[1:]
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    return symbols
+
+
+def _not_applicable_call(api_id: str, title: str, *, reason: str) -> Dict[str, Any]:
+    now = _utc_now().isoformat(timespec="seconds")
+    return {
+        "api_id": api_id,
+        "title": title,
+        "body": {},
+        "status": "not_applicable",
+        "error": "",
+        "reason": reason,
+        "started_at": now,
+        "finished_at": now,
+        "payload": {},
+    }
 
 
 class KiwoomAccountSnapshotCollector:
@@ -79,8 +142,7 @@ class KiwoomAccountSnapshotCollector:
         try:
             resolved_api_id = require_api(self.catalog, api_id, title)
             payload = self.client.call(resolved_api_id, body)
-            status = "ok"
-            error = ""
+            status, error = _payload_call_result(payload)
         except Exception as exc:
             payload = {}
             status = "error"
@@ -99,9 +161,21 @@ class KiwoomAccountSnapshotCollector:
     def collect(self, *, day: str, trigger: str = "report_generation") -> Dict[str, Any]:
         day_text = str(day or "").strip()
         ymd = _day8(day_text)
+        day_trade_call = self._call(
+            "ka10170",
+            "당일매매일지요청",
+            {"base_dt": ymd, "ottks_tp": "1", "ch_crd_tp": "0"},
+        )
+        detail_title = "당일실현손익상세요청"
+        symbols = _day_trade_symbols(day_trade_call.get("payload"))
+        detail_calls = (
+            [self._call("ka10077", detail_title, {"stk_cd": symbol}) for symbol in symbols]
+            if symbols
+            else [_not_applicable_call("ka10077", detail_title, reason="no_day_trade_symbols")]
+        )
         calls: List[Dict[str, Any]] = [
-            self._call("ka10170", "당일매매일지요청", {"base_dt": ymd, "ottks_tp": "1", "ch_crd_tp": "0"}),
-            self._call("ka10077", "당일실현손익상세요청", {}),
+            day_trade_call,
+            *detail_calls,
             self._call("ka10074", "일자별실현손익요청", {"strt_dt": ymd, "end_dt": ymd}),
             self._call("ka10072", "일자별종목별실현손익요청_일자", {"stk_cd": "", "strt_dt": ymd}),
             self._call("ka10073", "일자별종목별실현손익요청_기간", {"stk_cd": "", "strt_dt": ymd, "end_dt": ymd}),
@@ -150,15 +224,23 @@ class KiwoomAccountSnapshotCollector:
             self._call("kt00003", "추정자산조회요청", {"qry_tp": "0"}),
         ]
         ok_count = sum(1 for call in calls if call.get("status") == "ok")
+        error_count = sum(1 for call in calls if call.get("status") == "error")
+        unsupported_count = sum(1 for call in calls if call.get("status") == "unsupported")
+        not_applicable_count = sum(1 for call in calls if call.get("status") == "not_applicable")
+        api_call_count = len(calls) - not_applicable_count
         return {
             "schema_version": "kiwoom_account_snapshot.v1",
             "day": day_text,
             "trigger": str(trigger or "manual"),
             "generated_at": _utc_now().isoformat(timespec="seconds"),
             "summary": {
-                "api_call_count": len(calls),
+                "call_record_count": len(calls),
+                "api_call_count": api_call_count,
                 "ok_count": ok_count,
-                "error_count": len(calls) - ok_count,
+                "error_count": error_count,
+                "unsupported_count": unsupported_count,
+                "not_applicable_count": not_applicable_count,
+                "non_ok_count": error_count + unsupported_count,
             },
             "calls": calls,
         }

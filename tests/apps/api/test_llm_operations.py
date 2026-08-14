@@ -72,9 +72,9 @@ def test_llm_operations_exposes_observed_and_configured_models(
 
     assert roles["strategist"]["observed_model"] == "deepseek/deepseek-v3.2"
     assert roles["strategist"]["fallback_model"] == "minimax/minimax-m2.5"
-    assert roles["trade_report"]["configured_model"] == "minimax/minimax-m2.5"
-    assert roles["trade_report"]["state"] == "ROUTING_WARNING"
-    assert any("nvidia/nemotron" in issue for issue in payload["issues"])
+    assert roles["trade_report"]["configured_model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
+    assert roles["trade_report"]["state"] == "CONFIGURED"
+    assert not any("TRADE_REPORT_ROUTE_MISMATCH" in issue for issue in payload["issues"])
 
 
 def test_llm_operations_never_returns_prompt_or_response_text(

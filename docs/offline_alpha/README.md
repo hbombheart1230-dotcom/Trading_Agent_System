@@ -14,6 +14,14 @@ Rules:
 
 Current research:
 
+- `opening_rank1_controlled_probe_2026-08-14.md`
+  - starts one mock-only controlled behavior experiment on 2026-08-17
+  - permits only Scanner Rank-1 `DIRECTIONAL_BREADTH` or
+    `FRESH_CHANGE_ACTIVATION` from 09:00 through 09:20
+  - keeps cost, chart hard-floor, position, risk-off, order, and exit safety intact
+  - caps the lane at one 25%-size probe per day for five full trading days
+  - does not promote broad opening entry or alter official policy
+
 - `canonical_rank1_feature_mart_2026-08-11.md`
   - freezes one June-August Rank-1 feature and horizon contract
   - separates Scanner suitability, Monitor entry timing, and Strategist horizon evidence

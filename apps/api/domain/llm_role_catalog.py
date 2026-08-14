@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 ROLE_CATALOG = (
     {
         "role": "strategist",
@@ -12,7 +11,7 @@ ROLE_CATALOG = (
     {
         "role": "trade_report",
         "label": "거래 리포트·요약",
-        "configured_model": "minimax/minimax-m2.5",
+        "configured_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
         "fallback_model": None,
         "configuration_source": "live report generation path",
     },
@@ -46,7 +45,4 @@ ROLE_CATALOG = (
     },
 )
 
-ROUTING_ISSUES = (
-    "TRADE_REPORT_ROUTE_MISMATCH:live=minimax/minimax-m2.5;"
-    "generic_router=nvidia/nemotron-3-ultra-550b-a55b:free",
-)
+ROUTING_ISSUES: tuple[str, ...] = ()

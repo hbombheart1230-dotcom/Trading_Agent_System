@@ -195,6 +195,10 @@ def _event_route_rows(day_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any
             continue
         stage = str(row.get("stage") or "").strip()
         event = str(row.get("event") or "").strip()
+        route_event = stage == "commander_router" and event in {"route_selected", "end", "route"}
+        policy_event = stage == "strategist" and event == "policy_resolution"
+        if not (route_event or policy_event):
+            continue
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         current = by_run.setdefault(
             run_id,
@@ -207,14 +211,14 @@ def _event_route_rows(day_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any
                 "artifact_path": "",
             },
         )
-        if stage == "commander_router" and event in {"route_selected", "end", "route"}:
+        if route_event:
             merged = _commander_route_from_payload(payload)
             for key in ("route_selected", "strategy_generation_mode", "strategist_call_decision"):
                 if merged.get(key):
                     current[key] = merged[key]
             if merged.get("strategist_fallback_used"):
                 current["strategist_fallback_used"] = True
-        if stage == "strategist" and event == "policy_resolution":
+        if policy_event:
             mode = str(payload.get("strategy_generation_mode") or "").strip()
             if mode:
                 current["strategy_generation_mode"] = mode
@@ -246,10 +250,6 @@ def build_commander_route_summary(
     event_by_run = _event_route_rows(event_rows)
 
     all_run_ids = set(canonical_by_run) | set(event_by_run)
-    for row in event_rows:
-        run_id = str(row.get("run_id") or "").strip()
-        if run_id:
-            all_run_ids.add(run_id)
 
     by_run: Dict[str, Dict[str, Any]] = {}
     route_selected_total: Counter[str] = Counter()

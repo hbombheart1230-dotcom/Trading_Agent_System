@@ -139,7 +139,7 @@ def build_chart_structure_decision_hint_summary(runs: Sequence[Mapping[str, Any]
             reason_counts_when_applied[final_reason] += 1
         entry_style_counts_when_applied[entry_style] += 1
 
-        if final_decision != "WAIT":
+        if final_decision not in {"WAIT", "NOOP", "NO_TRADE"}:
             applied_non_wait_count += 1
         if final_reason not in allowed_reasons:
             applied_unexpected_reason_count += 1
@@ -196,7 +196,7 @@ def build_chart_structure_decision_hint_executive_summary(summary: Mapping[str, 
     non_wait_when_applied = sum(
         _safe_int(count)
         for decision, count in decision_counts_when_applied.items()
-        if str(decision or "").strip().upper() != "WAIT"
+        if str(decision or "").strip().upper() not in {"WAIT", "NOOP", "NO_TRADE"}
     )
 
     if run_count <= 0:

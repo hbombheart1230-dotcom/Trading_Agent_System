@@ -8,6 +8,7 @@ from libs.reporting.operator_visibility import (
     generate_operator_daily_summary,
     generate_run_card_report,
 )
+from libs.reporting.report_source_helpers import build_commander_route_summary
 from libs.reporting.trade_explain import generate_trade_explain_report
 from scripts.generate_daily_report import generate_daily_report
 from scripts.generate_metrics_report import generate_metrics_report
@@ -101,7 +102,37 @@ def test_report_metadata_alignment_smoke(tmp_path: Path) -> None:
     assert generated["decision_story"]["route_provenance"]["route_source"] == "canonical_commander_preferred"
     assert generated["run_cards"]["route_provenance"]["route_source"] == "canonical_commander_preferred"
     assert generated["trade_explain"]["route_provenance"]["route_source"] == "canonical_commander_preferred"
+    assert generated["operator"]["route_summary"]["route_source_run_count"] == 1
+    assert generated["operator"]["route_summary"]["route_source_missing_count"] == 0
+    assert generated["operator"]["policy_surface_quality_summary"]["run_count"] == 0
 
     assert operator_md.exists()
     assert trade_md.exists()
     assert trade_json.exists()
+
+
+def test_commander_route_summary_ignores_unrelated_shadow_run_ids(tmp_path: Path) -> None:
+    day = "2026-04-08"
+    reports_root = tmp_path / "reports"
+    _write_commander_artifact(
+        reports_root,
+        day,
+        "commander-run",
+        {"route_selected": "full_cycle", "strategy_generation_mode": "live_llm"},
+    )
+    summary = build_commander_route_summary(
+        reports_root=reports_root,
+        day=day,
+        day_rows=[
+            {
+                "run_id": "shadow-run",
+                "stage": "opportunity_engine",
+                "event": "candidate_evaluated",
+                "payload": {"symbol": "005930"},
+            }
+        ],
+    )
+
+    assert summary["route_source_run_count"] == 1
+    assert summary["route_source_missing_count"] == 0
+    assert set(summary["by_run"]) == {"commander-run"}

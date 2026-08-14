@@ -83,6 +83,11 @@ Use `docs/runtime_memory` for:
 - prevents empty no-trade days from distorting memory windows and freshness
 - adds symbol consistency and decision-effect linkage to `memory_usage_trace`
 
+10. `historical_memory_impact_review_2026-08-13.md`
+- reclassifies 2026-06-01 through 2026-08-13 Stage-2 calls by memory integrity
+- separates clean Strategist/Commander evidence from cross-symbol contamination
+- preserves Scanner/Rank-1/offline-alpha findings while narrowing B/C attribution claims
+
 Current additive implementation:
 
 - Commander now surfaces raw memory packets in `commander_decision`

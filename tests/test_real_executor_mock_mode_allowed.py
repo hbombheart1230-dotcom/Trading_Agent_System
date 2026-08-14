@@ -40,3 +40,16 @@ def test_real_executor_allows_mock_mode_without_execution_enabled(monkeypatch: p
     assert out.meta.get("executor") == "real"
     assert http.calls and http.calls[0]["dry_run"] is False
     assert http.calls[0]["headers"].get("api-id") == "X"
+
+
+def test_real_executor_sends_empty_json_object_for_post(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("EXECUTION_ENABLED", raising=False)
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+
+    http = _DummyHttp()
+    ex = RealExecutor(settings=Settings.from_env(env_path="__missing__.env"), http=http)  # type: ignore[arg-type]
+    req = PreparedRequest(api_id="X", method="POST", path="/account", headers={}, query={}, body={})
+
+    ex.execute(req, auth_token="dummy")
+
+    assert http.calls[0]["json"] == {}
