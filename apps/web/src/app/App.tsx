@@ -9,6 +9,8 @@ const TradesPage = lazy(() => import("../features/trades/TradesPage").then((modu
 const OpportunitiesPage = lazy(() => import("../features/opportunities/OpportunitiesPage").then((module) => ({ default: module.OpportunitiesPage })));
 const StrategiesPage = lazy(() => import("../features/strategies/StrategiesPage").then((module) => ({ default: module.StrategiesPage })));
 const MarketPage = lazy(() => import("../features/market/MarketPage").then((module) => ({ default: module.MarketPage })));
+const LlmOperationsPage = lazy(() => import("../features/llm-operations/LlmOperationsPage").then((module) => ({ default: module.LlmOperationsPage })));
+const AlertsPage = lazy(() => import("../features/alerts/AlertsPage").then((module) => ({ default: module.AlertsPage })));
 const ReportsPage = lazy(() => import("../features/reports/ReportsPage").then((module) => ({ default: module.ReportsPage })));
 const DataQualityPage = lazy(() => import("../features/data-quality/DataQualityPage").then((module) => ({ default: module.DataQualityPage })));
 
@@ -19,6 +21,8 @@ const PAGES: Record<PageId, ComponentType> = {
   opportunities: OpportunitiesPage,
   strategies: StrategiesPage,
   market: MarketPage,
+  alerts: AlertsPage,
+  "llm-operations": LlmOperationsPage,
   reports: ReportsPage,
   "data-quality": DataQualityPage,
 };

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 
@@ -22,6 +23,21 @@ def _positive_int(name: str, default: int) -> int:
     return value
 
 
+class ExposureProfile(StrEnum):
+    PRIVATE = "private"
+    PUBLIC = "public"
+
+
+def _exposure_profile() -> ExposureProfile:
+    raw = os.getenv("OBSERVABILITY_EXPOSURE_PROFILE", "private").strip().lower()
+    try:
+        return ExposureProfile(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "OBSERVABILITY_EXPOSURE_PROFILE must be private or public"
+        ) from exc
+
+
 @dataclass(frozen=True, slots=True)
 class ApiSettings:
     repository_root: Path
@@ -34,6 +50,7 @@ class ApiSettings:
     cache_ttl_seconds: int = 30
     max_period_days: int = 400
     max_trade_bundles: int = 5000
+    exposure_profile: ExposureProfile = ExposureProfile.PRIVATE
 
     @classmethod
     def from_environment(cls) -> "ApiSettings":
@@ -76,7 +93,12 @@ class ApiSettings:
                 "OBSERVABILITY_MAX_TRADE_BUNDLES",
                 5000,
             ),
+            exposure_profile=_exposure_profile(),
         )
+
+    @property
+    def public_mode(self) -> bool:
+        return self.exposure_profile == ExposureProfile.PUBLIC
 
     @property
     def source_roots(self) -> dict[str, Path]:

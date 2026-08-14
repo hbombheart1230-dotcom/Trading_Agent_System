@@ -11,6 +11,8 @@ interface Health {
   checked_at: string;
   read_only: boolean;
   execution_callable: boolean;
+  exposure_profile: "private" | "public";
+  public_mode: boolean;
 }
 
 interface Props {
@@ -36,7 +38,7 @@ export function AppShell({ page, onNavigate, children }: Props) {
           <button className="mobile-close" onClick={() => setMenuOpen(false)} title="메뉴 닫기"><X size={20} /></button>
         </div>
         <nav className="primary-nav" aria-label="주요 화면">
-          {NAV_ITEMS.map((item) => {
+          {NAV_ITEMS.filter((item) => !health.data?.public_mode || item.public).map((item) => {
             const Icon = item.icon;
             return (
               <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => navigate(item.id)}>
@@ -57,6 +59,7 @@ export function AppShell({ page, onNavigate, children }: Props) {
           <div className="topbar-signals">
             <span className="readonly-flag">READ ONLY</span>
             <span className="mode-flag">SIMULATION / MOCK</span>
+            {health.data?.public_mode && <span className="public-flag">PUBLIC SHOWCASE</span>}
             {health.data && <StatusPill status={health.data.status} />}
           </div>
           <div className="topbar-meta">

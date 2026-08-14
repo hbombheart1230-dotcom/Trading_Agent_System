@@ -28,6 +28,14 @@ def build_report_catalog(
     ref = locate_trade_bundle(settings.reports_root, trade_id)
     if ref is None:
         return None
+    if settings.public_mode:
+        return ReportCatalogResponse(
+            status=AvailabilityStatus.UNAVAILABLE,
+            trade_id=trade_id,
+            generated_at=datetime.now(UTC),
+            reports=[],
+            provenance=Provenance(source="public_profile.report_content_disabled"),
+        )
     rows: list[ReportDescriptor] = []
     for spec in REPORT_SPECS:
         path = report_path(ref.root, spec)
@@ -68,6 +76,16 @@ def build_report_content(
     spec = report_spec(report_id)
     if ref is None or spec is None:
         return None
+    if settings.public_mode:
+        return ReportContentResponse(
+            status=AvailabilityStatus.UNAVAILABLE,
+            trade_id=trade_id,
+            report_id=spec.report_id,
+            title=spec.title,
+            format=spec.format,
+            generated_at=datetime.now(UTC),
+            provenance=Provenance(source="public_profile.report_content_disabled"),
+        )
     path = report_path(ref.root, spec)
     if not path.is_file():
         return _missing_content(trade_id, spec)

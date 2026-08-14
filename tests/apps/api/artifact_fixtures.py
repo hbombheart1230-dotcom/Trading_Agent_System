@@ -4,6 +4,109 @@ import json
 from pathlib import Path
 
 
+def write_llm_call(
+    reports_root: Path,
+    day: str,
+    run_id: str,
+    *,
+    stage_index: int,
+    stage_name: str,
+    model: str = "deepseek/deepseek-v3.2",
+    status: str = "ok",
+) -> None:
+    component = f"strategist_stage{stage_index}_fixture"
+    target = (
+        reports_root
+        / "llm"
+        / day
+        / "no_trade"
+        / run_id
+        / component
+        / "response.json"
+    )
+    _write_json(
+        target,
+        {
+            "stage_index": stage_index,
+            "stage_name": stage_name,
+            "stage_component": component,
+            "call_kind": stage_name,
+            "provider": "strategist_router",
+            "model": model,
+            "status": status,
+            "reason": "" if status == "ok" else "fixture_failure",
+            "attempts": 1,
+            "run_id": run_id,
+            "saved_at": f"{day}T0{stage_index}:00:00+00:00",
+            "response_text": "SENSITIVE_RESPONSE_MUST_NOT_ESCAPE",
+        },
+    )
+
+
+def write_llm_events(logs_root: Path, day: str, *, include_usage: bool = False) -> None:
+    rows = [
+        {
+            "ts": f"{day}T00:01:00+00:00",
+            "ts_kst": f"{day}T09:01:00+09:00",
+            "stage": "strategist_llm",
+            "event": "result",
+            "payload": {
+                "call_kind": "market_frame",
+                "model": "deepseek/deepseek-v3.2",
+                "ok": True,
+                "latency_ms": 1000,
+                "attempts": 1,
+                "prompt": "SENSITIVE_PROMPT_MUST_NOT_ESCAPE",
+            },
+        },
+        {
+            "ts": f"{day}T00:02:00+00:00",
+            "ts_kst": f"{day}T09:02:00+09:00",
+            "stage": "strategist_llm",
+            "event": "result",
+            "payload": {
+                "call_kind": "selected_symbol_tactical_refresh",
+                "model": "deepseek/deepseek-v3.2",
+                "ok": False,
+                "latency_ms": 3000,
+                "attempts": 2,
+                "error_type": "TimeoutError",
+            },
+        },
+    ]
+    if include_usage:
+        rows[0]["payload"].update(
+            {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "estimated_cost_usd": 0.002,
+            }
+        )
+    target = logs_root / "events.jsonl"
+    target.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def write_trade_llm_response(
+    trade_root: Path,
+    name: str,
+    *,
+    model: str = "minimax/minimax-m2.5",
+) -> None:
+    _write_json(
+        trade_root / "reports" / name,
+        {
+            "status": "ok",
+            "model": model,
+            "provider": "OpenRouter",
+            "response_text": "SENSITIVE_TRADE_RESPONSE_MUST_NOT_ESCAPE",
+        },
+    )
+
+
 def write_performance_day(
     reports_root: Path,
     day: str,

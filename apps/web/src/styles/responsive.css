@@ -3,6 +3,7 @@
   .metric-cell:nth-child(3) { border-right: 0; }
   .metric-cell:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
   .span-8, .span-7, .span-6, .span-5, .span-4 { grid-column: span 12; }
+  .overview-alert-list { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
   .app-shell { display: block; }
@@ -15,7 +16,8 @@
   .sidebar-scrim { display: block; position: fixed; inset: 0; z-index: 25; border: 0; background: rgba(15,20,19,.45); }
   .topbar { height: auto; min-height: 58px; padding: 10px 13px; align-items: center; }
   .topbar-meta span { display: none; }
-  .mode-flag { display: none; }
+  .readonly-flag, .topbar-signals .status-pill { display: none; }
+  .mode-flag, .public-flag { padding: 0 6px; font-size: 9px; }
   .content { padding: 20px 14px 40px; }
   .page-header { align-items: flex-start; flex-direction: column; gap: 13px; }
   .page-header h1 { font-size: 21px; }

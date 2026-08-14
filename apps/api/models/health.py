@@ -23,6 +23,8 @@ class HealthResponse(BaseModel):
     checked_at: datetime
     read_only: bool = True
     execution_callable: bool = False
+    exposure_profile: str
+    public_mode: bool
 
 
 class ReadinessResponse(HealthResponse):

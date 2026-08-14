@@ -10,11 +10,13 @@ from ..models.health import HealthResponse, ReadinessResponse
 SERVICE_NAME = "trading-agent-read-only-api"
 
 
-def build_liveness() -> HealthResponse:
+def build_liveness(settings: ApiSettings) -> HealthResponse:
     return HealthResponse(
         status=AvailabilityStatus.AVAILABLE,
         service=SERVICE_NAME,
         checked_at=datetime.now(UTC),
+        exposure_profile=settings.exposure_profile.value,
+        public_mode=settings.public_mode,
     )
 
 
@@ -34,5 +36,7 @@ def build_readiness(settings: ApiSettings) -> ReadinessResponse:
         status=status,
         service=SERVICE_NAME,
         checked_at=datetime.now(UTC),
+        exposure_profile=settings.exposure_profile.value,
+        public_mode=settings.public_mode,
         sources=sources,
     )

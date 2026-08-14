@@ -13,7 +13,7 @@ const candidates = [
 const executablePath = candidates.find((candidate) => fs.existsSync(candidate));
 if (!executablePath) throw new Error("No Chromium-compatible browser was found");
 
-const routes = ["overview", "performance", "trades", "opportunities", "strategies", "market", "reports", "data-quality"];
+const routes = ["overview", "performance", "trades", "opportunities", "strategies", "market", "alerts", "llm-operations", "reports", "data-quality"];
 const errors = [];
 const browser = await chromium.launch({ executablePath, headless: true });
 
@@ -43,6 +43,12 @@ async function verifyViewport(viewport, suffix) {
   await page.goto("http://127.0.0.1:5173/#opportunities", { waitUntil: "networkidle" });
   await page.waitForFunction(() => !document.querySelector(".spin"), null, { timeout: 15_000 });
   await page.screenshot({ path: path.join(os.tmpdir(), `trading-console-${suffix}-opportunities.png`), fullPage: true });
+  await page.goto("http://127.0.0.1:5173/#llm-operations", { waitUntil: "networkidle" });
+  await page.waitForFunction(() => !document.querySelector(".spin"), null, { timeout: 15_000 });
+  await page.screenshot({ path: path.join(os.tmpdir(), `trading-console-${suffix}-llm-operations.png`), fullPage: true });
+  await page.goto("http://127.0.0.1:5173/#alerts", { waitUntil: "networkidle" });
+  await page.waitForFunction(() => !document.querySelector(".spin"), null, { timeout: 15_000 });
+  await page.screenshot({ path: path.join(os.tmpdir(), `trading-console-${suffix}-alerts.png`), fullPage: true });
   await context.close();
 }
 

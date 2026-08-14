@@ -12,6 +12,7 @@ import { formatDateTime, isoDayOffset } from "../../shared/formatters/dates";
 import { formatKrw, formatNumber, formatPct, formatRatioPct, toneFor } from "../../shared/formatters/numbers";
 import { PerformanceChart } from "../performance/PerformanceChart";
 import type { PerformanceSeries } from "../performance/types";
+import { OverviewAlerts } from "../alerts";
 
 export function OverviewPage() {
   const overview = useApi<Overview>("/api/v1/overview");
@@ -36,6 +37,9 @@ export function OverviewPage() {
       </DataState>
 
       <div className="page-grid" style={{ marginTop: 14 }}>
+        <Panel title="운영 알림" meta="고정 정책 · observation only" className="span-12">
+          <OverviewAlerts />
+        </Panel>
         <Panel title="누적 실현손익과 일별 평균 수익률" meta="최근 75일 · mock broker net" className="span-8">
           <DataState loading={series.loading} error={series.error} empty={!series.data?.points.length} onRetry={series.refresh}>
             <PerformanceChart points={series.data?.points ?? []} />

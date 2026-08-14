@@ -5,11 +5,12 @@ interface Props {
   loading: boolean;
   error: string | null;
   empty?: boolean;
+  emptyText?: string;
   onRetry?: () => void;
   children: ReactNode;
 }
 
-export function DataState({ loading, error, empty, onRetry, children }: Props) {
+export function DataState({ loading, error, empty, emptyText, onRetry, children }: Props) {
   if (loading) {
     return <div className="data-state"><LoaderCircle className="spin" size={22} />데이터를 읽는 중입니다.</div>;
   }
@@ -23,7 +24,7 @@ export function DataState({ loading, error, empty, onRetry, children }: Props) {
     );
   }
   if (empty) {
-    return <div className="data-state"><Database size={22} />선택한 범위에 데이터가 없습니다.</div>;
+    return <div className="data-state"><Database size={22} />{emptyText ?? "선택한 범위에 데이터가 없습니다."}</div>;
   }
   return children;
 }

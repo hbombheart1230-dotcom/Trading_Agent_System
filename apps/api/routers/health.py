@@ -9,8 +9,8 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 
 @router.get("/live", response_model=HealthResponse)
-def live() -> HealthResponse:
-    return build_liveness()
+def live(request: Request) -> HealthResponse:
+    return build_liveness(request.app.state.settings)
 
 
 @router.get("/ready", response_model=ReadinessResponse)

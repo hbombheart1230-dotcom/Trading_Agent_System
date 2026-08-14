@@ -24,28 +24,40 @@ Current authority:
    - product pages and frontend module boundaries
    - local execution and browser verification
    - UI safety and read-only behavior
-6. `isolation_and_modularity_contract.md`
+6. `m5_1_llm_operations_implementation_2026-08-14.md`
+   - OpenRouter role and actual-model visibility
+   - stage call, bounded latency, and token availability semantics
+   - prompt, response, credential, and path exclusion
+7. `m6_anomaly_public_profile_implementation_2026-08-14.md`
+   - explainable operations anomaly rules
+   - server-enforced public showcase and redaction boundary
+   - public/private metric parity
+8. `isolation_and_modularity_contract.md`
    - mandatory Trading Runtime isolation rules
    - backend/frontend module boundaries
    - bounded-resource and no-side-effect gates
    - per-slice verification checklist
-7. `product_data_contract_v1.md`
+9. `m7_prerequisites_and_weekend_plan_2026-08-14.md`
+   - verified Windows/WSL/Docker prerequisite state
+   - weekend Compose implementation and validation slices
+   - current and future Trading Runtime container boundary
+10. `product_data_contract_v1.md`
    - time, truth, cost-basis, and performance definitions
    - missing-data and availability semantics
    - internal/public data boundaries
-8. `combined_milestone_plan_2026-08-14.md`
+11. `combined_milestone_plan_2026-08-14.md`
    - product goal and information architecture
    - Q9-Q18 and current-research data mapping
    - generic read models and API surface
    - implementation milestones M0-M9
-9. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
+12. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
    - repository and infrastructure review
    - read-only and import-isolation constraints
    - Docker/Compose/Kubernetes design details
 
 The product is not an evaluation-progress dashboard. It presents performance,
-trades, opportunities, strategies, market context, reports, and data-quality
-signals. Evaluation artifacts are internal evidence sources.
+trades, opportunities, strategies, market context, LLM operations, reports,
+and data-quality signals. Evaluation artifacts are internal evidence sources.
 
 No document in this folder authorizes trading, evaluation, prompt, execution,
 or runtime behavior changes.

@@ -9,9 +9,12 @@
 | M2 Performance API | Complete | Overview, portfolio, trusted net performance, PnL series, and cost availability |
 | M3 Trades/Reports API | Complete | Trade list/detail/timeline, performance fallback, safe report access |
 | M4 Opportunities/Strategies/Market API | Complete | Generic opportunity, strategy, and market read models |
-| M5 Web UI MVP | Complete | Eight-domain React/Vite operating console running locally |
-| M6 Public mode and anomaly surface | Not started | Next product milestone |
-| M7-M9 | Not started | Docker/Kubernetes require their milestone gates |
+| M5 Web UI MVP | Complete | Nine-domain React/Vite operating console running locally |
+| M5.1 LLM Operations | Complete | OpenRouter role, model, stage, status, and bounded-latency surface |
+| M6 Public mode and anomaly surface | Complete | Explainable anomaly read model and server-enforced sanitized showcase profile |
+| M7 Docker Compose | Prerequisite pending | Host is suitable; WSL2 and Docker Desktop are not installed |
+| M8 Kubernetes local overlay | Not started | Begins only after M7 local Compose passes |
+| M9 Integrated audit | Not started | Final observability audit after M7-M8 |
 
 ## M1 Added Surface
 
@@ -284,3 +287,97 @@ API: http://127.0.0.1:8000
 
 See `m5_web_ui_implementation_2026-08-14.md` for the screen, module, safety,
 and verification details.
+
+## M5.1 LLM Operations
+
+M5.1 adds a ninth `LLM Operations` page and a single read-only endpoint:
+
+```text
+GET /api/v1/llm/operations?day=YYYY-MM-DD
+```
+
+Daily call/model/status authority comes from stage-specific `reports/llm`
+artifacts. Recent latency comes from a bounded event-log tail. Missing token
+and cost fields remain unavailable rather than becoming false zero values.
+
+The page explicitly distinguishes configured models from selected-day observed
+models and reports the current trade-report MiniMax/Nemotron route mismatch.
+No prompts, response text, credentials, or internal paths are returned.
+
+See `m5_1_llm_operations_implementation_2026-08-14.md` for the complete source,
+availability, UI, and verification contract.
+
+## M6 Anomaly and Public Profile
+
+M6 adds:
+
+```text
+GET /api/v1/anomalies?day=YYYY-MM-DD
+GET /api/v1/profile
+```
+
+The anomaly surface detects runtime freshness, artifact-integrity warnings,
+cost-drag spikes, same-symbol repeated losses, sub-60-second loss exits, and
+observed shadow opportunity misses. It is explicitly observation-only and
+returns its evidence and fixed threshold with every signal.
+
+The public profile is selected server-side with
+`OBSERVABILITY_EXPOSURE_PROFILE=public`. It preserves the private profile's
+metric formulas, identifies all results as simulation/mock, blocks report
+content before reading it, removes sensitive identifiers and values from JSON,
+and hides private-only navigation.
+
+Implementation and policy details are fixed in
+`m6_anomaly_public_profile_implementation_2026-08-14.md`.
+
+## M6 Verification
+
+```text
+API regression: 57 passed, 1 skipped
+Web unit tests: 3 passed
+Strict TypeScript and production build: passed
+Browser smoke: 10 routes x desktop/mobile = 20 renders passed
+Public-profile navigation/mode browser check: passed
+Trading Core imports from apps/api: 0
+non-GET routes: 0
+filesystem write-call isolation scan: passed
+```
+
+Actual artifact smoke:
+
+```text
+2026-07-21 trades evaluated: 1
+warnings classified: 2
+categories: COST_SPIKE, EARLY_LOSS_EXIT
+policy: operational_anomaly.v1
+```
+
+Live-runtime comparison:
+
+```text
+before event size: 908,210,563 bytes at 12:52:02 KST
+after event size:  909,484,892 bytes at 13:00:06 KST
+Trading Runtime PID: 760 before and after
+Trading Runtime responding: true
+API profile after verification: private
+API readiness: AVAILABLE
+Web/API listeners: 127.0.0.1:5173 and 127.0.0.1:8000
+```
+
+The API process was replaced to load M6. The Trading Runtime and Web process
+were not restarted.
+
+## M7 Weekend Gate
+
+The 2026-08-14 host audit confirmed Windows 11 Home 64-bit, 15.5 GB memory,
+220.2 GB free storage, and an active hypervisor. WSL, Docker Desktop, Docker
+CLI, and Docker Compose are not installed.
+
+M7 therefore starts after market close with administrator WSL installation,
+restart, Docker Desktop installation, and CLI verification. M7 includes only
+Web and read-only API containers. Trading Runtime remains on the Windows host
+through M9 and may enter a separate shadow-first container migration track
+afterward.
+
+See `m7_prerequisites_and_weekend_plan_2026-08-14.md` for the fixed weekend
+work slices, external-access boundary, and future runtime migration gates.
