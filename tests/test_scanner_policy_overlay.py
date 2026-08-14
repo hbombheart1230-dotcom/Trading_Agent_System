@@ -50,7 +50,7 @@ def _flat_candidate_metrics(*symbols):
     }
 
 
-def test_same_symbol_penalty_applied():
+def test_same_symbol_penalty_applied(tmp_path):
     scanner_policy = {
         "avoid_recent_symbol": True,
         "recent_symbol_penalty": 0.05,
@@ -67,13 +67,16 @@ def test_same_symbol_penalty_applied():
         scanner_policy=scanner_policy,
         mock_scan_results=mock_results,
     )
+    state["scanner_features"] = _neutral_scanner_features(*mock_results)
+    state["mock_candidate_metrics"] = _flat_candidate_metrics(*mock_results)
+    state["reports_root"] = str(tmp_path / "reports")
     result = scanner_node(state)
     
     scanner_output = result.get("scanner_output", {})
     assert scanner_output.get("reentry_penalty_applied") is True
     assert result.get("selected", {}).get("symbol") in {"005930", "000660"}
 
-def test_gap_threshold_exceeded():
+def test_gap_threshold_exceeded(tmp_path):
     scanner_policy = {
         "avoid_recent_symbol": True,
         "recent_symbol_penalty": 0.05,
@@ -90,6 +93,12 @@ def test_gap_threshold_exceeded():
         scanner_policy=scanner_policy,
         mock_scan_results=mock_results,
     )
+    now_epoch = 1_800_000_000
+    state["now_epoch"] = now_epoch
+    state["persisted_state"]["last_trade_epoch"] = now_epoch - 60
+    state["scanner_features"] = _neutral_scanner_features(*mock_results)
+    state["mock_candidate_metrics"] = _flat_candidate_metrics(*mock_results)
+    state["reports_root"] = str(tmp_path / "reports")
     result = scanner_node(state)
     
     scanner_output = result.get("scanner_output", {})
@@ -97,6 +106,8 @@ def test_gap_threshold_exceeded():
     # repeat-symbol guard still penalizes the most recently traded symbol.
     assert scanner_output.get("reentry_penalty_applied") is False
     assert result.get("selected", {}).get("symbol") == "MSFT"
+    rows = {str(row.get("symbol")): row for row in result.get("scan_results", [])}
+    assert float(rows["AAPL"]["score_breakdown"]["repeat_symbol_penalty"]) < 0.0
 
 def test_diversification_tie_break():
     scanner_policy = {

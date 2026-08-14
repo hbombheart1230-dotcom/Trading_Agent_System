@@ -12,6 +12,32 @@ from graphs.nodes.scanner_node import (
 )
 
 
+def _neutral_scanner_features(*symbols: str) -> dict[str, dict[str, float]]:
+    return {
+        symbol: {
+            "return20": 0.0,
+            "ma20_gap": 0.0,
+            "ma60_gap": 0.0,
+            "ma120_gap": 0.0,
+            "trend_strength": 0.0,
+            "adx14": 0.0,
+            "volume_spike20": 1.0,
+            "vwap_distance": 0.0,
+            "cross_section_rank": 0.0,
+            "volatility20": 0.0,
+            "signal_score": 0.0,
+        }
+        for symbol in symbols
+    }
+
+
+def _flat_candidate_metrics(*symbols: str) -> dict[str, dict[str, float]]:
+    return {
+        symbol: {"change_pct": 0.0, "volume": 1.0, "trading_value": 1.0}
+        for symbol in symbols
+    }
+
+
 class _FakeSkillRunnerQuotes:
     def run(self, *, run_id: str, skill: str, args: dict) -> dict:
         symbol = str(args.get("symbol") or "")
@@ -498,7 +524,7 @@ def test_scanner_auto_hydrates_skill_quotes_for_live_symbols():
     assert rows["005930"]["features"]["quote_trading_value"] > 0.0
 
 
-def test_scanner_repeat_guard_penalizes_recently_selected_symbol():
+def test_scanner_repeat_guard_penalizes_recently_selected_symbol(tmp_path):
     now_epoch = 1_800_000_000
     state = {
         "now_epoch": now_epoch,
@@ -510,6 +536,9 @@ def test_scanner_repeat_guard_penalizes_recently_selected_symbol():
             "005930": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
             "000660": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
         },
+        "scanner_features": _neutral_scanner_features("005930", "000660"),
+        "mock_candidate_metrics": _flat_candidate_metrics("005930", "000660"),
+        "reports_root": str(tmp_path / "reports"),
         "persisted_state": {
             "recent_scanner_selected": [
                 {"symbol": "005930", "epoch": now_epoch - 60},
@@ -545,7 +574,7 @@ def test_scanner_repeat_guard_penalizes_recently_selected_symbol():
     assert str(((out.get("persisted_state") or {}).get("recent_scanner_selected") or [])[-1].get("symbol")) == "000660"
 
 
-def test_scanner_repeat_guard_penalizes_recently_blocked_symbol_with_same_reason():
+def test_scanner_repeat_guard_penalizes_recently_blocked_symbol_with_same_reason(tmp_path):
     now_epoch = 1_800_000_000
     state = {
         "now_epoch": now_epoch,
@@ -557,6 +586,9 @@ def test_scanner_repeat_guard_penalizes_recently_blocked_symbol_with_same_reason
             "005930": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
             "000660": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
         },
+        "scanner_features": _neutral_scanner_features("005930", "000660"),
+        "mock_candidate_metrics": _flat_candidate_metrics("005930", "000660"),
+        "reports_root": str(tmp_path / "reports"),
         "persisted_state": {
             "recent_monitor_blocks": [
                 {"symbol": "005930", "reason": "too_extended_from_vwap", "epoch": now_epoch - 60},

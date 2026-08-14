@@ -10,6 +10,32 @@ from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 
 
+def _neutral_scanner_features(*symbols: str) -> dict[str, dict[str, float]]:
+    return {
+        symbol: {
+            "return20": 0.0,
+            "ma20_gap": 0.0,
+            "ma60_gap": 0.0,
+            "ma120_gap": 0.0,
+            "trend_strength": 0.0,
+            "adx14": 0.0,
+            "volume_spike20": 1.0,
+            "vwap_distance": 0.0,
+            "cross_section_rank": 0.0,
+            "volatility20": 0.0,
+            "signal_score": 0.0,
+        }
+        for symbol in symbols
+    }
+
+
+def _flat_candidate_metrics(*symbols: str) -> dict[str, dict[str, float]]:
+    return {
+        symbol: {"change_pct": 0.0, "volume": 1.0, "trading_value": 1.0}
+        for symbol in symbols
+    }
+
+
 def test_get_top_volume_stocks_uses_env_injection(monkeypatch):
     monkeypatch.setenv("MOCK_TOP_VOLUME_SYMBOLS", "111111,222222,333333")
     rows = get_top_volume_stocks({}, topk=2)
@@ -126,7 +152,7 @@ def test_build_kiwoom_candidate_rows_exposes_condition_search_diagnostics(monkey
     assert meta["condition_search_reason"] == "kiwoom_condition_websocket_not_integrated"
 
 
-def test_scanner_node_theme_filter_preserves_market_native_candidates():
+def test_scanner_node_theme_filter_preserves_market_native_candidates(tmp_path):
     state = {
         "themes": ["semiconductor"],
         "theme_map": {
@@ -138,8 +164,11 @@ def test_scanner_node_theme_filter_preserves_market_native_candidates():
         "mock_condition_symbols": ["005930", "000660"],
         "mock_scan_results": {
             "005930": {"score": 0.8, "risk_score": 0.2, "confidence": 0.9},
-            "000660": {"score": 0.9, "risk_score": 0.2, "confidence": 0.9},
+            "000660": {"score": 1.0, "risk_score": 0.2, "confidence": 0.9},
         },
+        "scanner_features": _neutral_scanner_features("005930", "000660"),
+        "mock_candidate_metrics": _flat_candidate_metrics("005930", "000660"),
+        "reports_root": str(tmp_path / "reports"),
     }
 
     out = scanner_node(state)
