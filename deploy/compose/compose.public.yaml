@@ -1,0 +1,4 @@
+services:
+  api:
+    environment:
+      OBSERVABILITY_EXPOSURE_PROFILE: public

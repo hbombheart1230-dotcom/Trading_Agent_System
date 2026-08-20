@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from libs.reporting.evaluation.metrics import performance_metrics
+from libs.reporting.q9_forward_candles import (
+    FORWARD_DATA_SOURCE,
+    load_q9_forward_candles,
+)
 from libs.reporting.quant_shadow_forward_outcomes import attach_forward_outcomes
 
 from .contracts import HORIZONS
-from .data_provider import load_existing_candles
-
-
 ROLES = (
     "P_SCANNER_PRE_STRATEGIST_UNIVERSE",
     "A_SCANNER_CONTROL",
@@ -44,11 +45,9 @@ def _load_q9_rows(
             row = dict(raw)
             row.setdefault("_payload_generated_at", generated_at)
             rows.append(row)
-    symbols = tuple(sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")}))
-    candles = load_existing_candles(
+    candles = load_q9_forward_candles(
+        rows,
         state_path=state_path,
-        day=day,
-        symbols=symbols,
         allow_fresh_fetch=True,
         run_id_prefix="q9_comparison_forward_recovery",
     )
@@ -172,6 +171,8 @@ def build_q9_role_comparison(
         "behavior_effect": "evaluation_only",
         "day": day,
         "comparison_unit": "decision_window_representative_candidate",
+        "cohort_scope": "complete_pabc_decision_windows_only",
+        "forward_data_source": FORWARD_DATA_SOURCE,
         "decision_window_count": len(grouped),
         "comparable_complete_window_count": len(comparable_windows),
         "roles": role_rows,

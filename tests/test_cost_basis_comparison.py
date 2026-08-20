@@ -43,8 +43,12 @@ def test_comparison_uses_same_gross_return_for_both_cost_bases(monkeypatch, tmp_
         lambda *_: {"conservative_round_trip_cost_pct": 0.009, "sample_count": 10},
     )
     monkeypatch.setattr(
+        "libs.reporting.evaluation.cost_basis_comparison.load_q9_forward_candles",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
         "libs.reporting.evaluation.scanner_quality.attach_forward_outcomes",
-        lambda rows: rows,
+        lambda rows, **_kwargs: rows,
     )
 
     result = build_cost_basis_comparison(
@@ -61,4 +65,6 @@ def test_comparison_uses_same_gross_return_for_both_cost_bases(monkeypatch, tmp_
     assert row["mock_net"]["expectancy_pct"] == 0.25
     assert row["live_net"]["expectancy_pct"] == 0.92
     assert row["expectancy_delta_live_minus_mock_pct"] == 0.67
+    assert result["forward_data_source"] == "state_plus_kiwoom_minute_recovery"
+    assert result["cohort_scope"] == "all_pre_strategist_windows_with_observed_horizon"
     assert "Mock Net" in render_cost_basis_comparison(result)

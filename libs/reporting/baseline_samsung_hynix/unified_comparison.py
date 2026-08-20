@@ -68,6 +68,8 @@ def _root_cause(
 
 
 def build_unified_comparison(forward_payload: Mapping[str, Any]) -> dict[str, Any]:
+    q9_comparison = forward_payload.get("q9_comparison")
+    q9_comparison = q9_comparison if isinstance(q9_comparison, Mapping) else {}
     baseline_by_horizon = {
         str(row.get("horizon") or ""): _metrics(row.get("top1_net") or {})
         for row in (forward_payload.get("summary") or {}).get("horizons") or []
@@ -183,6 +185,8 @@ def build_unified_comparison(forward_payload: Mapping[str, Any]) -> dict[str, An
             "cost-and-slippage-adjusted forward observations; trade_count is the "
             "number of observations used for each performer and horizon"
         ),
+        "q9_forward_data_source": str(q9_comparison.get("forward_data_source") or "unknown"),
+        "q9_cohort_scope": str(q9_comparison.get("cohort_scope") or "unknown"),
         "cost_model": dict(forward_payload.get("cost_model") or {}),
         "evidence_status": (
             "COMPLETE"
@@ -219,6 +223,8 @@ def render_unified_comparison(payload: Mapping[str, Any]) -> str:
         f"- Commander minus baseline: {_pct(alpha.get('commander_minus_baseline_pct'))}",
         f"- Root cause: `{alpha.get('root_cause') or '-'}`",
         f"- Metric basis: {payload.get('metric_basis')}",
+        f"- Q9 forward data source: `{payload.get('q9_forward_data_source') or 'unknown'}`",
+        f"- Q9 cohort scope: `{payload.get('q9_cohort_scope') or 'unknown'}`",
         "",
         "## Unified Metrics",
         "",

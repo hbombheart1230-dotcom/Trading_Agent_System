@@ -12,7 +12,7 @@
 | M5 Web UI MVP | Complete | Nine-domain React/Vite operating console running locally |
 | M5.1 LLM Operations | Complete | OpenRouter role, model, stage, status, and bounded-latency surface |
 | M6 Public mode and anomaly surface | Complete | Explainable anomaly read model and server-enforced sanitized showcase profile |
-| M7 Docker Compose | Prerequisite pending | Host is suitable; WSL2 and Docker Desktop are not installed |
+| M7 Docker Compose | Code complete; engine validation pending | Images, private/public Compose, isolation tests complete; WSL2 and Docker Desktop are not installed |
 | M8 Kubernetes local overlay | Not started | Begins only after M7 local Compose passes |
 | M9 Integrated audit | Not started | Final observability audit after M7-M8 |
 
@@ -373,11 +373,39 @@ The 2026-08-14 host audit confirmed Windows 11 Home 64-bit, 15.5 GB memory,
 220.2 GB free storage, and an active hypervisor. WSL, Docker Desktop, Docker
 CLI, and Docker Compose are not installed.
 
-M7 therefore starts after market close with administrator WSL installation,
-restart, Docker Desktop installation, and CLI verification. M7 includes only
-Web and read-only API containers. Trading Runtime remains on the Windows host
-through M9 and may enter a separate shadow-first container migration track
-afterward.
+M7 source implementation was completed on 2026-08-18 without changing or
+restarting the Trading Runtime. It includes only Web and read-only API
+containers. Trading Runtime remains on the Windows host through M9 and may
+enter a separate shadow-first container migration track afterward.
+
+Implemented:
+
+* minimal non-root API and multi-stage Web images;
+* Dockerfile-specific build-context allowlists;
+* localhost-only Web publication with a private API service;
+* read-only reports, logs, state, and evidence mounts;
+* read-only root filesystems, tmpfs, dropped capabilities, and resource limits;
+* private default and public sanitization override;
+* deterministic deployment-contract tests.
+
+Verified without Docker Engine:
+
+```text
+tests/apps/api + tests/deploy: 64 passed, 1 skipped
+existing API health/live: 200
+existing API health/ready: 200
+existing Web root: 200
+Trading Runtime restart: none
+```
+
+Still pending after market close:
+
+* administrator WSL installation and Windows restart;
+* Docker Desktop Linux-container installation;
+* `docker compose config/build/up/ps`;
+* container health and read-only mount write-denial proof.
 
 See `m7_prerequisites_and_weekend_plan_2026-08-14.md` for the fixed weekend
 work slices, external-access boundary, and future runtime migration gates.
+See `m7_docker_compose_implementation_2026-08-18.md` for the implemented file
+surface and remaining engine-validation gate.

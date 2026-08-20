@@ -1,0 +1,98 @@
+name: trading-agent-observability
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    image: trading-agent-observability-api:local
+    restart: unless-stopped
+    init: true
+    environment:
+      OBSERVABILITY_REPOSITORY_ROOT: /data
+      OBSERVABILITY_REPORTS_ROOT: /data/reports
+      OBSERVABILITY_LOGS_ROOT: /data/runtime-logs
+      OBSERVABILITY_STATE_ROOT: /data/state
+      OBSERVABILITY_EXPOSURE_PROFILE: ${OBSERVABILITY_EXPOSURE_PROFILE:-private}
+      OBSERVABILITY_CACHE_TTL_SECONDS: ${OBSERVABILITY_CACHE_TTL_SECONDS:-30}
+    volumes:
+      - type: bind
+        source: ${TRADING_REPO_ROOT:-../..}/reports
+        target: /data/reports
+        read_only: true
+      - type: bind
+        source: ${TRADING_REPO_ROOT:-../..}/data/logs
+        target: /data/runtime-logs
+        read_only: true
+      - type: bind
+        source: ${TRADING_REPO_ROOT:-../..}/data/state
+        target: /data/state
+        read_only: true
+      - type: bind
+        source: ${TRADING_REPO_ROOT:-../..}/data/evidence_ledger
+        target: /data/evidence
+        read_only: true
+    expose:
+      - "8000"
+    networks:
+      - observability
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    cpus: 0.50
+    mem_limit: 512m
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.web
+    image: trading-agent-observability-web:local
+    restart: unless-stopped
+    init: true
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:${OBSERVABILITY_WEB_PORT:-3000}:8080
+    networks:
+      - observability
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 0.25
+    mem_limit: 128m
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1:8080/web-health
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+networks:
+  observability:
+    internal: true

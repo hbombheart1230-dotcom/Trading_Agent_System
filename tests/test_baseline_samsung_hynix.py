@@ -250,6 +250,8 @@ def test_q9_comparison_uses_one_representative_per_role_and_window(
     }
 
     assert result["comparison_unit"] == "decision_window_representative_candidate"
+    assert result["cohort_scope"] == "complete_pabc_decision_windows_only"
+    assert result["forward_data_source"] == "state_plus_kiwoom_minute_recovery"
     assert result["comparable_complete_window_count"] == 1
     assert five_minute["P_SCANNER_PRE_STRATEGIST_UNIVERSE"]["count"] == 1
     assert five_minute["P_SCANNER_PRE_STRATEGIST_UNIVERSE"]["average_return_pct"] == 1.0
@@ -304,7 +306,11 @@ def _unified_payload(
         "day": "2026-06-24",
         "cost_model": {"round_trip_cost_pct": 0.2, "slippage_pct": 0.1},
         "summary": {"horizons": horizons},
-        "q9_comparison": {"roles": roles},
+        "q9_comparison": {
+            "roles": roles,
+            "forward_data_source": "state_plus_kiwoom_minute_recovery",
+            "cohort_scope": "complete_pabc_decision_windows_only",
+        },
     }
 
 
@@ -325,6 +331,8 @@ def test_unified_comparison_reports_multi_agent_alpha() -> None:
     assert primary["adds_alpha"] is None
     assert primary["causal_alpha_supported"] is False
     assert result["overall"]["best_performer"]["performer"] == "C_COMMANDER_FINAL"
+    assert result["q9_forward_data_source"] == "state_plus_kiwoom_minute_recovery"
+    assert result["q9_cohort_scope"] == "complete_pabc_decision_windows_only"
 
 
 def test_unified_comparison_attributes_strategist_degradation() -> None:

@@ -90,6 +90,22 @@ def run(
         "core_feature_paths": list(CORE_FEATURE_PATHS),
         "outcome_labels": list(OUTCOME_LABELS),
         "point_in_time_rule": "Only minute bars fully closed at decision_epoch may become features.",
+        "market_snapshot_contract": {
+            "schema_version": "opening_rank1_market_snapshot.v1",
+            "selection_policy": "LATEST_AT_OR_BEFORE_DECISION",
+            "required_fields": [
+                "snapshot_epoch",
+                "snapshot_time_kst",
+                "snapshot_age_sec",
+                "source_path",
+                "kospi_pct",
+                "kosdaq_pct",
+                "kospi200_pct",
+                "krx_night_futures_pct",
+                "evidence_status",
+            ],
+            "future_snapshot_allowed": False,
+        },
         "responsibility_split": {
             "scanner": "candidate suitability and rank quality",
             "entry": "chart state and timing after selection",

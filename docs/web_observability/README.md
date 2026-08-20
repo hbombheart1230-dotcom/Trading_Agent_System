@@ -41,16 +41,20 @@ Current authority:
    - verified Windows/WSL/Docker prerequisite state
    - weekend Compose implementation and validation slices
    - current and future Trading Runtime container boundary
-10. `product_data_contract_v1.md`
+10. `m7_docker_compose_implementation_2026-08-18.md`
+   - implemented API/Web images and Compose profiles
+   - read-only mounts, non-root services, and resource isolation
+   - completed static tests and pending Docker Engine smoke gate
+11. `product_data_contract_v1.md`
    - time, truth, cost-basis, and performance definitions
    - missing-data and availability semantics
    - internal/public data boundaries
-11. `combined_milestone_plan_2026-08-14.md`
+12. `combined_milestone_plan_2026-08-14.md`
    - product goal and information architecture
    - Q9-Q18 and current-research data mapping
    - generic read models and API surface
    - implementation milestones M0-M9
-12. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
+13. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
    - repository and infrastructure review
    - read-only and import-isolation constraints
    - Docker/Compose/Kubernetes design details

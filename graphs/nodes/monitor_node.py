@@ -40,6 +40,7 @@ from libs.runtime.opening_rank1_controlled_probe import (
     record_probe_submission,
     session_clock as _opening_probe_session_clock,
 )
+from libs.runtime.opening_rank1_probe_authority import resolve_opening_rank1_probe_authority
 from libs.runtime.monitor_entry_quality import (
     classify_vwap_reclaim_pullback_candidate as _classify_vwap_reclaim_pullback_candidate,
     evaluate_entry_quality_gate as _evaluate_entry_quality_gate,
@@ -869,6 +870,10 @@ def _evaluate_monitor_entry_candidate(
         and last_trade_symbol == symbol
         and last_trade_day == probe_day
     )
+    opening_probe_selection_authority = resolve_opening_rank1_probe_authority(
+        state=state,
+        selected=selected,
+    )
     opening_rank1_controlled_probe = evaluate_opening_rank1_controlled_probe(
         selected=selected,
         entry_info=entry_info,
@@ -879,6 +884,7 @@ def _evaluate_monitor_entry_candidate(
         entry_cost_filter=entry_cost_filter,
         quant_entry_enforcement=quant_entry_enforcement,
         risk_off_policy=risk_off_defensive_policy,
+        selection_authority=opening_probe_selection_authority,
         now_epoch=now_epoch_for_entry,
         normal_qty=qty,
         prior_probe_count=len(prior_probe_rows),

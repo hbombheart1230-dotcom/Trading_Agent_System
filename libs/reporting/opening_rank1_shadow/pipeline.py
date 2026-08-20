@@ -5,10 +5,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from libs.reporting.baseline_samsung_hynix.data_provider import (
-    load_market_change_pct,
-)
-
 from .candle_provider import (
     load_historical_reference_rows,
     load_opening_candles,
@@ -25,6 +21,7 @@ from .latent_watch import build_latent_reactivation_watch
 from .five_session_review import build_five_session_review
 from .episodes import build_opening_rank1_episodes
 from .metrics import evaluate_promotion, summarize_episodes
+from .market_snapshot import load_market_snapshot_timeline
 from .report import render_cumulative, render_daily
 from .symbol_metadata import (
     enrich_windows_with_symbol_metadata,
@@ -131,7 +128,7 @@ def build_opening_rank1_shadow(
     episodes = build_opening_rank1_episodes(
         windows,
         minute_rows_by_symbol=candles,
-        market_return_pct=load_market_change_pct(
+        market_snapshot_timeline=load_market_snapshot_timeline(
             day=normalized_day,
             macro_root=(state_path.parent / "logs" / "macro_indicators"),
         ),

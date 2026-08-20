@@ -12,6 +12,7 @@ from libs.llm.model_names import normalize_openrouter_model_name
 from libs.reporting.event_log_reader import iter_jsonl_events
 from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.narrative_axes import build_narrative_explanation, narrative_axis_policy
+from libs.reporting.operator_candidate_decisions import load_candidate_decision_summary
 from libs.reporting.report_metadata import (
     build_data_freshness,
     build_route_provenance,
@@ -930,6 +931,10 @@ def build_operator_daily_summary_payload(
     target_day = _pick_day(rows, day)
     day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
     canonical_report_root = _canonical_report_root(report_dir)
+    candidate_decision_summary = load_candidate_decision_summary(
+        reports_root=canonical_report_root,
+        day=target_day,
+    )
     route_summary = build_commander_route_summary(
         reports_root=canonical_report_root,
         day=target_day,
@@ -1135,8 +1140,10 @@ def build_operator_daily_summary_payload(
         if llm_total > 0
         else "LLM success_rate=not_measured (0 metric events)"
     )
+    candidate_rejected_total = int(candidate_decision_summary.get("candidate_rejected_total") or 0)
+    candidate_noop_total = int(candidate_decision_summary.get("candidate_noop_total") or 0)
     summary_lines = [
-        f"{_health_badge(health)} runs={run_total}, executions={executions_total} (ok={executions_ok}, fail={executions_fail}), blocks={blocked_total}.",
+        f"{_health_badge(health)} runs={run_total}, executions={executions_total} (ok={executions_ok}, fail={executions_fail}), execution_guard_blocks={blocked_total}, commander_rejections={candidate_rejected_total}.",
         f"Top guard block: {_humanize_reason(top_block_reason[0][0])} ({top_block_reason[0][1]})" if top_block_reason else "Top guard block: none",
         f"{llm_summary}, interventions={operator_intervention_total}, cooldowns={cooldown_transition_total}.",
     ]
@@ -1180,11 +1187,15 @@ def build_operator_daily_summary_payload(
             "executions_ok_total": int(executions_ok),
             "executions_fail_total": int(executions_fail),
             "blocked_total": int(blocked_total),
+            "execution_guard_blocked_total": int(blocked_total),
+            "commander_candidate_rejected_total": candidate_rejected_total,
+            "commander_candidate_noop_total": candidate_noop_total,
             "blocked_reason_top": dict(blocked_reason_counts.most_common(5)),
             "blocked_reason_top_human": blocked_reason_top_human,
             "noop_reason_top_human": noop_reason_top_human,
             "fallback_signal_status_top_human": fallback_signal_status_top,
         },
+        "candidate_decision_summary": candidate_decision_summary,
         "route_summary": {
             "route_source": str(route_summary.get("route_source") or "canonical_commander_preferred"),
             "route_source_run_count": int(route_summary.get("route_source_run_count") or 0),
@@ -1197,6 +1208,7 @@ def build_operator_daily_summary_payload(
         "route_provenance": build_route_provenance(route_summary),
         "safety_guard_interventions": {
             "blocked_total": int(blocked_total),
+            "execution_guard_blocked_total": int(blocked_total),
             "blocked_reason_top": dict(blocked_reason_counts.most_common(5)),
             "blocked_reason_top_human": blocked_reason_top_human,
             "operator_intervention_total": int(operator_intervention_total),
@@ -1333,7 +1345,9 @@ def generate_operator_daily_summary(
         f"- decision_action_counts: `{json.dumps(tas.get('decision_action_counts') or {}, ensure_ascii=False)}`",
         f"- strategy_counts: `{json.dumps(tas.get('strategy_counts') or {}, ensure_ascii=False)}`",
         f"- executions_total: **{tas.get('executions_total') or 0}**",
-        f"- blocked_total: **{tas.get('blocked_total') or 0}**",
+        f"- execution_guard_blocked_total: **{tas.get('execution_guard_blocked_total') or tas.get('blocked_total') or 0}**",
+        f"- commander_candidate_rejected_total: **{tas.get('commander_candidate_rejected_total') or 0}**",
+        f"- commander_candidate_noop_total: **{tas.get('commander_candidate_noop_total') or 0}**",
         f"- noop_reason_top_human: {_format_reason_rows(list(tas.get('noop_reason_top_human') or []))}",
         f"- fallback_signal_status_top_human: {_format_reason_rows(list(tas.get('fallback_signal_status_top_human') or []))}",
         "",
@@ -1348,16 +1362,28 @@ def generate_operator_daily_summary(
     ]
 
     sgi = out.get("safety_guard_interventions") if isinstance(out.get("safety_guard_interventions"), dict) else {}
+    cds = out.get("candidate_decision_summary") if isinstance(out.get("candidate_decision_summary"), dict) else {}
     md_lines += [
         "",
         "## Safety Guard Interventions",
         "",
-        f"- blocked_total: **{sgi.get('blocked_total') or 0}**",
+        f"- execution_guard_blocked_total: **{sgi.get('execution_guard_blocked_total') or sgi.get('blocked_total') or 0}**",
         f"- blocked_reason_top_human: {_format_reason_rows(list(sgi.get('blocked_reason_top_human') or []))}",
         f"- operator_intervention_total: **{sgi.get('operator_intervention_total') or 0}**",
         f"- cooldown_transition_total: **{sgi.get('cooldown_transition_total') or 0}**",
         f"- duplicate_execution_total: **{sgi.get('duplicate_execution_total') or 0}**",
         f"- guard_precedence_violation_total: **{sgi.get('guard_precedence_violation_total') or 0}**",
+        "",
+        "## Commander Candidate Decisions",
+        "",
+        f"- available: **{bool(cds.get('available'))}**",
+        f"- evaluated_windows: **{int(cds.get('window_count') or 0)}**",
+        f"- candidate_rejected_total: **{int(cds.get('candidate_rejected_total') or 0)}**",
+        f"- candidate_noop_total: **{int(cds.get('candidate_noop_total') or 0)}**",
+        f"- candidate_approved_total: **{int(cds.get('candidate_approved_total') or 0)}**",
+        f"- decision_counts: `{json.dumps(cds.get('decision_counts') or {}, ensure_ascii=False)}`",
+        f"- reason_counts: `{json.dumps(cds.get('reason_counts') or {}, ensure_ascii=False)}`",
+        "- semantics: candidate rejection occurs before OrderIntent; it is not an execution guard block.",
         "",
     ]
     narrative_policy = out.get("narrative_axis_policy") if isinstance(out.get("narrative_axis_policy"), dict) else {}

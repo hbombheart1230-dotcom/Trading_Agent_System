@@ -248,9 +248,14 @@ def test_fresh_change_shadow_keeps_historical_and_prospective_separate(
     result = build_fresh_change_activation_shadow(
         day="2026-08-13", reports_root=reports, mart_root=mart_root
     )
+    daily_payload = json.loads(
+        Path(result["daily_json_path"]).read_text(encoding="utf-8")
+    )
     payload = json.loads(
         Path(result["cumulative_json_path"]).read_text(encoding="utf-8")
     )
+    assert daily_payload["status"] == "VALID"
+    assert daily_payload["observations"][0]["symbol_name"]
     assert payload["historical_reference"]["branch"]["day_symbol_count"] == 1
     assert payload["branch"]["day_symbol_count"] == 1
     assert payload["decision"]["status"] == "COLLECTING"

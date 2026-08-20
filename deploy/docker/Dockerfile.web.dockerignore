@@ -1,0 +1,7 @@
+**
+!apps/
+!apps/web/
+!apps/web/**
+!deploy/
+!deploy/docker/
+!deploy/docker/nginx.conf

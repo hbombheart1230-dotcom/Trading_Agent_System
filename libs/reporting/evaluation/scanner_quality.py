@@ -34,7 +34,7 @@ def _checkpoint_return(row: Mapping[str, Any], horizon: str) -> float | None:
     return _number(checkpoint.get("return_pct"))
 
 
-def pre_strategist_candidate_rows(
+def extract_pre_strategist_candidate_rows(
     payloads: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -56,7 +56,21 @@ def pre_strategist_candidate_rows(
             seen.add(key)
             row.setdefault("_payload_generated_at", generated_at)
             rows.append(row)
-    return attach_forward_outcomes(rows)
+    return rows
+
+
+def pre_strategist_candidate_rows(
+    payloads: list[dict[str, Any]],
+    *,
+    minute_rows_by_symbol: Mapping[str, list[Mapping[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    rows = extract_pre_strategist_candidate_rows(payloads)
+    if minute_rows_by_symbol is None:
+        return attach_forward_outcomes(rows)
+    return attach_forward_outcomes(
+        rows,
+        minute_rows_by_symbol=minute_rows_by_symbol,
+    )
 
 
 def build_scanner_topk_forward_performance(
@@ -169,8 +183,12 @@ def build_scanner_quality_review(
     *,
     cost_pct: float,
     slippage_pct: float,
+    minute_rows_by_symbol: Mapping[str, list[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    rows = pre_strategist_candidate_rows(payloads)
+    rows = pre_strategist_candidate_rows(
+        payloads,
+        minute_rows_by_symbol=minute_rows_by_symbol,
+    )
     return {
         "schema_version": "q9_scanner_quality_review.v1",
         "behavior_effect": "evaluation_only",

@@ -235,6 +235,7 @@ def opening_observability(
     baseline_price: float,
     prior_rank1_observations_5m: int = 0,
     market_return_pct: float | None = None,
+    market_snapshot: Mapping[str, Any] | None = None,
     volume_reference_rows: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     ordered = sorted(
@@ -294,6 +295,9 @@ def opening_observability(
         "prev_close",
     )
     entry_vs_prior_close_pct = _pct(baseline_price, prior_close)
+    market_snapshot = dict(market_snapshot or {})
+    if market_return_pct is None:
+        market_return_pct = _number(market_snapshot.get("kospi_pct"))
     if market_return_pct is None:
         market_return_pct = _first_number(
             [candidate, compact],
@@ -333,6 +337,7 @@ def opening_observability(
         "opening_relative_volume": opening_relative_volume,
         "entry_vs_prior_close_pct": entry_vs_prior_close_pct,
         "market_return_pct": market_return_pct,
+        "market_snapshot": market_snapshot,
         "above_vwap": above_vwap,
         "exact_opening_09_00_04": 9 * 60 <= decision_minute < 9 * 60 + 5,
         "opening_chase_7pct": (

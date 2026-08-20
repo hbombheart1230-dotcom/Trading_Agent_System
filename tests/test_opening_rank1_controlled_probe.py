@@ -12,6 +12,9 @@ from libs.runtime.opening_rank1_controlled_probe import (
     load_probe_submissions,
     record_probe_submission,
 )
+from libs.runtime.opening_rank1_probe_authority import (
+    resolve_opening_rank1_probe_authority,
+)
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -46,6 +49,19 @@ def _evaluate(**overrides) -> dict:
         "entry_cost_filter": {"enabled": True, "passed": True},
         "quant_entry_enforcement": {"blocked": False, "matched_blockers": []},
         "risk_off_policy": {"blocked": False},
+        "selection_authority": {
+            "schema_version": "opening_rank1_probe_authority.v1",
+            "status": "ALIGNED",
+            "evidence_available": True,
+            "aligned": True,
+            "selected_symbol": "005930",
+            "intrinsic_rank1_symbol": "005930",
+            "intrinsic_rank1_rank": 1,
+            "source": (
+                "scanner_output.pre_strategist_full_universe_snapshot."
+                "intrinsic_ranked_top20"
+            ),
+        },
         "now_epoch": _epoch(),
         "normal_qty": 8,
         "prior_probe_count": 0,
@@ -102,6 +118,17 @@ def test_probe_preserves_hard_safety_guards() -> None:
         ({"prior_probe_count": 1}, "daily_probe_limit_reached"),
         ({"same_symbol_reentry_detected": True}, "same_symbol_reentry_not_allowed"),
         ({"entry_cost_filter": {"enabled": True, "passed": False}}, "cost_adjusted_edge_not_ready"),
+        (
+            {
+                "entry_cost_filter": {
+                    "enabled": True,
+                    "passed": False,
+                    "fail_reasons": ["estimated_gross_edge_below_cost_floor"],
+                    "estimated_gross_edge_pct": 0.001,
+                }
+            },
+            "cost_adjusted_edge_not_ready",
+        ),
         ({"entry_quality_gate": {"reasons": ["chart_fit_below_hard_floor"]}}, "entry_quality_hard_floor_not_met"),
         ({"risk_off_policy": {"blocked": True}}, "risk_off_policy_blocked"),
         (
@@ -118,6 +145,153 @@ def test_probe_preserves_hard_safety_guards() -> None:
         result = _evaluate(**override)
         assert result["applied"] is False
         assert result["reason"] == expected_reason
+
+
+def test_probe_uses_frozen_setup_edge_only_for_missing_cost_evidence() -> None:
+    result = _evaluate(
+        entry_info={"triggered": True},
+        original_wait_reason="entry_signal_confirmed",
+        base_entry_guard_blocked=True,
+        base_entry_guard_reason="cost_adjusted_edge_not_ready",
+        entry_cost_filter={
+            "enabled": True,
+            "passed": False,
+            "fail_reasons": [
+                "directional_edge_evidence_missing",
+                "estimated_gross_edge_missing",
+            ],
+            "estimated_gross_edge_pct": None,
+            "cost_adjusted_edge_pct": None,
+            "min_cost_adjusted_edge_pct": 0.001,
+        },
+        quant_entry_enforcement={
+            "blocked": True,
+            "matched_blockers": ["cost_edge_fail"],
+        },
+    )
+
+    assert result["applied"] is True
+    assert result["overridden_base_guard_reason"] == "cost_adjusted_edge_not_ready"
+    assert result["overridden_quant_blockers"] == ["cost_edge_fail"]
+    evidence = result["cost_edge_evidence"]
+    assert evidence["fallback_applied"] is True
+    assert evidence["candidate_setup"] == "FRESH_CHANGE_ACTIVATION"
+    assert evidence["independent_day_symbol_count"] == 6
+    assert evidence["source_live_net_return_30m"] == 0.04875
+    assert evidence["conservative_net_return"] == 0.04068151
+    assert evidence["cost_basis"]["target_mock_drag_ratio"] == 0.01086849
+
+
+def test_probe_rejects_selection_that_is_not_intrinsic_rank1() -> None:
+    result = _evaluate(
+        selection_authority={
+            "status": "SYMBOL_MISMATCH",
+            "evidence_available": True,
+            "aligned": False,
+            "selected_symbol": "035890",
+            "intrinsic_rank1_symbol": "003010",
+            "intrinsic_rank1_rank": 1,
+        }
+    )
+
+    assert result["applied"] is False
+    assert result["reason"] == "intrinsic_rank1_symbol_mismatch"
+
+
+def test_probe_rejects_missing_intrinsic_rank1_evidence() -> None:
+    result = _evaluate(
+        selection_authority={
+            "status": "MISSING_INTRINSIC_RANK1",
+            "evidence_available": False,
+            "aligned": False,
+        }
+    )
+
+    assert result["applied"] is False
+    assert result["reason"] == "intrinsic_rank1_evidence_missing"
+
+
+def test_selection_authority_uses_pre_strategist_intrinsic_rank1() -> None:
+    aligned = resolve_opening_rank1_probe_authority(
+        state={
+            "scanner_output": {
+                "pre_strategist_full_universe_snapshot": {
+                    "intrinsic_ranked_top20": [
+                        {"rank": 2, "symbol": "035890"},
+                        {"rank": 1, "symbol": "005930.KS"},
+                    ]
+                }
+            }
+        },
+        selected={"symbol": "005930", "rank": 1},
+    )
+    mismatched = resolve_opening_rank1_probe_authority(
+        state={
+            "scanner_output": {
+                "pre_strategist_full_universe_snapshot": {
+                    "intrinsic_ranked_top20": [{"rank": 1, "symbol": "003010"}]
+                }
+            }
+        },
+        selected={"symbol": "035890", "rank": 1},
+    )
+
+    assert aligned["status"] == "ALIGNED"
+    assert aligned["aligned"] is True
+    assert aligned["intrinsic_rank1_symbol"] == "005930"
+    assert mismatched["status"] == "SYMBOL_MISMATCH"
+    assert mismatched["aligned"] is False
+
+
+def test_probe_does_not_replace_explicit_negative_cost_evidence() -> None:
+    result = _evaluate(
+        entry_cost_filter={
+            "enabled": True,
+            "passed": False,
+            "fail_reasons": ["cost_adjusted_edge_below_min"],
+            "estimated_gross_edge_pct": 0.001,
+            "cost_adjusted_edge_pct": -0.0018,
+            "min_cost_adjusted_edge_pct": 0.001,
+        },
+    )
+
+    assert result["applied"] is False
+    assert result["reason"] == "cost_adjusted_edge_not_ready"
+    assert result["cost_edge_evidence"]["fallback_applied"] is False
+    assert result["cost_edge_evidence"]["reason"] == (
+        "normal_cost_filter_has_non_missing_failure"
+    )
+
+
+def test_probe_missing_edge_fallback_does_not_bypass_other_base_guard() -> None:
+    result = _evaluate(
+        base_entry_guard_blocked=True,
+        base_entry_guard_reason="max_positions_reached",
+        entry_cost_filter={
+            "enabled": True,
+            "passed": False,
+            "fail_reasons": ["estimated_gross_edge_missing"],
+            "min_cost_adjusted_edge_pct": 0.001,
+        },
+    )
+
+    assert result["cost_edge_evidence"]["fallback_applied"] is True
+    assert result["applied"] is False
+    assert result["reason"] == "max_positions_reached"
+
+
+def test_probe_accepts_directional_missing_as_the_only_cost_evidence_gap() -> None:
+    result = _evaluate(
+        entry_cost_filter={
+            "enabled": True,
+            "passed": False,
+            "fail_reasons": ["directional_edge_evidence_missing"],
+            "min_cost_adjusted_edge_pct": 0.001,
+        },
+    )
+
+    assert result["cost_edge_evidence"]["fallback_applied"] is True
+    assert result["applied"] is True
 
 
 def test_non_overrideable_quant_blocker_remains_blocked() -> None:
@@ -169,8 +343,9 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
 
     def _forced_probe(**kwargs) -> dict:
         assert kwargs["is_top_pick"] is True
+        assert kwargs["selection_authority"]["aligned"] is True
         return {
-            "schema_version": "opening_rank1_controlled_probe.v1",
+            "schema_version": "opening_rank1_controlled_probe.v2",
             "applied": True,
             "eligible": True,
             "reason": "opening_rank1_controlled_probe_applied",
@@ -203,6 +378,11 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
             "expected_move_pct": 0.03,
             "scanner_chart_fit_score": 0.86,
             "sources": ["top_change_rate", "top_value"],
+        },
+        "scanner_output": {
+            "pre_strategist_full_universe_snapshot": {
+                "intrinsic_ranked_top20": [{"rank": 1, "symbol": "005930"}]
+            }
         },
         "minute_ohlcv_by_symbol": {"005930": rows},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},

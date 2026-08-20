@@ -98,6 +98,15 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
             "policy_surface_quality_executive_summary": {"headline": "stale-file-should-not-be-read"},
         },
     )
+    _write_json(
+        daily_dir / "q9_decision_windows.json",
+        {
+            "windows": [
+                {"commander_final": {"decision": "reject", "reason": "risk_too_high"}},
+                {"commander_final": {"decision": "noop", "reason": "no_candidate"}},
+            ]
+        },
+    )
 
     monkeypatch.setattr(
         operator_visibility,
@@ -189,6 +198,9 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert obj["data_freshness"]["freshness_status"] == "fresh"
     assert obj["route_provenance"]["route_source"] == "canonical_commander_preferred"
     assert obj["narrative_axis_policy"]["entry_primary_for"] == ["BUY", "WAIT", "NOOP", "NO_TRADE"]
+    assert obj["trading_activity_summary"]["execution_guard_blocked_total"] == 1
+    assert obj["trading_activity_summary"]["commander_candidate_rejected_total"] == 1
+    assert obj["candidate_decision_summary"]["candidate_noop_total"] == 1
     md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
     assert "Data Freshness" in md_body
     assert "Executive Summary" in md_body
@@ -200,6 +212,8 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert "System Health Status" in md_body
     assert "Trading Activity Summary" in md_body
     assert "Safety Guard Interventions" in md_body
+    assert "Commander Candidate Decisions" in md_body
+    assert "candidate rejection occurs before OrderIntent" in md_body
     assert "Top Issues" in md_body
     assert "Recommended Operator Actions" in md_body
 

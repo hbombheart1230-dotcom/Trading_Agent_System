@@ -23,6 +23,7 @@ def audit(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     ids = [str(value_at(row, "identity.episode_id") or "") for row in rows]
     duplicates = sorted(key for key, count in Counter(ids).items() if key and count > 1)
     time_leaks = []
+    market_snapshot_time_leaks = []
     symbol_mismatches = []
     for row in rows:
         episode_id = str(value_at(row, "identity.episode_id") or "")
@@ -30,6 +31,9 @@ def audit(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         feature_epoch = int(value_at(row, "chart.feature_max_epoch") or 0)
         if feature_epoch and decision_epoch and feature_epoch > decision_epoch:
             time_leaks.append(episode_id)
+        snapshot_epoch = int(value_at(row, "market.snapshot_epoch") or 0)
+        if snapshot_epoch and decision_epoch and snapshot_epoch > decision_epoch:
+            market_snapshot_time_leaks.append(episode_id)
         symbol = str(value_at(row, "identity.symbol") or "")
         if symbol and len(symbol) != 6:
             symbol_mismatches.append(episode_id)
@@ -67,7 +71,29 @@ def audit(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
             "coverage": round(observed / len(rows), 4) if rows else 0.0,
             "status_counts": dict(statuses),
         }
-    critical = bool(duplicates or time_leaks or symbol_mismatches)
+    prospective = [
+        row
+        for row in rows
+        if str(value_at(row, "identity.cohort_source") or "")
+        == "PROSPECTIVE_OPENING_SHADOW"
+    ]
+    market_statuses = Counter(
+        str(value_at(row, "market.snapshot_evidence_status") or "MISSING_LEGACY")
+        for row in prospective
+    )
+    market_observed = int(market_statuses.get("OBSERVED_POINT_IN_TIME") or 0)
+    market_snapshot_coverage = {
+        "observed": market_observed,
+        "total": len(prospective),
+        "coverage": round(market_observed / len(prospective), 4) if prospective else 0.0,
+        "status_counts": dict(market_statuses),
+    }
+    critical = bool(
+        duplicates
+        or time_leaks
+        or market_snapshot_time_leaks
+        or symbol_mismatches
+    )
     return {
         "schema_version": "rank1_feature_mart_integrity.v1",
         "status": "FAIL" if critical else "PASS_WITH_COVERAGE_GAPS" if any(value["eligible_coverage"] < 0.9 for value in feature_coverage.values()) else "PASS",
@@ -76,6 +102,8 @@ def audit(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "symbol_count": len({value_at(row, "identity.symbol") for row in rows}),
         "duplicate_episode_ids": duplicates,
         "point_in_time_violations": time_leaks,
+        "market_snapshot_time_violations": market_snapshot_time_leaks,
+        "market_snapshot_coverage": market_snapshot_coverage,
         "symbol_format_violations": symbol_mismatches,
         "feature_coverage": feature_coverage,
         "horizon_coverage": horizon_coverage,

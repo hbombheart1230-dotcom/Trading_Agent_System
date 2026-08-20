@@ -75,6 +75,8 @@ def render_integrity(integrity: Mapping[str, Any]) -> str:
         f"* Episodes: **{integrity.get('episode_count', 0)}**",
         f"* Duplicate IDs: **{len(integrity.get('duplicate_episode_ids') or [])}**",
         f"* Point-in-time violations: **{len(integrity.get('point_in_time_violations') or [])}**",
+        f"* Market snapshot time violations: **{len(integrity.get('market_snapshot_time_violations') or [])}**",
+        f"* Prospective market snapshot coverage: **{float((integrity.get('market_snapshot_coverage') or {}).get('coverage') or 0.0):.1%}**",
         f"* Symbol violations: **{len(integrity.get('symbol_format_violations') or [])}**",
         "",
         "## Feature Coverage",

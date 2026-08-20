@@ -7,9 +7,16 @@ from typing import Any, Mapping
 from libs.reporting.quant_shadow_candidate_evaluation import (
     load_quant_shadow_candidate_payloads_for_range,
 )
+from libs.reporting.q9_forward_candles import (
+    FORWARD_DATA_SOURCE,
+    load_q9_forward_candles,
+)
 from libs.runtime.broker_cost_profile import load_broker_cost_profile
 
-from .scanner_quality import build_scanner_quality_review
+from .scanner_quality import (
+    build_scanner_quality_review,
+    extract_pre_strategist_candidate_rows,
+)
 
 
 DEFAULT_EVALUATION_SLIPPAGE_PCT = 0.05
@@ -83,17 +90,25 @@ def build_cost_basis_comparison(
     )
     profile = load_broker_cost_profile(cost_profile_path)
     bases = build_evaluation_cost_bases(profile, slippage_pct=slippage_pct)
+    pre_strategist_rows = extract_pre_strategist_candidate_rows(payloads)
+    forward_candles = load_q9_forward_candles(
+        pre_strategist_rows,
+        allow_fresh_fetch=start[:10] == end[:10],
+        run_id_prefix="q9_cost_basis_forward_recovery",
+    )
     mock_cost = float(bases["mock_observed"]["round_trip_cost_pct"])
     live_cost = float(bases["live_deployment_equity"]["round_trip_cost_pct"])
     mock_review = build_scanner_quality_review(
         payloads,
         cost_pct=mock_cost,
         slippage_pct=slippage_pct,
+        minute_rows_by_symbol=forward_candles,
     )
     live_review = build_scanner_quality_review(
         payloads,
         cost_pct=live_cost,
         slippage_pct=slippage_pct,
+        minute_rows_by_symbol=forward_candles,
     )
     mock_rows = _topk_rows(mock_review)
     live_rows = _topk_rows(live_review)
@@ -121,6 +136,8 @@ def build_cost_basis_comparison(
     return {
         "schema_version": "q9_cost_basis_comparison.v1",
         "behavior_effect": "evaluation_only",
+        "cohort_scope": "all_pre_strategist_windows_with_observed_horizon",
+        "forward_data_source": FORWARD_DATA_SOURCE,
         "range": {"start": start[:10], "end": end[:10]},
         "cost_bases": bases,
         "pre_strategist_universe_available": bool(
@@ -144,6 +161,8 @@ def render_cost_basis_comparison(payload: Mapping[str, Any]) -> str:
         f"# Cost Basis Comparison ({date_range.get('start')} ~ {date_range.get('end')})",
         "",
         "Evaluation-only. Runtime entry, exit, and broker accounting are unchanged.",
+        f"Forward data source: `{payload.get('forward_data_source') or 'unknown'}`.",
+        f"Cohort scope: `{payload.get('cohort_scope') or 'unknown'}`.",
         "",
         "## Cost Assumptions",
         "",

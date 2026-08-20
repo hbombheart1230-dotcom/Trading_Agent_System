@@ -58,8 +58,10 @@ docker run --rm hello-world
 docker info --format '{{.OSType}}'
 ```
 
-M7 code implementation starts only after all four commands pass and the last
-command reports `linux`.
+M7 image build and container smoke verification start only after all four
+commands pass and the last command reports `linux`. Deployment source files
+and static isolation tests may be prepared earlier because they do not change
+the host or start containers.
 
 ## Weekend Work Slices
 

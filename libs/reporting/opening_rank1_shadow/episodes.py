@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from libs.research.post_reclaim_alpha.evaluator import evaluate_episodes
 from libs.research.structural_alpha.features import entry_bar
 
 from .contracts import COHORT_ID, EPISODE_GAP_SEC
+from .market_snapshot import select_market_snapshot
 from .observability import opening_observability
 
 
@@ -14,6 +15,7 @@ def build_opening_rank1_episodes(
     *,
     minute_rows_by_symbol: Mapping[str, list[Mapping[str, Any]]],
     market_return_pct: float | None = None,
+    market_snapshot_timeline: Sequence[Mapping[str, Any]] = (),
     volume_reference_rows_by_symbol: Mapping[
         str, list[Mapping[str, Any]]
     ] | None = None,
@@ -82,6 +84,11 @@ def build_opening_rank1_episodes(
                 "score_breakdown": dict(candidate.get("score_breakdown") or {}),
                 "evidence_class": "PROSPECTIVE_POINT_IN_TIME_Q9",
             }
+        market_snapshot = select_market_snapshot(
+            market_snapshot_timeline,
+            decision_epoch=decision_epoch,
+        )
+        episode["market_snapshot"] = market_snapshot
         episode["opening_observability"] = opening_observability(
             candidate=candidate,
             day_rows=minute_rows_by_symbol.get(symbol) or [],
@@ -90,6 +97,7 @@ def build_opening_rank1_episodes(
             baseline_price=baseline_price,
             prior_rank1_observations_5m=len(previous_rank1),
             market_return_pct=market_return_pct,
+            market_snapshot=market_snapshot,
             volume_reference_rows=volume_reference_rows_by_symbol.get(symbol) or [],
         )
         episodes.append(episode)
