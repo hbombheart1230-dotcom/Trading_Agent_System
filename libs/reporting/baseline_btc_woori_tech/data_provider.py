@@ -13,6 +13,49 @@ from .contracts import TARGET_SYMBOL
 KST = timezone(timedelta(hours=9))
 
 
+def evaluate_multihorizon_leading_signal(
+    *,
+    momentum_5m: float | None,
+    momentum_15m: float | None,
+    momentum_60m: float | None,
+    momentum_24h: float | None,
+) -> dict[str, Any]:
+    regime_basis = momentum_60m if momentum_60m is not None else momentum_15m
+    if regime_basis is None:
+        regime = "insufficient_evidence"
+    elif regime_basis >= 1.0 or (momentum_24h is not None and momentum_24h >= 3.0):
+        regime = "strong_bull"
+    elif regime_basis >= 0.25:
+        regime = "bull"
+    elif regime_basis <= -1.0 or (momentum_24h is not None and momentum_24h <= -3.0):
+        regime = "strong_bear"
+    elif regime_basis <= -0.25:
+        regime = "bear"
+    else:
+        regime = "neutral"
+    shallow_pullback = bool(
+        regime in {"bull", "strong_bull"}
+        and momentum_15m is not None
+        and momentum_15m > 0.0
+        and momentum_5m is not None
+        and momentum_5m > -0.3
+    )
+    leading_positive = bool(
+        momentum_5m is not None and (momentum_5m > 0.0 or shallow_pullback)
+    )
+    return {
+        "market_regime": regime,
+        "leading_positive": leading_positive,
+        "leading_signal_reason": (
+            "positive_5m_momentum"
+            if momentum_5m is not None and momentum_5m > 0.0
+            else "bull_regime_short_pullback"
+            if shallow_pullback
+            else "btc_leading_signal_not_confirmed"
+        ),
+    }
+
+
 def load_woori_candles(
     *,
     day: str,
@@ -182,27 +225,12 @@ def signal_at(payload: Mapping[str, Any], *, epoch: int) -> dict[str, Any]:
     momentum_60m = aggregate("momentum_60m_pct")
     momentum_24h = aggregate("momentum_24h_pct")
     momentum_krx = aggregate("momentum_since_krx_open_pct")
-    regime_basis = momentum_60m if momentum_60m is not None else momentum_15m
-    if regime_basis is None:
-        regime = "insufficient_evidence"
-    elif regime_basis >= 1.0 or (momentum_24h is not None and momentum_24h >= 3.0):
-        regime = "strong_bull"
-    elif regime_basis >= 0.25:
-        regime = "bull"
-    elif regime_basis <= -1.0 or (momentum_24h is not None and momentum_24h <= -3.0):
-        regime = "strong_bear"
-    elif regime_basis <= -0.25:
-        regime = "bear"
-    else:
-        regime = "neutral"
-    short_pullback_with_bull_regime = bool(
-        regime in {"bull", "strong_bull"}
-        and momentum_15m is not None
-        and momentum_15m > 0.0
-        and momentum is not None
-        and momentum > -0.3
+    leading = evaluate_multihorizon_leading_signal(
+        momentum_5m=momentum,
+        momentum_15m=momentum_15m,
+        momentum_60m=momentum_60m,
+        momentum_24h=momentum_24h,
     )
-    leading_positive = bool(momentum is not None and (momentum > 0.0 or short_pullback_with_bull_regime))
     stale_sources = [str(row.get("name") or "") for row in observations if row.get("stale")]
     return {
         "available": momentum is not None,
@@ -211,18 +239,12 @@ def signal_at(payload: Mapping[str, Any], *, epoch: int) -> dict[str, Any]:
         "momentum_60m_pct": momentum_60m,
         "momentum_24h_pct": momentum_24h,
         "momentum_since_krx_open_pct": momentum_krx,
-        "market_regime": regime,
+        "market_regime": leading["market_regime"],
         "market_regime_behavior_effect": "observation_only",
         "positive": bool(momentum is not None and momentum > 0.0),
-        "leading_positive": leading_positive,
+        "leading_positive": leading["leading_positive"],
         "leading_signal_policy": "q12_btc_multihorizon_leading_signal.v2",
-        "leading_signal_reason": (
-            "positive_5m_momentum"
-            if momentum is not None and momentum > 0.0
-            else "bull_regime_short_pullback"
-            if short_pullback_with_bull_regime
-            else "btc_leading_signal_not_confirmed"
-        ),
+        "leading_signal_reason": leading["leading_signal_reason"],
         "observations": observations,
         "source_count": len(observations),
         "fresh_source_count": sum(1 for row in observations if not row.get("stale")),

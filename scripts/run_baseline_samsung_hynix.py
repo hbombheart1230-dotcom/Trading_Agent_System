@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.reporting.baseline_samsung_hynix import build_baseline_artifacts
+from libs.runtime.shadow_loop_session import should_stop_shadow_loop
 
 
 def main() -> int:
@@ -41,6 +42,9 @@ def main() -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
         if not args.loop:
+            break
+        if should_stop_shadow_loop(day=args.day):
+            print(json.dumps({"event": "shadow_loop_stopped", "day": args.day, "reason": "session_complete"}), flush=True)
             break
         time.sleep(max(30, int(args.interval_sec)))
     return 0

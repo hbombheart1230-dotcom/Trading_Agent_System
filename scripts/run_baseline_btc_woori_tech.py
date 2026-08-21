@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.reporting.baseline_btc_woori_tech import build_baseline_btc_woori_artifacts
+from libs.runtime.shadow_loop_session import should_stop_shadow_loop
 
 
 def main() -> int:
@@ -40,9 +41,11 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
         if not args.loop:
             return 0
+        if should_stop_shadow_loop(day=args.day):
+            print(json.dumps({"event": "shadow_loop_stopped", "day": args.day, "reason": "session_complete"}), flush=True)
+            return 0
         time.sleep(max(30, args.interval_sec))
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

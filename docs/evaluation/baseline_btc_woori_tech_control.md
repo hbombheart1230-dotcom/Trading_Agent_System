@@ -62,6 +62,23 @@ create an `OrderIntent`, submit an order, or alter portfolio state.
 
 All comparisons use the same broker cost profile and evaluation slippage.
 
+## Historical v1/v2 Review
+
+Run the deterministic replay with:
+
+```powershell
+.\venv\Scripts\python.exe scripts/run_q12_historical_policy_review.py
+```
+
+The replay reads only stored Q12 decisions and forward returns. It does not
+fetch replacement history or create execution intent. Consecutive v2-only
+signals within 30 minutes are counted as one episode using the first signal.
+
+The 2026-06-25 through 2026-08-21 replay produced 19 independent v2-only
+episodes. At +30 minutes, the real-account cost assumption (`0.28%`) produced
+a 68.4% win rate and +0.5329% average return. This is a promising subset, not
+production authorization; prospective v2 shadow evidence remains required.
+
 ## Artifacts
 
 Stored under `reports/evaluation/baseline_btc_woori_tech/YYYY-MM-DD/`:
