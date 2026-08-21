@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from graphs.nodes.strategist_node import strategist_node
-from libs.news.news_pipeline import _fetch_yfinance_news_items, collect_news_items, score_news_sentiment
+from libs.news.news_pipeline import _fetch_yfinance_news_items, _resolve_yf_ticker, collect_news_items, score_news_sentiment
 from libs.news.providers.base import NewsItem as ProviderNewsItem
+
+
+def test_news_yfinance_ticker_uses_kosdaq_for_foreign_listing_code() -> None:
+    assert _resolve_yf_ticker("950260", {}) == "950260.KQ"
 
 
 def test_collect_news_items_accepts_mapping_provider_shape(monkeypatch):

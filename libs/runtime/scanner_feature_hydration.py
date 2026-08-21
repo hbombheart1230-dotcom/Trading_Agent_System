@@ -144,6 +144,10 @@ def _append_live_price(
 def _resolve_yf_ticker(symbol: str) -> str:
     normalized = normalize_symbol(str(symbol or "").lstrip("$"))
     if is_live_equity_symbol(normalized):
+        # Foreign listings with six-digit codes are carried on KOSDAQ.  Yahoo
+        # logs a noisy 404 when these are incorrectly queried as KOSPI.
+        if normalized.startswith("9"):
+            return f"{normalized}.KQ"
         return f"{normalized}.KS"
     return normalized
 

@@ -27,15 +27,28 @@ The Crypto Fear & Greed Index is recorded as an observation-only feature:
 - `crypto_fear_greed.observed_at`
 - `crypto_fear_greed.fallback_reason`
 
-It does not change Q12 virtual entry eligibility in v0.
+It did not change Q12 virtual entry eligibility in v0. Starting with decision
+policy `q12_btc_multihorizon_leading_signal.v2`, it remains observation-only
+and is not itself an entry condition.
 
-## Strategy v0
+## Strategy v2
 
 Entry requires all three conditions:
 
-1. BTC 5-minute momentum is positive.
+1. BTC multi-horizon leading momentum is confirmed.
 2. Woori has a volume spike or local breakout.
 3. Woori is above VWAP or its 5-minute moving average.
+
+The BTC leading condition passes when either:
+
+- BTC 5-minute momentum is positive; or
+- the 60-minute/24-hour regime is bullish, 15-minute momentum is positive,
+  and the current 5-minute pullback is greater than `-0.30%`.
+
+This separates a shallow pause inside a strong BTC trend from an actual sharp
+short-horizon reversal. The artifacts retain the legacy 5-minute result as
+`positive`, and record the v2 result as `leading_positive` with an explicit
+`leading_signal_reason`.
 
 The module records forward outcomes at +5m, +15m, +30m, and EOD. It does not
 create an `OrderIntent`, submit an order, or alter portfolio state.

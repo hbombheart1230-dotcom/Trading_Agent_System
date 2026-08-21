@@ -66,7 +66,7 @@ def build_decision_snapshot(
         )
     )
     conditions = {
-        ENTRY_RULES[0]: bool(btc.get("positive")),
+        ENTRY_RULES[0]: bool(btc.get("leading_positive", btc.get("positive"))),
         ENTRY_RULES[1]: local_confirmation,
         ENTRY_RULES[2]: bool(local.get("price_above_vwap_or_short_ma")),
     }
@@ -75,9 +75,10 @@ def build_decision_snapshot(
     volume_edge = max(0.0, float(local.get("volume_ratio") or 0.0) - 1.0)
     score = (0.7 * max(-3.0, min(3.0, btc_momentum))) + (0.3 * min(3.0, volume_edge))
     return {
-        "schema_version": "baseline_btc_woori_decision.v1",
+        "schema_version": "baseline_btc_woori_decision.v2",
         "evaluation_program_id": "Q12_BTC_WOORI_TECH_BASELINE",
         "behavior_effect": "shadow_only",
+        "decision_policy_version": "q12_btc_multihorizon_leading_signal.v2",
         "decision_id": f"BTW_{day.replace('-', '')}_{as_of_epoch}",
         "day": day,
         "as_of_epoch": as_of_epoch,

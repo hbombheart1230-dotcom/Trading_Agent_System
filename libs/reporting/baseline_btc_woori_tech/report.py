@@ -20,6 +20,7 @@ def render_report(
         "- Target: `041190.KQ` Woori Technology Investment",
         "- Q9/Q10/main execution integration: none",
         "- OrderIntent / execution: disabled",
+        f"- Decision policy: `{decisions.get('decision_policy_version') or 'legacy'}`",
         f"- Evidence status: `{forward.get('evidence_status')}`",
         (
             "- Crypto Fear & Greed: "
@@ -33,8 +34,8 @@ def render_report(
         "",
         "## Decisions",
         "",
-        "| Time | Action | BTC 5m | BTC Sources | Woori Volume | Breakout | Trend | Conditions |",
-        "|---|---|---:|---:|---:|---|---|---|",
+        "| Time | Action | BTC 5m | BTC 15m | BTC 60m | BTC 24h | KRX Session | Regime | BTC Sources | Woori Volume | Breakout | Trend | Conditions |",
+        "|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---|---|",
     ]
     for row in decisions.get("decisions") or []:
         btc = row.get("btc_signal") or {}
@@ -42,7 +43,12 @@ def render_report(
         conditions = row.get("entry_conditions") or {}
         lines.append(
             f"| {row.get('generated_at')} | {row.get('action')} | "
-            f"{float(btc.get('momentum_5m_pct') or 0):.4f}% | {btc.get('source_count') or 0} | "
+            f"{float(btc.get('momentum_5m_pct') or 0):.4f}% | "
+            f"{float(btc.get('momentum_15m_pct') or 0):.4f}% | "
+            f"{float(btc.get('momentum_60m_pct') or 0):.4f}% | "
+            f"{float(btc.get('momentum_24h_pct') or 0):.4f}% | "
+            f"{float(btc.get('momentum_since_krx_open_pct') or 0):.4f}% | "
+            f"{btc.get('market_regime') or 'insufficient_evidence'} | {btc.get('source_count') or 0} | "
             f"{float(local.get('volume_ratio') or 0):.2f}x | "
             f"{bool(local.get('breakout_confirmed'))} | "
             f"{bool(local.get('price_above_vwap_or_short_ma'))} | "

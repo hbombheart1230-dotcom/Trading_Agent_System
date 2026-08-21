@@ -13,6 +13,10 @@ def test_yfinance_ticker_strips_quote_prefix() -> None:
     assert _resolve_yf_ticker("$477850") == "477850.KS"
 
 
+def test_yfinance_ticker_uses_kosdaq_for_foreign_listing_code() -> None:
+    assert _resolve_yf_ticker("950260") == "950260.KQ"
+
+
 def test_hydrate_scanner_feature_map_refreshes_existing_symbol_with_live_quote():
     state = {
         "feature_engine": {

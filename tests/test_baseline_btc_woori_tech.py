@@ -18,6 +18,7 @@ from libs.reporting.baseline_btc_woori_tech.pipeline import (
 from libs.reporting.baseline_btc_woori_tech.strategy import (
     build_decision_snapshot,
 )
+from libs.reporting.baseline_btc_woori_tech.data_provider import signal_at
 
 
 def _candles(*, start: int = 1782345600, count: int = 61) -> list[dict]:
@@ -141,6 +142,72 @@ def test_btc_signal_records_stale_proxy_without_changing_direct_signal() -> None
     assert decision["btc_signal"]["freshness_warning"] == "stale_sources_present"
 
 
+def test_btc_regime_timeframes_are_observation_only() -> None:
+    payload = _btc()
+    for row in payload["sources"]["btc_usd"]:
+        row.update(
+            {
+                "momentum_15m_pct": 0.8,
+                "momentum_60m_pct": 1.5,
+                "momentum_24h_pct": 6.0,
+                "momentum_since_krx_open_pct": 3.0,
+            }
+        )
+
+    signal = signal_at(payload, epoch=1782347400)
+
+    assert signal["momentum_60m_pct"] == 1.5
+    assert signal["momentum_24h_pct"] == 6.0
+    assert signal["momentum_since_krx_open_pct"] == 3.0
+    assert signal["market_regime"] == "strong_bull"
+    assert signal["market_regime_behavior_effect"] == "observation_only"
+    assert signal["leading_positive"] is True
+
+
+def test_strong_btc_regime_allows_a_shallow_five_minute_pullback() -> None:
+    payload = _btc()
+    for row in payload["sources"]["btc_usd"]:
+        row.update(
+            {
+                "momentum_5m_pct": -0.1,
+                "momentum_15m_pct": 0.6,
+                "momentum_60m_pct": 1.2,
+                "momentum_24h_pct": 5.0,
+                "momentum_since_krx_open_pct": 2.0,
+            }
+        )
+    decision = build_decision_snapshot(
+        day="2026-06-25",
+        as_of_epoch=1782347400,
+        woori_candles=_candles(),
+        btc_signals=payload,
+    )
+
+    assert decision["btc_signal"]["positive"] is False
+    assert decision["btc_signal"]["leading_positive"] is True
+    assert decision["btc_signal"]["leading_signal_reason"] == "bull_regime_short_pullback"
+    assert decision["entry_conditions"]["btc_multihorizon_leading_signal_positive"] is True
+    assert decision["behavior_effect"] == "shadow_only"
+
+
+def test_strong_btc_regime_does_not_mask_a_sharp_five_minute_drop() -> None:
+    payload = _btc()
+    for row in payload["sources"]["btc_usd"]:
+        row.update(
+            {
+                "momentum_5m_pct": -0.5,
+                "momentum_15m_pct": 0.6,
+                "momentum_60m_pct": 1.2,
+                "momentum_24h_pct": 5.0,
+            }
+        )
+
+    signal = signal_at(payload, epoch=1782347400)
+
+    assert signal["market_regime"] == "strong_bull"
+    assert signal["leading_positive"] is False
+
+
 def test_cost_and_slippage_application() -> None:
     summary = summarize(
         [
@@ -228,3 +295,28 @@ def test_crypto_fear_greed_does_not_change_virtual_entry_rule() -> None:
     assert greedy["entry_conditions"] == fearful["entry_conditions"]
     assert greedy["eligible"] == fearful["eligible"]
     assert greedy["action"] == fearful["action"]
+
+
+def test_no_fresh_fetch_preserves_existing_market_observations(tmp_path: Path, monkeypatch) -> None:
+    kwargs = {
+        "day": "2026-06-25",
+        "reports_root": tmp_path / "reports",
+        "state_path": tmp_path / "state.json",
+        "q9_root": tmp_path / "q9",
+        "candles": _candles(),
+        "btc_signals": _btc(),
+    }
+    build_baseline_btc_woori_artifacts(**kwargs, crypto_fear_greed=_fear_greed())
+    monkeypatch.setattr(
+        "libs.reporting.baseline_btc_woori_tech.pipeline.load_btc_signal_rows",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("fresh BTC fetch must not run")),
+    )
+    offline_kwargs = dict(kwargs)
+    offline_kwargs.pop("btc_signals")
+    result = build_baseline_btc_woori_artifacts(**offline_kwargs, allow_fresh_fetch=False)
+    payload = json.loads(Path(result["decisions"]).read_text(encoding="utf-8"))
+
+    assert payload["crypto_fear_greed"]["available"] is True
+    assert payload["crypto_fear_greed"]["value"] == 72
+    assert payload["btc_signal_availability"]["available"] is True
+    assert any(row["btc_signal"]["available"] for row in payload["decisions"])

@@ -51,6 +51,8 @@ def _resolve_yf_ticker(symbol: str, policy: Dict[str, Any]) -> str:
     if sym in mapping:
         return str(mapping[sym])
     if sym.isdigit() and len(sym) == 6:
+        if sym.startswith("9"):
+            return f"{sym}.KQ"
         return f"{sym}.KS"
     return sym
 

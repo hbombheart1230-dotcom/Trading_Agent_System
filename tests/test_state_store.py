@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from libs.storage.state_store import StateStore
+from libs.storage.state_store import StateStore, _REPLACE_RETRY_DELAYS_SEC
 
 
 def test_state_store_roundtrip(tmp_path: Path):
@@ -94,4 +94,4 @@ def test_state_store_raises_after_replace_lock_retry_exhausted(tmp_path: Path):
         else:
             raise AssertionError("persistent replace lock must still fail")
 
-    assert sleep.call_count == 6
+    assert sleep.call_count == len(_REPLACE_RETRY_DELAYS_SEC)

@@ -66,40 +66,67 @@ def build_baseline_btc_woori_artifacts(
     reconstruct_intraday: bool = True,
     slippage_pct: float = DEFAULT_SLIPPAGE_PCT,
 ) -> dict[str, str]:
+    output_dir = reports_root / "evaluation" / "baseline_btc_woori_tech" / day
+    decisions_path = output_dir / "baseline_btc_woori_decisions.json"
+    existing = _read(decisions_path)
+    existing_fear_greed = (
+        dict(existing.get("crypto_fear_greed") or {})
+        if isinstance(existing.get("crypto_fear_greed"), Mapping)
+        else {}
+    )
+    existing_decisions = [
+        row for row in existing.get("decisions") or []
+        if isinstance(row, dict)
+    ]
     candle_rows = (
         [dict(row) for row in candles]
         if candles is not None
         else load_woori_candles(day=day, state_path=state_path, allow_fresh_fetch=allow_fresh_fetch)
     )
-    signal_payload = dict(btc_signals) if btc_signals is not None else load_btc_signal_rows(day=day)
-    fear_greed_payload = (
-        dict(crypto_fear_greed)
-        if crypto_fear_greed is not None
-        else load_crypto_fear_greed_index(day=day)
+    signal_payload = (
+        dict(btc_signals)
+        if btc_signals is not None
+        else load_btc_signal_rows(day=day)
         if allow_fresh_fetch
-        else unavailable_crypto_fear_greed("fresh_fetch_disabled", day=day)
+        else {
+            "available": False,
+            "available_sources": [],
+            "sources": {},
+            "fallback_reason": "fresh_fetch_disabled",
+        }
     )
+    if crypto_fear_greed is not None:
+        fear_greed_payload = dict(crypto_fear_greed)
+    elif allow_fresh_fetch:
+        fetched_fear_greed = load_crypto_fear_greed_index(day=day)
+        fear_greed_payload = (
+            fetched_fear_greed
+            if fetched_fear_greed.get("available")
+            else existing_fear_greed
+            if existing_fear_greed.get("available") and existing_fear_greed.get("day") == day
+            else fetched_fear_greed
+        )
+    elif existing_fear_greed.get("available") and existing_fear_greed.get("day") == day:
+        fear_greed_payload = existing_fear_greed
+    else:
+        fear_greed_payload = unavailable_crypto_fear_greed("fresh_fetch_disabled", day=day)
     epochs = _decision_epochs(candle_rows) if reconstruct_intraday else ([int(candle_rows[-1]["ts"])] if candle_rows else [])
     decisions: list[dict[str, Any]] = []
-    for epoch in epochs:
-        row = build_decision_snapshot(
-            day=day,
-            as_of_epoch=epoch,
-            woori_candles=candle_rows,
-            btc_signals=signal_payload,
-            crypto_fear_greed=fear_greed_payload,
-        )
-        row["generated_at"] = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
-        decisions.append(row)
-    output_dir = reports_root / "evaluation" / "baseline_btc_woori_tech" / day
-    decisions_path = output_dir / "baseline_btc_woori_decisions.json"
-    existing = _read(decisions_path)
-    existing_decisions = [
-        row for row in existing.get("decisions") or []
-        if isinstance(row, dict)
-    ]
-    if not decisions and existing_decisions:
+    if not allow_fresh_fetch and btc_signals is None and existing_decisions:
         decisions = existing_decisions
+    else:
+        for epoch in epochs:
+            row = build_decision_snapshot(
+                day=day,
+                as_of_epoch=epoch,
+                woori_candles=candle_rows,
+                btc_signals=signal_payload,
+                crypto_fear_greed=fear_greed_payload,
+            )
+            row["generated_at"] = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+            decisions.append(row)
+        if not decisions and existing_decisions:
+            decisions = existing_decisions
     forward_path = output_dir / "baseline_btc_woori_forward_returns.json"
     report_path = output_dir / "baseline_btc_woori_daily_report.md"
     comparison_path = output_dir / "baseline_btc_woori_comparison.json"
@@ -107,13 +134,18 @@ def build_baseline_btc_woori_artifacts(
         "schema_version": DECISIONS_SCHEMA,
         "evaluation_program_id": PROGRAM_ID,
         "behavior_effect": "shadow_only",
+        "decision_policy_version": "q12_btc_multihorizon_leading_signal.v2",
         "day": day,
         "fixed_target": "041190.KQ",
-        "btc_signal_availability": {
-            "available": signal_payload.get("available"),
-            "sources": signal_payload.get("available_sources") or [],
-            "fallback_reason": signal_payload.get("fallback_reason") or "",
-        },
+        "btc_signal_availability": (
+            existing.get("btc_signal_availability")
+            if not allow_fresh_fetch and btc_signals is None and existing_decisions
+            else {
+                "available": signal_payload.get("available"),
+                "sources": signal_payload.get("available_sources") or [],
+                "fallback_reason": signal_payload.get("fallback_reason") or "",
+            }
+        ),
         "crypto_fear_greed": fear_greed_payload,
         "crypto_fear_greed_behavior_effect": "observation_only",
         "decision_count": len(decisions),

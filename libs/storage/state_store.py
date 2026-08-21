@@ -17,7 +17,7 @@ _BROKER_TRUTH_PROTECTED_KEYS = (
     "closeout_backup_liquidation",
     _BROKER_TRUTH_MARKER,
 )
-_REPLACE_RETRY_DELAYS_SEC = (0.05, 0.1, 0.2, 0.4, 0.5, 0.5)
+_REPLACE_RETRY_DELAYS_SEC = (0.05, 0.1, 0.2, 0.4, 0.75, 1.0, 1.5, 2.0, 2.0, 2.0)
 
 
 def _replace_with_retry(source: Path, target: Path) -> None:
