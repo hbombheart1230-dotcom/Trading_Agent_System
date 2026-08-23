@@ -6,8 +6,9 @@ from typing import Any, Mapping
 
 from libs.reporting.q8_historical_review import build_q8_historical_review_payload
 from libs.reporting.quant_shadow_candidate_evaluation import (
-    load_quant_shadow_candidate_payloads_for_range,
+    iter_quant_shadow_candidate_payloads_for_range,
 )
+from libs.reporting.quant_shadow_forward_outcomes import attach_forward_outcomes
 from libs.runtime.broker_cost_profile import load_broker_cost_profile
 
 from .cost_basis_comparison import build_evaluation_cost_bases
@@ -16,6 +17,7 @@ from .episode_scanner_review import (
     build_same_symbol_reentry_review,
 )
 from .post_reclaim_shadow_review import build_post_reclaim_shadow_review
+from .scanner_quality import extract_pre_strategist_candidate_rows
 from .scanner_alignment_root_cause import (
     build_scanner_alignment_root_cause_range,
 )
@@ -239,15 +241,25 @@ def build_cumulative_improvement_review(
         )
         or 0.0
     )
-    source_payloads = (
-        payloads
-        if payloads is not None
-        else load_quant_shadow_candidate_payloads_for_range(
+    prepared_scanner_rows: list[dict[str, Any]] | None = None
+    if payloads is not None:
+        source_payloads = payloads
+    else:
+        source_payloads = []
+        deduped_rows: dict[tuple[str, str, int], dict[str, Any]] = {}
+        for payload in iter_quant_shadow_candidate_payloads_for_range(
             reports_root=reports_root,
             start=start,
             end=end,
-        )
-    )
+        ):
+            for row in extract_pre_strategist_candidate_rows([payload]):
+                key = (
+                    str(row.get("q9_decision_id") or ""),
+                    str(row.get("symbol") or ""),
+                    int(float(row.get("rank") or 0)),
+                )
+                deduped_rows[key] = row
+        prepared_scanner_rows = attach_forward_outcomes(list(deduped_rows.values()))
     q8 = (
         dict(historical_review)
         if historical_review is not None
@@ -270,6 +282,7 @@ def build_cumulative_improvement_review(
         source_payloads,
         mock_drag_pct=mock_drag,
         live_drag_pct=live_drag,
+        prepared_rows=prepared_scanner_rows,
     )
     reentry_review = build_same_symbol_reentry_review(q14.get("rows") or [])
     post_reclaim_review = build_post_reclaim_shadow_review(

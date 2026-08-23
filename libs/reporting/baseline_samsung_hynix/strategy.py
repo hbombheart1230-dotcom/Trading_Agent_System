@@ -33,7 +33,13 @@ def _features(rows: list[Mapping[str, Any]], *, as_of_epoch: int) -> dict[str, A
         if weighted_volume > 0
         else ma5
     )
-    momentum_pct = ((close / float(usable[-6].get("close") or close)) - 1.0) * 100.0
+    def momentum(minutes: int) -> float | None:
+        if len(usable) <= minutes:
+            return None
+        base = float(usable[-(minutes + 1)].get("close") or 0.0)
+        return ((close / base) - 1.0) * 100.0 if base > 0.0 else None
+
+    momentum_pct = momentum(5) or 0.0
     return {
         "available": True,
         "candle_count": len(usable),
@@ -41,6 +47,9 @@ def _features(rows: list[Mapping[str, Any]], *, as_of_epoch: int) -> dict[str, A
         "baseline_price": close,
         "baseline_raw_ts": current.get("raw_ts"),
         "momentum_5m_pct": round(momentum_pct, 4),
+        "momentum_15m_pct": round(value, 4) if (value := momentum(15)) is not None else None,
+        "momentum_30m_pct": round(value, 4) if (value := momentum(30)) is not None else None,
+        "momentum_60m_pct": round(value, 4) if (value := momentum(60)) is not None else None,
         "volume_ratio": round(volume_ratio, 4),
         "short_ma5": round(float(ma5 or close), 4),
         "vwap": round(float(vwap or close), 4),
@@ -53,6 +62,7 @@ def build_decision_snapshot(
     as_of_epoch: int,
     candles: Mapping[str, list[Mapping[str, Any]]],
     market_change_pct: float | None,
+    market_snapshot: Mapping[str, Any] | None = None,
     volume_ratio_min: float = 1.2,
     sharp_negative_threshold_pct: float = -2.0,
 ) -> dict[str, Any]:
@@ -117,6 +127,7 @@ def build_decision_snapshot(
         "day": day,
         "as_of_epoch": as_of_epoch,
         "market_change_pct": market_change_pct,
+        "market_snapshot": dict(market_snapshot or {}),
         "universe": [row["ticker"] for row in SYMBOLS],
         "entry_rule_count": len(ENTRY_RULES),
         "entry_rules": list(ENTRY_RULES),

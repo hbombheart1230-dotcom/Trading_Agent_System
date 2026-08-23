@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from libs.reporting.evaluation.q16_proxy_rejection_review import (
     _q16_decision,
+    _timestamp_day,
     build_q16_proxy_rejection_review,
     render_q16_proxy_rejection_review,
 )
@@ -15,6 +16,14 @@ from libs.reporting.evaluation.q16_proxy_rejection_review import (
 def _write(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_timestamp_day_distinguishes_compact_datetime_from_epoch() -> None:
+    epoch = int(datetime(2026, 7, 22, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")).timestamp())
+
+    assert _timestamp_day("20260722100000") == "20260722"
+    assert _timestamp_day(str(epoch)) == "20260722"
+    assert _timestamp_day("99999999999999") == ""
 
 
 def test_q16_separates_exact_proxy_rejection_from_legacy_cost_rejection(tmp_path: Path) -> None:
@@ -198,10 +207,11 @@ def test_q17_separates_below_cost_unavailable_and_missing_artifact(
     _write(
         tmp_path / "data" / "state.json",
         {
-            "recent_minute_ohlcv_by_symbol": {
-                "005930": [
-                    {"ts": base, "close": 100.0},
-                    {"ts": base + 1800, "close": 101.0},
+                    "recent_minute_ohlcv_by_symbol": {
+                        "005930": [
+                            {"ts": base, "close": 100.0},
+                            {"ts": base + 300, "close": 100.5},
+                            {"ts": base + 1800, "close": 101.0},
                 ]
             }
         },
@@ -231,7 +241,11 @@ def test_q17_separates_below_cost_unavailable_and_missing_artifact(
                 {
                     **common,
                     "q9_decision_id": "D1",
-                    "directional_edge_estimate": {"available": True},
+                        "directional_edge_estimate": {
+                            "available": True,
+                            "forward_horizon": "5m",
+                            "strategy_horizon": "scalp",
+                        },
                     "entry_cost_filter": {
                         "passed": False,
                         "directional_edge_available": True,
@@ -274,3 +288,7 @@ def test_q17_separates_below_cost_unavailable_and_missing_artifact(
     assert q17["class_counts"]["DIRECTIONAL_ESTIMATE_ARTIFACT_MISSING"] == 1
     assert q17["unavailable_reasons"]["evidence_not_eligible"] == 1
     assert q17["unavailable_reasons"]["artifact_missing"] == 1
+    expected = q17["below_cost_expected_horizon"][0]
+    assert expected["expected_forward_horizon"] == "+5m"
+    assert expected["strategy_horizon"] == "scalp"
+    assert expected["live"]["gross"]["count"] == 1

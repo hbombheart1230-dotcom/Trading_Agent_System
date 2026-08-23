@@ -6,11 +6,16 @@ from pathlib import Path
 from libs.reporting.baseline_samsung_hynix.contracts import (
     DECISIONS_SCHEMA,
     FORWARD_SCHEMA,
+    HORIZONS,
 )
 from libs.reporting.baseline_samsung_hynix.forward_returns import (
     summarize_forward_returns,
 )
-from libs.reporting.baseline_samsung_hynix.data_provider import load_existing_candles
+from libs.reporting.baseline_samsung_hynix.data_provider import (
+    load_existing_candles,
+    load_market_timeline,
+    market_snapshot_at,
+)
 from libs.reporting.baseline_samsung_hynix.pipeline import build_baseline_artifacts
 from libs.reporting.baseline_samsung_hynix.q9_comparison import (
     build_q9_role_comparison,
@@ -121,6 +126,8 @@ def test_artifact_schema_and_shadow_constraints(tmp_path: Path) -> None:
 
     assert decisions["schema_version"] == DECISIONS_SCHEMA
     assert forward["schema_version"] == FORWARD_SCHEMA
+    assert decisions["measurement_contract_version"] == "q10_point_in_time_market.v2"
+    assert forward["measurement_contract_version"] == "q10_extended_forward.v2"
     decision = decisions["decisions"][0]
     assert decision["order_execution_allowed"] is False
     assert decision["llm_used"] is False
@@ -185,7 +192,7 @@ def test_comparison_report_generation(tmp_path: Path) -> None:
         },
     )
 
-    assert len(comparison["roles"]) == 16
+    assert len(comparison["roles"]) == len(HORIZONS) * 4
     assert comparison["roles"][0]["baseline_minus_q9_expectancy_pct"] is None
     assert "Comparison vs Q9 P/A/B/C" in markdown
     assert "P_SCANNER_PRE_STRATEGIST_UNIVERSE" in markdown
@@ -521,6 +528,25 @@ def test_data_provider_refreshes_stale_nonempty_cache(tmp_path: Path, monkeypatc
     )
 
     assert result["005930"][-1]["raw_ts"] == "20260624153000"
+
+
+def test_market_snapshot_is_resolved_at_decision_time(tmp_path: Path) -> None:
+    day_dir = tmp_path / "2026-06-24"
+    day_dir.mkdir()
+    for name, generated_at, value in (
+        ("090000_macro_indicators.json", "2026-06-24T00:00:00+00:00", -1.0),
+        ("100000_macro_indicators.json", "2026-06-24T01:00:00+00:00", 2.0),
+    ):
+        (day_dir / name).write_text(
+            json.dumps({"generated_at": generated_at, "index_moves": {"kospi_pct": value}}),
+            encoding="utf-8",
+        )
+
+    timeline = load_market_timeline(day="2026-06-24", macro_root=tmp_path)
+    snapshot = market_snapshot_at(timeline, epoch=1782261000)
+
+    assert snapshot["kospi_pct"] == -1.0
+    assert snapshot["snapshot_age_sec"] == 1800
 
 
 def test_data_provider_retries_empty_fresh_response(tmp_path: Path, monkeypatch) -> None:

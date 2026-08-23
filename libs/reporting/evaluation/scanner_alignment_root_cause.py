@@ -299,10 +299,11 @@ def build_scanner_alignment_root_cause_report(
         cause_summary,
         excluded=OUTCOME_CONDITIONED_CAUSES | EVIDENCE_GAP_CAUSES,
     )
-    patch_candidate = _patch_candidate(str(largest_behavior.get("root_cause") or ""))
+    patch_candidate = _patch_candidate(str(largest_structural.get("root_cause") or ""))
 
     return {
         "schema_version": "scanner_alignment_root_cause.v1",
+        "measurement_contract_version": "q14_structural_causality.v2",
         "evaluation_program_id": "Q14_SCANNER_ALIGNMENT_ROOT_CAUSE",
         "behavior_effect": "observation_only",
         "day": day,
@@ -472,7 +473,8 @@ def build_scanner_alignment_root_cause_range(
         "largest_behavior_root_cause": largest_behavior,
         "largest_structural_root_cause": largest_structural,
         "outcome_conditioned_causes": sorted(OUTCOME_CONDITIONED_CAUSES),
-        "q15_behavior_patch_candidate": _patch_candidate(str(largest_behavior.get("root_cause") or "")),
+        "measurement_contract_version": "q14_structural_causality.v2",
+        "q15_behavior_patch_candidate": _patch_candidate(str(largest_structural.get("root_cause") or "")),
         "daily_rows": [
             {
                 "day": payload.get("day"),

@@ -77,6 +77,7 @@ def build_opportunity_engine_artifacts(
         signals,
         cost_pct=cost_pct,
         slippage_pct=slippage_pct,
+        minute_rows_by_symbol=candle_map,
     )
     summary = summarize_trades(trades)
     market_missing_count = sum(
@@ -86,6 +87,9 @@ def build_opportunity_engine_artifacts(
         or bool((row.get("opportunity") or {}).get("market_data_missing"))
     )
     probe_near_miss_count = sum(1 for row in signals if bool((row.get("opportunity") or {}).get("probe_near_miss")))
+    stale_market_count = sum(
+        1 for row in signals if bool((row.get("market") or {}).get("snapshot_stale"))
+    )
     data_quality = {
         "symbol_count": len(normalized_symbols),
         "symbols_with_candles": sum(1 for rows in candle_map.values() if rows),
@@ -93,6 +97,7 @@ def build_opportunity_engine_artifacts(
         "market_snapshot_count": len(timeline),
         "market_data_missing_signal_count": market_missing_count,
         "probe_near_miss_count": probe_near_miss_count,
+        "stale_market_snapshot_signal_count": stale_market_count,
         "missing_symbols": [symbol for symbol, rows in candle_map.items() if not rows],
     }
     output_dir = reports_root / "evaluation" / "opportunity_engine_shadow" / day
@@ -105,18 +110,31 @@ def build_opportunity_engine_artifacts(
         existing_signals = existing_signal_payload.get("signals") if isinstance(existing_signal_payload.get("signals"), list) else []
         if existing_signals:
             signals = [dict(row) for row in existing_signals if isinstance(row, Mapping)]
+            for signal in signals:
+                market = signal.get("market")
+                if not isinstance(market, dict):
+                    continue
+                age = market.get("snapshot_age_sec")
+                market["snapshot_stale"] = bool(
+                    age is not None and int(float(age)) > 300
+                )
             trades = simulate_probe_v0(
                 signals,
                 cost_pct=cost_pct,
                 slippage_pct=slippage_pct,
+                minute_rows_by_symbol=candle_map,
             )
             summary = summarize_trades(trades)
             data_quality = dict(existing_signal_payload.get("data_quality") or {})
             data_quality["preserved_higher_quality_previous_snapshot"] = True
+            data_quality["stale_market_snapshot_signal_count"] = sum(
+                1 for row in signals if bool((row.get("market") or {}).get("snapshot_stale"))
+            )
     _write_json(
         signals_path,
         {
             "schema_version": SIGNALS_SCHEMA,
+            "measurement_contract_version": "q11_market_freshness.v2",
             "evaluation_program_id": PROGRAM_ID,
             "evaluation_program_name": PROGRAM_NAME,
             "behavior_effect": "shadow_only",
@@ -132,6 +150,7 @@ def build_opportunity_engine_artifacts(
         trades_path,
         {
             "schema_version": TRADES_SCHEMA,
+            "measurement_contract_version": "q11_minute_path.v2",
             "evaluation_program_id": PROGRAM_ID,
             "evaluation_program_name": PROGRAM_NAME,
             "behavior_effect": "shadow_only",

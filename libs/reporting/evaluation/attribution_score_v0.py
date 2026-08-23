@@ -49,7 +49,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _ledger_day_record(reports_root: Path, day: str) -> dict[str, Any]:
     root = reports_root / "evaluation" / "freeze_window"
-    for path in root.glob("*/daily_ledger.json"):
+    for path in sorted(root.glob("*/daily_ledger.json"), key=lambda item: str(item)):
         payload = _read_json(path)
         for row in payload.get("days") or []:
             if isinstance(row, dict) and str(row.get("day") or "") == day:
@@ -283,7 +283,7 @@ def build_attribution_score_v0(
         if key != "evidence_quality_score"
     }
     weakest = (
-        min(scored.items(), key=lambda item: item[1])
+        min(behavior_scored.items(), key=lambda item: item[1])
         if behavior_scored
         else ("", None)
     )

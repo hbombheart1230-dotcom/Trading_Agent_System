@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -22,6 +23,8 @@ Q16_FINAL_DECISION_SOURCE = (
 )
 Q17_START_DAY = "2026-07-27"
 Q16_HORIZONS = ("+15m", "+30m")
+Q17_OBSERVATION_HORIZONS = ("+5m", "+15m", "+30m", "+60m")
+KST = timezone(timedelta(hours=9))
 Q16_MIN_EXACT_SAMPLES = 20
 Q16_MIN_DAYS = 2
 
@@ -152,6 +155,91 @@ def _observed_rows(rows: list[dict[str, Any]], horizon: str) -> list[dict[str, A
     return observed
 
 
+def _epoch_day(value: Any) -> str:
+    try:
+        epoch = int(float(value))
+    except Exception:
+        return ""
+    if epoch <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(epoch, tz=KST).strftime("%Y%m%d")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _timestamp_day(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) == 8 and text.isdigit():
+        return text
+    if len(text) in {12, 14} and text.isdigit():
+        try:
+            datetime.strptime(text[:8], "%Y%m%d")
+            return text[:8]
+        except ValueError:
+            return ""
+    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+        return text[:10].replace("-", "")
+    return _epoch_day(value)
+
+
+def _forward_integrity(row: Mapping[str, Any]) -> tuple[str, list[str]]:
+    expected_day = str(row.get("q16_day") or "").replace("-", "")
+    base = row.get("shadow_forward_base")
+    base = base if isinstance(base, Mapping) else {}
+    base_day = _timestamp_day(base.get("baseline_raw_ts")) or _timestamp_day(
+        base.get("baseline_epoch")
+    )
+    reasons: list[str] = []
+    if not expected_day or not base_day:
+        reasons.append("baseline_day_missing")
+    elif expected_day != base_day:
+        reasons.append("baseline_day_mismatch")
+    outcome = row.get("shadow_forward_outcome")
+    outcome = outcome if isinstance(outcome, Mapping) else {}
+    for horizon, checkpoint in (outcome.get("checkpoints") or {}).items():
+        if not isinstance(checkpoint, Mapping) or checkpoint.get("status") != "observed":
+            continue
+        observed_day = _timestamp_day(checkpoint.get("observed_ts"))
+        if observed_day and expected_day and observed_day != expected_day:
+            reasons.append(f"{horizon}:observed_day_mismatch")
+    return ("TRUSTED" if not reasons else "INVALID", reasons)
+
+
+def _expected_horizon(row: Mapping[str, Any]) -> str:
+    estimate = row.get("directional_edge_estimate")
+    estimate = estimate if isinstance(estimate, Mapping) else {}
+    value = str(estimate.get("forward_horizon") or "").strip().lower()
+    if not value:
+        return ""
+    return value if value.startswith("+") else f"+{value}"
+
+
+def _q17_expected_horizon_rows(
+    rows: list[dict[str, Any]],
+    *,
+    live_drag: float,
+    mock_drag: float,
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        horizon = _expected_horizon(row)
+        estimate = row.get("directional_edge_estimate")
+        estimate = estimate if isinstance(estimate, Mapping) else {}
+        strategy_horizon = str(estimate.get("strategy_horizon") or "unknown")
+        grouped.setdefault((horizon or "unknown", strategy_horizon), []).append(row)
+    return [
+        {
+            "expected_forward_horizon": horizon,
+            "strategy_horizon": strategy_horizon,
+            "candidate_count": len(group),
+            "live": _metric_bundle(group, live_drag, horizon) if horizon in Q17_OBSERVATION_HORIZONS else {},
+            "mock": _metric_bundle(group, mock_drag, horizon) if horizon in Q17_OBSERVATION_HORIZONS else {},
+        }
+        for (horizon, strategy_horizon), group in sorted(grouped.items())
+    ]
+
+
 def _daily_exact_metrics(rows: list[dict[str, Any]], live_drag: float) -> list[dict[str, Any]]:
     days = sorted({str(row.get("q16_day") or "") for row in rows if row.get("q16_day")})
     daily: list[dict[str, Any]] = []
@@ -212,12 +300,23 @@ def build_q16_proxy_rejection_review(
     rows = list(deduped.values())
     for row in rows:
         row.setdefault("q17_candidate_class", _q17_candidate_class(row))
-    exact = [row for row in rows if row.get("q16_candidate_class") == "EXACT_PROXY_ONLY_REJECTION"]
-    directional_admitted = [row for row in rows if row.get("q16_candidate_class") == "DIRECTIONAL_ADMITTED"]
-    legacy = [row for row in rows if row.get("q16_candidate_class") == "LEGACY_COST_REJECTION_UNATTRIBUTED"]
+        status, reasons = _forward_integrity(row)
+        row["forward_integrity_status"] = status
+        row["forward_integrity_reasons"] = reasons
+    trusted_rows = [row for row in rows if row.get("forward_integrity_status") == "TRUSTED"]
+    integrity_reason_counts = Counter(
+        str(reason)
+        for row in rows
+        if row.get("forward_integrity_status") != "TRUSTED"
+        for reason in row.get("forward_integrity_reasons") or []
+    )
+    exact_all = [row for row in rows if row.get("q16_candidate_class") == "EXACT_PROXY_ONLY_REJECTION"]
+    exact = [row for row in trusted_rows if row.get("q16_candidate_class") == "EXACT_PROXY_ONLY_REJECTION"]
+    directional_admitted = [row for row in trusted_rows if row.get("q16_candidate_class") == "DIRECTIONAL_ADMITTED"]
+    legacy = [row for row in trusted_rows if row.get("q16_candidate_class") == "LEGACY_COST_REJECTION_UNATTRIBUTED"]
     q17_rows = [
         row
-        for row in rows
+        for row in trusted_rows
         if str(row.get("q16_day") or "") >= Q17_START_DAY
         and str(row.get("q17_candidate_class") or "")
     ]
@@ -288,6 +387,7 @@ def build_q16_proxy_rejection_review(
         decision_ready = True
     return {
         "schema_version": "q16_proxy_rejection_review.v1",
+        "measurement_contract_version": "q16_forward_integrity.v2",
         "behavior_effect": "evaluation_only",
         "start_day": start_day,
         "end_day": day,
@@ -312,18 +412,22 @@ def build_q16_proxy_rejection_review(
             "legacy_unattributed_rows_are_decision_ineligible": True,
         },
         "counts": {
-            "exact_proxy_only_rejection_count": len(exact),
+            "exact_proxy_only_rejection_count": len(exact_all),
+            "exact_trusted_forward_count": len(exact),
+            "forward_integrity_invalid_count": len(rows) - len(trusted_rows),
             "exact_observed_30m_count": observed_30m,
             "exact_observed_day_count": observed_day_count,
             "positive_30m_day_count": positive_30m_day_count,
             "directional_admitted_count": len(directional_admitted),
             "legacy_cost_rejection_unattributed_count": len(legacy),
         },
+        "forward_integrity_reason_counts": dict(integrity_reason_counts),
         "cost_bases": bases,
         "horizons": horizons,
         "daily_exact_proxy_only": daily_exact,
         "q17_directional_edge_validation": {
             "schema_version": "q17_directional_edge_validation.v1",
+            "measurement_contract_version": "q17_expected_horizon.v2",
             "behavior_effect": "evaluation_only",
             "start_day": Q17_START_DAY,
             "class_counts": dict(q17_class_counts),
@@ -334,7 +438,7 @@ def build_q16_proxy_rejection_review(
                     "live": _metric_bundle(q17_below_cost, live_drag, horizon),
                     "mock": _metric_bundle(q17_below_cost, mock_drag, horizon),
                 }
-                for horizon in Q16_HORIZONS
+                for horizon in Q17_OBSERVATION_HORIZONS
             ],
             "admitted_horizons": [
                 {
@@ -342,8 +446,18 @@ def build_q16_proxy_rejection_review(
                     "live": _metric_bundle(q17_admitted, live_drag, horizon),
                     "mock": _metric_bundle(q17_admitted, mock_drag, horizon),
                 }
-                for horizon in Q16_HORIZONS
+                for horizon in Q17_OBSERVATION_HORIZONS
             ],
+            "below_cost_expected_horizon": _q17_expected_horizon_rows(
+                q17_below_cost,
+                live_drag=live_drag,
+                mock_drag=mock_drag,
+            ),
+            "admitted_expected_horizon": _q17_expected_horizon_rows(
+                q17_admitted,
+                live_drag=live_drag,
+                mock_drag=mock_drag,
+            ),
         },
         "samples": rows,
     }
@@ -361,6 +475,8 @@ def render_q16_proxy_rejection_review(payload: Mapping[str, Any]) -> str:
         f"- Decision authority: `{authority.get('status', 'LEGACY')}`",
         f"- Rolling diagnostic decision: `{authority.get('rolling_diagnostic_decision', payload.get('decision'))}`",
         f"- Exact proxy-only rejections: {counts.get('exact_proxy_only_rejection_count', 0)}",
+        f"- Trusted forward rows: {counts.get('exact_trusted_forward_count', 0)}",
+        f"- Invalid forward rows: {counts.get('forward_integrity_invalid_count', 0)}",
         f"- Exact +30m observations: {counts.get('exact_observed_30m_count', 0)}",
         f"- Exact observed days: {counts.get('exact_observed_day_count', 0)}",
         f"- Positive +30m days: {counts.get('positive_30m_day_count', 0)}",
@@ -370,6 +486,15 @@ def render_q16_proxy_rejection_review(payload: Mapping[str, Any]) -> str:
         "| Horizon | Cohort | Basis | Count | Win Rate | Avg Return | Profit Factor | MDD |",
         "|---|---|---|---:|---:|---:|---:|---:|",
     ]
+    integrity_reasons = payload.get("forward_integrity_reason_counts") or {}
+    if integrity_reasons:
+        lines.insert(
+            10,
+            "- Invalid reasons: "
+            + ", ".join(
+                f"`{name}`={count}" for name, count in sorted(integrity_reasons.items())
+            ),
+        )
     for horizon in payload.get("horizons") or []:
         for cohort in ("exact_proxy_only", "directional_admitted", "legacy_unattributed_cost_rejection"):
             for basis in ("live", "mock"):
@@ -415,6 +540,7 @@ def render_q16_proxy_rejection_review(payload: Mapping[str, Any]) -> str:
         "## Q17 Directional Edge Validation",
         "",
         f"- Start day: `{q17.get('start_day', Q17_START_DAY)}`",
+        f"- Measurement contract: `{q17.get('measurement_contract_version', 'legacy')}`",
     ]
     class_counts = q17.get("class_counts") or {}
     if class_counts:
@@ -427,6 +553,23 @@ def render_q16_proxy_rejection_review(payload: Mapping[str, Any]) -> str:
         lines.append("- Unavailable reasons:")
         for name, count in sorted(unavailable_reasons.items()):
             lines.append(f"  - `{name}`: {count}")
+    expected_rows = q17.get("below_cost_expected_horizon") or []
+    if expected_rows:
+        lines += [
+            "",
+            "### Below-Cost Results At Intended Horizon",
+            "",
+            "| Strategy Horizon | Forward Horizon | Candidates | Observed | Live Net Avg |",
+            "|---|---|---:|---:|---:|",
+        ]
+        for row in expected_rows:
+            live = row.get("live") or {}
+            net = live.get("net") or {}
+            lines.append(
+                f"| {row.get('strategy_horizon')} | {row.get('expected_forward_horizon')} | "
+                f"{row.get('candidate_count', 0)} | {net.get('count', 0)} | "
+                f"{float(net.get('average_return_pct') or 0):.4f}% |"
+            )
     lines += [
         "",
         "Q17 fields are additive and do not change the final Q16 RETAIN/ROLL_BACK decision.",

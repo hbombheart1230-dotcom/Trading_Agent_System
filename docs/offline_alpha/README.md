@@ -14,6 +14,20 @@ Rules:
 
 Current research:
 
+- `immediate_opening_probe_runtime_validation_2026-08-21.md`
+  - is the only next fixed runtime validation candidate
+  - reuses the existing `IMMEDIATE_OPENING_PROBE` observer without behavior changes
+  - runs for five full valid trading days with no automatic extension
+  - closes with pass, effect failure, integrity failure, or insufficient sample
+
+- `alpha_research_board_contract_2026-08-21.md`
+  - consolidates existing historical, validation, and prospective conclusions
+  - fixes four research tracks without creating another Q phase
+  - separates action review, fixed observation, integrity boundaries, and closed work
+  - prevents closed candidates from being retuned or restarted under a new name
+  - closes generic `risk_band=HIGH` after contributor-dependence sensitivity failed
+  - is read-only and never authorizes an automatic behavior change
+
 - `opening_rank1_controlled_probe_2026-08-14.md`
   - starts one mock-only controlled behavior experiment on 2026-08-17
   - permits only Scanner Rank-1 `DIRECTIONAL_BREADTH` or

@@ -91,7 +91,11 @@ def test_entry_timing_labels_too_late_with_pre_entry_alpha(tmp_path):
     )
 
     assert report["rows"][0]["label"] == "ENTRY_TOO_LATE"
+    assert report["measurement_contract_version"] == "q13_stage_timing.v2"
     assert report["rows"][0]["scanner_to_entry_delay_sec"] == 300
+    assert report["rows"][0]["strategist_to_entry_delay_sec"] is None
+    assert report["rows"][0]["selected_to_entry_delay_sec"] is None
+    assert report["rows"][0]["stage_timing_status"] == "PARTIAL"
     assert report["rows"][0]["pre_entry_move_pct"] == 1.0
 
 

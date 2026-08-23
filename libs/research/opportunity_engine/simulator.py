@@ -8,24 +8,121 @@ def _net_return_pct(entry: float, exit_price: float, cost_pct: float, slippage_p
     return gross - cost_pct - slippage_pct
 
 
+def _forward_returns(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    entry_epoch: int,
+    entry_price: float,
+    cost_pct: float,
+    slippage_pct: float,
+) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    usable = sorted(
+        (dict(row) for row in rows if int(row.get("ts") or 0) >= entry_epoch),
+        key=lambda row: int(row.get("ts") or 0),
+    )
+    for minutes in (5, 15, 30, 60):
+        target = entry_epoch + minutes * 60
+        observed = next(
+            (row for row in usable if target <= int(row.get("ts") or 0) <= target + 90),
+            None,
+        )
+        if observed is None:
+            output[f"+{minutes}m"] = {"status": "pending"}
+            continue
+        window = [row for row in usable if int(row.get("ts") or 0) <= int(observed["ts"])]
+        close = float(observed.get("close") or 0.0)
+        high = max(float(row.get("high") or row.get("close") or 0.0) for row in window)
+        low = min(float(row.get("low") or row.get("close") or 0.0) for row in window)
+        output[f"+{minutes}m"] = {
+            "status": "observed",
+            "return_pct": round(((close / entry_price) - 1.0) * 100.0, 6),
+            "net_return_pct": round(
+                _net_return_pct(entry_price, close, cost_pct, slippage_pct),
+                6,
+            ),
+            "mfe_pct": round(((high / entry_price) - 1.0) * 100.0, 6),
+            "mae_pct": round(((low / entry_price) - 1.0) * 100.0, 6),
+            "observed_epoch": int(observed["ts"]),
+        }
+    eod = next(
+        (
+            row
+            for row in reversed(usable)
+            if str(row.get("raw_ts") or "")[8:12] >= "1530"
+        ),
+        None,
+    )
+    output["EOD"] = (
+        {
+            "status": "observed",
+            "return_pct": round(
+                ((float(eod.get("close") or 0.0) / entry_price) - 1.0) * 100.0,
+                6,
+            ),
+            "net_return_pct": round(
+                _net_return_pct(
+                    entry_price,
+                    float(eod.get("close") or 0.0),
+                    cost_pct,
+                    slippage_pct,
+                ),
+                6,
+            ),
+            "observed_epoch": int(eod.get("ts") or 0),
+        }
+        if eod is not None and float(eod.get("close") or 0.0) > 0.0
+        else {"status": "pending"}
+    )
+    return output
+
+
 def simulate_probe_v0(
     signals: Sequence[Mapping[str, Any]],
     *,
     cost_pct: float,
     slippage_pct: float,
     max_hold_minutes: int = 30,
+    minute_rows_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     by_symbol: dict[str, list[Mapping[str, Any]]] = {}
     for signal in signals:
         by_symbol.setdefault(str(signal.get("symbol") or ""), []).append(signal)
     trades: list[dict[str, Any]] = []
     for symbol, rows in sorted(by_symbol.items()):
+        ordered_signals = sorted(rows, key=lambda row: int(row.get("as_of_epoch") or 0))
+        signal_by_epoch = {
+            int(row.get("as_of_epoch") or 0): row for row in ordered_signals
+        }
+        minute_rows = sorted(
+            (
+                dict(row)
+                for row in (minute_rows_by_symbol or {}).get(symbol, [])
+                if int(row.get("ts") or 0) > 0
+            ),
+            key=lambda row: int(row.get("ts") or 0),
+        )
+        if not minute_rows:
+            minute_rows = [
+                {
+                    "ts": int(signal.get("as_of_epoch") or 0),
+                    "close": float((signal.get("symbol_features") or {}).get("price") or 0.0),
+                    "high": float((signal.get("symbol_features") or {}).get("price") or 0.0),
+                    "low": float((signal.get("symbol_features") or {}).get("price") or 0.0),
+                    "raw_ts": "",
+                }
+                for signal in ordered_signals
+            ]
         position: dict[str, Any] | None = None
-        for signal in sorted(rows, key=lambda row: int(row.get("as_of_epoch") or 0)):
+        for candle in minute_rows:
+            epoch = int(candle.get("ts") or 0)
+            signal = signal_by_epoch.get(epoch)
+            if signal is None and position is None:
+                continue
+            signal = signal or {}
             features = signal.get("symbol_features") if isinstance(signal.get("symbol_features"), Mapping) else {}
             opportunity = signal.get("opportunity") if isinstance(signal.get("opportunity"), Mapping) else {}
-            epoch = int(signal.get("as_of_epoch") or 0)
-            price = float(features.get("price") or 0.0)
+            price = float(candle.get("close") or features.get("price") or 0.0)
             if position is None:
                 if not bool(opportunity.get("probe_candidate")) or price <= 0.0:
                     continue
@@ -45,24 +142,31 @@ def simulate_probe_v0(
                     "min_price": price,
                 }
                 continue
-            position["max_price"] = max(float(position["max_price"]), float(features.get("price") or price))
-            position["min_price"] = min(float(position["min_price"]), float(features.get("price") or price))
+            if epoch <= int(position["entry_epoch"]):
+                continue
+            high = float(candle.get("high") or price)
+            low = float(candle.get("low") or price)
+            position["max_price"] = max(float(position["max_price"]), high)
+            position["min_price"] = min(float(position["min_price"]), low)
             held_minutes = max(0, (epoch - int(position["entry_epoch"])) // 60)
-            stop_hit = price <= float(position["stop_price"])
+            stop_hit = low <= float(position["stop_price"])
             signal_faded = bool(
+                signal
+                and
                 float(opportunity.get("score") or 0.0) <= 0.35
                 and float(features.get("momentum_1m_pct") or 0.0) < 0.0
             )
             timeout = held_minutes >= max_hold_minutes
-            is_last = signal is rows[-1]
-            if not (stop_hit or signal_faded or timeout or is_last):
+            if not (stop_hit or signal_faded or timeout):
                 continue
-            reason = "stop_hit" if stop_hit else "signal_faded" if signal_faded else "max_hold" if timeout else "end_of_data"
+            reason = "stop_hit" if stop_hit else "signal_faded" if signal_faded else "max_hold"
             entry_price = float(position["entry_price"])
+            exit_price = float(position["stop_price"]) if stop_hit else price
             trades.append(
                 {
                     "trade_id": f"OE_TRD_{symbol}_{position['entry_epoch']}",
                     "strategy_id": "probe_v0",
+                    "measurement_contract_version": "q11_minute_path.v2",
                     "behavior_effect": "shadow_only",
                     "symbol": symbol,
                     "entry_signal_id": position["entry_signal_id"],
@@ -71,13 +175,21 @@ def simulate_probe_v0(
                     "entry_score": round(float(position["entry_score"]), 6),
                     "stop_price": round(float(position["stop_price"]), 6),
                     "exit_epoch": epoch,
-                    "exit_price": price,
+                    "exit_price": exit_price,
                     "exit_reason": reason,
                     "held_minutes": int(held_minutes),
-                    "gross_return_pct": round(((price / entry_price) - 1.0) * 100.0, 6),
-                    "net_return_pct": round(_net_return_pct(entry_price, price, cost_pct, slippage_pct), 6),
+                    "gross_return_pct": round(((exit_price / entry_price) - 1.0) * 100.0, 6),
+                    "net_return_pct": round(_net_return_pct(entry_price, exit_price, cost_pct, slippage_pct), 6),
                     "mfe_pct": round(((float(position["max_price"]) / entry_price) - 1.0) * 100.0, 6),
                     "mae_pct": round(((float(position["min_price"]) / entry_price) - 1.0) * 100.0, 6),
+                    "price_extrema_source": "minute_high_low",
+                    "forward_returns": _forward_returns(
+                        minute_rows,
+                        entry_epoch=int(position["entry_epoch"]),
+                        entry_price=entry_price,
+                        cost_pct=cost_pct,
+                        slippage_pct=slippage_pct,
+                    ),
                     "order_execution_allowed": False,
                 }
             )
@@ -107,4 +219,3 @@ def summarize_trades(trades: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if trades
         else None,
     }
-

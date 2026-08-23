@@ -195,6 +195,7 @@ def build_q13_q14_validation_report(
 
     return {
         "schema_version": "q13_q14_validation.v1",
+        "measurement_contract_version": "q13_q14_diagnostic_stability.v2",
         "evaluation_program_id": "Q13_Q14_VALIDATION_RUN",
         "behavior_effect": "observation_only",
         "days": selected_days,
@@ -210,6 +211,8 @@ def build_q13_q14_validation_report(
             "max_daily_ratio": MISSING_EVIDENCE_MAX_DAILY_RATIO,
         },
         "decision": decision,
+        "decision_scope": "diagnostic_stability_only",
+        "behavior_patch_authorized": False,
         "decision_reasons": decision_reasons,
         "daily_rows": daily_rows,
         "validation_rules": [
@@ -218,6 +221,7 @@ def build_q13_q14_validation_report(
             "GO requires Scanner Ranking Failure to be the largest behavior root cause on at least 4 of 5 trading days.",
             "GO requires Missing Evidence to remain within the configured thresholds.",
             "GO requires Q13/Q14 reports to be generated without schema/report errors.",
+            "A diagnostic GO does not authorize a behavior patch; Q14 structural evidence is required.",
         ],
     }
 
@@ -228,6 +232,8 @@ def render_q13_q14_validation_report(payload: Mapping[str, Any]) -> str:
         "",
         f"- Behavior effect: `{payload.get('behavior_effect', '')}`",
         f"- Decision: `{payload.get('decision', '')}`",
+        f"- Decision scope: `{payload.get('decision_scope', 'legacy')}`",
+        f"- Behavior patch authorized: `{bool(payload.get('behavior_patch_authorized'))}`",
         f"- Days: {payload.get('day_count', 0)} / {payload.get('required_validation_days', 0)}",
         f"- Completed report days: {payload.get('completed_report_day_count', 0)}",
         f"- Total trades: {payload.get('total_trade_count', 0)}",

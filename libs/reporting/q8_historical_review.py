@@ -178,6 +178,9 @@ class ForwardAccumulator:
     day_count: int = 0
     sums: Dict[str, float] = field(default_factory=lambda: defaultdict(float))
     weights: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    horizon_observed_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    horizon_observed_day_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    legacy_horizon_count_missing_days: int = 0
 
     def add(self, row: Mapping[str, Any]) -> None:
         candidates = _int(row.get("candidate_count"))
@@ -185,19 +188,35 @@ class ForwardAccumulator:
         self.candidate_count += candidates
         self.observed_count += observed
         self.day_count += 1
+        horizon_fields = (
+            ("3m", "avg_return_3m_pct"),
+            ("5m", "avg_return_5m_pct"),
+            ("15m", "avg_return_15m_pct"),
+            ("30m", "avg_return_30m_pct"),
+            ("60m", "avg_return_60m_pct"),
+        )
+        has_horizon_counts = any(row.get(f"observed_count_{name}") is not None for name, _ in horizon_fields)
+        if not has_horizon_counts:
+            self.legacy_horizon_count_missing_days += 1
+        for horizon, key in horizon_fields:
+            horizon_observed = _int(row.get(f"observed_count_{horizon}"))
+            horizon_days = _int(row.get(f"observed_day_count_{horizon}"))
+            if horizon_observed > 0:
+                self.horizon_observed_counts[horizon] += horizon_observed
+                self.horizon_observed_day_counts[horizon] += max(1, horizon_days)
+            value = _float(row.get(key))
+            if value is not None and horizon_observed > 0:
+                self.sums[key] += float(value) * horizon_observed
+                self.weights[key] += horizon_observed
         for key in (
-            "avg_return_3m_pct",
-            "avg_return_5m_pct",
-            "avg_return_15m_pct",
-            "avg_return_30m_pct",
-            "avg_return_60m_pct",
             "avg_mfe_5m_pct",
             "avg_mae_5m_pct",
         ):
             value = _float(row.get(key))
-            if value is not None and observed > 0:
-                self.sums[key] += float(value) * observed
-                self.weights[key] += observed
+            horizon_observed = _int(row.get("observed_count_5m"))
+            if value is not None and horizon_observed > 0:
+                self.sums[key] += float(value) * horizon_observed
+                self.weights[key] += horizon_observed
 
     def to_dict(self, name: str) -> Dict[str, Any]:
         out = {
@@ -208,6 +227,9 @@ class ForwardAccumulator:
             "coverage": round(float(self.observed_count) / float(self.candidate_count), 4)
             if self.candidate_count
             else 0.0,
+            "measurement_contract_version": "q8_horizon_coverage.v2",
+            "legacy_horizon_count_missing_days": self.legacy_horizon_count_missing_days,
+            "horizon_coverage_verified": self.legacy_horizon_count_missing_days == 0,
         }
         for key in (
             "avg_return_3m_pct",
@@ -218,7 +240,19 @@ class ForwardAccumulator:
             "avg_mfe_5m_pct",
             "avg_mae_5m_pct",
         ):
-            out[key] = _weighted_avg(float(self.sums.get(key) or 0.0), int(self.weights.get(key) or 0))
+            weight = int(self.weights.get(key) or 0)
+            out[key] = _weighted_avg(float(self.sums.get(key) or 0.0), weight) if weight > 0 else None
+        for horizon in ("3m", "5m", "15m", "30m", "60m"):
+            count = int(self.horizon_observed_counts.get(horizon) or 0)
+            out[f"observed_count_{horizon}"] = count
+            out[f"observed_day_count_{horizon}"] = int(
+                self.horizon_observed_day_counts.get(horizon) or 0
+            )
+            out[f"coverage_{horizon}"] = (
+                round(float(count) / float(self.candidate_count), 4)
+                if self.candidate_count
+                else 0.0
+            )
         return out
 
 

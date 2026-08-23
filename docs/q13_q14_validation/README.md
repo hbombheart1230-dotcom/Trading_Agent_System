@@ -250,6 +250,14 @@ or guessed.
 
 ## Q14 Causal Interpretation
 
+Measurement authority update (2026-08-21):
+
+- `docs/daily_patch/2026-08-21_q14_q18_measurement_integrity.md`
+- A legacy Q13/Q14 validation `GO` is diagnostic-stability evidence only.
+- It does not authorize a behavior patch.
+- Q15 candidate generation uses `largest_structural_root_cause`, not the
+  outcome-conditioned `largest_behavior_root_cause`.
+
 The legacy Q14 label `Scanner Ranking Failure` is outcome-conditioned: it is
 assigned when Scanner Top-1 alignment is present and the realized return is
 negative. `Aligned / No Alignment Issue` is the positive counterpart.
@@ -319,3 +327,7 @@ Q18 closed immediately as `RETAIN SHADOW`:
 
 The optional five-day extension was not started. No Q19 evaluation phase is
 authorized by the result.
+
+The 2026-08-21 integrity review does not reopen Q18. Historical aggregates that
+do not contain horizon-specific `+30m` counts are retained as legacy records but
+cannot be reused as promotion evidence.

@@ -14,7 +14,13 @@ from .contracts import (
     REPORT_SCHEMA,
     SYMBOL_CODES,
 )
-from .data_provider import common_as_of_epoch, load_existing_candles, load_market_change_pct
+from .data_provider import (
+    common_as_of_epoch,
+    load_existing_candles,
+    load_market_change_pct,
+    load_market_timeline,
+    market_snapshot_at,
+)
 from .forward_returns import attach_baseline_forward_returns, summarize_forward_returns
 from .q9_comparison import build_q9_role_comparison
 from .report import render_daily_report
@@ -84,6 +90,7 @@ def build_baseline_artifacts(
     market_change_pct: float | None = None,
     slippage_pct: float = DEFAULT_SLIPPAGE_PCT,
     q9_root: Path = Path("data/logs/quant_shadow_candidates"),
+    macro_root: Path = Path("data/logs/macro_indicators"),
     allow_fresh_fetch: bool = True,
     reconstruct_intraday: bool = False,
 ) -> dict[str, str]:
@@ -98,8 +105,12 @@ def build_baseline_artifacts(
         )
     )
     resolved_epoch = common_as_of_epoch(candle_map, requested_epoch=as_of_epoch)
-    if market_change_pct is None:
-        market_change_pct = load_market_change_pct(day=day)
+    market_timeline = load_market_timeline(day=day, macro_root=macro_root)
+    fallback_market_change_pct = (
+        market_change_pct
+        if market_change_pct is not None
+        else load_market_change_pct(day=day, macro_root=macro_root)
+    )
     decision_epochs = (
         _intraday_decision_epochs(candle_map)
         if reconstruct_intraday
@@ -109,11 +120,27 @@ def build_baseline_artifacts(
     for decision_epoch in decision_epochs:
         if decision_epoch <= 0:
             continue
+        market_snapshot = (
+            {
+                "available": True,
+                "reason": "explicit_market_change_override",
+                "snapshot_epoch": decision_epoch,
+                "snapshot_age_sec": 0,
+                "kospi_pct": market_change_pct,
+                "source_path": "explicit_override",
+            }
+            if market_change_pct is not None
+            else market_snapshot_at(market_timeline, epoch=decision_epoch)
+        )
+        point_in_time_market_change = market_snapshot.get("kospi_pct")
+        if point_in_time_market_change is None and not reconstruct_intraday:
+            point_in_time_market_change = fallback_market_change_pct
         decision = build_decision_snapshot(
             day=day,
             as_of_epoch=decision_epoch,
             candles=candle_map,
-            market_change_pct=market_change_pct,
+            market_change_pct=point_in_time_market_change,
+            market_snapshot=market_snapshot,
         )
         decision["generated_at"] = datetime.fromtimestamp(
             decision_epoch,
@@ -150,6 +177,7 @@ def build_baseline_artifacts(
     decisions.sort(key=lambda row: (int(row.get("as_of_epoch") or 0), str(row.get("decision_id") or "")))
     decisions_payload = {
         "schema_version": DECISIONS_SCHEMA,
+        "measurement_contract_version": "q10_point_in_time_market.v2",
         "evaluation_program_id": "Q10_LARGECAP_BASELINE_CONTROL",
         "behavior_effect": "shadow_only",
         "day": day,
@@ -178,6 +206,7 @@ def build_baseline_artifacts(
     )
     forward_payload = {
         "schema_version": FORWARD_SCHEMA,
+        "measurement_contract_version": "q10_extended_forward.v2",
         "evaluation_program_id": "Q10_LARGECAP_BASELINE_CONTROL",
         "behavior_effect": "evaluation_only",
         "day": day,

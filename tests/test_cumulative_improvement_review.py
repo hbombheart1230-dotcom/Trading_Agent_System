@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+from libs.reporting.evaluation.cumulative_improvement_review import (
+    build_cumulative_improvement_review,
+)
 from libs.reporting.evaluation.episode_scanner_review import (
     build_episode_scanner_review,
     build_same_symbol_reentry_review,
@@ -37,6 +43,47 @@ def _prepared_row(
             }
         },
     }
+
+
+def test_cumulative_review_streams_pre_strategist_rows_from_disk(tmp_path: Path) -> None:
+    day = "2026-08-21"
+    row = _prepared_row(
+        day=day,
+        symbol="005930",
+        epoch=1787270400,
+        rank=1,
+        return_30m=0.4,
+    )
+    row.update(
+        {
+            "q9_decision_id": "Q9-1",
+            "q9_decision_role": "P_SCANNER_PRE_STRATEGIST_UNIVERSE",
+        }
+    )
+    path = (
+        tmp_path
+        / "data"
+        / "logs"
+        / "quant_shadow_candidates"
+        / day
+        / "sample.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"generated_at": day, "q9_decision_candidates": [row]}),
+        encoding="utf-8",
+    )
+
+    result = build_cumulative_improvement_review(
+        reports_root=tmp_path / "reports",
+        start=day,
+        end=day,
+        historical_review={"below_vwap_reclaim_subtype_forward": []},
+        q14_range={"rows": [], "cause_summary": []},
+    )
+
+    assert result["episode_scanner_review"]["raw_candidate_row_count"] == 1
+    assert result["episode_scanner_review"]["episode_count"] == 1
 
 
 def test_episode_scanner_review_compresses_serial_windows_deterministically() -> None:
@@ -137,6 +184,9 @@ def test_post_reclaim_shadow_review_keeps_live_and_mock_costs_separate() -> None
                     "candidate_count": 24,
                     "observed_count": 24,
                     "day_count": 12,
+                    "observed_count_30m": 24,
+                    "observed_day_count_30m": 12,
+                    "horizon_coverage_verified": True,
                     "coverage": 1.0,
                     "avg_return_5m_pct": 0.35,
                     "avg_return_15m_pct": 0.49,
@@ -154,3 +204,22 @@ def test_post_reclaim_shadow_review_keeps_live_and_mock_costs_separate() -> None
     assert row_30m["mock_net_expectancy_pct"] == -0.54
     assert result["promotion_status"] == "LIVE_COST_SHADOW_CANDIDATE"
     assert result["runtime_directional_edge_used"] is False
+
+
+def test_post_reclaim_legacy_total_count_cannot_authorize_promotion() -> None:
+    result = build_post_reclaim_shadow_review(
+        {
+            "below_vwap_reclaim_subtype_forward": [{
+                "name": "vwap_reclaim:post_reclaim_pullback_candidate",
+                "candidate_count": 24,
+                "observed_count": 24,
+                "day_count": 12,
+                "avg_return_30m_pct": 0.54,
+            }]
+        },
+        mock_drag_pct=1.08,
+        live_drag_pct=0.28,
+    )
+
+    assert result["promotion_status"] == "LEGACY_HORIZON_COVERAGE_UNVERIFIED"
+    assert result["observed_30m_count"] == 0

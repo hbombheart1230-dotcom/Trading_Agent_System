@@ -108,3 +108,12 @@ def test_attribution_score_identifies_exit_horizon_as_weak_axis() -> None:
     assert exit_score["status"] == "OK"
     assert exit_score["score"] == 50
     assert payload["weakest_observed_axis"]["name"] == "exit_horizon_score"
+
+
+def test_evidence_quality_is_not_selected_as_behavior_axis() -> None:
+    payload = _base_score(
+        daily_scorecard={"artifact_integrity": {"status_counts": {"PASS": 9, "FAIL": 1}}},
+    )
+
+    assert payload["scores"]["evidence_quality_score"]["score"] < 100
+    assert payload["weakest_observed_axis"]["name"] != "evidence_quality_score"

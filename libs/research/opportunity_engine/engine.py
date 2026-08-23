@@ -38,6 +38,10 @@ def build_signal_timeline(
             market_features["snapshot_age_sec"] = (
                 max(0, epoch - market_source_epoch) if market_source_epoch > 0 else None
             )
+            market_features["snapshot_stale"] = bool(
+                market_features["snapshot_age_sec"] is not None
+                and int(market_features["snapshot_age_sec"]) > 300
+            )
             symbol_features = build_symbol_features(
                 rows[: index + 1],
                 as_of_epoch=epoch,

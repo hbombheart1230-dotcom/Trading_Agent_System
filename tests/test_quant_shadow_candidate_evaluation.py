@@ -5,6 +5,7 @@ from pathlib import Path
 
 from libs.reporting.quant_shadow_candidate_evaluation import (
     _augment_missing_q9_commander_candidate,
+    _forward_outcome_summary,
     build_quant_shadow_candidate_evaluation,
     load_quant_shadow_candidate_payloads,
     render_quant_shadow_candidate_evaluation_lines,
@@ -43,6 +44,38 @@ def test_q9_loader_backfills_missing_commander_row_from_daily_window() -> None:
     assert commander["q9_decision_role"] == "C_COMMANDER_FINAL"
     assert commander["q9_commander_no_trade"] is True
     assert commander["shadow_forward_base"]["baseline_price"] == 70000
+
+
+def test_forward_summary_keeps_horizon_specific_coverage() -> None:
+    rows = [
+        {
+            "candidate_day": "2026-08-21",
+            "shadow_forward_outcome": {
+                "available": True,
+                "checkpoints": {
+                    "+5m": {"status": "observed", "return_pct": 0.1},
+                    "+30m": {"status": "pending"},
+                },
+            },
+        },
+        {
+            "candidate_day": "2026-08-21",
+            "shadow_forward_outcome": {
+                "available": True,
+                "checkpoints": {
+                    "+5m": {"status": "observed", "return_pct": 0.2},
+                    "+30m": {"status": "observed", "return_pct": 0.4},
+                },
+            },
+        },
+    ]
+
+    summary = _forward_outcome_summary(rows)
+
+    assert summary["observed_count"] == 2
+    assert summary["observed_count_5m"] == 2
+    assert summary["observed_count_30m"] == 1
+    assert summary["measurement_contract_version"] == "forward_horizon_coverage.v2"
 
 
 def test_quant_shadow_candidate_evaluation_counts_roles_and_blockers() -> None:

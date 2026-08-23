@@ -137,8 +137,20 @@ def load_quant_shadow_candidate_payloads(
     reports_root: Path,
     days: Sequence[str],
 ) -> List[Dict[str, Any]]:
+    return list(
+        iter_quant_shadow_candidate_payloads(
+            reports_root=reports_root,
+            days=days,
+        )
+    )
+
+
+def iter_quant_shadow_candidate_payloads(
+    *,
+    reports_root: Path,
+    days: Sequence[str],
+) -> Iterable[Dict[str, Any]]:
     root = shadow_candidate_root_for_reports(reports_root)
-    payloads: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for day in days:
         q9_windows = _q9_windows_by_id(reports_root, day)
@@ -149,13 +161,22 @@ def load_quant_shadow_candidate_payloads(
             seen.add(key)
             payload = _read_json(path)
             if isinstance(payload, dict):
-                payloads.append(
-                    _augment_missing_q9_commander_candidate(
-                        dict(payload),
-                        windows_by_id=q9_windows,
-                    )
+                yield _augment_missing_q9_commander_candidate(
+                    dict(payload),
+                    windows_by_id=q9_windows,
                 )
-    return payloads
+
+
+def iter_quant_shadow_candidate_payloads_for_range(
+    *,
+    reports_root: Path,
+    start: str,
+    end: str,
+) -> Iterable[Dict[str, Any]]:
+    return iter_quant_shadow_candidate_payloads(
+        reports_root=reports_root,
+        days=list(_iter_days(start, end)),
+    )
 
 
 def load_quant_shadow_candidate_payloads_for_range(
@@ -498,7 +519,20 @@ def _forward_outcome_summary(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any
     observed_rows = [row for row in rows if _bool(_forward_outcome(row).get("available"))]
     observed_days = Counter(_candidate_day(row) for row in observed_rows if _candidate_day(row))
     largest_day_count = observed_days.most_common(1)[0][1] if observed_days else 0
+    horizon_counts: Dict[str, int] = {}
+    horizon_day_counts: Dict[str, int] = {}
+    for horizon in ("+3m", "+5m", "+15m", "+30m", "+60m", "EOD"):
+        horizon_rows = [
+            row
+            for row in rows
+            if _checkpoint_value(row, horizon, "return_pct") is not None
+        ]
+        horizon_counts[horizon] = len(horizon_rows)
+        horizon_day_counts[horizon] = len(
+            {_candidate_day(row) for row in horizon_rows if _candidate_day(row)}
+        )
     return {
+        "measurement_contract_version": "forward_horizon_coverage.v2",
         "candidate_count": len(rows),
         "observed_count": len(observed_rows),
         "observed_day_count": len(observed_days),
@@ -508,6 +542,16 @@ def _forward_outcome_summary(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any
             else 0.0
         ),
         "observed_days": [name for name, _count in observed_days.most_common(5)],
+        "observed_count_by_horizon": horizon_counts,
+        "observed_day_count_by_horizon": horizon_day_counts,
+        **{
+            f"observed_count_{horizon[1:-1]}m" if horizon.startswith("+") else "observed_count_eod": count
+            for horizon, count in horizon_counts.items()
+        },
+        **{
+            f"observed_day_count_{horizon[1:-1]}m" if horizon.startswith("+") else "observed_day_count_eod": count
+            for horizon, count in horizon_day_counts.items()
+        },
         "avg_return_3m_pct": _mean([_checkpoint_value(row, "+3m", "return_pct") for row in rows]),
         "avg_return_5m_pct": _mean([_checkpoint_value(row, "+5m", "return_pct") for row in rows]),
         "avg_return_15m_pct": _mean([_checkpoint_value(row, "+15m", "return_pct") for row in rows]),

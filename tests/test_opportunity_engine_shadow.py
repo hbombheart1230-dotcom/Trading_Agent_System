@@ -162,6 +162,43 @@ def test_virtual_trade_never_allows_execution() -> None:
     assert all(row["net_return_pct"] < row["gross_return_pct"] for row in trades)
 
 
+def test_late_opening_entry_is_observed_beyond_signal_window() -> None:
+    start = 1782262500
+    signal = {
+        "signal_id": "late",
+        "symbol": "005930",
+        "as_of_epoch": start,
+        "symbol_features": {
+            "price": 100.0,
+            "atr_6_pct": 0.5,
+            "opening_low": 90.0,
+        },
+        "opportunity": {"probe_candidate": True, "score": 0.8},
+    }
+    candles = []
+    for index in range(31):
+        candles.append({
+            "ts": start + index * 60,
+            "raw_ts": f"2026062410{index:02d}00",
+            "close": 100.0 + index * 0.1,
+            "high": 100.2 + index * 0.1,
+            "low": 99.8 + index * 0.1,
+        })
+
+    trades = simulate_probe_v0(
+        [signal],
+        cost_pct=0.2,
+        slippage_pct=0.05,
+        minute_rows_by_symbol={"005930": candles},
+    )
+
+    assert len(trades) == 1
+    assert trades[0]["exit_reason"] == "max_hold"
+    assert trades[0]["held_minutes"] == 30
+    assert trades[0]["price_extrema_source"] == "minute_high_low"
+    assert trades[0]["mfe_pct"] > trades[0]["gross_return_pct"]
+
+
 def test_artifacts_are_separate_from_q9(tmp_path: Path) -> None:
     start = 1782259200
     result = build_opportunity_engine_artifacts(
@@ -175,6 +212,9 @@ def test_artifacts_are_separate_from_q9(tmp_path: Path) -> None:
     signals = json.loads(Path(result["signals"]).read_text(encoding="utf-8"))
     report = Path(result["daily_report"]).read_text(encoding="utf-8")
     assert signals["behavior_effect"] == "shadow_only"
+    assert signals["measurement_contract_version"] == "q11_market_freshness.v2"
+    trades = json.loads(Path(result["virtual_trades"]).read_text(encoding="utf-8"))
+    assert trades["measurement_contract_version"] == "q11_minute_path.v2"
     assert signals["evaluation_program_id"] == "Q11_OPENING_SURGE_MARKET_REVERSAL"
     assert signals["research_window"] == "09:00-10:00 KST"
     assert "market_data_missing_signal_count" in signals["data_quality"]
@@ -209,6 +249,7 @@ def test_pipeline_preserves_higher_quality_existing_signal_snapshot(tmp_path: Pa
 
     assert second_payload["signal_count"] == first_payload["signal_count"]
     assert second_payload["data_quality"]["preserved_higher_quality_previous_snapshot"] is True
+    assert "stale_market_snapshot_signal_count" in second_payload["data_quality"]
 
 
 def test_package_has_no_q9_or_execution_imports() -> None:

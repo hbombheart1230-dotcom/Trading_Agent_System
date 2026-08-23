@@ -134,6 +134,66 @@ def load_market_change_pct(
     return _number(moves.get("kospi_pct"))
 
 
+def load_market_timeline(
+    *,
+    day: str,
+    macro_root: Path = Path("data/logs/macro_indicators"),
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in sorted((macro_root / day).glob("*_macro_indicators.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        try:
+            epoch = int(
+                datetime.fromisoformat(
+                    str(payload.get("generated_at") or "").replace("Z", "+00:00")
+                ).timestamp()
+            )
+        except Exception:
+            continue
+        moves = payload.get("index_moves")
+        moves = moves if isinstance(moves, Mapping) else {}
+        rows.append(
+            {
+                "ts": epoch,
+                "kospi_pct": _number(moves.get("kospi_pct")),
+                "source_path": str(path),
+            }
+        )
+    deduped = {int(row["ts"]): row for row in rows if int(row["ts"]) > 0}
+    return [deduped[epoch] for epoch in sorted(deduped)]
+
+
+def market_snapshot_at(
+    timeline: list[Mapping[str, Any]],
+    *,
+    epoch: int,
+) -> dict[str, Any]:
+    eligible = [dict(row) for row in timeline if int(row.get("ts") or 0) <= epoch]
+    if not eligible:
+        return {
+            "available": False,
+            "reason": "point_in_time_market_snapshot_missing",
+            "snapshot_epoch": None,
+            "snapshot_age_sec": None,
+            "kospi_pct": None,
+        }
+    row = eligible[-1]
+    source_epoch = int(row.get("ts") or 0)
+    return {
+        "available": True,
+        "reason": "",
+        "snapshot_epoch": source_epoch,
+        "snapshot_age_sec": max(0, int(epoch) - source_epoch),
+        "kospi_pct": _number(row.get("kospi_pct")),
+        "source_path": str(row.get("source_path") or ""),
+    }
+
+
 def common_as_of_epoch(
     candles: Mapping[str, list[Mapping[str, Any]]],
     *,

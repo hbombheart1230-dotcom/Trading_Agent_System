@@ -6,7 +6,7 @@ SYMBOLS = (
     {"symbol": "000660", "ticker": "000660.KS", "name": "SK Hynix"},
 )
 SYMBOL_CODES = tuple(row["symbol"] for row in SYMBOLS)
-HORIZONS = ("+5m", "+15m", "+30m", "EOD")
+HORIZONS = ("+5m", "+15m", "+30m", "+60m", "+120m", "+180m", "EOD")
 DEFAULT_SLIPPAGE_PCT = 0.05
 
 DECISIONS_SCHEMA = "baseline_samsung_hynix_decisions.v1"

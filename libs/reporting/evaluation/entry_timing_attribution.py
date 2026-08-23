@@ -14,7 +14,7 @@ from libs.reporting.quant_shadow_forward_outcomes import (
 from .metrics import performance_metrics
 
 
-HORIZONS = ("+5m", "+15m", "+30m")
+HORIZONS = ("+5m", "+15m", "+30m", "+60m")
 LABELS = (
     "ENTRY_TOO_EARLY",
     "ENTRY_TOO_LATE",
@@ -58,6 +58,14 @@ def _iso(epoch: int) -> str:
     if epoch <= 0:
         return ""
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def _stage_epoch(payload: Mapping[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = _epoch(payload.get(key))
+        if value > 0:
+            return value
+    return 0
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -164,13 +172,32 @@ def _label(
     scanner_to_entry_delay_sec: int | None,
     pre_entry_move_pct: float | None,
     forward: Mapping[str, Any],
+    strategy_horizon: str = "",
 ) -> tuple[str, list[str]]:
     cp5 = _checkpoint(forward, "+5m")
     cp15 = _checkpoint(forward, "+15m")
+    cp30 = _checkpoint(forward, "+30m")
     ret5 = _num(cp5.get("return_pct"))
     mfe5 = _num(cp5.get("mfe_pct"))
     mae5 = _num(cp5.get("mae_pct"))
     ret15 = _num(cp15.get("return_pct"))
+    normalized_horizon = str(strategy_horizon or "").strip().lower()
+    if normalized_horizon in {"swing", "overnight", "position", "1-2day", "1_2day"}:
+        return "INSUFFICIENT_EVIDENCE", ["strategy_horizon_exceeds_entry_timing_observation_window"]
+    if normalized_horizon == "intraday":
+        ret30 = _num(cp30.get("return_pct"))
+        mfe15 = _num(cp15.get("mfe_pct"))
+        mae15 = _num(cp15.get("mae_pct"))
+        if ret15 is None or ret30 is None or mfe15 is None or mae15 is None:
+            return "INSUFFICIENT_EVIDENCE", ["missing_intraday_forward_quality"]
+        reasons: list[str] = []
+        if pre_entry_move_pct is not None and pre_entry_move_pct >= 0.35 and ret15 <= 0.0 and ret30 <= 0.0:
+            return "ENTRY_TOO_LATE", ["pre_entry_move>=0.35pct_then_intraday_forward_weak"]
+        if mae15 <= -0.75 and ret15 < 0.0 and (pre_entry_move_pct is None or pre_entry_move_pct < 0.20):
+            return "ENTRY_TOO_EARLY", ["intraday_adverse_move_without_prior_alpha"]
+        if ret15 > 0.0 or ret30 > 0.0 or mfe15 >= 0.70:
+            return "ENTRY_APPROPRIATE", ["favorable_intraday_forward_response"]
+        return "INSUFFICIENT_EVIDENCE", ["intraday_forward_weak_but_not_classifiable"]
     if ret5 is None or mfe5 is None or mae5 is None:
         return "INSUFFICIENT_EVIDENCE", ["missing_5m_forward_quality"]
     reasons: list[str] = []
@@ -217,14 +244,32 @@ def build_entry_timing_attribution_report(
         selection = _mapping(model.get("selection"))
         entry = _mapping(model.get("entry"))
         outcome = _mapping(model.get("outcome"))
+        horizon_contract = _mapping(model.get("horizon_contract"))
+        strategy_horizon = str(
+            horizon_contract.get("strategy_horizon")
+            or horizon_contract.get("source_strategy_horizon")
+            or ""
+        )
         decision_id = str(selection.get("q9_decision_id") or "")
         window = windows.get(decision_id, {})
         decision_epoch = int(_num(window.get("decision_epoch")) or _epoch(window.get("generated_at")))
         entry_epoch = _epoch(entry.get("timestamp"))
         entry_price = _num(entry.get("price"))
         scanner_time = decision_epoch
-        strategist_time = decision_epoch if _mapping(window.get("strategist_selection")) else 0
-        selected_time = decision_epoch if selection.get("selected_symbol") else 0
+        strategist_payload = _mapping(window.get("strategist_selection"))
+        strategist_time = _stage_epoch(
+            strategist_payload,
+            "generated_at",
+            "confirmed_at",
+            "updated_at",
+            "timestamp",
+        )
+        selected_time = _stage_epoch(
+            selection,
+            "selected_at",
+            "selected_candidate_time",
+            "timestamp",
+        )
         scanner_delay = int(entry_epoch - scanner_time) if entry_epoch > 0 and scanner_time > 0 else None
         strategist_delay = int(entry_epoch - strategist_time) if entry_epoch > 0 and strategist_time > 0 else None
         selected_delay = int(entry_epoch - selected_time) if entry_epoch > 0 and selected_time > 0 else None
@@ -245,10 +290,20 @@ def build_entry_timing_attribution_report(
             scanner_to_entry_delay_sec=scanner_delay,
             pre_entry_move_pct=pre_move,
             forward=forward,
+            strategy_horizon=strategy_horizon,
         )
         cp5 = _checkpoint(forward, "+5m")
         cp15 = _checkpoint(forward, "+15m")
         cp30 = _checkpoint(forward, "+30m")
+        cp60 = _checkpoint(forward, "+60m")
+        missing_stage_timestamps = [
+            name
+            for name, value in (
+                ("strategist_confirm_time", strategist_time),
+                ("selected_candidate_time", selected_time),
+            )
+            if value <= 0
+        ]
         rows.append({
             "trade_id": trade_id,
             "symbol": symbol,
@@ -258,6 +313,9 @@ def build_entry_timing_attribution_report(
             "post_strategy_top1_symbol": _candidate_symbol(selection.get("scanner_top1")),
             "selected_symbol": str(selection.get("selected_symbol") or ""),
             "selected_rank": selection.get("selected_rank") or _candidate_rank(selection.get("selected_candidate")),
+            "strategy_horizon": strategy_horizon or "unknown",
+            "stage_timing_status": "COMPLETE" if not missing_stage_timestamps else "PARTIAL",
+            "missing_stage_timestamps": missing_stage_timestamps,
             "scanner_top1_time": _iso(scanner_time),
             "post_strategy_top1_time": _iso(strategist_time),
             "strategist_confirm_time": _iso(strategist_time),
@@ -266,6 +324,7 @@ def build_entry_timing_attribution_report(
             "scanner_to_entry_delay_sec": scanner_delay,
             "strategist_to_entry_delay_sec": strategist_delay,
             "selected_to_entry_delay_sec": selected_delay,
+            "decision_window_to_entry_delay_sec": scanner_delay,
             "pre_entry_move_pct": pre_move,
             "pre_entry_move_meta": pre_move_meta,
             "entry_return_pct": outcome.get("net_return_pct"),
@@ -273,12 +332,15 @@ def build_entry_timing_attribution_report(
                 "+5m_return_pct": cp5.get("return_pct"),
                 "+15m_return_pct": cp15.get("return_pct"),
                 "+30m_return_pct": cp30.get("return_pct"),
+                "+60m_return_pct": cp60.get("return_pct"),
                 "+5m_mfe_pct": cp5.get("mfe_pct"),
                 "+15m_mfe_pct": cp15.get("mfe_pct"),
                 "+30m_mfe_pct": cp30.get("mfe_pct"),
+                "+60m_mfe_pct": cp60.get("mfe_pct"),
                 "+5m_mae_pct": cp5.get("mae_pct"),
                 "+15m_mae_pct": cp15.get("mae_pct"),
                 "+30m_mae_pct": cp30.get("mae_pct"),
+                "+60m_mae_pct": cp60.get("mae_pct"),
                 "immediate_adverse_move": bool((_num(cp5.get("mae_pct")) or 0.0) <= -0.55),
                 "immediate_favorable_move": bool((_num(cp5.get("mfe_pct")) or 0.0) >= 0.50),
                 "forward_available": bool(forward.get("available")),
@@ -325,6 +387,7 @@ def build_entry_timing_attribution_report(
 
     return {
         "schema_version": "entry_timing_attribution_report.v1",
+        "measurement_contract_version": "q13_stage_timing.v2",
         "evaluation_program_id": "Q13_ENTRY_TIMING_ATTRIBUTION",
         "behavior_effect": "observation_only",
         "day": day,
@@ -333,7 +396,7 @@ def build_entry_timing_attribution_report(
         "label_summary": label_rows,
         "rows": rows,
         "limitations": [
-            "Scanner, strategist, and selected candidate timestamps are inferred from the Q9 decision window timestamp when separate stage timestamps are unavailable.",
+            "Scanner time uses the Q9 decision snapshot. Strategist and selected-candidate times remain empty unless an explicit stage timestamp exists.",
             "Labels are attribution hypotheses, not trading behavior.",
             "INSUFFICIENT_EVIDENCE is used when forward minute observations are missing or ambiguous.",
         ],

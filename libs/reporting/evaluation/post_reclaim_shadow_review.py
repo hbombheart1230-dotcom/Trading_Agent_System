@@ -62,24 +62,34 @@ def build_post_reclaim_shadow_review(
     )
     observed_count = int(target.get("observed_count") or 0)
     observed_days = int(target.get("day_count") or 0)
+    horizon_coverage_verified = bool(target.get("horizon_coverage_verified"))
+    observed_30m = int(target.get("observed_count_30m") or 0)
+    observed_30m_days = int(target.get("observed_day_count_30m") or 0)
     return {
         "schema_version": "post_reclaim_shadow_review.v1",
+        "measurement_contract_version": "q18_horizon_coverage.v2",
         "behavior_effect": "shadow_only",
         "profile_name": TARGET_PROFILE,
         "available": bool(target),
         "candidate_count": int(target.get("candidate_count") or 0),
         "observed_count": observed_count,
         "observed_day_count": observed_days,
+        "observed_30m_count": observed_30m,
+        "observed_30m_day_count": observed_30m_days,
+        "horizon_coverage_verified": horizon_coverage_verified,
         "coverage": target.get("coverage"),
         "rows": rows,
         "promotion_status": (
             "LIVE_COST_SHADOW_CANDIDATE"
-            if observed_count >= 20
-            and observed_days >= 10
+            if horizon_coverage_verified
+            and observed_30m >= 20
+            and observed_30m_days >= 10
             and live_30m is not None
             and live_30m > 0
             and mock_30m is not None
             and mock_30m <= 0
+            else "LEGACY_HORIZON_COVERAGE_UNVERIFIED"
+            if target and not horizon_coverage_verified
             else "RETAIN_UNDER_OBSERVATION"
         ),
         "runtime_directional_edge_used": False,
@@ -87,6 +97,7 @@ def build_post_reclaim_shadow_review(
             "This subtype is not fed into Q17 runtime cost evidence.",
             "Aggregated subtype observations may remain serially correlated.",
             "Positive live-cost expectancy does not imply mock-cost profitability.",
+            "Promotion uses horizon-specific +30m counts and day coverage; total observed_count is not a substitute.",
         ],
     }
 

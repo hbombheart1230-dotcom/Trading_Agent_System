@@ -30,8 +30,8 @@ def render_daily_report(
         "",
         "## Decisions",
         "",
-        "| Time | Rank | Symbol | Action | Score | Momentum | Volume | Conditions |",
-        "|---|---:|---|---|---:|---:|---:|---|",
+        "| Time | Rank | Symbol | Action | Score | 5m | 15m | 30m | 60m | Volume | Market age | Conditions |",
+        "|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for decision in decisions.get("decisions") or []:
         for row in decision.get("ranked_candidates") or []:
@@ -42,7 +42,11 @@ def render_daily_report(
                 f"| {decision.get('generated_at')} | {row.get('rank')} | "
                 f"{row.get('ticker')} | {row.get('action')} | {float(row.get('score') or 0):.4f} | "
                 f"{float(features.get('momentum_5m_pct') or 0):.4f}% | "
-                f"{float(features.get('volume_ratio') or 0):.2f}x | {passed}/{total} |"
+                f"{_pct(features.get('momentum_15m_pct'))} | "
+                f"{_pct(features.get('momentum_30m_pct'))} | "
+                f"{_pct(features.get('momentum_60m_pct'))} | "
+                f"{float(features.get('volume_ratio') or 0):.2f}x | "
+                f"{(decision.get('market_snapshot') or {}).get('snapshot_age_sec', '-')} | {passed}/{total} |"
             )
     lines += [
         "",

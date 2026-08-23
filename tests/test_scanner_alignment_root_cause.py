@@ -100,6 +100,8 @@ def test_scanner_alignment_root_cause_identifies_structural_cause_separately() -
 
     assert result["largest_behavior_root_cause"]["root_cause"] == "Scanner Ranking Failure"
     assert result["largest_structural_root_cause"]["root_cause"] == "Candidate Filtering"
+    assert "runner-up" in result["q15_behavior_patch_candidate"]
+    assert result["measurement_contract_version"] == "q14_structural_causality.v2"
 
 
 def test_scanner_alignment_excludes_trade_absent_from_authority_audit() -> None:

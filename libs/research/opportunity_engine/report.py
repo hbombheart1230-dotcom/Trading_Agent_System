@@ -45,6 +45,7 @@ def render_report(
         f"- Candle rows: {data_quality.get('candle_row_count', 0)}",
         f"- Market snapshots: {data_quality.get('market_snapshot_count', 0)}",
         f"- Signals missing market data: {data_quality.get('market_data_missing_signal_count', market_missing_count)}",
+        f"- Signals using market snapshots older than 300s: {data_quality.get('stale_market_snapshot_signal_count', 0)}",
         "",
         "## Shadow Results",
         "",
@@ -58,10 +59,29 @@ def render_report(
         f"- Average MFE: {summary.get('average_mfe_pct')}",
         f"- Average MAE: {summary.get('average_mae_pct')}",
         "",
+        "## Virtual Trade Outcomes",
+        "",
+        "| Symbol | Entry | Exit | Hold | Reason | Net | MFE | MAE | +30m net | +60m net |",
+        "|---|---:|---:|---:|---|---:|---:|---:|---:|---:|",
+    ]
+    for trade in trades:
+        forward = trade.get("forward_returns") or {}
+        cp30 = forward.get("+30m") or {}
+        cp60 = forward.get("+60m") or {}
+        lines.append(
+            f"| {trade.get('symbol')} | {trade.get('entry_epoch')} | {trade.get('exit_epoch')} | "
+            f"{trade.get('held_minutes')}m | {trade.get('exit_reason')} | "
+            f"{trade.get('net_return_pct')}% | {trade.get('mfe_pct')}% | {trade.get('mae_pct')}% | "
+            f"{cp30.get('net_return_pct', '-')} | {cp60.get('net_return_pct', '-')} |"
+        )
+    if not trades:
+        lines.append("| - | - | - | - | - | - | - | - | - | - |")
+    lines += [
+        "",
         "## Probe Candidates",
         "",
-        "| Time | Symbol | Score | Market state | 3m momentum | Relative strength | Robust volume | VWAP distance |",
-        "|---:|---|---:|---|---:|---:|---:|---:|",
+        "| Time | Symbol | Score | Market state | Market age | 3m momentum | Relative strength | Robust volume | VWAP distance |",
+        "|---:|---|---:|---|---:|---:|---:|---:|---:|",
     ]
     for row in probes[:100]:
         market = row.get("market") or {}
@@ -69,13 +89,13 @@ def render_report(
         opportunity = row.get("opportunity") or {}
         lines.append(
             f"| {row.get('as_of_epoch')} | {row.get('symbol')} | {float(opportunity.get('score') or 0.0):.4f} "
-            f"| {market.get('state')} | {float(features.get('momentum_3m_pct') or 0.0):.4f}% "
+            f"| {market.get('state')} | {market.get('snapshot_age_sec')}s | {float(features.get('momentum_3m_pct') or 0.0):.4f}% "
             f"| {float(features.get('market_relative_strength_proxy_pct') or 0.0):.4f}% "
             f"| {float(features.get('robust_volume_ratio') or 0.0):.3f} "
             f"| {float(features.get('vwap_distance_pct') or 0.0):.4f}% |"
         )
     if not probes:
-        lines.append("| - | - | - | - | - | - | - | - |")
+        lines.append("| - | - | - | - | - | - | - | - | - |")
     lines.extend(
         [
             "",

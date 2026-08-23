@@ -69,6 +69,8 @@ def test_q13_q14_validation_go_when_scanner_failure_is_stable(tmp_path: Path) ->
 
     assert result["decision"] == "GO"
     assert result["largest_behavior_root_cause_day_counts"]["Scanner Ranking Failure"] == 4
+    assert result["decision_scope"] == "diagnostic_stability_only"
+    assert result["behavior_patch_authorized"] is False
 
 
 def test_q13_q14_validation_no_go_when_missing_evidence_is_high(tmp_path: Path) -> None:

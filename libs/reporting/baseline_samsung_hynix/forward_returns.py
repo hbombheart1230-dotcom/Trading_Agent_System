@@ -13,6 +13,46 @@ from .contracts import HORIZONS
 KST = timezone(timedelta(hours=9))
 
 
+def _extended_checkpoint(
+    rows: list[Mapping[str, Any]],
+    *,
+    base_epoch: int,
+    base_price: float,
+    minutes: int,
+) -> dict[str, Any]:
+    target = base_epoch + minutes * 60
+    observed = next(
+        (
+            row
+            for row in rows
+            if target <= int(row.get("ts") or 0) <= target + 90
+        ),
+        None,
+    )
+    if observed is None:
+        return {"status": "pending"}
+    window = [
+        row
+        for row in rows
+        if base_epoch < int(row.get("ts") or 0) <= int(observed.get("ts") or 0)
+    ]
+    close = float(observed.get("close") or 0.0)
+    if close <= 0.0 or not window:
+        return {"status": "pending"}
+    high = max(float(row.get("high") or row.get("close") or 0.0) for row in window)
+    low = min(float(row.get("low") or row.get("close") or 0.0) for row in window)
+    return {
+        "status": "observed",
+        "return_pct": round(((close / base_price) - 1.0) * 100.0, 4),
+        "mfe_pct": round(((high / base_price) - 1.0) * 100.0, 4),
+        "mae_pct": round(((low / base_price) - 1.0) * 100.0, 4),
+        "price": close,
+        "high": high,
+        "low": low,
+        "observed_ts": observed.get("raw_ts") or observed.get("ts"),
+    }
+
+
 def decision_candidate_rows(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for decision in decisions:
@@ -61,26 +101,43 @@ def attach_baseline_forward_returns(
             horizon: dict(checkpoints.get(horizon) or {"status": "pending"})
             for horizon in HORIZONS
         }
-        eod = selected_checkpoints["EOD"]
         symbol_rows = list(minute_rows_by_symbol.get(str(row.get("symbol") or "")) or [])
+        base = row.get("shadow_forward_base") or {}
+        base_epoch = int(base.get("baseline_epoch") or 0)
+        base_price = float(base.get("baseline_price") or 0.0)
         same_day_rows = [
             candle
             for candle in symbol_rows
-            if int(candle.get("ts") or 0) >= int(
-                (row.get("shadow_forward_base") or {}).get("baseline_epoch") or 0
-            )
+            if int(candle.get("ts") or 0) >= base_epoch
         ]
-        if eod.get("status") != "observed" and same_day_rows:
+        for minutes in (120, 180):
+            selected_checkpoints[f"+{minutes}m"] = _extended_checkpoint(
+                same_day_rows,
+                base_epoch=base_epoch,
+                base_price=base_price,
+                minutes=minutes,
+            ) if base_epoch > 0 and base_price > 0 else {"status": "pending"}
+        selected_checkpoints["EOD"] = {"status": "pending"}
+        if same_day_rows:
             last = same_day_rows[-1]
             last_epoch = int(last.get("ts") or 0)
             last_kst = datetime.fromtimestamp(last_epoch, tz=KST) if last_epoch > 0 else None
-            if last_kst and (last_kst.hour, last_kst.minute) >= (15, 19):
-                base_price = float((row.get("shadow_forward_base") or {}).get("baseline_price") or 0.0)
+            if last_kst and (last_kst.hour, last_kst.minute) >= (15, 30):
                 close = float(last.get("close") or 0.0)
                 if base_price > 0 and close > 0:
+                    high = max(
+                        float(candle.get("high") or candle.get("close") or 0.0)
+                        for candle in same_day_rows
+                    )
+                    low = min(
+                        float(candle.get("low") or candle.get("close") or 0.0)
+                        for candle in same_day_rows
+                    )
                     selected_checkpoints["EOD"] = {
                         "status": "observed",
                         "return_pct": round(((close / base_price) - 1.0) * 100.0, 4),
+                        "mfe_pct": round(((high / base_price) - 1.0) * 100.0, 4),
+                        "mae_pct": round(((low / base_price) - 1.0) * 100.0, 4),
                         "price": close,
                         "observed_ts": last.get("raw_ts") or last_epoch,
                         "source": "last_regular_session_minute",
