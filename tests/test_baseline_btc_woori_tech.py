@@ -7,6 +7,7 @@ from libs.reporting.baseline_btc_woori_tech.contracts import (
     DECISIONS_SCHEMA,
     FORWARD_SCHEMA,
     TARGET_SYMBOL,
+    STRONG_BTC_POLICY_ID,
 )
 from libs.reporting.baseline_btc_woori_tech.forward_returns import (
     attach_forward_returns,
@@ -208,6 +209,52 @@ def test_strong_btc_regime_does_not_mask_a_sharp_five_minute_drop() -> None:
     assert signal["leading_positive"] is False
 
 
+def test_strong_btc_variant_rejects_ordinary_bull_signal() -> None:
+    payload = _btc()
+    for row in payload["sources"]["btc_usd"]:
+        row.update(
+            {
+                "momentum_15m_pct": 0.4,
+                "momentum_60m_pct": 0.5,
+                "momentum_24h_pct": 1.0,
+            }
+        )
+    decision = build_decision_snapshot(
+        day="2026-06-25",
+        as_of_epoch=1782347400,
+        woori_candles=_candles(),
+        btc_signals=payload,
+    )
+
+    assert decision["eligible"] is True
+    variant = decision["policy_variants"][STRONG_BTC_POLICY_ID]
+    assert variant["eligible"] is False
+    assert variant["conditions"]["btc_large_rise_confirmed"] is False
+
+
+def test_strong_btc_variant_requires_large_rise_and_local_confirmation() -> None:
+    payload = _btc()
+    for row in payload["sources"]["btc_usd"]:
+        row.update(
+            {
+                "momentum_15m_pct": 0.8,
+                "momentum_60m_pct": 1.2,
+                "momentum_24h_pct": 4.0,
+            }
+        )
+    decision = build_decision_snapshot(
+        day="2026-06-25",
+        as_of_epoch=1782347400,
+        woori_candles=_candles(),
+        btc_signals=payload,
+    )
+
+    variant = decision["policy_variants"][STRONG_BTC_POLICY_ID]
+    assert variant["eligible"] is True
+    assert variant["action"] == "SHADOW_ENTER"
+    assert variant["thresholds"]["btc_60m_min_pct"] == 1.0
+
+
 def test_cost_and_slippage_application() -> None:
     summary = summarize(
         [
@@ -263,6 +310,7 @@ def test_artifacts_have_no_order_intent_or_execution(tmp_path: Path) -> None:
 
     assert decisions["schema_version"] == DECISIONS_SCHEMA
     assert forward["schema_version"] == FORWARD_SCHEMA
+    assert STRONG_BTC_POLICY_ID in forward["policy_variant_summaries"]
     assert decisions["fixed_target"] == "041190.KQ"
     assert decisions["crypto_fear_greed"]["regime"] == "greed"
     assert decisions["crypto_fear_greed_behavior_effect"] == "observation_only"

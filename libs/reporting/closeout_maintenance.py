@@ -318,6 +318,40 @@ def run_closeout_maintenance(
         }
 
     try:
+        from libs.reporting.short_alpha_discriminator import (
+            write_short_alpha_discriminator,
+        )
+
+        short_alpha = write_short_alpha_discriminator(
+            reports_root=Path(reports_root),
+            through_day=normalized_day,
+            output_dir=(
+                Path(reports_root)
+                / "evaluation"
+                / "short_alpha_discriminator"
+                / normalized_day
+            ),
+        )
+        out["steps"]["short_alpha_discriminator"] = {
+            "ok": str(short_alpha.get("integrity_status") or "").startswith("PASS"),
+            "integrity_status": short_alpha.get("integrity_status"),
+            "behavior_change_authorized": bool(
+                short_alpha.get("behavior_change_authorized")
+            ),
+            **{
+                key: value
+                for key, value in short_alpha.items()
+                if key.endswith("_path")
+            },
+        }
+    except Exception as exc:
+        out["steps"]["short_alpha_discriminator"] = {
+            "ok": False,
+            "behavior_change_authorized": False,
+            "error": str(exc),
+        }
+
+    try:
         from libs.reporting.evaluation.same_symbol_sequences import (
             build_same_symbol_sequence_artifacts,
         )

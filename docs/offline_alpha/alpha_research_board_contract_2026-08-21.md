@@ -51,6 +51,11 @@ No new Q phase is created. The existing Q artifacts are evidence suppliers.
 - BTC-Woori historical subset review
 - corrected daily Samsung/Hynix baseline
 
+The corrected Samsung/Hynix baseline uses one Top-1 average per trading day as
+the independent evaluation unit. Repeated intraday windows remain visible as
+`window_count` but do not inflate `sample_count`. The cumulative cohort starts
+at the 2026-08-21 integrity boundary.
+
 ## Outputs
 
 - `reports/evaluation/alpha_research_board/YYYY-MM-DD/alpha_research_board.json`
@@ -61,6 +66,8 @@ No new Q phase is created. The existing Q artifacts are evidence suppliers.
 - `reports/evaluation/alpha_research_board/YYYY-MM-DD/remaining_candidate_reviews.md`
 - `reports/evaluation/alpha_research_board/YYYY-MM-DD/immediate_opening_runtime_validation.json`
 - `reports/evaluation/alpha_research_board/YYYY-MM-DD/immediate_opening_runtime_validation.md`
+- `reports/evaluation/alpha_research_board/YYYY-MM-DD/short_alpha_discriminator.json`
+- `reports/evaluation/alpha_research_board/YYYY-MM-DD/short_alpha_discriminator.md`
 
 ## First Manual Review Result
 
@@ -76,6 +83,32 @@ fixed sensitivity review returned `REJECT_CONTRIBUTOR_DEPENDENCE`.
 The generic `risk_band=HIGH` discriminator is therefore closed. The result must not
 be used to retune the risk threshold or to create a narrower behavior rule from the
 same reviewed sample.
+
+## Additive Short-Alpha Discriminator
+
+The 2026-08-24 offline review found an asset-class interaction inside the already
+closed generic HIGH cohort. This does not reopen `R1_SCANNER_RISK_HIGH_30M_V1` and
+does not authorize a narrower behavior rule.
+
+`HIGH_COMMON_SHORT_ALPHA_V1` is a new fixed prospective shadow contract:
+
+- conditions: `asset_class=common_stock AND risk_band=HIGH`;
+- first eligible prospective day: 2026-08-25;
+- independent unit: first observation per day-symbol;
+- checkpoints: +5m, +15m, +30m, +60m, EOD;
+- historical discovery rows and prospective rows are stored separately;
+- Scanner, Strategist, Monitor, Commander, and execution behavior remain unchanged.
+
+The report also stores `TOP_VALUE_VOLUME_NEGATIVE_CONTROL_V1`, candidate-setup
+comparisons, score calibration, profit-fade observations, optimistic profit-lock
+proxies, and Strategist Stage-2 ROI evidence. Profit-lock proxies are not executable
+backtests and cannot authorize a policy.
+
+The independent runner is:
+
+```powershell
+python scripts/run_short_alpha_discriminator.py --through-day YYYY-MM-DD
+```
 
 ## Remaining Offline Decisions
 

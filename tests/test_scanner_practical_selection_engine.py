@@ -160,6 +160,32 @@ def test_scanner_monitor_boundary_contract_compatibility():
                 "AAA": {"score": 0.8, "risk_score": 0.2, "confidence": 0.8},
                 "BBB": {"score": 0.3, "risk_score": 0.3, "confidence": 0.7},
             },
+            "scanner_features": {
+                "AAA": {
+                    "return20": 0.08,
+                    "ma20_gap": 0.03,
+                    "trend_strength": 0.8,
+                    "volume_spike20": 2.2,
+                    "volatility20": 0.02,
+                    "signal_score": 0.7,
+                },
+                "BBB": {
+                    "return20": -0.02,
+                    "ma20_gap": -0.01,
+                    "trend_strength": -0.2,
+                    "volume_spike20": 0.9,
+                    "volatility20": 0.06,
+                    "signal_score": -0.2,
+                },
+            },
+            "skill_data": {
+                "market.quote": {
+                    "data": [
+                        {"symbol": "AAA", "price": 100, "change_pct": 2.1, "volume": 900_000, "value": 4_000_000_000},
+                        {"symbol": "BBB", "price": 100, "change_pct": -0.4, "volume": 350_000, "value": 1_000_000_000},
+                    ]
+                }
+            },
         }
     )
     top = str(scanned.get("top_stock") or "")

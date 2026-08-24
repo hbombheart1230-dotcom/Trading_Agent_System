@@ -14,6 +14,7 @@ from .contracts import (
     TRACKS,
 )
 from .loaders import find_by_id, find_horizon, load_json, mapping, metric_snapshot
+from .large_cap_review import build_large_cap_daily_review
 from .report import render_alpha_research_board
 from .remaining_reviews import (
     build_remaining_candidate_reviews,
@@ -24,6 +25,8 @@ from .runtime_validation import (
     render_immediate_opening_runtime_validation,
 )
 from .sensitivity import build_risk_high_sensitivity, render_risk_high_sensitivity
+from ..short_alpha_discriminator import build_short_alpha_discriminator
+from ..short_alpha_discriminator.report import render_short_alpha_discriminator
 
 
 def _candidate(
@@ -315,45 +318,31 @@ def _btc_woori(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _large_cap_candidate(reports_root: Path, through_day: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    path = (
-        reports_root
-        / "evaluation"
-        / "baseline_samsung_hynix"
-        / through_day
-        / "baseline_samsung_hynix_forward_returns.json"
+    review = build_large_cap_daily_review(
+        reports_root=reports_root, through_day=through_day
     )
-    payload, source = load_json(path)
-    horizon = find_horizon(mapping(payload.get("summary")).get("horizons"), "+180m")
-    gross = metric_snapshot(horizon.get("top1_gross"))
-    live_net = {
-        "sample_count": 1 if gross.get("window_count") else 0,
-        "window_count": gross.get("window_count", 0),
-        "win_rate": None,
-        "avg_net_return_pct": None,
-        "profit_factor": None,
-        "max_drawdown_pct": None,
-        "coverage": None,
-        "avg_mfe_pct": None,
-        "avg_mae_pct": None,
-    }
-    if gross.get("avg_net_return_pct") is not None:
-        live_net["avg_net_return_pct"] = round(
-            float(gross["avg_net_return_pct"]) - LIVE_RESEARCH_COST_PCT, 4
-        )
+    live_net = metric_snapshot(review.get("base"))
+    live_net["window_count"] = int(mapping(review.get("base")).get("window_count") or 0)
     row = _candidate(
         candidate_id="SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1",
         track_id="LARGE_CAP_TWO_SYMBOL",
         discriminator="momentum + volume confirmation within fixed two-symbol universe",
         target_horizon="+180m",
-        source_status="COLLECTING_AFTER_2026_08_21_INTEGRITY_FIX",
-        board_bucket="DATA_REPAIR_BOUNDARY",
+        source_status=str(review.get("decision") or "RUNTIME_DATA_REQUIRED"),
+        board_bucket="BACKGROUND_RUNTIME_REQUIRED",
         owner="SAMSUNG_HYNIX_BASELINE",
         prospective=live_net,
         evidence_note="정합성 수정 이후 하루만 비교 가능하며 반복 window는 독립 거래가 아님.",
         next_action="과거 시점 오류 자료를 섞지 않고 수정 이후 day-level episode만 누적.",
         source_keys=["large_cap_daily"],
     )
-    return row, source
+    return row, {
+        "path": "multiple_daily_artifacts",
+        "available": bool(review.get("source_count")),
+        "error": "INVALID_DAILY_ARTIFACT" if review.get("invalid_sources") else None,
+        "through_day": through_day,
+        "source_count": review.get("source_count"),
+    }
 
 
 def _attention_order(candidates: list[dict[str, Any]]) -> list[str]:
@@ -430,6 +419,77 @@ def build_alpha_research_board(
     remaining_reviews = build_remaining_candidate_reviews(
         reports_root=reports_root, through_day=through_day
     )
+    broad_btc_review = next(
+        (
+            mapping(row)
+            for row in remaining_reviews.get("reviews") or []
+            if mapping(row).get("candidate_id") == "BTC_WOORI_V2_ONLY_LOCAL_CONFIRMATION"
+        ),
+        {},
+    )
+    strong_btc_history = next(
+        (
+            mapping(row)
+            for row in broad_btc_review.get("by_btc_regime") or []
+            if mapping(row).get("btc_regime") == "strong_bull"
+        ),
+        {},
+    )
+    candidates.append(
+        _candidate(
+            candidate_id="BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1",
+            track_id="BTC_WOORI",
+            discriminator="BTC 60m >= 1.0% or 24h >= 3.0%, plus Woori local confirmation",
+            target_horizon="+30m",
+            source_status="PROSPECTIVE_SHADOW_FROM_2026_08_25",
+            board_bucket="BACKGROUND_RUNTIME_REQUIRED",
+            owner="BTC_WOORI_BASELINE",
+            historical=metric_snapshot(strong_btc_history),
+            evidence_note=(
+                "The historical strong-bull subgroup is hypothesis-generating only; "
+                "the rejected broad BTC rule remains closed."
+            ),
+            next_action=(
+                "Collect only the fixed additive shadow variant from the next full session."
+            ),
+            source_keys=["btc_woori_history"],
+        )
+    )
+    short_alpha_review = build_short_alpha_discriminator(
+        reports_root=reports_root,
+        through_day=through_day,
+    )
+    short_cohort_review = mapping(short_alpha_review.get("cohort_review"))
+    short_historical = mapping(short_cohort_review.get("historical_reference"))
+    short_prospective = mapping(short_cohort_review.get("prospective"))
+    historical_5m = mapping(mapping(short_historical.get("horizons")).get("+5m"))
+    prospective_5m = mapping(mapping(short_prospective.get("horizons")).get("+5m"))
+    candidates.append(
+        _candidate(
+            candidate_id="HIGH_COMMON_SHORT_ALPHA_V1",
+            track_id="OPENING_CONDITIONAL",
+            discriminator="risk HIGH + common stock short-horizon alpha",
+            target_horizon="+5m",
+            source_status="PROSPECTIVE_SHADOW_FROM_2026_08_25",
+            board_bucket="BACKGROUND_RUNTIME_REQUIRED",
+            owner="SCANNER_OR_HORIZON_REVIEW",
+            historical=metric_snapshot(historical_5m),
+            prospective=metric_snapshot(prospective_5m),
+            concentration={
+                "historical_day_count": short_historical.get("day_count"),
+                "historical_largest_day_share": short_historical.get("largest_day_share"),
+                "historical_largest_symbol_share": short_historical.get("largest_symbol_share"),
+            },
+            evidence_note=(
+                "Post-hoc historical discriminator. Historical and prospective "
+                "episodes are kept separate and no behavior is changed."
+            ),
+            next_action=(
+                "Collect the frozen HIGH common-stock cohort at +5m/+15m/+30m/EOD."
+            ),
+            source_keys=["short_alpha_discriminator"],
+        )
+    )
     runtime_validation = build_immediate_opening_runtime_validation(
         reports_root=reports_root, through_day=through_day
     )
@@ -477,6 +537,7 @@ def build_alpha_research_board(
         "sensitivity_reviews": [risk_high_sensitivity],
         "remaining_candidate_reviews": remaining_reviews,
         "runtime_validation": runtime_validation,
+        "short_alpha_discriminator": short_alpha_review,
         "settled_findings": SETTLED_FINDINGS,
         "integrity": {
             "status": "PASS" if not missing_sources else "PASS_WITH_MISSING_SOURCES",
@@ -502,6 +563,8 @@ def write_alpha_research_board(
     remaining_markdown_path = output_dir / "remaining_candidate_reviews.md"
     runtime_json_path = output_dir / "immediate_opening_runtime_validation.json"
     runtime_markdown_path = output_dir / "immediate_opening_runtime_validation.md"
+    short_alpha_json_path = output_dir / "short_alpha_discriminator.json"
+    short_alpha_markdown_path = output_dir / "short_alpha_discriminator.md"
     json_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -527,6 +590,13 @@ def write_alpha_research_board(
     runtime_markdown_path.write_text(
         render_immediate_opening_runtime_validation(runtime_validation), encoding="utf-8"
     )
+    short_alpha = mapping(payload.get("short_alpha_discriminator"))
+    short_alpha_json_path.write_text(
+        json.dumps(short_alpha, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    short_alpha_markdown_path.write_text(
+        render_short_alpha_discriminator(short_alpha), encoding="utf-8"
+    )
     return {
         "json_path": str(json_path),
         "markdown_path": str(markdown_path),
@@ -536,6 +606,8 @@ def write_alpha_research_board(
         "remaining_markdown_path": str(remaining_markdown_path),
         "runtime_json_path": str(runtime_json_path),
         "runtime_markdown_path": str(runtime_markdown_path),
+        "short_alpha_json_path": str(short_alpha_json_path),
+        "short_alpha_markdown_path": str(short_alpha_markdown_path),
         "candidate_count": payload["candidate_count"],
         "integrity_status": mapping(payload.get("integrity")).get("status"),
     }

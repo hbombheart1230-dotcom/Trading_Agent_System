@@ -72,6 +72,28 @@ def render_report(
         )
     lines += [
         "",
+        "## Strong BTC Rise Shadow Variant",
+        "",
+        "- Contract: BTC strong-bull regime (60m >= 1.0% or 24h >= 3.0%) plus positive leading signal and Woori local confirmation.",
+        "- This is an additive shadow comparison. The existing Q12 series is not overwritten.",
+        "",
+        "| Horizon | Trades | Win Rate | Avg Net | Profit Factor | Max Drawdown |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    variant = (forward.get("policy_variant_summaries") or {}).get(
+        "BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1"
+    ) or {}
+    for row in variant.get("horizons") or []:
+        metrics = row.get("eligible_entries_net") or {}
+        lines.append(
+            f"| {row.get('horizon')} | {metrics.get('count')} | "
+            f"{float(metrics.get('win_rate') or 0):.1%} | "
+            f"{float(metrics.get('average_return_pct') or 0):.4f}% | "
+            f"{float(metrics.get('profit_factor') or 0):.4f} | "
+            f"{float(metrics.get('maximum_drawdown_pct') or 0):.4f}% |"
+        )
+    lines += [
+        "",
         "## Comparison",
         "",
         "| Horizon | Q12 | BTC Momentum Only | Woori Buy/Hold | Samsung/Hynix Top1 |",

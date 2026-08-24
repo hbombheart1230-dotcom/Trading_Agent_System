@@ -9,6 +9,13 @@ if not exist "%PY%" (
   exit /b 3
 )
 
+pushd "%ROOT%"
+
+rem Capture point-in-time macro/index evidence before the first opening decision.
+"%PY%" "%ROOT%\scripts\capture_preopen_macro_snapshot.py" ^
+  --env-path "%ROOT%\.env" ^
+  --state-path "%ROOT%\data\state.json"
+
 rem Scheduled preopen is a short strategist/portfolio warmup, not the legacy mock-exam gate suite.
 "%PY%" "%ROOT%\scripts\run_session.py" ^
   --mode live ^
@@ -16,4 +23,6 @@ rem Scheduled preopen is a short strategist/portfolio warmup, not the legacy moc
   --env-path "%ROOT%\.env" ^
   %*
 
-exit /b %ERRORLEVEL%
+set "RUN_RC=%ERRORLEVEL%"
+popd
+exit /b %RUN_RC%

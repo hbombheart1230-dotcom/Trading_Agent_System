@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .loaders import find_by_id, load_json, mapping, metric_snapshot
+from .large_cap_review import build_large_cap_daily_review
 from .sensitivity import leave_one_out, performance_metrics, performance_passes
 
 
@@ -173,6 +174,9 @@ def build_remaining_candidate_reviews(
         "R1_ENTRY_DAILY_MA5_20_EXTENDED_15M_V1",
     )
     post_cross_branch = metric_snapshot(post_cross.get("branch"))
+    large_cap_review = build_large_cap_daily_review(
+        reports_root=reports_root, through_day=through_day
+    )
     reviews = [
         {
             "candidate_id": "IMMEDIATE_OPENING_PROBE",
@@ -213,11 +217,16 @@ def build_remaining_candidate_reviews(
         {
             "candidate_id": "SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1",
             "target_horizon": "+180m",
-            "base": {"sample_count": 1},
-            "decision": "RUNTIME_DATA_REQUIRED",
+            "base": large_cap_review.get("base") or {},
+            "decision": large_cap_review.get("decision"),
+            "review_rationale": large_cap_review.get("rationale"),
             "rationale": "2026-08-21 정합성 수정 이후 독립 거래일이 1일뿐임.",
         },
     ]
+    for review in reviews:
+        if review.get("candidate_id") == "SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1":
+            review["rationale"] = large_cap_review.get("rationale")
+            review.pop("review_rationale", None)
     next_runtime = [
         row["candidate_id"]
         for row in reviews

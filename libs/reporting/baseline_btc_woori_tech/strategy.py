@@ -9,6 +9,9 @@ from .contracts import (
     TARGET_NAME,
     TARGET_SYMBOL,
     TARGET_TICKER,
+    STRONG_BTC_24H_MIN_PCT,
+    STRONG_BTC_60M_MIN_PCT,
+    STRONG_BTC_POLICY_ID,
 )
 from .data_provider import signal_at
 
@@ -71,6 +74,23 @@ def build_decision_snapshot(
         ENTRY_RULES[2]: bool(local.get("price_above_vwap_or_short_ma")),
     }
     eligible = bool(local.get("available") and btc.get("available") and all(conditions.values()))
+    btc_60m = btc.get("momentum_60m_pct")
+    btc_24h = btc.get("momentum_24h_pct")
+    btc_large_rise = bool(
+        (btc_60m is not None and float(btc_60m) >= STRONG_BTC_60M_MIN_PCT)
+        or (btc_24h is not None and float(btc_24h) >= STRONG_BTC_24H_MIN_PCT)
+    )
+    strong_conditions = {
+        "btc_large_rise_confirmed": btc_large_rise,
+        "btc_leading_signal_positive": bool(btc.get("leading_positive", btc.get("positive"))),
+        "woori_volume_spike_or_breakout_confirmation": local_confirmation,
+        "woori_price_above_vwap_or_short_ma": bool(local.get("price_above_vwap_or_short_ma")),
+    }
+    strong_eligible = bool(
+        local.get("available")
+        and btc.get("available")
+        and all(strong_conditions.values())
+    )
     btc_momentum = float(btc.get("momentum_5m_pct") or 0.0)
     volume_edge = max(0.0, float(local.get("volume_ratio") or 0.0) - 1.0)
     score = (0.7 * max(-3.0, min(3.0, btc_momentum))) + (0.3 * min(3.0, volume_edge))
@@ -90,6 +110,19 @@ def build_decision_snapshot(
         "entry_rules": list(ENTRY_RULES),
         "entry_rule_count": len(ENTRY_RULES),
         "entry_conditions": conditions,
+        "policy_variants": {
+            STRONG_BTC_POLICY_ID: {
+                "behavior_effect": "shadow_only",
+                "eligible": strong_eligible,
+                "action": "SHADOW_ENTER" if strong_eligible else "NO_ENTRY",
+                "conditions": strong_conditions,
+                "thresholds": {
+                    "btc_60m_min_pct": STRONG_BTC_60M_MIN_PCT,
+                    "btc_24h_min_pct": STRONG_BTC_24H_MIN_PCT,
+                    "regime_rule": "60m >= threshold OR 24h >= threshold",
+                },
+            }
+        },
         "exit_rules": list(EXIT_RULES),
         "exit_rule_count": len(EXIT_RULES),
         "score": round(score, 6),

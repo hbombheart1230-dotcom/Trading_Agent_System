@@ -53,6 +53,25 @@ short-horizon reversal. The artifacts retain the legacy 5-minute result as
 The module records forward outcomes at +5m, +15m, +30m, and EOD. It does not
 create an `OrderIntent`, submit an order, or alter portfolio state.
 
+## Strong BTC Rise Shadow Variant
+
+Starting after the 2026-08-24 review, the existing v2 series remains intact and
+an additive shadow policy is recorded as
+`BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1`.
+
+The variant requires all of the following:
+
+1. BTC has risen at least `1.0%` over 60 minutes or `3.0%` over 24 hours.
+2. The multi-horizon leading signal is still positive; a sharp 5-minute decline
+   is not hidden by the longer trend.
+3. Woori confirms locally through volume spike or breakout and remains above
+   VWAP or MA5.
+
+This isolates the historically promising `strong_bull` subgroup from the broad
+BTC bull condition that failed day-concentration review. It is a new prospective
+shadow comparison, not a relabeling or promotion of the rejected broad rule.
+Its metrics are written under `policy_variant_summaries` in the forward artifact.
+
 ## Comparisons
 
 - Q9 P/A/B/C

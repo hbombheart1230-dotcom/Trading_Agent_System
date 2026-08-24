@@ -14,6 +14,13 @@ Rules:
 
 Current research:
 
+- `deep_discriminator_squeeze_2026-08-24.md`
+  - consolidates opening, asset-class, Scanner setup, horizon, BTC, and Strategist evidence
+  - fixes `HIGH_COMMON_SHORT_ALPHA_V1` as a prospective shadow from 2026-08-25
+  - keeps historical discovery and prospective validation samples separate
+  - records profit-lock alternatives as non-executable proxies only
+  - explicitly preserves Strategist Stage-2 authority
+
 - `immediate_opening_probe_runtime_validation_2026-08-21.md`
   - is the only next fixed runtime validation candidate
   - reuses the existing `IMMEDIATE_OPENING_PROBE` observer without behavior changes
@@ -26,6 +33,7 @@ Current research:
   - separates action review, fixed observation, integrity boundaries, and closed work
   - prevents closed candidates from being retuned or restarted under a new name
   - closes generic `risk_band=HIGH` after contributor-dependence sensitivity failed
+  - adds the asset-conditional HIGH common-stock cohort as a new shadow, not a behavior rule
   - is read-only and never authorizes an automatic behavior change
 
 - `opening_rank1_controlled_probe_2026-08-14.md`

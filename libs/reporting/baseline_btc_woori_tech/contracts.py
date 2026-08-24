@@ -8,6 +8,9 @@ TARGET_TICKER = "041190.KQ"
 TARGET_NAME = "Woori Technology Investment"
 HORIZONS = ("+5m", "+15m", "+30m", "EOD")
 DEFAULT_SLIPPAGE_PCT = 0.05
+STRONG_BTC_POLICY_ID = "BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1"
+STRONG_BTC_60M_MIN_PCT = 1.0
+STRONG_BTC_24H_MIN_PCT = 3.0
 
 DECISIONS_SCHEMA = "baseline_btc_woori_decisions.v2"
 FORWARD_SCHEMA = "baseline_btc_woori_forward_returns.v1"

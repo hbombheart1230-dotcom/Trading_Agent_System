@@ -168,6 +168,8 @@ def test_board_keeps_closed_and_review_candidates_separate(tmp_path: Path) -> No
     assert by_id["R1_SCANNER_RISK_HIGH_30M_V1"]["source_status"] == "SINGLE_BEHAVIOR_PATCH_REVIEW_ELIGIBLE"
     assert by_id["R1_SCANNER_RISK_HIGH_30M_V1"]["board_bucket"] == "CLOSED_AFTER_SENSITIVITY_REVIEW"
     assert by_id["R1_FRESH_CHANGE_ACTIVATION_V1"]["board_bucket"] == "CLOSED_NEGATIVE_PROSPECTIVE"
+    assert by_id["BTC_WOORI_V2_ONLY_LOCAL_CONFIRMATION"]["board_bucket"] == "CLOSED_AFTER_SENSITIVITY_REVIEW"
+    assert by_id["BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1"]["board_bucket"] == "BACKGROUND_RUNTIME_REQUIRED"
 
 
 def test_board_uses_day_symbol_sample_and_live_cost_basis(tmp_path: Path) -> None:
@@ -179,6 +181,46 @@ def test_board_uses_day_symbol_sample_and_live_cost_basis(tmp_path: Path) -> Non
     assert by_id["R1_SCANNER_RISK_HIGH_30M_V1"]["concentration"]["largest_symbol_share"] == 0.6667
     assert by_id["SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1"]["prospective"]["avg_net_return_pct"] == 0.66
     assert payload["cost_authority"]["live_equity_round_trip_pct"] == 0.28
+
+
+def test_large_cap_baseline_accumulates_independent_days(tmp_path: Path) -> None:
+    reports_root = _fixture_reports(tmp_path)
+    _write(
+        reports_root
+        / "evaluation"
+        / "baseline_samsung_hynix"
+        / "2026-08-24"
+        / "baseline_samsung_hynix_forward_returns.json",
+        {
+            "schema_version": "fixture",
+            "summary": {
+                "horizons": [
+                    {
+                        "horizon": "+180m",
+                        "top1_gross": {
+                            "count": 40,
+                            "average_return_pct": -2.2727,
+                        },
+                    }
+                ]
+            },
+        },
+    )
+    payload = build_alpha_research_board(
+        reports_root=reports_root, through_day="2026-08-24"
+    )
+    by_id = {row["candidate_id"]: row for row in payload["candidates"]}
+    large = by_id["SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1"]
+
+    assert large["prospective"]["sample_count"] == 2
+    assert large["prospective"]["window_count"] == 76
+    assert large["prospective"]["avg_net_return_pct"] == -0.9464
+    review = next(
+        row
+        for row in payload["remaining_candidate_reviews"]["reviews"]
+        if row["candidate_id"] == "SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1"
+    )
+    assert review["base"]["sample_count"] == 2
 
 
 def test_board_reports_missing_sources_without_guessing(tmp_path: Path) -> None:

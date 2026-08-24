@@ -16,10 +16,11 @@ from .contracts import (
     PROGRAM_ID,
     REPORT_SCHEMA,
     TARGET_SYMBOL,
+    STRONG_BTC_POLICY_ID,
 )
 from .crypto_fear_greed import load_crypto_fear_greed_index, unavailable as unavailable_crypto_fear_greed
 from .data_provider import load_btc_signal_rows, load_woori_candles
-from .forward_returns import attach_forward_returns, summarize
+from .forward_returns import attach_forward_returns, summarize, summarize_policy_variant
 from .report import render_report
 from .strategy import build_decision_snapshot
 
@@ -155,6 +156,13 @@ def build_baseline_btc_woori_artifacts(
     cost_pct = float(profile.get("conservative_round_trip_cost_pct") or 0.0) * 100.0
     forward_rows = attach_forward_returns(decisions, candles=candle_rows)
     summary = summarize(forward_rows, cost_pct=cost_pct, slippage_pct=slippage_pct)
+    strong_btc_summary = summarize_policy_variant(
+        forward_rows,
+        decisions,
+        policy_id=STRONG_BTC_POLICY_ID,
+        cost_pct=cost_pct,
+        slippage_pct=slippage_pct,
+    )
     observed = sum(
         1
         for row in forward_rows
@@ -174,6 +182,9 @@ def build_baseline_btc_woori_artifacts(
         "row_count": len(forward_rows),
         "rows": forward_rows,
         "summary": summary,
+        "policy_variant_summaries": {
+            STRONG_BTC_POLICY_ID: strong_btc_summary,
+        },
     }
     comparison = build_comparison(
         day=day,
