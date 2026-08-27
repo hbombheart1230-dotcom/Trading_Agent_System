@@ -51,6 +51,7 @@ from libs.runtime.position_horizon_revision import (
     ensure_horizon_state,
     position_review_due,
 )
+from libs.runtime.stage3_horizon_lineage import record_stage3_assessment
 from libs.runtime.strategy_horizon_feedback import (
     build_commander_horizon_policy,
     build_horizon_context,
@@ -5052,6 +5053,7 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
         return False, payload
     override_assessment = _assess_open_position_commander_override(state)
     state["commander_open_position_override"] = dict(override_assessment)
+    record_stage3_assessment(state, override_assessment)
     payload.update(
         {
             "carry_state": str(override_assessment.get("carry_state") or ""),

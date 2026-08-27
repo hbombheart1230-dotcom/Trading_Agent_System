@@ -13,6 +13,7 @@ from .contracts import (
     SOURCE_PATHS,
     TRACKS,
 )
+from .canonical import canonicalize_board
 from .loaders import find_by_id, find_horizon, load_json, mapping, metric_snapshot
 from .large_cap_review import build_large_cap_daily_review
 from .report import render_alpha_research_board
@@ -520,7 +521,7 @@ def build_alpha_research_board(
     missing_sources = [
         key for key, source in sources.items() if not source.get("available") or source.get("error")
     ]
-    return {
+    legacy_payload = {
         "schema_version": SCHEMA_VERSION,
         "behavior_effect": "evaluation_only",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -546,6 +547,11 @@ def build_alpha_research_board(
         "sources": sources,
         "behavior_change_authorized": False,
     }
+    return canonicalize_board(
+        legacy_payload,
+        reports_root=reports_root,
+        through_day=through_day,
+    )
 
 
 def write_alpha_research_board(
@@ -568,7 +574,15 @@ def write_alpha_research_board(
     json_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    markdown_path.write_text(render_alpha_research_board(payload), encoding="utf-8")
+    markdown = render_alpha_research_board(payload)
+    markdown_path.write_text(markdown, encoding="utf-8")
+    latest_dir = output_dir.parent
+    latest_json_path = latest_dir / "latest.json"
+    latest_markdown_path = latest_dir / "latest.md"
+    latest_json_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    latest_markdown_path.write_text(markdown, encoding="utf-8")
     sensitivity = mapping((payload.get("sensitivity_reviews") or [{}])[0])
     sensitivity_json_path.write_text(
         json.dumps(sensitivity, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -600,6 +614,8 @@ def write_alpha_research_board(
     return {
         "json_path": str(json_path),
         "markdown_path": str(markdown_path),
+        "latest_json_path": str(latest_json_path),
+        "latest_markdown_path": str(latest_markdown_path),
         "sensitivity_json_path": str(sensitivity_json_path),
         "sensitivity_markdown_path": str(sensitivity_markdown_path),
         "remaining_json_path": str(remaining_json_path),

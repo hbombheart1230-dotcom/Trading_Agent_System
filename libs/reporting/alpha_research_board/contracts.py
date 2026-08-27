@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 
-SCHEMA_VERSION = "alpha_research_board.v1"
+SCHEMA_VERSION = "alpha_research_board.v2"
+CONTRACT_VERSION = "abc_fixed_2026_08_27"
 LIVE_RESEARCH_COST_PCT = 0.28
 
 SOURCE_PATHS = {
@@ -35,58 +36,113 @@ SOURCE_PATHS = {
     ),
 }
 
-TRACKS = [
+QUESTIONS = (
     {
-        "track_id": "OPENING_CONDITIONAL",
-        "question": "어떤 장초반 셋업이 상승 지속과 과열 소진을 구분하는가?",
-        "owner_if_proven": "Scanner 적합도 또는 Monitor 진입 중 하나",
+        "question_id": "A",
+        "question": "\uc7a5\ucd08\ubc18 Rank-1 \uc131\uacf5\uacfc \uc2e4\ud328\ub97c \uac00\ub974\ub294 \uad6c\ubd84\uc790\ub294 \ubb34\uc5c7\uc778\uac00?",
+        "decision_scope": "opening_rank1_discriminator",
     },
     {
-        "track_id": "SCANNER_REACTIVATION_HORIZON",
-        "question": "선정 종목이 새 신호로 재점화되는가, 그렇다면 유효 horizon은 언제인가?",
-        "owner_if_proven": "Scanner 재관찰 또는 horizon 정책 중 하나",
+        "question_id": "B",
+        "question": "BTC \uac15\uc0c1\uc2b9\uc774 \uc6b0\ub9ac\uae30\uc220\ud22c\uc790 \uc0c1\uc2b9\uc73c\ub85c \uc5f0\uacb0\ub418\ub294 \uc870\uac74\uc740 \ubb34\uc5c7\uc778\uac00?",
+        "decision_scope": "btc_woori_lead_lag",
     },
     {
-        "track_id": "BTC_WOORI",
-        "question": "BTC 선행 신호에 우기투 가격·거래량 확인이 붙을 때만 유효한가?",
-        "owner_if_proven": "독립 BTC-우기투 baseline",
+        "question_id": "C",
+        "question": "risk=HIGH\uc5d0\uc11c \ubcf4\ud1b5\uc8fc\ub294 \uc131\uacf5\ud558\uace0 ETF\ub294 \uc2e4\ud328\ud55c \uc774\uc720\ub294 \ubb34\uc5c7\uc778\uac00?",
+        "decision_scope": "risk_high_asset_class_divergence",
     },
-    {
-        "track_id": "LARGE_CAP_TWO_SYMBOL",
-        "question": "삼성전자·하이닉스 고정 universe에서 반복 가능한 순수익 edge가 있는가?",
-        "owner_if_proven": "독립 삼성전자·하이닉스 baseline",
-    },
-]
+)
 
-SETTLED_FINDINGS = [
+# Immutable candidate surface after 2026-08-27.
+CANDIDATE_REGISTRY = (
+    ("A", "IMMEDIATE_OPENING_PROBE", "Immediate opening response at +5m"),
+    ("A", "CONFIRMED_RECURRENT_RANK", "Recurrent Rank confirmation at +30m"),
+    ("A", "DISLOCATION_REBOUND", "Opening dislocation rebound at +60m"),
+    ("A", "OPEN_0_20_RANK1_30M", "All 09:00-09:20 Rank-1 control"),
+    ("A", "R1_FRESH_CHANGE_ACTIVATION_V1", "Fresh Top-change activation"),
+    ("A", "R1_ENTRY_DAILY_MA5_20_EXTENDED_15M_V1", "Daily MA5/20 extended state"),
+    ("A", "LATENT_REACTIVATION_FRESH_TRIGGER", "D+1-D+5 fresh reactivation"),
+    ("A", "SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1", "Samsung/Hynix fixed control"),
+    ("A", "STRATEGIST_STAGE2_REFRESH_AUTHORITY_V1", "Stage-2 pre/post Rank-1 value"),
+    ("B", "BTC_WOORI_V2_ONLY_LOCAL_CONFIRMATION", "BTC lead plus Woori confirmation"),
+    ("B", "BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1", "Strong BTC plus Woori confirmation"),
+    ("C", "R1_SCANNER_RISK_HIGH_30M_V1", "Scanner risk HIGH at +30m"),
+    ("C", "HIGH_COMMON_SHORT_ALPHA_V1", "risk HIGH common-stock short alpha"),
+    ("C", "TOP_VALUE_VOLUME_NEGATIVE_CONTROL_V1", "Liquidity-only negative control"),
+)
+
+CANDIDATE_IDS = tuple(row[1] for row in CANDIDATE_REGISTRY)
+
+FEATURE_COLUMNS = (
+    "market_regime",
+    "asset_class",
+    "rank_and_selection",
+    "price_structure",
+    "volume_and_flow",
+    "external_signal",
+    "agent_lineage",
+    "horizon_and_exit",
+    "cost_and_quality",
+)
+
+ROW_COLUMNS = (
+    "question_id",
+    "candidate_id",
+    "status",
+    "hypothesis",
+    "feature_evidence",
+    "target_horizon",
+    "historical_evidence",
+    "prospective_evidence",
+    "sample_quality",
+    "concentration",
+    "net_metrics",
+    "agent_attribution",
+    "decision",
+    "rationale",
+    "next_action",
+    "source_artifacts",
+    "updated_through_day",
+)
+
+ALLOWED_STATUSES = (
+    "DISCOVERY",
+    "PROSPECTIVE",
+    "REVIEW_READY",
+    "PROMOTED",
+    "REJECTED",
+    "CLOSED",
+)
+
+TRACK_TO_QUESTION = {
+    "OPENING_CONDITIONAL": "A",
+    "SCANNER_REACTIVATION_HORIZON": "A",
+    "LARGE_CAP_TWO_SYMBOL": "A",
+    "BTC_WOORI": "B",
+}
+
+SETTLED_FINDINGS = (
     {
-        "finding": "장초반 Rank-1 전부 진입",
-        "status": "REJECTED",
-        "reason": "종목 집중도 gate를 통과하지 못해 전면 진입은 허용되지 않음.",
+        "finding": "Enter every opening Rank-1",
+        "status": "CLOSED",
+        "reason": "The broad control failed concentration and robustness checks.",
     },
     {
-        "finding": "진입 guard 전면 완화",
-        "status": "REJECTED",
-        "reason": "차단 후보 전체가 좋은 기회였다는 근거가 없음.",
+        "finding": "Relax every entry guard",
+        "status": "CLOSED",
+        "reason": "Blocked candidates were not uniformly superior opportunities.",
     },
     {
-        "finding": "손실 후 동일 종목 재진입",
-        "status": "RETAIN_BLOCK",
-        "reason": "손실 조건의 반복 진입이 성과를 악화함.",
+        "finding": "Re-enter a symbol after a loss",
+        "status": "CLOSED",
+        "reason": "Repeated loss-condition entries degraded cumulative results.",
     },
     {
-        "finding": "조건 없는 보유 연장",
-        "status": "REJECTED",
-        "reason": "유리한 horizon은 셋업별로 다르고 EOD에서 수익 반납이 반복됨.",
+        "finding": "Extend every holding period",
+        "status": "CLOSED",
+        "reason": "Useful horizons differ by setup and EOD profit fade repeats.",
     },
-    {
-        "finding": "Strategist 랭킹 overlay",
-        "status": "NEUTRAL",
-        "reason": "측정된 overlay에서 안정적이고 유의미한 alpha가 확인되지 않음.",
-    },
-    {
-        "finding": "다른 종목 메모리 혼입 영향",
-        "status": "EXCLUDE_CONTAMINATED_HISTORY",
-        "reason": "재사용 가능한 구분자가 아니라 계측 결함으로 분류함.",
-    },
-]
+)
+
+TRACKS = QUESTIONS

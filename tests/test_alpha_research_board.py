@@ -7,6 +7,11 @@ from libs.reporting.alpha_research_board import (
     build_alpha_research_board,
     write_alpha_research_board,
 )
+from libs.reporting.alpha_research_board.contracts import (
+    CANDIDATE_IDS,
+    FEATURE_COLUMNS,
+    ROW_COLUMNS,
+)
 from libs.reporting.alpha_research_board.sensitivity import evaluate_risk_high_sensitivity
 from libs.reporting.alpha_research_board.remaining_reviews import evaluate_bounded_candidate
 from libs.reporting.alpha_research_board.runtime_validation import (
@@ -164,12 +169,13 @@ def test_board_keeps_closed_and_review_candidates_separate(tmp_path: Path) -> No
     )
     by_id = {row["candidate_id"]: row for row in payload["candidates"]}
     assert payload["behavior_change_authorized"] is False
-    assert by_id["OPEN_0_20_RANK1_30M"]["board_bucket"] == "CLOSED"
-    assert by_id["R1_SCANNER_RISK_HIGH_30M_V1"]["source_status"] == "SINGLE_BEHAVIOR_PATCH_REVIEW_ELIGIBLE"
-    assert by_id["R1_SCANNER_RISK_HIGH_30M_V1"]["board_bucket"] == "CLOSED_AFTER_SENSITIVITY_REVIEW"
-    assert by_id["R1_FRESH_CHANGE_ACTIVATION_V1"]["board_bucket"] == "CLOSED_NEGATIVE_PROSPECTIVE"
-    assert by_id["BTC_WOORI_V2_ONLY_LOCAL_CONFIRMATION"]["board_bucket"] == "CLOSED_AFTER_SENSITIVITY_REVIEW"
-    assert by_id["BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1"]["board_bucket"] == "BACKGROUND_RUNTIME_REQUIRED"
+    assert [row["question_id"] for row in payload["questions"]] == ["A", "B", "C"]
+    assert tuple(payload["candidate_ids"]) == CANDIDATE_IDS
+    assert by_id["OPEN_0_20_RANK1_30M"]["status"] == "CLOSED"
+    assert by_id["R1_SCANNER_RISK_HIGH_30M_V1"]["status"] == "CLOSED"
+    assert by_id["R1_FRESH_CHANGE_ACTIVATION_V1"]["status"] == "CLOSED"
+    assert by_id["BTC_WOORI_V2_ONLY_LOCAL_CONFIRMATION"]["status"] == "CLOSED"
+    assert by_id["BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1"]["status"] == "PROSPECTIVE"
 
 
 def test_board_uses_day_symbol_sample_and_live_cost_basis(tmp_path: Path) -> None:
@@ -177,9 +183,9 @@ def test_board_uses_day_symbol_sample_and_live_cost_basis(tmp_path: Path) -> Non
         reports_root=_fixture_reports(tmp_path), through_day="2026-08-21"
     )
     by_id = {row["candidate_id"]: row for row in payload["candidates"]}
-    assert by_id["R1_SCANNER_RISK_HIGH_30M_V1"]["prospective"]["sample_count"] == 21
+    assert by_id["R1_SCANNER_RISK_HIGH_30M_V1"]["prospective_evidence"]["sample_count"] == 21
     assert by_id["R1_SCANNER_RISK_HIGH_30M_V1"]["concentration"]["largest_symbol_share"] == 0.6667
-    assert by_id["SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1"]["prospective"]["avg_net_return_pct"] == 0.66
+    assert by_id["SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1"]["prospective_evidence"]["avg_net_return_pct"] == 0.66
     assert payload["cost_authority"]["live_equity_round_trip_pct"] == 0.28
 
 
@@ -212,15 +218,9 @@ def test_large_cap_baseline_accumulates_independent_days(tmp_path: Path) -> None
     by_id = {row["candidate_id"]: row for row in payload["candidates"]}
     large = by_id["SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1"]
 
-    assert large["prospective"]["sample_count"] == 2
-    assert large["prospective"]["window_count"] == 76
-    assert large["prospective"]["avg_net_return_pct"] == -0.9464
-    review = next(
-        row
-        for row in payload["remaining_candidate_reviews"]["reviews"]
-        if row["candidate_id"] == "SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1"
-    )
-    assert review["base"]["sample_count"] == 2
+    assert large["prospective_evidence"]["sample_count"] == 2
+    assert large["prospective_evidence"]["window_count"] == 76
+    assert large["prospective_evidence"]["avg_net_return_pct"] == -0.9464
 
 
 def test_board_reports_missing_sources_without_guessing(tmp_path: Path) -> None:
@@ -239,12 +239,50 @@ def test_board_writes_json_and_readable_markdown(tmp_path: Path) -> None:
         output_dir=tmp_path / "out",
     )
     markdown = Path(result["markdown_path"]).read_text(encoding="utf-8")
-    assert "한눈에 보는 결론" in markdown
-    assert "승패 구분자 근거" in markdown
-    assert "끝난 결론" in markdown
+    assert "Top-Level Questions" in markdown
+    assert "Candidate Board" in markdown
+    assert "Closeout Summary" in markdown
     assert Path(result["sensitivity_markdown_path"]).exists()
     assert Path(result["remaining_markdown_path"]).exists()
     assert Path(result["runtime_markdown_path"]).exists()
+    assert Path(result["latest_json_path"]).exists()
+    assert Path(result["latest_markdown_path"]).exists()
+
+
+def test_board_contract_columns_and_feature_surface_are_frozen(tmp_path: Path) -> None:
+    payload = build_alpha_research_board(
+        reports_root=_fixture_reports(tmp_path), through_day="2026-08-21"
+    )
+    assert tuple(payload["row_columns"]) == ROW_COLUMNS
+    assert tuple(payload["feature_columns"]) == FEATURE_COLUMNS
+    for row in payload["candidates"]:
+        assert tuple(row) == ROW_COLUMNS
+        assert tuple(row["feature_evidence"]) == FEATURE_COLUMNS
+
+
+def test_board_keeps_historical_and_prospective_separate(tmp_path: Path) -> None:
+    payload = build_alpha_research_board(
+        reports_root=_fixture_reports(tmp_path), through_day="2026-08-21"
+    )
+    row = next(
+        value
+        for value in payload["candidates"]
+        if value["candidate_id"] == "R1_SCANNER_RISK_HIGH_30M_V1"
+    )
+    assert row["historical_evidence"]["sample_count"] == 24
+    assert row["prospective_evidence"]["sample_count"] == 21
+    assert row["net_metrics"]["cohort"] == "prospective"
+
+
+def test_board_is_deterministic_for_same_inputs(tmp_path: Path) -> None:
+    reports_root = _fixture_reports(tmp_path)
+    first = build_alpha_research_board(
+        reports_root=reports_root, through_day="2026-08-21"
+    )
+    second = build_alpha_research_board(
+        reports_root=reports_root, through_day="2026-08-21"
+    )
+    assert first == second
 
 
 def test_sensitivity_rejects_single_symbol_profit_dependence() -> None:

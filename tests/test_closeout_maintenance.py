@@ -49,3 +49,10 @@ def test_write_closeout_maintenance_refreshes_q9_artifacts_after_json_exists(
     assert calls == [{"reports_root": reports_root, "day": "2026-07-13"}]
     assert refresh["ok"] is True
     assert Path(refresh["artifact_inventory_path"]).exists()
+    board = payload["steps"]["alpha_research_board_final"]
+    assert board["ok"] is True
+    assert board["explanation_authority"] == "alpha_research_board_only"
+    assert Path(board["report_json_path"]).exists()
+    assert Path(board["report_md_path"]).exists()
+    assert Path(board["latest_json_path"]).exists()
+    assert list(payload["steps"])[-1] == "alpha_research_board_final"

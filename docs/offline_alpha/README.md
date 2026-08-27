@@ -14,6 +14,14 @@ Rules:
 
 Current research:
 
+- `alpha_research_board_contract_2026-08-27.md`
+  - is the sole closeout research authority
+  - freezes top-level questions A/B/C, 14 candidate IDs, row columns, and feature columns
+  - keeps historical discovery and prospective evidence in separate columns
+  - treats Q8-Q18 and all other evaluations as input evidence only
+  - accumulates terminal candidates as CLOSED without renaming or restarting them
+  - is generated automatically as the final closeout reporting step
+
 - `deep_discriminator_squeeze_2026-08-24.md`
   - consolidates opening, asset-class, Scanner setup, horizon, BTC, and Strategist evidence
   - fixes `HIGH_COMMON_SHORT_ALPHA_V1` as a prospective shadow from 2026-08-25
@@ -28,6 +36,7 @@ Current research:
   - closes with pass, effect failure, integrity failure, or insufficient sample
 
 - `alpha_research_board_contract_2026-08-21.md`
+  - is the superseded v1 four-track contract retained for history
   - consolidates existing historical, validation, and prospective conclusions
   - fixes four research tracks without creating another Q phase
   - separates action review, fixed observation, integrity boundaries, and closed work

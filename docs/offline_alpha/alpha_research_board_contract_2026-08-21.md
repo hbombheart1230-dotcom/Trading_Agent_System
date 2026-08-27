@@ -1,5 +1,9 @@
 # Alpha Research Board Contract - 2026-08-21
 
+> Superseded by `alpha_research_board_contract_2026-08-27.md`. This file is
+> retained as the historical v1 four-track contract and is not a current
+> closeout authority.
+
 ## Purpose
 
 The Alpha Research Board consolidates existing research conclusions. It does not

@@ -10,6 +10,7 @@ from libs.runtime.position_horizon_revision import ensure_horizon_state
 from libs.runtime.strategy_horizon_feedback import (
     normalize_operational_commander_horizon_policy,
 )
+from libs.runtime.stage3_horizon_lineage import record_stage3_monitor_consumption
 from libs.strategies.contracts import coerce_strategist_output
 
 
@@ -179,6 +180,7 @@ def position_strategy_frame_for_symbol(
     out["stage4_carry_approved"] = bool(horizon_state.get("stage4_carry_approved"))
     out["last_stage3_decision"] = dict(horizon_state.get("last_stage3_decision") or {})
     out["last_stage4_decision"] = dict(horizon_state.get("last_stage4_decision") or {})
+    record_stage3_monitor_consumption(state, symbol=sym, strategy_frame=out)
     return out
 
 

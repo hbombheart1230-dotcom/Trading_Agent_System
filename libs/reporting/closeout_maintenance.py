@@ -464,6 +464,41 @@ def write_closeout_maintenance_report(payload: Dict[str, Any], *, reports_root: 
         }
         payload["ok"] = all(bool(step.get("ok")) for step in payload.get("steps", {}).values() if isinstance(step, dict))
         _write(payload)
+    try:
+        from libs.reporting.alpha_research_board import write_alpha_research_board
+
+        board = write_alpha_research_board(
+            reports_root=Path(reports_root),
+            through_day=day,
+            output_dir=(
+                Path(reports_root)
+                / "evaluation"
+                / "alpha_research_board"
+                / day
+            ),
+        )
+        payload.setdefault("steps", {})["alpha_research_board_final"] = {
+            "ok": str(board.get("integrity_status") or "").startswith("PASS"),
+            "integrity_status": board.get("integrity_status"),
+            "candidate_count": board.get("candidate_count"),
+            "report_json_path": board.get("json_path"),
+            "report_md_path": board.get("markdown_path"),
+            "latest_json_path": board.get("latest_json_path"),
+            "latest_md_path": board.get("latest_markdown_path"),
+            "explanation_authority": "alpha_research_board_only",
+        }
+    except Exception as exc:
+        payload.setdefault("steps", {})["alpha_research_board_final"] = {
+            "ok": False,
+            "error": str(exc),
+            "explanation_authority": "alpha_research_board_only",
+        }
+    payload["ok"] = all(
+        bool(step.get("ok"))
+        for step in payload.get("steps", {}).values()
+        if isinstance(step, dict)
+    )
+    _write(payload)
     return {"report_json_path": str(json_path), "report_md_path": str(md_path)}
 
 
