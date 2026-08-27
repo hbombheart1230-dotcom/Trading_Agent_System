@@ -48,6 +48,7 @@ from .scanner_alignment_root_cause import (
 )
 from .start_gate import build_full_chain_start_gate
 from .strategist_effectiveness import build_strategist_effectiveness
+from .stage2_authority import write_stage2_authority_review
 from .trade_evaluator import evaluate_trade
 from .trade_read_model import build_q9_trade_read_model
 
@@ -264,6 +265,12 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         end=day,
         output_dir=evaluation_root / "agent_effectiveness" / day,
     )
+    stage2_authority = write_stage2_authority_review(
+        reports_root=reports_root,
+        start=day,
+        end=day,
+        output_dir=evaluation_root / "agent_effectiveness" / day,
+    )
     return {
         "day": day,
         "trade_count": len(models),
@@ -284,4 +291,5 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         "strategist_effectiveness": str(evaluation_root / "strategist" / day / "strategist_effectiveness.json"),
         "feedback_effectiveness": str(evaluation_root / "feedback" / day / "feedback_effectiveness.json"),
         "agent_effectiveness_scorecard": agent_effectiveness,
+        "strategist_stage2_authority_review": stage2_authority,
     }

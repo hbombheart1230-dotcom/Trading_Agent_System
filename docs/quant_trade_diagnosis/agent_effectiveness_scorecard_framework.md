@@ -387,6 +387,33 @@ The Q9 daily pipeline writes the current day increment. Historical cumulative
 rebuilds are explicit off-hours jobs because raw forward reconstruction is too
 expensive to repeat in every daily closeout.
 
+### Stage-2 Authority Decomposition
+
+The post-Scanner Strategist refresh is split into four authority surfaces:
+
+| Surface | Measurement |
+|---|---|
+| `rerank` | first Scanner Top-1 versus post-refresh Scanner Top-1 |
+| `candidate_change` | the same comparison restricted to changed Top-1 symbols |
+| `entry_tightening` | captured Stage-2 tightening recommendation and downstream outcome |
+| `no_trade` | captured Stage-2 no-trade recommendation and downstream outcome |
+
+`rerank` and `candidate_change` have a direct paired forward comparison. Entry
+tightening and no-trade remain `NOT_MEASURABLE` until the runtime preserves an
+explicit adoption trace and an untreated paired control. A weak observational
+cohort must not be used to remove authority.
+
+Artifacts are written beside the Agent Effectiveness Scorecard:
+
+- `strategist_stage2_authority_review.json`
+- `strategist_stage2_authority_review.md`
+
+A `DEGRADING` paired effect is only a diagnostic signal. An advisory-only
+behavior patch also requires the fixed promotion stability contract: at least
+50 comparable pairs across 5 days, no day above 40% of the sample, at least 60%
+directionally consistent daily averages, and a median with the same sign as the
+mean effect. This report never applies a patch itself.
+
 ### Step 3: Reuse Historical Evidence
 
 Use all trustworthy historical rows. Do not restart because a new artifact was

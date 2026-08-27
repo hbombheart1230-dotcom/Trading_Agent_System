@@ -360,3 +360,43 @@ def test_inventory_excludes_post_session_and_non_krx_test_windows(
     assert decision["complete_pabc_window_count"] == 1
     assert decision["post_session_window_count"] == 1
     assert decision["synthetic_window_count"] == 1
+
+
+def test_inventory_does_not_treat_memory_packet_ids_as_symbols(tmp_path) -> None:
+    reports = tmp_path / "reports"
+    daily = reports / "operator_summary" / "daily" / "2026-08-27"
+    daily.mkdir(parents=True)
+    (daily / "q9_decision_windows.json").write_text(
+        """
+        {
+          "schema_version": "q9_decision_windows.v1",
+          "windows": [
+            {
+              "decision_id": "Q9_20260827_live",
+              "generated_at": "2026-08-27T00:05:00+00:00",
+              "scanner_pre_strategist_universe": {
+                "intrinsic_ranked_top20": [{"symbol": "005930"}]
+              },
+              "scanner_control": {"top1_symbol": "005930"},
+              "strategist_selection": {"selected_symbol": "005930"},
+              "strategist_provenance": {
+                "memory": {
+                  "layer_packet_ids": {
+                    "symbol": "memory_95807bfb862d7452b0ea"
+                  }
+                }
+              },
+              "commander_final": {"decision": "approve"}
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    inventory = build_artifact_inventory(reports, "2026-08-27")
+    decision = inventory["daily_artifacts"]["q9_decision_windows"]
+
+    assert decision["scanner_selection_window_count"] == 1
+    assert decision["complete_pabc_window_count"] == 1
+    assert decision["synthetic_window_count"] == 0

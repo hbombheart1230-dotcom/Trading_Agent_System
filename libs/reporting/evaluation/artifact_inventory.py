@@ -22,24 +22,28 @@ def _synthetic_identity(row: dict[str, Any]) -> bool:
         return True
     symbols: list[str] = []
 
-    def collect(value: Any) -> None:
+    def collect(value: Any, *, path: tuple[str, ...] = ()) -> None:
         if isinstance(value, dict):
             for key, child in value.items():
+                child_path = (*path, str(key))
                 if key in {
                     "symbol",
                     "ticker",
                     "selected_symbol",
                     "top1_symbol",
                     "candidate_symbol",
-                }:
+                } and not any(
+                    part == "layer_packet_ids" or part.endswith("_packet_ids")
+                    for part in path
+                ):
                     text = str(child or "").strip()
                     if text:
                         symbols.append(text)
                 elif isinstance(child, (dict, list)):
-                    collect(child)
+                    collect(child, path=child_path)
         elif isinstance(value, list):
             for child in value:
-                collect(child)
+                collect(child, path=path)
 
     collect(row)
     return any(not _KRX_SYMBOL_RE.fullmatch(symbol) for symbol in symbols)

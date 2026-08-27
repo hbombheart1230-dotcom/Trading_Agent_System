@@ -12,6 +12,10 @@ if str(ROOT) not in sys.path:
 from libs.reporting.evaluation.agent_effectiveness_scorecard import (
     write_agent_effectiveness_scorecard,
 )
+from libs.reporting.evaluation.stage2_authority import (
+    write_stage2_authority_review,
+    write_stage2_authority_review_sharded,
+)
 
 
 def main() -> int:
@@ -29,6 +33,17 @@ def main() -> int:
         else Path(args.reports_root) / "evaluation" / "agent_effectiveness" / args.end[:10]
     )
     result = write_agent_effectiveness_scorecard(
+        reports_root=Path(args.reports_root),
+        start=args.start[:10],
+        end=args.end[:10],
+        output_dir=output_dir,
+    )
+    stage2_writer = (
+        write_stage2_authority_review
+        if args.start[:10] == args.end[:10]
+        else write_stage2_authority_review_sharded
+    )
+    result["strategist_stage2_authority_review"] = stage2_writer(
         reports_root=Path(args.reports_root),
         start=args.start[:10],
         end=args.end[:10],

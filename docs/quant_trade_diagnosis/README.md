@@ -9,6 +9,9 @@ Active documents:
 - `integrated_selection_horizon_sequence_evaluation_2026-07-31.md`: current
   integration decision for selection, horizon, exit, reactivation, and
   same-symbol sequence evidence
+- `strategist_stage2_effectiveness_review_2026-08-27.md`: R1/R2 role
+  separation, Stage-1 R1 absolute edge, Stage-2 refresh utility, target
+  consistency, and exploratory discriminator review
 
 `quant_trade_diagnosis` is a reporting adapter. It does not independently
 authorize behavior changes. Promotion decisions must use the integrated range
@@ -36,6 +39,13 @@ Implemented scorecard outputs:
 
 - `reports/evaluation/agent_effectiveness/YYYY-MM-DD/agent_effectiveness_scorecard.json`
 - `reports/evaluation/agent_effectiveness/YYYY-MM-DD/agent_effectiveness_scorecard.md`
+- `reports/evaluation/agent_effectiveness/YYYY-MM-DD/strategist_stage2_authority_review.json`
+- `reports/evaluation/agent_effectiveness/YYYY-MM-DD/strategist_stage2_authority_review.md`
+
+The Stage-2 review separates rerank, candidate replacement, entry tightening,
+and no-trade recommendation. Direct linkage establishes an effect signal, but a
+runtime authority patch additionally requires distributed, directionally
+stable evidence under the promotion stability contract.
 
 The baseline generated from the trusted 2026-06-01 through 2026-07-29
 full-chain review is stored under `2026-07-29`. Daily Q9 runs append a daily
