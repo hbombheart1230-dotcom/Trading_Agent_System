@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 44,
+  "entry_count": 50,
   "entries": [
     {
       "date": "2026-02-07",
@@ -1157,6 +1157,156 @@
         "docs/01_overview.md",
         "docs/offline_alpha/alpha_research_board_contract_2026-08-21.md",
         "docs/web_observability/implementation_status_2026-08-14.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-24",
+      "version": "Evaluation Integrity + Prospective Board",
+      "title": "평가 무결성과 Alpha Research Board의 실장 관측 기반 강화",
+      "stage": "Research Governance",
+      "types": [
+        "ALPHA",
+        "BOARD",
+        "INTEGRITY"
+      ],
+      "summary": "과거 평가 산출물을 다시 만드는 대신 원본 증거의 정합성을 확인하고, 장중 prospective 표본을 고정된 연구 보드에 누적하는 구조를 강화했습니다.",
+      "details": [
+        "Q 평가와 baseline 산출물의 누락·중복·시간 정합성 검사를 강화했습니다.",
+        "과거 발견 표본과 prospective 표본을 분리해 사후 선택 편향을 줄였습니다.",
+        "기존 평가 결과는 Alpha Research Board의 입력 증거로 재사용하도록 권위를 정리했습니다.",
+        "행동 변경 없이 opening, horizon, BTC-Woori, large-cap control 연구를 같은 표에서 비교하도록 했습니다."
+      ],
+      "impact": "평가표가 계속 늘어나는 문제를 줄이고, 동일한 기준에서 가설의 유지·기각·추가 관찰 여부를 추적할 수 있게 되었습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-24_preopen_and_baseline_observability.md",
+        "docs/offline_alpha/deep_discriminator_squeeze_2026-08-24.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-25~2026-08-26",
+      "version": "Q12 Trend + Opening Snapshot + AI Provenance",
+      "title": "BTC 추세·장초반 시장 스냅샷·AI 판단 계보 보강",
+      "stage": "Evidence Quality",
+      "types": [
+        "Q12",
+        "OPENING",
+        "PROVENANCE"
+      ],
+      "summary": "짧은 단일 시점 값에 의존하지 않도록 BTC 추세와 장초반 시장 정보를 확장하고, AI 단계별 입력·출력의 출처를 추적할 수 있게 했습니다.",
+      "details": [
+        "Q12가 BTC의 현재값뿐 아니라 최근 추세와 신호 가용성을 함께 기록하도록 보강했습니다.",
+        "장초반 판단 시점의 국내 지수·야간선물 값과 snapshot 시각·지연을 artifact에 남겼습니다.",
+        "Strategist 단계별 후보·판단·horizon의 provenance를 분리해 사후 비교가 가능해졌습니다.",
+        "성공·실패·성공 가능 사례를 동일 스냅샷 기준으로 재검토할 수 있는 casebook 근거를 추가했습니다."
+      ],
+      "impact": "시장 상태나 AI 단계가 결과에 영향을 주었는지 추정이 아니라 시점이 맞는 증거로 분석할 수 있게 되었습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-25_q12_trend_and_rank1_observability.md",
+        "docs/daily_patch/2026-08-26_opening_overshoot_snapshot_and_casebook.md",
+        "docs/daily_patch/2026-08-26_ai_effectiveness_provenance.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-27",
+      "version": "Strategist Authority Lineage",
+      "title": "2차 전략가 후보 권위와 3차 horizon 계보의 관측 분리",
+      "stage": "Agent Evaluation",
+      "types": [
+        "STRATEGIST",
+        "AUTHORITY",
+        "HORIZON"
+      ],
+      "summary": "전략가가 실제로 후보를 바꾸거나 보유기간을 수정했는지 단계별로 분해해, LLM 기여도를 결과와 연결할 수 있게 했습니다.",
+      "details": [
+        "2차 전략가의 재순위·후보 교체·진입 강화·no-trade 권한을 별도 평가 항목으로 분해했습니다.",
+        "Scanner 원본 순위와 전략가 이후 순위가 같거나 달라진 경우를 후보 ID 기준으로 비교합니다.",
+        "3차 전략가의 최초 horizon, 재평가 horizon, 실제 보유시간을 하나의 lineage로 연결했습니다.",
+        "권한 축소나 행동 변경 전 근거를 누적하는 관측 단계로 유지했습니다."
+      ],
+      "impact": "전략가 호출이 복잡성만 더하는지, 후보 선택 또는 보유기간 판단에 실질적인 가치를 주는지 검증할 기반이 생겼습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-27_stage2_candidate_authority_review.md",
+        "docs/daily_patch/2026-08-27_stage3_horizon_lineage.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-27",
+      "version": "Web Observability M7",
+      "title": "메인 런타임 가시성·호스트 Supervisor·예약 인텔리전스 통합",
+      "stage": "Operations",
+      "types": [
+        "WEB_UI",
+        "SUPERVISOR",
+        "SCHEDULER"
+      ],
+      "summary": "트레이딩 런타임을 Docker로 옮기지 않고도 웹 UI에서 실행 상태와 watchdog 이력을 확인하고, 호스트 Supervisor와 장전·장후 작업을 운영할 수 있게 했습니다.",
+      "details": [
+        "메인 프로세스·watchdog·health 상태를 읽기 전용 UI에서 시각화했습니다.",
+        "호스트 Supervisor가 비정상 종료와 중복 실행을 감시하도록 운영 경계를 정리했습니다.",
+        "장전 브리핑과 장후 closeout intelligence의 예약 실행·산출물 상태를 표시합니다.",
+        "관측 UI 컨테이너는 런타임과 분리하고 reports/logs/state를 read-only로 소비합니다."
+      ],
+      "impact": "매일 콘솔에서 프로세스를 직접 확인하던 운영 부담을 줄이면서 트레이딩 실행 경계는 그대로 유지했습니다.",
+      "sources": [
+        "docs/web_observability/m7_1_main_runtime_visibility_2026-08-27.md",
+        "docs/web_observability/m7_2_host_supervisor_2026-08-27.md",
+        "docs/web_observability/m7_3_scheduled_intelligence_2026-08-27.md",
+        "docs/daily_patch/2026-08-27_scheduled_intelligence_and_supervisor.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-27~2026-08-28",
+      "version": "Alpha Board v2 + Q12 Five-Variable Validation",
+      "title": "고정 연구 보드와 BTC→우기투 5변수 가설의 prospective 검증",
+      "stage": "Current Research",
+      "types": [
+        "CURRENT",
+        "ALPHA",
+        "Q12"
+      ],
+      "summary": "장후 판단 기준을 Alpha Research Board로 고정하고, BTC→우리기술투자 가설은 새 전략 생성 없이 합의한 5개 변수만 검증하도록 제한했습니다.",
+      "details": [
+        "장후 closeout 마지막 단계에서 Board를 자동 생성하고 기존 평가 산출물은 입력 증거로만 사용합니다.",
+        "BTC 08:55 수익률, FIRST_SURGE, BREAKOUT, 우기투 opening gap, 09:03~09:05 수급 확인을 고정 변수로 기록합니다.",
+        "09:00·09:03·09:05·09:10·눌림 시점의 forward 성과를 동일 비용·슬리피지 기준으로 비교합니다.",
+        "과거 발견과 prospective 표본을 분리하며 Q9 및 실제 주문·진입·청산 로직은 변경하지 않습니다."
+      ],
+      "impact": "연구 가설이 계속 바뀌는 것을 막고, 실제 장중 데이터가 가설을 지지하는지 같은 표 구조에서 누적 판단할 수 있게 되었습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-27_alpha_research_board_v2.md",
+        "docs/offline_alpha/alpha_research_board_contract_2026-08-27.md",
+        "docs/daily_patch/2026-08-28_q12_five_variable_hypothesis_validation.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Patch Notes Timeline UI",
+      "title": "운영 UI에 검색 가능한 패치 노트 타임라인 추가",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "DOCUMENTATION"
+      ],
+      "summary": "누적 패치 이력과 최근 주요 변경을 운영 UI에서 검색·필터·확장해 볼 수 있는 읽기 전용 화면을 추가했습니다.",
+      "details": [
+        "기존 44개 이력을 수정하지 않고 최근 1주일의 주요 변경 5건을 보강했습니다.",
+        "패치 노트 전용 FastAPI adapter·service·router·schema를 독립 모듈로 추가했습니다.",
+        "전체 변경 수, 최신 기준, 단계, 유형 요약과 검색·stage·type 필터를 제공합니다.",
+        "Docker 관측 컨테이너에는 패치 노트 문서 경로만 read-only로 마운트합니다.",
+        "앞으로 모든 패치는 JSON과 Markdown 패치 노트를 같은 커밋에서 갱신하도록 운영 규칙을 고정했습니다."
+      ],
+      "impact": "변경 이력을 코드 저장소에서 직접 찾지 않아도 운영 화면에서 빠르게 파악할 수 있으며, 트레이딩 런타임에는 실행 의존성을 추가하지 않습니다.",
+      "sources": [
+        "docs/trading_agent_patch_notes_detailed_update/README.md",
+        "apps/api/routers/patch_notes.py",
+        "apps/web/src/features/patch-notes/PatchNotesPage.tsx"
       ],
       "status": "current"
     }

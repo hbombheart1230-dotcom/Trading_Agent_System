@@ -10,6 +10,7 @@ from .routers.llm_operations import router as llm_operations_router
 from .routers.market import router as market_router
 from .routers.opportunities import router as opportunities_router
 from .routers.overview import router as overview_router
+from .routers.patch_notes import router as patch_notes_router
 from .routers.performance import router as performance_router
 from .routers.portfolio import router as portfolio_router
 from .routers.profile import router as profile_router
@@ -30,6 +31,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     install_public_sanitization(app, resolved_settings)
     app.include_router(health_router)
     app.include_router(profile_router)
+    app.include_router(patch_notes_router)
     app.include_router(runtime_status_router)
     app.include_router(anomalies_router)
     app.include_router(llm_operations_router)

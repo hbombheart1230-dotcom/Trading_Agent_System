@@ -33,6 +33,10 @@ services:
         source: ${TRADING_REPO_ROOT:-../..}/data/evidence_ledger
         target: /data/evidence
         read_only: true
+      - type: bind
+        source: ${TRADING_REPO_ROOT:-../..}/docs/trading_agent_patch_notes_detailed_update
+        target: /data/docs/trading_agent_patch_notes_detailed_update
+        read_only: true
     expose:
       - "8000"
     networks:

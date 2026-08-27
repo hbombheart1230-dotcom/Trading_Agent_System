@@ -14,7 +14,7 @@ const executablePath = candidates.find((candidate) => fs.existsSync(candidate));
 if (!executablePath) throw new Error("No Chromium-compatible browser was found");
 const baseUrl = (process.env.BASE_URL ?? "http://127.0.0.1:5173").replace(/\/$/, "");
 
-const routes = ["overview", "performance", "trades", "opportunities", "strategies", "market", "alerts", "llm-operations", "reports", "data-quality"];
+const routes = ["overview", "performance", "trades", "opportunities", "strategies", "market", "alerts", "patch-notes", "llm-operations", "reports", "data-quality"];
 const errors = [];
 const browser = await chromium.launch({ executablePath, headless: true });
 
@@ -75,6 +75,9 @@ async function verifyViewport(viewport, suffix) {
   await page.goto(`${baseUrl}/#alerts`, { waitUntil: "networkidle" });
   await page.waitForFunction(() => !document.querySelector(".spin"), null, { timeout: 30_000 });
   await page.screenshot({ path: path.join(os.tmpdir(), `trading-console-${suffix}-alerts.png`), fullPage: true });
+  await page.goto(`${baseUrl}/#patch-notes`, { waitUntil: "networkidle" });
+  await page.waitForFunction(() => !document.querySelector(".spin"), null, { timeout: 30_000 });
+  await page.screenshot({ path: path.join(os.tmpdir(), `trading-console-${suffix}-patch-notes.png`), fullPage: true });
   await context.close();
 }
 

@@ -120,3 +120,39 @@
 .overview-alert strong, .overview-alert span { display: block; }
 .overview-alert strong { font-size: 11px; }
 .overview-alert span { margin-top: 4px; color: var(--ink-muted); font-size: 10px; line-height: 1.45; }
+.patch-note-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); overflow: hidden; }
+.patch-note-metrics > div { min-width: 0; min-height: 88px; padding: 15px; border-right: 1px solid var(--line); }
+.patch-note-metrics > div:last-child { border-right: 0; }
+.patch-note-metrics span, .patch-note-metrics small { display: block; color: var(--ink-muted); font-size: 10px; }
+.patch-note-metrics strong { display: block; margin: 9px 0 7px; overflow-wrap: anywhere; font-size: 18px; font-weight: 760; }
+.patch-note-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.patch-note-search { flex: 1 1 260px; height: 34px; display: flex; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink-muted); }
+.patch-note-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; }
+.patch-note-filter { height: 34px; display: flex; align-items: center; gap: 6px; padding-left: 9px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink-muted); background: var(--surface); }
+.patch-note-filter select { height: 32px; max-width: 210px; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; }
+.patch-note-result { margin-left: auto; color: var(--ink-muted); font-size: 10px; white-space: nowrap; }
+.patch-note-timeline { position: relative; display: grid; gap: 10px; padding-left: 26px; }
+.patch-note-timeline::before { content: ""; position: absolute; top: 9px; bottom: 9px; left: 8px; width: 1px; background: var(--line-strong); }
+.patch-note-entry { position: relative; min-width: 0; }
+.patch-note-marker { position: absolute; top: 20px; left: -26px; width: 17px; display: grid; place-items: center; }
+.patch-note-marker span { width: 9px; height: 9px; border: 2px solid var(--surface); border-radius: 50%; background: var(--teal); box-shadow: 0 0 0 1px var(--teal); }
+.patch-note-entry details { border: 1px solid var(--line); border-radius: 7px; background: var(--surface); overflow: hidden; }
+.patch-note-entry details[open] { border-color: #b9d5cf; }
+.patch-note-entry summary { padding: 15px 38px 15px 16px; cursor: pointer; list-style: none; position: relative; }
+.patch-note-entry summary::-webkit-details-marker { display: none; }
+.patch-note-entry summary::after { content: "+"; position: absolute; top: 15px; right: 16px; color: var(--ink-muted); font-size: 18px; line-height: 1; }
+.patch-note-entry details[open] summary::after { content: "−"; }
+.patch-note-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: var(--ink-muted); font-size: 9px; }
+.patch-note-meta span { display: inline-flex; align-items: center; gap: 4px; }
+.patch-note-meta b { padding: 3px 6px; border-radius: 3px; background: var(--green-soft); color: var(--green); font-size: 8px; }
+.patch-note-entry h2 { margin: 9px 0 5px; font-size: 15px; line-height: 1.35; }
+.patch-note-entry summary p { margin: 0 0 10px; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
+.patch-note-body { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(220px, .8fr); gap: 14px; padding: 15px 16px 17px; border-top: 1px solid var(--line); background: var(--surface-soft); }
+.patch-note-body section:last-child { grid-column: 1 / -1; }
+.patch-note-body h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 11px; }
+.patch-note-body p, .patch-note-body li { color: var(--ink-soft); font-size: 10px; line-height: 1.65; }
+.patch-note-body ul { margin: 0; padding-left: 17px; }
+.patch-note-impact { padding-left: 12px; border-left: 3px solid var(--teal); }
+.patch-note-impact p { margin: 0; }
+.patch-note-sources { display: grid; gap: 3px; }
+.patch-note-sources li { overflow-wrap: anywhere; }

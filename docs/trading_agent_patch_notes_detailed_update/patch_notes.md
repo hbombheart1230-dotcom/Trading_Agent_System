@@ -24,6 +24,49 @@
 
 ---
 
+## 최근 1주일 주요 업데이트 (2026-08-24 ~ 2026-08-28)
+
+기존 패치 이력은 그대로 유지하고, 현재 운영과 연구 방향을 이해하는 데 필요한 주요 변경만 보강합니다.
+
+### 2026-08-24 · Evaluation Integrity + Prospective Board
+
+- 과거 발견 표본과 prospective 표본을 분리했습니다.
+- Q 평가와 baseline 산출물의 누락·중복·시간 정합성 검사를 강화했습니다.
+- 기존 평가 결과는 Alpha Research Board의 입력 증거로 재사용하며 새 평가 축을 늘리지 않습니다.
+
+### 2026-08-25~26 · Q12 Trend + Opening Snapshot + AI Provenance
+
+- BTC 최근 추세와 신호 가용성을 Q12 증거에 추가했습니다.
+- 장초반 국내 지수·야간선물 값, snapshot 시각과 지연을 기록합니다.
+- Strategist 단계별 후보·판단·horizon provenance를 연결했습니다.
+
+### 2026-08-27 · Strategist Authority Lineage
+
+- 2차 전략가의 재순위·후보 교체·진입 강화·no-trade 권한을 분리했습니다.
+- 3차 전략가의 최초 horizon, 재평가 horizon, 실제 보유시간을 연결했습니다.
+- 행동 변경 없이 LLM 기여도를 검증하는 관측 근거를 마련했습니다.
+
+### 2026-08-27 · Web Observability M7
+
+- 메인 런타임, watchdog, health 상태를 읽기 전용 UI에서 확인합니다.
+- 호스트 Supervisor와 장전·장후 예약 인텔리전스의 실행 상태를 표시합니다.
+- UI 컨테이너는 트레이딩 런타임과 분리되며 데이터 경로는 read-only입니다.
+
+### 2026-08-27~28 · Alpha Board v2 + Q12 Five-Variable Validation
+
+- 장후 판단 기준을 고정된 Alpha Research Board로 통합했습니다.
+- Q12는 BTC 08:55 수익률, FIRST_SURGE, BREAKOUT, 우기투 opening gap, 09:03~09:05 수급의 다섯 변수만 검증합니다.
+- 09:00·09:03·09:05·09:10·눌림 시점의 forward 성과를 같은 비용 기준으로 비교합니다.
+- Q9와 실제 주문·진입·청산 로직은 변경하지 않았습니다.
+
+### 2026-08-28 · Patch Notes Timeline UI
+
+- 누적 패치 이력을 운영 UI에서 검색·stage·type으로 필터할 수 있게 했습니다.
+- FastAPI와 React 기능을 독립 모듈로 구성하고 문서 경로만 read-only로 마운트했습니다.
+- 앞으로 모든 패치는 JSON과 Markdown 패치 노트를 같은 커밋에서 함께 갱신합니다.
+
+---
+
 ## 2026-02-07 ~ 2026-02-10 · M1–M5 — Kiwoom API Catalog와 요청 파이프라인 골격
 **Stage:** Foundation  
 **Tags:** CORE · KIWOOM

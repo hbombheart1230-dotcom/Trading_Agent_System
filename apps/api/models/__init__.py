@@ -1,6 +1,7 @@
 from .common import AvailabilityStatus, CostBasis, MetricValue, Provenance
 from .health import HealthResponse, ReadinessResponse, SourceRootStatus
 from .overview import OverviewResponse
+from .patch_notes import PatchNoteEntry, PatchNotesResponse
 from .performance import PerformanceSeriesResponse, PerformanceSummaryResponse
 from .portfolio import PortfolioResponse, Position
 from .reports import ReportCatalogResponse, ReportContentResponse
@@ -12,6 +13,8 @@ __all__ = [
     "HealthResponse",
     "MetricValue",
     "OverviewResponse",
+    "PatchNoteEntry",
+    "PatchNotesResponse",
     "PerformanceSeriesResponse",
     "PerformanceSummaryResponse",
     "PortfolioResponse",

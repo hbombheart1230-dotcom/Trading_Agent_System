@@ -7,6 +7,7 @@ import {
   ClipboardList,
   FileText,
   Gauge,
+  History,
   MessagesSquare,
   ShieldCheck,
 } from "lucide-react";
@@ -19,6 +20,7 @@ export const NAV_ITEMS = [
   { id: "strategies", label: "전략", icon: BarChart3, public: true },
   { id: "market", label: "시장", icon: Activity, public: true },
   { id: "alerts", label: "운영 알림", icon: BellRing, public: true },
+  { id: "patch-notes", label: "패치 노트", icon: History, public: true },
   { id: "llm-operations", label: "LLM 운영", icon: MessagesSquare, public: false },
   { id: "reports", label: "리포트", icon: FileText, public: false },
   { id: "data-quality", label: "데이터 품질", icon: ShieldCheck, public: false },
