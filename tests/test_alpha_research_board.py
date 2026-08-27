@@ -178,6 +178,54 @@ def test_board_keeps_closed_and_review_candidates_separate(tmp_path: Path) -> No
     assert by_id["BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1"]["status"] == "PROSPECTIVE"
 
 
+def test_board_reads_q12_five_variable_prospective_metric(tmp_path: Path) -> None:
+    reports_root = _fixture_reports(tmp_path)
+    _write(
+        reports_root
+        / "evaluation"
+        / "baseline_btc_woori_tech"
+        / "hypothesis_validation"
+        / "q12_btc_woori_hypothesis_cumulative.json",
+        {
+            "schema_version": "q12_btc_woori_hypothesis_cumulative.v1",
+            "rows": [
+                {
+                    "evidence_phase": "PROSPECTIVE",
+                    "axis": "hypothesis_path",
+                    "value": "FAST_BUY_ALL_PASS",
+                    "entry_method": "09:05",
+                    "horizon": "+30m",
+                    "metrics": {
+                        "sample_count": 3,
+                        "win_rate": 0.6667,
+                        "avg_return_pct": 0.42,
+                        "profit_factor": 2.1,
+                        "max_drawdown_pct": -0.3,
+                        "avg_mfe_pct": 0.9,
+                        "avg_mae_pct": -0.2,
+                    },
+                }
+            ],
+        },
+    )
+
+    payload = build_alpha_research_board(
+        reports_root=reports_root, through_day="2026-08-28"
+    )
+    row = next(
+        value
+        for value in payload["candidates"]
+        if value["candidate_id"] == "BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1"
+    )
+
+    assert row["prospective_evidence"]["sample_count"] == 3
+    assert row["prospective_evidence"]["avg_net_return_pct"] == 0.42
+    assert any(
+        source["source_key"] == "btc_woori_hypothesis"
+        for source in row["source_artifacts"]
+    )
+
+
 def test_board_uses_day_symbol_sample_and_live_cost_basis(tmp_path: Path) -> None:
     payload = build_alpha_research_board(
         reports_root=_fixture_reports(tmp_path), through_day="2026-08-21"

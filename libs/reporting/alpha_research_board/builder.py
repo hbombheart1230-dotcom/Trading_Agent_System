@@ -65,6 +65,27 @@ def _candidate(
     }
 
 
+def _q12_hypothesis_metric(
+    payload: Mapping[str, Any],
+    *,
+    phase: str,
+    path_value: str = "FAST_BUY_ALL_PASS",
+    entry_method: str = "09:05",
+    horizon: str = "+30m",
+) -> dict[str, Any]:
+    for raw in payload.get("rows") or []:
+        row = mapping(raw)
+        if (
+            row.get("evidence_phase") == phase
+            and row.get("axis") == "hypothesis_path"
+            and row.get("value") == path_value
+            and row.get("entry_method") == entry_method
+            and row.get("horizon") == horizon
+        ):
+            return metric_snapshot(row.get("metrics"))
+    return metric_snapshot({})
+
+
 def _feature_candidates(
     feature_payload: Mapping[str, Any],
     prospective_payload: Mapping[str, Any],
@@ -373,6 +394,17 @@ def build_alpha_research_board(
     payloads: dict[str, dict[str, Any]] = {}
     for key, relative_path in SOURCE_PATHS.items():
         payloads[key], sources[key] = load_json(reports_root / relative_path)
+    q12_hypothesis_path = (
+        reports_root
+        / "evaluation"
+        / "baseline_btc_woori_tech"
+        / "hypothesis_validation"
+        / "q12_btc_woori_hypothesis_cumulative.json"
+    )
+    if q12_hypothesis_path.exists():
+        payloads["btc_woori_hypothesis"], sources["btc_woori_hypothesis"] = load_json(
+            q12_hypothesis_path
+        )
 
     contract = mapping(payloads.get("prospective_contract"))
     concentrations = _prospective_concentrations(
@@ -446,6 +478,10 @@ def build_alpha_research_board(
             board_bucket="BACKGROUND_RUNTIME_REQUIRED",
             owner="BTC_WOORI_BASELINE",
             historical=metric_snapshot(strong_btc_history),
+            prospective=_q12_hypothesis_metric(
+                payloads.get("btc_woori_hypothesis") or {},
+                phase="PROSPECTIVE",
+            ),
             evidence_note=(
                 "The historical strong-bull subgroup is hypothesis-generating only; "
                 "the rejected broad BTC rule remains closed."
@@ -453,7 +489,14 @@ def build_alpha_research_board(
             next_action=(
                 "Collect only the fixed additive shadow variant from the next full session."
             ),
-            source_keys=["btc_woori_history"],
+            source_keys=[
+                "btc_woori_history",
+                *(
+                    ["btc_woori_hypothesis"]
+                    if payloads.get("btc_woori_hypothesis")
+                    else []
+                ),
+            ],
         )
     )
     short_alpha_review = build_short_alpha_discriminator(

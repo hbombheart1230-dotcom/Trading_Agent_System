@@ -89,9 +89,10 @@ FEATURE_HINTS = {
         "volume_and_flow": ["woori_volume_confirmation"],
     },
     "BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1": {
-        "external_signal": ["btc_60m>=1.0_or_24h>=3.0"],
-        "price_structure": ["woori_local_confirmation"],
-        "volume_and_flow": ["woori_volume_confirmation"],
+        "external_signal": ["btc_0855_24h_thresholds", "first_vs_repeated_surge"],
+        "price_structure": ["btc_20d_60d_ath_breakout", "woori_opening_gap"],
+        "volume_and_flow": ["woori_0903_0905_confirmation"],
+        "horizon_and_exit": ["09:00", "09:03", "09:05", "09:10", "pullback", "+30m"],
     },
     "R1_SCANNER_RISK_HIGH_30M_V1": {
         "market_regime": ["scanner_risk_band=HIGH"],

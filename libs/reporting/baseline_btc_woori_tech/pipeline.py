@@ -22,6 +22,7 @@ from .contracts import (
 from .crypto_fear_greed import load_crypto_fear_greed_index, unavailable as unavailable_crypto_fear_greed
 from .data_provider import load_btc_signal_rows, load_woori_candles
 from .forward_returns import attach_forward_returns, summarize, summarize_policy_variant
+from .hypothesis_pipeline import build_hypothesis_validation_artifacts
 from .report import render_report
 from .strategy import build_decision_snapshot
 
@@ -234,10 +235,35 @@ def build_baseline_btc_woori_artifacts(
             "markdown_path": str(report_path),
         },
     )
-    return {
+    hypothesis_daily = output_dir / "q12_btc_woori_hypothesis_validation.json"
+    signal_sources = signal_payload.get("sources")
+    signal_sources = signal_sources if isinstance(signal_sources, Mapping) else {}
+    has_signal_rows = any(
+        isinstance(rows, list) and rows for rows in signal_sources.values()
+    )
+    if hypothesis_daily.exists() and (not candle_rows or not has_signal_rows):
+        hypothesis_root = reports_root / "evaluation" / "baseline_btc_woori_tech" / "hypothesis_validation"
+        hypothesis = {
+            "daily_json": str(hypothesis_daily),
+            "daily_markdown": str(output_dir / "q12_btc_woori_hypothesis_validation.md"),
+            "cumulative_json": str(hypothesis_root / "q12_btc_woori_hypothesis_cumulative.json"),
+            "cumulative_markdown": str(hypothesis_root / "q12_btc_woori_hypothesis_cumulative.md"),
+        }
+    else:
+        hypothesis = build_hypothesis_validation_artifacts(
+            day=day,
+            reports_root=reports_root,
+            candles=candle_rows,
+            btc_signals=signal_payload,
+            cost_pct=cost_pct,
+            slippage_pct=slippage_pct,
+        )
+    result = {
         "decisions": str(decisions_path),
         "forward_returns": str(forward_path),
         "daily_report": str(report_path),
         "daily_report_metadata": str(metadata_path),
         "comparison": str(comparison_path),
     }
+    result.update({f"hypothesis_{key}": value for key, value in hypothesis.items()})
+    return result

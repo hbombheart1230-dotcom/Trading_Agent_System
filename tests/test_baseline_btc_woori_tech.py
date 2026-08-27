@@ -422,7 +422,8 @@ def test_no_fresh_fetch_preserves_existing_market_observations(tmp_path: Path, m
         "candles": _candles(),
         "btc_signals": _btc(),
     }
-    build_baseline_btc_woori_artifacts(**kwargs, crypto_fear_greed=_fear_greed())
+    first_result = build_baseline_btc_woori_artifacts(**kwargs, crypto_fear_greed=_fear_greed())
+    hypothesis_before = Path(first_result["hypothesis_daily_json"]).read_text(encoding="utf-8")
     monkeypatch.setattr(
         "libs.reporting.baseline_btc_woori_tech.pipeline.load_btc_signal_rows",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("fresh BTC fetch must not run")),
@@ -431,8 +432,10 @@ def test_no_fresh_fetch_preserves_existing_market_observations(tmp_path: Path, m
     offline_kwargs.pop("btc_signals")
     result = build_baseline_btc_woori_artifacts(**offline_kwargs, allow_fresh_fetch=False)
     payload = json.loads(Path(result["decisions"]).read_text(encoding="utf-8"))
+    hypothesis_after = Path(result["hypothesis_daily_json"]).read_text(encoding="utf-8")
 
     assert payload["crypto_fear_greed"]["available"] is True
     assert payload["crypto_fear_greed"]["value"] == 72
     assert payload["btc_signal_availability"]["available"] is True
     assert any(row["btc_signal"]["available"] for row in payload["decisions"])
+    assert hypothesis_after == hypothesis_before
