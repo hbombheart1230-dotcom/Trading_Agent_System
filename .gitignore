@@ -19,6 +19,8 @@ data/
 
 # Reports
 reports/
+!apps/web/src/features/reports/
+!apps/web/src/features/reports/**
 
 # State & Dynamic Data
 data/state/

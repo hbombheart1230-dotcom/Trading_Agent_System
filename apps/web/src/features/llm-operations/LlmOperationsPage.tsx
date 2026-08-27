@@ -10,10 +10,11 @@ import { Panel } from "../../shared/components/Panel";
 import { StatusPill } from "../../shared/components/StatusPill";
 import { formatDateTime, isoDayOffset } from "../../shared/formatters/dates";
 import { formatNumber, formatPct } from "../../shared/formatters/numbers";
-import { issueLabel, stageLabel } from "./labels";
+import { issueLabel } from "./labels";
 import { LlmStageChart } from "./LlmStageChart";
 import { ModelRouteTable } from "./ModelRouteTable";
 import { RecentCallTable } from "./RecentCallTable";
+import { StageUsageTable } from "./StageUsageTable";
 import type { LlmOperations } from "./types";
 
 function seconds(value: number | null) {
@@ -37,7 +38,7 @@ export function LlmOperationsPage() {
       <div className="page-grid" style={{ marginTop: 14 }}>
         <Panel title="역할별 모델 라우팅" meta="설정과 당일 실사용 분리" className="span-12 panel-flush"><ModelRouteTable roles={data.data?.roles ?? []} /></Panel>
         <Panel title="전략가 단계별 호출" meta={`${data.data?.stages.length ?? 0}개 단계`} className="span-6"><LlmStageChart stages={data.data?.stages ?? []} /></Panel>
-        <Panel title="단계별 상세" meta="artifact 기준" className="span-6 panel-flush"><div className="data-table-wrap"><table className="data-table"><thead><tr><th>단계</th><th>호출</th><th>성공</th><th>실패</th><th>최근</th></tr></thead><tbody>{data.data?.stages.map((stage) => <tr key={stage.stage_key}><td><strong>{stageLabel(stage.stage_label)}</strong><div className="table-subline mono">{stage.model ?? "-"}</div></td><td>{stage.call_count}</td><td className="positive">{stage.success_count}</td><td className={stage.failure_count ? "negative" : "muted"}>{stage.failure_count}</td><td>{formatDateTime(stage.latest_call_at)}</td></tr>)}</tbody></table></div></Panel>
+        <Panel title="단계별 상세" meta="artifact 기준" className="span-6 panel-flush"><StageUsageTable stages={data.data?.stages ?? []} /></Panel>
         <Panel title="최근 OpenRouter 호출" meta={data.data?.latency.recent_window_only ? "최근 bounded event window" : "전체 관측"} className="span-8 panel-flush"><DataState loading={false} error={null} empty={!data.data?.recent_calls.length}><RecentCallTable calls={data.data?.recent_calls ?? []} /></DataState></Panel>
         <Panel title="계측 상태" meta={formatDateTime(data.data?.generated_at)} className="span-4"><div className="detail-stack"><div className="detail-row"><span>호출 artifact</span><strong>{data.data?.total_calls ?? 0}건</strong></div><div className="detail-row"><span>지연 coverage</span><strong>{formatPct((data.data?.latency.coverage ?? 0) * 100)}</strong></div><div className="detail-row"><span>토큰 상태</span><strong>{data.data?.token_usage.status ?? "-"}</strong></div><div className="detail-row"><span>원본 노출</span><strong className="positive">차단</strong></div></div></Panel>
         {!!data.data?.issues.length && <Panel title="확인 필요" meta={`${data.data.issues.length}건`} className="span-12"><ul className="issue-list">{data.data.issues.map((issue) => <li key={issue}><CircleAlert size={13} /> {issueLabel(issue)}</li>)}</ul></Panel>}

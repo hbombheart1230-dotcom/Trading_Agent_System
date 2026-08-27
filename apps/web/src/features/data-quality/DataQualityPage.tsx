@@ -23,7 +23,7 @@ interface Ready {
 export function DataQualityPage() {
   const ready = useApi<Ready>("/health/ready");
   const overview = useApi<Overview>("/api/v1/overview");
-  const trades = useApi<TradeList>(query("/api/v1/trades", { start: isoDayOffset(-90), end: isoDayOffset(0), limit: 100 }));
+  const trades = useApi<TradeList>(query("/api/v1/trades", { start: isoDayOffset(-45), end: isoDayOffset(0), limit: 100 }));
   const funnel = useApi<OpportunityFunnel>("/api/v1/opportunities/funnel");
   const outcomes = useApi<OpportunityOutcomes>("/api/v1/opportunities/outcomes");
   const allIssues = [...(overview.data?.issues ?? []), ...(trades.data?.issues ?? []), ...(funnel.data?.issues ?? []), ...(outcomes.data?.issues ?? [])];

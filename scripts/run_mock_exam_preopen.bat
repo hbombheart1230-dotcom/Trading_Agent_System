@@ -15,6 +15,7 @@ rem Capture point-in-time macro/index evidence before the first opening decision
 "%PY%" "%ROOT%\scripts\capture_preopen_macro_snapshot.py" ^
   --env-path "%ROOT%\.env" ^
   --state-path "%ROOT%\data\state.json"
+set "CAPTURE_RC=%ERRORLEVEL%"
 
 rem Scheduled preopen is a short strategist/portfolio warmup, not the legacy mock-exam gate suite.
 "%PY%" "%ROOT%\scripts\run_session.py" ^
@@ -24,5 +25,12 @@ rem Scheduled preopen is a short strategist/portfolio warmup, not the legacy moc
   %*
 
 set "RUN_RC=%ERRORLEVEL%"
+
+rem Additive observability only. Its failure never changes the existing preopen result.
+"%PY%" "%ROOT%\scripts\run_scheduled_intelligence.py" ^
+  --phase preopen ^
+  --capture-rc %CAPTURE_RC% ^
+  --session-rc %RUN_RC% ^
+  --reports-root "%ROOT%\reports"
 popd
 exit /b %RUN_RC%

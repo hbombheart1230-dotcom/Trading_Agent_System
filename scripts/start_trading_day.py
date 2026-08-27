@@ -16,8 +16,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.runtime.entrypoint_common import to_int
+from libs.runtime.host_supervisor import (
+    evaluate_supervisor,
+    load_supervisor_state,
+    public_supervisor_summary,
+    record_watchdog_result,
+    recovery_reason,
+    write_supervisor_state,
+)
 from libs.runtime.live_loop_lock import pid_exists
 from libs.runtime.live_loop_process_query import query_live_loop_processes, read_lock_owner_pid
+from libs.runtime.process_tree_status import summarize_process_tree
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -26,6 +35,12 @@ STATUS_DIR = ROOT / "reports" / "runtime" / "trading_day_status"
 LOCK_PATH = ROOT / "data" / "state" / "m13_live_loop.lock"
 
 SHADOW_LOOPS = {
+    "opening_macro_snapshots": {
+        "pattern": "run_opening_macro_snapshot_collector.py",
+        "cmd": [
+            "scripts/run_opening_macro_snapshot_collector.py",
+        ],
+    },
     "q10_samsung_hynix": {
         "pattern": "run_baseline_samsung_hynix.py",
         "cmd": [
@@ -239,12 +254,23 @@ def _ensure_shadow_loops(day: str, *, replace_stale: bool = True) -> dict[str, A
 def _live_status() -> dict[str, Any]:
     lock_pid = read_lock_owner_pid(LOCK_PATH)
     processes = query_live_loop_processes(ROOT, LOCK_PATH)
+    lock_payload: dict[str, Any] = {}
+    try:
+        parsed = json.loads(LOCK_PATH.read_text(encoding="utf-8")) if LOCK_PATH.exists() else {}
+        lock_payload = parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        lock_payload = {}
+    heartbeat_epoch = to_int(lock_payload.get("heartbeat_epoch"), 0) or to_int(lock_payload.get("started_epoch"), 0)
+    heartbeat_age = max(0, int(time.time()) - heartbeat_epoch) if heartbeat_epoch > 0 else None
     return {
         "lock_exists": LOCK_PATH.exists(),
         "lock_pid": lock_pid,
         "lock_pid_alive": bool(lock_pid and pid_exists(lock_pid)),
         "process_count": len(processes),
         "pids": [to_int(row.get("pid"), 0) for row in processes],
+        "process_tree": summarize_process_tree(processes, owner_pid=lock_pid),
+        "heartbeat_ts": str(lock_payload.get("heartbeat_ts") or lock_payload.get("started_ts") or "") or None,
+        "heartbeat_age_seconds": heartbeat_age,
         "running": bool(lock_pid and pid_exists(lock_pid) and processes),
     }
 
@@ -339,7 +365,22 @@ def _write_status(day: str, mode: str, payload: dict[str, Any]) -> Path:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     latest = STATUS_DIR / "latest.json"
     latest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    history_dir = STATUS_DIR / "history" / day
+    history_dir.mkdir(parents=True, exist_ok=True)
+    generated = str(payload.get("generated_at") or datetime.now(KST).isoformat(timespec="seconds"))
+    stamp = "".join(character for character in generated if character.isdigit())[:14]
+    fallback_stamp = datetime.now(KST).strftime("%Y%m%d%H%M%S")
+    history_path = history_dir / f"{stamp or fallback_stamp}_{mode}.json"
+    history_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+def _supervisor_state_path() -> Path:
+    return ROOT / "data" / "state" / "trading_day_supervisor.json"
+
+
+def _supervisor_state(day: str) -> dict[str, Any]:
+    return load_supervisor_state(_supervisor_state_path(), day)
 
 
 def run_start(day: str) -> dict[str, Any]:
@@ -359,7 +400,8 @@ def run_start(day: str) -> dict[str, Any]:
     shadow = _ensure_shadow_loops(day, replace_stale=True)
     live_before = _live_status()
     live_start = {"skipped": True, "reason": "already_running"}
-    if not live_before.get("running"):
+    start_reason = recovery_reason(live_before)
+    if start_reason:
         live_start = _start_live()
     live_after = _live_status()
     payload = {
@@ -371,6 +413,8 @@ def run_start(day: str) -> dict[str, Any]:
         "live_start": live_start,
         "live_after": live_after,
         "shadow_loops": shadow,
+        "supervisor": public_supervisor_summary(_supervisor_state(day)),
+        "start_reason": start_reason or "runtime_healthy",
     }
     blockers: list[dict[str, Any]] = []
     if not live_after.get("running"):
@@ -387,31 +431,57 @@ def run_start(day: str) -> dict[str, Any]:
 
 
 def run_watchdog(day: str, *, lookback_min: int) -> dict[str, Any]:
+    now = datetime.now(KST)
+    supervisor_state = _supervisor_state(day)
     if not _session_stack_window_open():
+        supervisor = public_supervisor_summary(supervisor_state)
         payload = {
             "schema_version": "trading_day_watchdog.v1",
             "day": day,
             "mode": "watchdog",
-            "generated_at": datetime.now(KST).isoformat(timespec="seconds"),
+            "generated_at": now.isoformat(timespec="seconds"),
             "ok": True,
             "offhours_noop": True,
             "blockers": [],
             "live_after": _live_status(),
             "shadow_loops": {"running": {}},
             "event_health": {"available": False, "reason": "outside_regular_session_start_window"},
+            "supervisor": supervisor,
         }
         payload["status_path"] = str(_write_status(day, "watchdog", payload))
         return payload
     shadow = _ensure_shadow_loops(day, replace_stale=True)
     live_before = _live_status()
+    decision = evaluate_supervisor(live_before, supervisor_state, now=now)
     live_start = {"skipped": True, "reason": "already_running"}
-    if not live_before.get("running"):
+    recovery_attempted = bool(decision.restart_allowed)
+    if recovery_attempted:
         live_start = _start_live()
     live_after = _live_status()
+    remaining_runtime_issue = recovery_reason(live_after)
+    recovery_success = recovery_attempted and not remaining_runtime_issue
+    supervisor_state = record_watchdog_result(
+        supervisor_state,
+        decision,
+        now=now,
+        recovery_attempted=recovery_attempted,
+        recovery_success=recovery_success if recovery_attempted else None,
+    )
+    write_supervisor_state(_supervisor_state_path(), supervisor_state)
+    supervisor = public_supervisor_summary(supervisor_state)
+    supervisor["decision"] = decision.action
+    supervisor["decision_reason"] = decision.reason
+    supervisor["runtime_issue_after"] = remaining_runtime_issue or None
     event_health = _event_health(day, lookback_min=lookback_min)
     blockers: list[dict[str, Any]] = []
     if not live_after.get("running"):
         blockers.append({"code": "live_session_not_running"})
+    if remaining_runtime_issue and remaining_runtime_issue != "live_session_not_running":
+        blockers.append({"code": remaining_runtime_issue})
+    if decision.action == "BLOCKED":
+        blockers.append({"code": "supervisor_recovery_blocked", "reason": decision.reason})
+    if recovery_attempted and not recovery_success:
+        blockers.append({"code": "supervisor_recovery_failed", "reason": decision.reason})
     for name, row in (shadow.get("running") or {}).items():
         if to_int(row.get("current_day_count"), 0) <= 0:
             blockers.append({"code": f"{name}_not_running_for_day"})
@@ -426,6 +496,7 @@ def run_watchdog(day: str, *, lookback_min: int) -> dict[str, Any]:
         "live_after": live_after,
         "shadow_loops": shadow,
         "event_health": event_health,
+        "supervisor": supervisor,
         "blockers": blockers,
         "ok": not blockers,
     }

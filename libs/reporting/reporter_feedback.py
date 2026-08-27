@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from libs.core.evidence_identity import stable_evidence_id
 from libs.reporting.llm_artifacts import iter_trade_dirs, resolve_trade_day_root
 
 
@@ -575,9 +576,10 @@ def build_strategist_feedback_packet(
         trade_report_summary=trade_report_summary,
     )
 
-    return {
+    packet = {
         "available": bool(route_analysis.get("route_selected_total")) or bool(blocker_analysis) or _safe_int(trade_report_summary.get("closed_trade_count"), 0) > 0,
         "packet_version": "strategist_feedback.v1",
+        "source_day": normalized_day,
         "feedback_mode": "deterministic",
         "source_mode": str(mode or ""),
         "source_reports": {
@@ -601,3 +603,16 @@ def build_strategist_feedback_packet(
         "trade_report_analysis": trade_report_summary,
         "runtime_semantics_unchanged": True,
     }
+    packet["feedback_id"] = stable_evidence_id(
+        "feedback",
+        {
+            "source_day": normalized_day,
+            "source_mode": packet.get("source_mode"),
+            "dominant_patterns": packet.get("dominant_patterns"),
+            "blocker_analysis": packet.get("blocker_analysis"),
+            "route_analysis": packet.get("route_analysis"),
+            "recommendation": packet.get("recommendation"),
+            "confidence": packet.get("confidence"),
+        },
+    )
+    return packet

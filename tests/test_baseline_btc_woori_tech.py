@@ -7,6 +7,7 @@ from libs.reporting.baseline_btc_woori_tech.contracts import (
     DECISIONS_SCHEMA,
     FORWARD_SCHEMA,
     TARGET_SYMBOL,
+    PERSISTENT_TREND_POLICY_ID,
     STRONG_BTC_POLICY_ID,
 )
 from libs.reporting.baseline_btc_woori_tech.forward_returns import (
@@ -73,6 +74,36 @@ def _fear_greed() -> dict:
         "regime": "greed",
         "fallback_reason": "",
         "behavior_effect": "observation_only",
+    }
+
+
+def _persistent_btc(*, epoch: int, fading: bool = False) -> dict:
+    start = epoch - (5 * 60 * 60)
+    rows = []
+    for index in range(301):
+        current_epoch = start + index * 60
+        momentum_15m = 0.8
+        momentum_5m = 0.25
+        if fading and index >= 285:
+            momentum_15m = -0.2
+            momentum_5m = -0.1
+        rows.append(
+            {
+                "ts": current_epoch,
+                "price": 100.0 + index * 0.02,
+                "momentum_5m_pct": momentum_5m,
+                "momentum_15m_pct": momentum_15m,
+                "momentum_60m_pct": 1.2,
+                "momentum_24h_pct": 4.0,
+                "momentum_since_krx_open_pct": 2.0,
+                "source": "fixture",
+            }
+        )
+    return {
+        "available": True,
+        "available_sources": ["btc_usd"],
+        "sources": {"btc_usd": rows},
+        "fallback_reason": "",
     }
 
 
@@ -255,6 +286,42 @@ def test_strong_btc_variant_requires_large_rise_and_local_confirmation() -> None
     assert variant["thresholds"]["btc_60m_min_pct"] == 1.0
 
 
+def test_persistent_trend_variant_requires_recent_trend_quality() -> None:
+    epoch = 1782347400
+    decision = build_decision_snapshot(
+        day="2026-06-25",
+        as_of_epoch=epoch,
+        woori_candles=_candles(),
+        btc_signals=_persistent_btc(epoch=epoch),
+    )
+
+    trend = decision["btc_signal"]["recent_trend"]
+    variant = decision["policy_variants"][PERSISTENT_TREND_POLICY_ID]
+    assert trend["state"] == "persistent_uptrend"
+    assert trend["positive_5m_ratio_60m"] == 1.0
+    assert trend["momentum_4h_pct"] > 0.0
+    assert variant["eligible"] is True
+    assert variant["behavior_effect"] == "shadow_only"
+    assert variant["evidence_phase"] == "historical_reconstruction"
+    assert variant["prospective_start_day"] == "2026-08-26"
+
+
+def test_persistent_trend_variant_rejects_extended_fading_btc() -> None:
+    epoch = 1782347400
+    decision = build_decision_snapshot(
+        day="2026-06-25",
+        as_of_epoch=epoch,
+        woori_candles=_candles(),
+        btc_signals=_persistent_btc(epoch=epoch, fading=True),
+    )
+
+    trend = decision["btc_signal"]["recent_trend"]
+    variant = decision["policy_variants"][PERSISTENT_TREND_POLICY_ID]
+    assert trend["state"] == "extended_fading"
+    assert trend["extended_fading"] is True
+    assert variant["eligible"] is False
+
+
 def test_cost_and_slippage_application() -> None:
     summary = summarize(
         [
@@ -311,6 +378,7 @@ def test_artifacts_have_no_order_intent_or_execution(tmp_path: Path) -> None:
     assert decisions["schema_version"] == DECISIONS_SCHEMA
     assert forward["schema_version"] == FORWARD_SCHEMA
     assert STRONG_BTC_POLICY_ID in forward["policy_variant_summaries"]
+    assert PERSISTENT_TREND_POLICY_ID in forward["policy_variant_summaries"]
     assert decisions["fixed_target"] == "041190.KQ"
     assert decisions["crypto_fear_greed"]["regime"] == "greed"
     assert decisions["crypto_fear_greed_behavior_effect"] == "observation_only"

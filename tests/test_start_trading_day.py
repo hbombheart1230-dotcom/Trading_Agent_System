@@ -7,6 +7,12 @@ from pathlib import Path
 import scripts.start_trading_day as mod
 
 
+def test_opening_macro_collector_is_part_of_the_observation_stack() -> None:
+    config = mod.SHADOW_LOOPS["opening_macro_snapshots"]
+    assert config["pattern"] == "run_opening_macro_snapshot_collector.py"
+    assert all("OrderIntent" not in value for value in config["cmd"])
+
+
 def test_has_day_arg_accepts_space_and_equals_forms() -> None:
     assert mod._has_day_arg("python scripts/run_baseline_samsung_hynix.py --day 2026-06-30", "2026-06-30")
     assert mod._has_day_arg("python scripts/run_baseline_samsung_hynix.py --day=2026-06-30", "2026-06-30")
@@ -96,3 +102,33 @@ def test_event_health_counts_q9_monitor_decision_trace(tmp_path: Path, monkeypat
     result = mod._event_health(now.date().isoformat(), lookback_min=10)
 
     assert result["counts"]["q9_scanner_selection"] == 1
+
+
+def test_watchdog_recovers_stale_runtime_and_writes_history(tmp_path: Path, monkeypatch) -> None:
+    status_dir = tmp_path / "reports" / "runtime" / "trading_day_status"
+    stale = {
+        "running": True,
+        "heartbeat_age_seconds": 360,
+        "process_tree": {"logical_session_count": 1, "tree_state": "NORMAL_PROCESS_TREE"},
+    }
+    healthy = {
+        "running": True,
+        "heartbeat_age_seconds": 2,
+        "process_tree": {"logical_session_count": 1, "tree_state": "NORMAL_PROCESS_TREE"},
+    }
+    live_rows = iter((stale, healthy))
+    monkeypatch.setattr(mod, "ROOT", tmp_path)
+    monkeypatch.setattr(mod, "STATUS_DIR", status_dir)
+    monkeypatch.setattr(mod, "_session_stack_window_open", lambda *_: True)
+    monkeypatch.setattr(mod, "_ensure_shadow_loops", lambda *_args, **_kwargs: {"running": {}})
+    monkeypatch.setattr(mod, "_live_status", lambda: next(live_rows))
+    monkeypatch.setattr(mod, "_start_live", lambda: {"started": True})
+    monkeypatch.setattr(mod, "_event_health", lambda *_args, **_kwargs: {"available": True, "status": "PASS", "blockers": []})
+
+    result = mod.run_watchdog("2026-08-27", lookback_min=10)
+
+    assert result["ok"] is True
+    assert result["supervisor"]["decision"] == "RECOVER"
+    assert result["supervisor"]["last_action"] == "RECOVERED"
+    assert result["supervisor"]["restart_count"] == 1
+    assert list((status_dir / "history" / "2026-08-27").glob("*_watchdog.json"))

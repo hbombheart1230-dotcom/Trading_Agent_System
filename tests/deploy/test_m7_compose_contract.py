@@ -32,6 +32,9 @@ def test_m7_images_copy_only_observability_app_sources() -> None:
     assert "!apps/api/**" in api_ignore
     assert web_ignore.splitlines()[0] == "**"
     assert "!apps/web/**" in web_ignore
+    assert "apps/web/node_modules/" in web_ignore
+    assert "apps/web/dist/" in web_ignore
+    assert "apps/web/coverage/" in web_ignore
 
     forbidden = (".env", "graphs/", "libs/", "scripts/")
     assert all(value not in api for value in forbidden)
@@ -50,7 +53,8 @@ def test_m7_images_are_non_root_and_health_checked() -> None:
 
 
 def test_m7_api_is_private_and_web_is_localhost_only() -> None:
-    services = _compose()["services"]
+    compose = _compose()
+    services = compose["services"]
     api = services["api"]
     web = services["web"]
 
@@ -58,6 +62,10 @@ def test_m7_api_is_private_and_web_is_localhost_only() -> None:
     assert api["expose"] == ["8000"]
     assert web["ports"] == ["127.0.0.1:${OBSERVABILITY_WEB_PORT:-3000}:8080"]
     assert web["depends_on"]["api"]["condition"] == "service_healthy"
+    assert set(api["networks"]) == {"observability"}
+    assert set(web["networks"]) == {"observability", "edge"}
+    assert compose["networks"]["observability"]["internal"] is True
+    assert compose["networks"]["edge"] is None
 
 
 def test_m7_evidence_mounts_are_read_only() -> None:

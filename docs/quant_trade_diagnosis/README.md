@@ -18,6 +18,20 @@ The per-trade diagnosis explains what happened. The Agent Effectiveness
 Scorecard Framework decides how those explanations become cumulative component
 judgments. Neither artifact directly changes runtime behavior.
 
+## AI Evidence Provenance
+
+From 2026-08-26 onward, new Q9 decision windows can carry stable evidence IDs
+for Reporter feedback and memory packets. This allows later reports to answer:
+
+- which feedback packet was exposed and consumed
+- whether a Strategist frame change was observed in that decision
+- which memory packets were visible and deterministically applied
+- whether the Scanner universe was eligible as a strategy-neutral control
+
+The records deliberately keep `causal_attribution=false`. Performance impact
+requires a linked forward outcome and a valid control; packet visibility alone
+does not establish value.
+
 Implemented scorecard outputs:
 
 - `reports/evaluation/agent_effectiveness/YYYY-MM-DD/agent_effectiveness_scorecard.json`

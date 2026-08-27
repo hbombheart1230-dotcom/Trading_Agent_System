@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from libs.core.evidence_identity import stable_evidence_id
+
 
 def _dict(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
@@ -123,6 +125,20 @@ def build_strategist_memory_packet_visibility(
         or selected_symbol_memory.get("symbol"),
         max_len=24,
     )
+    feedback_id = str(reporter_feedback_packet.get("feedback_id") or "").strip()
+    if reporter_feedback_packet and not feedback_id:
+        feedback_id = stable_evidence_id("feedback", reporter_feedback_packet)
+    memory_packet_ids = {
+        layer: stable_evidence_id("memory", packet)
+        for layer, packet in (
+            ("strategy", strategy_memory),
+            ("symbol", selected_symbol_memory),
+            ("daily", _dict(memory_packets.get("daily_strategy_memory"))),
+            ("weekly", _dict(memory_packets.get("weekly_strategy_memory"))),
+            ("monthly", _dict(memory_packets.get("monthly_strategy_memory"))),
+        )
+        if packet
+    }
     return {
         "read_model_facts": {
             "present": bool(read_model_facts.get("present")),
@@ -153,6 +169,7 @@ def build_strategist_memory_packet_visibility(
             "feedback_gate_reason": _text(reporter_feedback_packet.get("feedback_gate_reason"), max_len=40),
             "confidence": _text(reporter_feedback_packet.get("confidence"), max_len=24),
             "recommendation_count": len(_list(reporter_feedback_packet.get("recommendation"))),
+            "feedback_id": feedback_id,
         },
         "strategy_memory": {
             "present": bool(strategy_memory),
@@ -164,6 +181,7 @@ def build_strategist_memory_packet_visibility(
             "recent_failure_count": len(_list(strategy_memory.get("recent_failures"))),
             "recent_success_pattern_count": len(_list(strategy_memory.get("recent_success_patterns"))),
             "reporter_analysis_digest_present": bool(_dict(strategy_memory.get("reporter_analysis_digest"))),
+            "packet_id": memory_packet_ids.get("strategy", ""),
         },
         "selected_symbol_memory": {
             "present": bool(selected_symbol_memory),
@@ -174,6 +192,7 @@ def build_strategist_memory_packet_visibility(
             "win_rate": _safe_float(selected_symbol_memory.get("win_rate")),
             "dominant_playbook": _text(selected_symbol_memory.get("dominant_playbook"), max_len=40),
             "dominant_monitor_blocker": _text(selected_symbol_memory.get("dominant_monitor_blocker"), max_len=60),
+            "packet_id": memory_packet_ids.get("symbol", ""),
         },
         "commander_refresh_context": {
             "present": bool(commander_refresh_context or commander_open_position_refresh_context),
@@ -208,6 +227,7 @@ def build_strategist_memory_packet_visibility(
             "application_mode": _text(commander_memory_policy.get("application_mode"), max_len=24),
             "active_layers": [_text(x, max_len=16) for x in _list(commander_memory_policy.get("active_layers"))[:4] if _text(x, max_len=16)],
             "priority_order": [_text(x, max_len=16) for x in _list(commander_memory_policy.get("priority_order"))[:4] if _text(x, max_len=16)],
+            "packet_ids": dict(memory_packet_ids),
             "symbol_memory_override_enabled": bool(commander_memory_policy.get("symbol_memory_override_enabled")),
             "scanner_bias_enabled": bool(commander_memory_policy.get("scanner_bias_enabled")),
             "monitor_bias_enabled": bool(commander_memory_policy.get("monitor_bias_enabled")),

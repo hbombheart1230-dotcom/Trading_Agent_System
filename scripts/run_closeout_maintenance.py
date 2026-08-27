@@ -14,6 +14,7 @@ from libs.reporting.closeout_maintenance import (
     run_closeout_maintenance,
     write_closeout_maintenance_report,
 )
+from libs.reporting.scheduled_intelligence import materialize_closeout_intelligence
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -43,6 +44,15 @@ def main() -> int:
     )
     paths = write_closeout_maintenance_report(payload, reports_root=reports_root)
     payload["report_paths"] = dict(paths)
+    try:
+        payload["scheduled_intelligence"] = materialize_closeout_intelligence(
+            day=str(args.day)[:10],
+            closeout_payload=payload,
+            closeout_paths=paths,
+            reports_root=reports_root,
+        )
+    except Exception as exc:
+        payload["scheduled_intelligence"] = {"status": "FAILED", "error": str(exc)}
     if bool(args.json):
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:

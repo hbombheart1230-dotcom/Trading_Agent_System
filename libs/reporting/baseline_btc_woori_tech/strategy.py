@@ -9,6 +9,10 @@ from .contracts import (
     TARGET_NAME,
     TARGET_SYMBOL,
     TARGET_TICKER,
+    PERSISTENT_POSITIVE_RATIO_MIN,
+    PERSISTENT_TREND_POLICY_ID,
+    PERSISTENT_TREND_PROSPECTIVE_START_DAY,
+    PERSISTENT_TREND_SCORE_MIN,
     STRONG_BTC_24H_MIN_PCT,
     STRONG_BTC_60M_MIN_PCT,
     STRONG_BTC_POLICY_ID,
@@ -91,6 +95,35 @@ def build_decision_snapshot(
         and btc.get("available")
         and all(strong_conditions.values())
     )
+    recent_trend = (
+        dict(btc.get("recent_trend") or {})
+        if isinstance(btc.get("recent_trend"), Mapping)
+        else {}
+    )
+    trend_score = float(recent_trend.get("trend_score") or 0.0)
+    positive_ratio = float(recent_trend.get("positive_5m_ratio_60m") or 0.0)
+    persistent_trend_confirmed = bool(
+        btc_large_rise
+        and trend_score >= PERSISTENT_TREND_SCORE_MIN
+        and positive_ratio >= PERSISTENT_POSITIVE_RATIO_MIN
+        and str(recent_trend.get("state") or "")
+        in {"persistent_uptrend", "accelerating_uptrend"}
+        and not bool(recent_trend.get("extended_fading"))
+    )
+    persistent_conditions = {
+        "btc_strong_recent_trend_confirmed": persistent_trend_confirmed,
+        "btc_leading_signal_positive": bool(
+            btc.get("leading_positive", btc.get("positive"))
+        ),
+        "woori_local_price_volume_confirmation": bool(
+            local_confirmation and local.get("price_above_vwap_or_short_ma")
+        ),
+    }
+    persistent_eligible = bool(
+        local.get("available")
+        and btc.get("available")
+        and all(persistent_conditions.values())
+    )
     btc_momentum = float(btc.get("momentum_5m_pct") or 0.0)
     volume_edge = max(0.0, float(local.get("volume_ratio") or 0.0) - 1.0)
     score = (0.7 * max(-3.0, min(3.0, btc_momentum))) + (0.3 * min(3.0, volume_edge))
@@ -121,7 +154,30 @@ def build_decision_snapshot(
                     "btc_24h_min_pct": STRONG_BTC_24H_MIN_PCT,
                     "regime_rule": "60m >= threshold OR 24h >= threshold",
                 },
-            }
+            },
+            PERSISTENT_TREND_POLICY_ID: {
+                "behavior_effect": "shadow_only",
+                "prospective_start_day": PERSISTENT_TREND_PROSPECTIVE_START_DAY,
+                "evidence_phase": (
+                    "prospective_shadow"
+                    if day >= PERSISTENT_TREND_PROSPECTIVE_START_DAY
+                    else "historical_reconstruction"
+                ),
+                "eligible": persistent_eligible,
+                "action": "SHADOW_ENTER" if persistent_eligible else "NO_ENTRY",
+                "conditions": persistent_conditions,
+                "trend_context": recent_trend,
+                "thresholds": {
+                    "btc_60m_min_pct": STRONG_BTC_60M_MIN_PCT,
+                    "btc_24h_min_pct": STRONG_BTC_24H_MIN_PCT,
+                    "trend_score_min": PERSISTENT_TREND_SCORE_MIN,
+                    "positive_5m_ratio_60m_min": PERSISTENT_POSITIVE_RATIO_MIN,
+                    "accepted_states": [
+                        "persistent_uptrend",
+                        "accelerating_uptrend",
+                    ],
+                },
+            },
         },
         "exit_rules": list(EXIT_RULES),
         "exit_rule_count": len(EXIT_RULES),

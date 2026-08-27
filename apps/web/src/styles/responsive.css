@@ -4,6 +4,9 @@
   .metric-cell:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
   .span-8, .span-7, .span-6, .span-5, .span-4 { grid-column: span 12; }
   .overview-alert-list { grid-template-columns: 1fr; }
+  .runtime-status-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .runtime-state-summary { grid-column: span 2; }
+  .watchdog-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
   .app-shell { display: block; }
@@ -18,6 +21,7 @@
   .topbar-meta span { display: none; }
   .readonly-flag, .topbar-signals .status-pill { display: none; }
   .mode-flag, .public-flag { padding: 0 6px; font-size: 9px; }
+  .topbar-signals .runtime-state-pill { height: 22px; padding: 0 6px; font-size: 9px; }
   .content { padding: 20px 14px 40px; }
   .page-header { align-items: flex-start; flex-direction: column; gap: 13px; }
   .page-header h1 { font-size: 21px; }
@@ -34,4 +38,11 @@
   .panel-body { padding: 13px; }
   .data-table td { white-space: nowrap; }
   .data-table .symbol-cell { min-width: 150px; white-space: normal; }
+  .runtime-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .runtime-state-summary { grid-column: span 2; }
+  .runtime-state-summary, .runtime-status-item { min-height: 82px; }
+  .watchdog-summary-strip { grid-template-columns: 1fr; }
+  .watchdog-panel .panel-meta { display: none; }
+  .scheduled-job-grid { grid-template-columns: 1fr; }
+  .scheduled-intelligence-panel .panel-meta { display: none; }
 }

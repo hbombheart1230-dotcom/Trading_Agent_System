@@ -17,6 +17,10 @@ from libs.reporting.short_alpha_discriminator.profit_lock import (
 from libs.reporting.short_alpha_discriminator.strategist_roi import (
     build_strategist_stage2_review,
 )
+from libs.reporting.short_alpha_discriminator.opening_casebook import (
+    build_opening_overshoot_casebook,
+    classify_opening_case,
+)
 
 
 def _opening(
@@ -246,6 +250,34 @@ def test_pipeline_writes_independent_artifacts(tmp_path: Path) -> None:
     assert Path(result["profit_fade_json_path"]).exists()
     assert Path(result["strategist_roi_json_path"]).exists()
     assert Path(result["scanner_diagnostics_json_path"]).exists()
+    assert Path(result["opening_casebook_json_path"]).exists()
+    assert Path(result["opening_casebook_markdown_path"]).exists()
     markdown = Path(result["summary_markdown_path"]).read_text(encoding="utf-8")
     assert "## Historical Sensitivity" in markdown
     assert "Strategist Stage-2 authority changed: **No**" in markdown
+
+
+def test_opening_case_classification_is_deterministic_and_cost_aware() -> None:
+    success = _opening(
+        "decision-success", day="2026-08-26", symbol="005930",
+        asset_class="common_stock", epoch=10, returns=(0.2, 1.1, 0.5, 0.0, 0.0),
+    )
+    fade = _opening(
+        "decision-fade", day="2026-08-26", symbol="000660",
+        asset_class="common_stock", epoch=11, returns=(-0.2, -0.1, -0.3, 0.0, 0.0), mfe=1.5,
+    )
+
+    assert classify_opening_case(success)["label"] == "FIXED_HORIZON_SUCCESS"
+    classified_fade = classify_opening_case(fade)
+    assert classified_fade["label"] == "MFE_NEAR_SUCCESS_PROFIT_FADE"
+    assert classified_fade["best_mfe_net_proxy_pct"] == 1.22
+
+
+def test_casebook_uses_first_day_symbol_episode_only() -> None:
+    opening, features = _fixture_payloads()
+    joined, _ = join_opening_to_feature_mart(opening, features)
+    casebook = build_opening_overshoot_casebook(joined)
+
+    assert casebook["source_episode_count"] == 4
+    assert casebook["independent_case_count"] == 3
+    assert casebook["behavior_effect"] == "NONE_OBSERVATION_ONLY"

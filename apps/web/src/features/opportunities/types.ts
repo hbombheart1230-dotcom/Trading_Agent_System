@@ -75,3 +75,6 @@ export interface OpportunityOutcomes {
   issues: string[];
   provenance: Provenance;
 }
+
+export type OpportunitySignal = OpportunityFunnel["current_signals"][number];
+export type OpportunityOutcome = OpportunityOutcomes["outcomes"][number];

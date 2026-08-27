@@ -44,17 +44,32 @@ Current authority:
 10. `m7_docker_compose_implementation_2026-08-18.md`
    - implemented API/Web images and Compose profiles
    - read-only mounts, non-root services, and resource isolation
-   - completed static tests and pending Docker Engine smoke gate
-11. `product_data_contract_v1.md`
+   - completed Docker Engine, private/public profile, browser, and isolation gates
+11. `m7_engine_gate_2026-08-26.md`
+   - installed host tools and post-restart Linux Engine verification
+   - engine-discovered corrections and final M7 evidence
+12. `m7_1_main_runtime_visibility_2026-08-27.md`
+   - minimal Windows Trading Main visibility in the read-only Docker UI
+   - heartbeat, logical process tree, duplicate-session, and market expectation rules
+   - explicit no-control and no-runtime-container boundary
+13. `m7_2_host_supervisor_2026-08-27.md`
+   - bounded Windows Trading Main automatic recovery policy
+   - immutable watchdog decision history and operator UI
+   - restart cooldown, daily limit, and read-only API boundary
+14. `m7_3_scheduled_intelligence_2026-08-27.md`
+   - existing Preopen/Closeout result materialization without duplicate LLM calls
+   - memory delivery receipt and active/advisory semantics
+   - scheduled job status and briefing visibility in Overview
+15. `product_data_contract_v1.md`
    - time, truth, cost-basis, and performance definitions
    - missing-data and availability semantics
    - internal/public data boundaries
-12. `combined_milestone_plan_2026-08-14.md`
+16. `combined_milestone_plan_2026-08-14.md`
    - product goal and information architecture
    - Q9-Q18 and current-research data mapping
    - generic read models and API surface
    - implementation milestones M0-M9
-13. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
+17. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
    - repository and infrastructure review
    - read-only and import-isolation constraints
    - Docker/Compose/Kubernetes design details
@@ -62,6 +77,19 @@ Current authority:
 The product is not an evaluation-progress dashboard. It presents performance,
 trades, opportunities, strategies, market context, LLM operations, reports,
 and data-quality signals. Evaluation artifacts are internal evidence sources.
+
+M7.1 adds one operational exception to that product summary: a compact,
+read-only Trading Main status. It normalizes Windows parent/child processes to
+one logical session and exposes no start, stop, restart, kill, or order action.
+
+M7.2 keeps that UI read-only while extending the existing Windows scheduled
+watchdog with bounded recovery for stopped, heartbeat-stale, duplicated, and
+ownership-inconsistent Main sessions. Every watchdog decision is retained as
+history and shown on Overview; the API still exposes no control endpoint.
+
+M7.3 reuses the existing Preopen and Closeout pipelines to materialize an
+operator briefing, daily intelligence index, scheduled job manifests and a
+memory delivery receipt. It adds no scheduler task and no LLM call.
 
 No document in this folder authorizes trading, evaluation, prompt, execution,
 or runtime behavior changes.

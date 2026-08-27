@@ -85,6 +85,7 @@ from libs.runtime.scanner.output_payloads import (
     build_candidate_ranking_table_payload as _build_candidate_ranking_table_payload,
     build_candidate_selection_reason_payload as _build_candidate_selection_reason_payload,
 )
+from libs.runtime.scanner.control_eligibility import build_full_strategist_control_eligibility
 from libs.runtime.quant.suitability import score_candidate_tactic_suitability
 from libs.runtime.intraday_monitor_signals import evaluate_intraday_entry_signal, resolve_intraday_entry_policy
 from libs.runtime.feature_engine import build_feature_map
@@ -2256,6 +2257,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         candidates, live_symbol_meta = _filter_live_equity_candidates(list(candidates or []))
         pool_meta = dict(pool_meta)
         pool_meta.update(dict(live_symbol_meta))
+    full_strategist_control_eligibility = build_full_strategist_control_eligibility(pool_meta)
     state["scanner_source_universe_before_strategy_weighting"] = {
         "schema_version": "q9_scanner_source_universe.v1",
         "behavior_effect": "evaluation_only",
@@ -2280,6 +2282,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         ],
         "candidate_source": str(pool_meta.get("candidate_source") or ""),
         "scanner_candidate_source": str(pool_meta.get("scanner_candidate_source") or ""),
+        "full_strategist_control_eligibility": dict(full_strategist_control_eligibility),
         "limitation": (
             "Captured before Scanner asset/practical filters and score overlays; source inclusion "
             "may still reflect the current Strategist-provided source policy."
@@ -2992,6 +2995,11 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "quote_best_bid": _to_float(metrics.get("best_bid")),
                     "quote_best_ask": _to_float(metrics.get("best_ask")),
                     "quote_spread_bps": metrics.get("spread_bps"),
+                    "quote_payload_available": bool(metrics.get("quote_payload_available")),
+                    "quote_source": str(metrics.get("quote_source") or ""),
+                    "quote_evidence_status": str(
+                        metrics.get("bid_ask_evidence_status") or ""
+                    ),
                     "etf_deviation_pct": deviation_signal.get("etf_deviation_pct"),
                     "etf_deviation_source": str(deviation_signal.get("etf_deviation_source") or ""),
                     "etf_deviation_available": bool(deviation_signal.get("available")),
@@ -3911,7 +3919,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
         },
     )
-    candidate_ranking_table_payload = _build_candidate_ranking_table_payload(ranking_table)
+    candidate_ranking_table_payload = _build_candidate_ranking_table_payload(
+        ranking_table,
+        full_strategist_control_eligibility=full_strategist_control_eligibility,
+    )
     state["scanner_candidate_ranking_table"] = dict(candidate_ranking_table_payload)
     state["scanner_output"]["scanner_intrinsic_control_top10"] = list(
         candidate_ranking_table_payload.get("scanner_intrinsic_control_top10") or []

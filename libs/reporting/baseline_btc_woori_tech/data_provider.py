@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from libs.reporting.baseline_samsung_hynix.data_provider import load_existing_candles
 
 from .contracts import TARGET_SYMBOL
+from .trend_context import build_recent_btc_trend_context
 
 
 KST = timezone(timedelta(hours=9))
@@ -231,6 +232,13 @@ def signal_at(payload: Mapping[str, Any], *, epoch: int) -> dict[str, Any]:
         momentum_60m=momentum_60m,
         momentum_24h=momentum_24h,
     )
+    recent_trend = build_recent_btc_trend_context(
+        payload,
+        epoch=epoch,
+        momentum_15m=momentum_15m,
+        momentum_60m=momentum_60m,
+        momentum_24h=momentum_24h,
+    )
     stale_sources = [str(row.get("name") or "") for row in observations if row.get("stale")]
     return {
         "available": momentum is not None,
@@ -245,6 +253,7 @@ def signal_at(payload: Mapping[str, Any], *, epoch: int) -> dict[str, Any]:
         "leading_positive": leading["leading_positive"],
         "leading_signal_policy": "q12_btc_multihorizon_leading_signal.v2",
         "leading_signal_reason": leading["leading_signal_reason"],
+        "recent_trend": recent_trend,
         "observations": observations,
         "source_count": len(observations),
         "fresh_source_count": sum(1 for row in observations if not row.get("stale")),

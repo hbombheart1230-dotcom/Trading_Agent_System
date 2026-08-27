@@ -21,7 +21,10 @@ docker compose -f deploy/compose/compose.yaml --env-file deploy/compose/.env ps
 ```
 
 Open `http://127.0.0.1:3000`. The API has no host port and is reachable only
-through the Web reverse proxy.
+through the Web reverse proxy. The API is attached only to the internal
+`observability` network. Web also uses an `edge` network because Docker Desktop
+does not publish host ports from a container attached only to an internal
+network.
 
 ## Public Sanitization Profile
 

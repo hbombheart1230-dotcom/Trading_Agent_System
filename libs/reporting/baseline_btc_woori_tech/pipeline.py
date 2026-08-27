@@ -14,6 +14,7 @@ from .contracts import (
     DEFAULT_SLIPPAGE_PCT,
     FORWARD_SCHEMA,
     PROGRAM_ID,
+    PERSISTENT_TREND_POLICY_ID,
     REPORT_SCHEMA,
     TARGET_SYMBOL,
     STRONG_BTC_POLICY_ID,
@@ -163,6 +164,13 @@ def build_baseline_btc_woori_artifacts(
         cost_pct=cost_pct,
         slippage_pct=slippage_pct,
     )
+    persistent_trend_summary = summarize_policy_variant(
+        forward_rows,
+        decisions,
+        policy_id=PERSISTENT_TREND_POLICY_ID,
+        cost_pct=cost_pct,
+        slippage_pct=slippage_pct,
+    )
     observed = sum(
         1
         for row in forward_rows
@@ -184,6 +192,7 @@ def build_baseline_btc_woori_artifacts(
         "summary": summary,
         "policy_variant_summaries": {
             STRONG_BTC_POLICY_ID: strong_btc_summary,
+            PERSISTENT_TREND_POLICY_ID: persistent_trend_summary,
         },
     }
     comparison = build_comparison(

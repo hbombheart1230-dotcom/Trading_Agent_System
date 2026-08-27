@@ -47,11 +47,14 @@ def candidate_quote_metrics(
     quote = skill_quotes.get(norm_symbol(symbol), {})
     if not isinstance(quote, dict):
         quote = {}
+    skill_quote_available = bool(quote)
+    fallback_used = False
     fallback = state.get("mock_candidate_metrics")
     if isinstance(fallback, dict) and isinstance(fallback.get(symbol), dict):
         merged = dict(fallback.get(symbol) or {})
         merged.update(quote)
         quote = merged
+        fallback_used = True
 
     volume = to_float(quote.get("volume") or quote.get("vol") or quote.get("trading_volume"))
     trading_value = to_float(
@@ -108,6 +111,23 @@ def candidate_quote_metrics(
         "best_ask": float(max(0.0, best_ask)),
         "best_bid": float(max(0.0, best_bid)),
         "spread_bps": (float(max(0.0, spread_bps)) if spread_bps is not None else None),
+        "quote_payload_available": bool(quote),
+        "quote_source": (
+            "skill_quote+mock_fallback"
+            if skill_quote_available and fallback_used
+            else "skill_quote"
+            if skill_quote_available
+            else "mock_candidate_metrics"
+            if fallback_used
+            else "unavailable"
+        ),
+        "bid_ask_evidence_status": (
+            "OBSERVED"
+            if best_ask > 0.0 and best_bid > 0.0
+            else "QUOTE_PAYLOAD_WITHOUT_BID_ASK"
+            if quote
+            else "QUOTE_PAYLOAD_UNAVAILABLE"
+        ),
         "etf_deviation_pct": deviation_signal.get("etf_deviation_pct"),
         "etf_deviation_source": str(deviation_signal.get("etf_deviation_source") or ""),
         "etf_deviation_available": bool(deviation_signal.get("available")),

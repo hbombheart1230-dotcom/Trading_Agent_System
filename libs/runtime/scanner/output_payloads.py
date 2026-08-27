@@ -12,7 +12,11 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
-def build_candidate_ranking_table_payload(ranking_table: List[Dict[str, Any]]) -> Dict[str, Any]:
+def build_candidate_ranking_table_payload(
+    ranking_table: List[Dict[str, Any]],
+    *,
+    full_strategist_control_eligibility: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     reconstructed_pre_adjust = sorted(
         [dict(row) for row in ranking_table if isinstance(row, dict)],
         key=lambda row: (
@@ -78,6 +82,9 @@ def build_candidate_ranking_table_payload(ranking_table: List[Dict[str, Any]]) -
             "candidate_count": len(ranking_table),
             "source_universe_top20": source_universe[:20],
             "intrinsic_ranked_top20": intrinsic_control[:20],
+            "full_strategist_control_eligibility": dict(
+                full_strategist_control_eligibility or {}
+            ),
             "limitation": (
                 "The runtime graph invokes Strategist before Scanner. This snapshot removes "
                 "Strategist ranking weights but candidate-source availability may still reflect "

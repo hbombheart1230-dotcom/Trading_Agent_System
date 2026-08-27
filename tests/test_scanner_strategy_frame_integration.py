@@ -166,6 +166,21 @@ def test_candidate_quote_metrics_include_spread_bps_from_quote_snapshot():
     assert metrics["best_bid"] == 70500.0
     assert metrics["best_ask"] == 70550.0
     assert float(metrics["spread_bps"]) > 0.0
+    assert metrics["quote_payload_available"] is True
+    assert metrics["quote_source"] == "skill_quote"
+    assert metrics["bid_ask_evidence_status"] == "OBSERVED"
+
+
+def test_candidate_quote_metrics_explains_missing_bid_ask() -> None:
+    metrics = _candidate_quote_metrics(
+        "005930",
+        skill_quotes={"005930": {"price": 70500, "volume": 1000}},
+        state={},
+    )
+
+    assert metrics["quote_payload_available"] is True
+    assert metrics["quote_source"] == "skill_quote"
+    assert metrics["bid_ask_evidence_status"] == "QUOTE_PAYLOAD_WITHOUT_BID_ASK"
 
 
 def test_scanner_extract_guidance_prefers_strategy_policy_when_present():

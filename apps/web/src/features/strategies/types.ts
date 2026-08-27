@@ -28,3 +28,5 @@ export interface StrategyPerformance {
   issues: string[];
   provenance: Provenance;
 }
+
+export type StrategyPerformanceItem = StrategyPerformance["items"][number];

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .contracts import PERSISTENT_TREND_POLICY_ID, STRONG_BTC_POLICY_ID
+
 
 def render_report(
     *,
@@ -34,11 +36,16 @@ def render_report(
         "",
         "## Decisions",
         "",
-        "| Time | Action | BTC 5m | BTC 15m | BTC 60m | BTC 24h | KRX Session | Regime | BTC Sources | Woori Volume | Breakout | Trend | Conditions |",
-        "|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---|---|",
+        "| Time | Action | BTC 5m | BTC 15m | BTC 60m | BTC 24h | KRX Session | Regime | Recent trend | Trend score | BTC Sources | Woori Volume | Breakout | Trend | Conditions |",
+        "|---|---|---:|---:|---:|---:|---:|---|---|---:|---:|---:|---|---|---|",
     ]
     for row in decisions.get("decisions") or []:
         btc = row.get("btc_signal") or {}
+        recent_trend = (
+            btc.get("recent_trend")
+            if isinstance(btc.get("recent_trend"), Mapping)
+            else {}
+        )
         local = row.get("local_features") or {}
         conditions = row.get("entry_conditions") or {}
         lines.append(
@@ -48,7 +55,10 @@ def render_report(
             f"{float(btc.get('momentum_60m_pct') or 0):.4f}% | "
             f"{float(btc.get('momentum_24h_pct') or 0):.4f}% | "
             f"{float(btc.get('momentum_since_krx_open_pct') or 0):.4f}% | "
-            f"{btc.get('market_regime') or 'insufficient_evidence'} | {btc.get('source_count') or 0} | "
+            f"{btc.get('market_regime') or 'insufficient_evidence'} | "
+            f"{recent_trend.get('state') or 'insufficient_evidence'} | "
+            f"{float(recent_trend.get('trend_score') or 0):.3f} | "
+            f"{btc.get('source_count') or 0} | "
             f"{float(local.get('volume_ratio') or 0):.2f}x | "
             f"{bool(local.get('breakout_confirmed'))} | "
             f"{bool(local.get('price_above_vwap_or_short_ma'))} | "
@@ -81,9 +91,33 @@ def render_report(
         "|---|---:|---:|---:|---:|---:|",
     ]
     variant = (forward.get("policy_variant_summaries") or {}).get(
-        "BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1"
+        STRONG_BTC_POLICY_ID
     ) or {}
     for row in variant.get("horizons") or []:
+        metrics = row.get("eligible_entries_net") or {}
+        lines.append(
+            f"| {row.get('horizon')} | {metrics.get('count')} | "
+            f"{float(metrics.get('win_rate') or 0):.1%} | "
+            f"{float(metrics.get('average_return_pct') or 0):.4f}% | "
+            f"{float(metrics.get('profit_factor') or 0):.4f} | "
+            f"{float(metrics.get('maximum_drawdown_pct') or 0):.4f}% |"
+        )
+    lines += [
+        "",
+        "## Persistent BTC Trend Shadow Variant",
+        "",
+        "- Contract: strong BTC rise plus persistent/accelerating recent trend and Woori local confirmation.",
+        "- Prospective evidence starts on `2026-08-26`; earlier regenerated rows are historical reconstruction only.",
+        "- Recent trend score uses multi-horizon alignment, positive 5m persistence, acceleration, and drawdown from recent highs; realized volatility is recorded as separate observation evidence.",
+        "- This is additive observation only and cannot create an order.",
+        "",
+        "| Horizon | Trades | Win Rate | Avg Net | Profit Factor | Max Drawdown |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    persistent_variant = (forward.get("policy_variant_summaries") or {}).get(
+        PERSISTENT_TREND_POLICY_ID
+    ) or {}
+    for row in persistent_variant.get("horizons") or []:
         metrics = row.get("eligible_entries_net") or {}
         lines.append(
             f"| {row.get('horizon')} | {metrics.get('count')} | "

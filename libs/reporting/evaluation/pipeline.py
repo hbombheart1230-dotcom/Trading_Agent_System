@@ -240,9 +240,21 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
             if model_payload:
                 all_models.append(model_payload)
 
-    strategist = build_strategist_effectiveness(all_evaluations, all_attributions)
+    q9_windows: list[dict[str, Any]] = []
+    q9_daily_root = reports_root / "operator_summary" / "daily"
+    if q9_daily_root.exists():
+        q9_days = sorted(
+            path.name for path in q9_daily_root.iterdir() if path.is_dir() and path.name <= day
+        )[-20:]
+        for q9_day in q9_days:
+            payload = read_json(q9_daily_root / q9_day / "q9_decision_windows.json")
+            for window in list(payload.get("windows") or []):
+                if isinstance(window, dict):
+                    q9_windows.append(dict(window))
+
+    strategist = build_strategist_effectiveness(all_evaluations, all_attributions, q9_windows)
     strategist["source_days"] = evaluation_days
-    feedback = build_feedback_effectiveness(all_models)
+    feedback = build_feedback_effectiveness(all_models, q9_windows)
     feedback["source_days"] = evaluation_days
     _write_json(evaluation_root / "strategist" / day / "strategist_effectiveness.json", strategist)
     _write_json(evaluation_root / "feedback" / day / "feedback_effectiveness.json", feedback)

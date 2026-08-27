@@ -11,6 +11,10 @@ from .cohorts import (
 )
 from .contracts import BEHAVIOR_EFFECT, PRIMARY_COHORT_ID, SCHEMA_VERSION
 from .profit_lock import build_profit_fade_review
+from .opening_casebook import (
+    build_opening_overshoot_casebook,
+    render_opening_overshoot_casebook,
+)
 from .report import render_short_alpha_discriminator
 from .scanner_diagnostics import build_scanner_diagnostics
 from .strategist_roi import build_strategist_stage2_review
@@ -103,6 +107,7 @@ def build_short_alpha_discriminator(
         "cohort_review": cohort_review,
         "profit_fade_review": build_profit_fade_review(primary_rows),
         "scanner_diagnostics": build_scanner_diagnostics(joined),
+        "opening_overshoot_casebook": build_opening_overshoot_casebook(joined),
         "strategist_stage2_review": build_strategist_stage2_review(
             [row for row in feature_mart.get("episodes") or [] if isinstance(row, Mapping)],
             agent_scorecard,
@@ -126,6 +131,8 @@ def write_short_alpha_discriminator(
         "profit_fade_json_path": output_dir / "profit_fade_shadow.json",
         "strategist_roi_json_path": output_dir / "strategist_stage2_roi.json",
         "scanner_diagnostics_json_path": output_dir / "scanner_diagnostics.json",
+        "opening_casebook_json_path": output_dir / "opening_overshoot_casebook.json",
+        "opening_casebook_markdown_path": output_dir / "opening_overshoot_casebook.md",
     }
     paths["summary_json_path"].write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -147,6 +154,14 @@ def write_short_alpha_discriminator(
     )
     paths["scanner_diagnostics_json_path"].write_text(
         json.dumps(payload["scanner_diagnostics"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    paths["opening_casebook_json_path"].write_text(
+        json.dumps(payload["opening_overshoot_casebook"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    paths["opening_casebook_markdown_path"].write_text(
+        render_opening_overshoot_casebook(payload["opening_overshoot_casebook"]),
         encoding="utf-8",
     )
     return {

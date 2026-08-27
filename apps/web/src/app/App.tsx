@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type ComponentType } from "react";
 
+import { RuntimeStatusProvider } from "../features/runtime-status/RuntimeStatusContext";
 import { AppShell } from "../shared/layout/AppShell";
 import { pageFromHash, type PageId } from "./navigation";
 
@@ -40,5 +41,13 @@ export function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const Page = PAGES[page];
-  return <AppShell page={page} onNavigate={navigate}><Suspense fallback={<div className="data-state">화면을 불러오는 중입니다.</div>}><Page /></Suspense></AppShell>;
+  return (
+    <RuntimeStatusProvider>
+      <AppShell page={page} onNavigate={navigate}>
+        <Suspense fallback={<div className="data-state">화면을 불러오는 중입니다.</div>}>
+          <Page />
+        </Suspense>
+      </AppShell>
+    </RuntimeStatusProvider>
+  );
 }

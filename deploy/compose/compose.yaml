@@ -15,6 +15,7 @@ services:
       OBSERVABILITY_STATE_ROOT: /data/state
       OBSERVABILITY_EXPOSURE_PROFILE: ${OBSERVABILITY_EXPOSURE_PROFILE:-private}
       OBSERVABILITY_CACHE_TTL_SECONDS: ${OBSERVABILITY_CACHE_TTL_SECONDS:-30}
+      OBSERVABILITY_MAX_TAIL_SCAN_BYTES: ${OBSERVABILITY_MAX_TAIL_SCAN_BYTES:-8388608}
     volumes:
       - type: bind
         source: ${TRADING_REPO_ROOT:-../..}/reports
@@ -71,6 +72,7 @@ services:
       - 127.0.0.1:${OBSERVABILITY_WEB_PORT:-3000}:8080
     networks:
       - observability
+      - edge
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m
@@ -96,3 +98,4 @@ services:
 networks:
   observability:
     internal: true
+  edge:

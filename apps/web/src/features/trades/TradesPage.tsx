@@ -13,7 +13,7 @@ import { TradeTable } from "./TradeTable";
 import type { TradeDetail, TradeList } from "./types";
 
 export function TradesPage() {
-  const [start, setStart] = useState(isoDayOffset(-90));
+  const [start, setStart] = useState(isoDayOffset(-45));
   const [end, setEnd] = useState(isoDayOffset(0));
   const [symbol, setSymbol] = useState("");
   const [result, setResult] = useState("");
