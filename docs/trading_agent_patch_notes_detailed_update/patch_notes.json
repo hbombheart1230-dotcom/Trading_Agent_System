@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 56,
+  "entry_count": 57,
   "entries": [
     {
       "date": "2026-02-07",
@@ -1471,6 +1471,34 @@
         "apps/api/routers/runtime_status.py",
         "apps/web/src/features/runtime-status/ScheduledArtifactViewer.tsx",
         "tests/apps/api/test_runtime_status.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-30",
+      "version": "M7.5 Operations Command Center",
+      "title": "읽기 전용 운영 관제 화면 추가",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "OBSERVABILITY",
+        "OPERATIONS"
+      ],
+      "summary": "장전부터 장후까지의 운영 흐름, 이상 징후, 거래 의사결정 계보와 전일·사후 관측 차이를 하나의 읽기 전용 화면에서 확인합니다.",
+      "details": [
+        "최신 scheduled manifest와 당일 trade bundle을 시간 순서로 조합한 운영 타임라인을 제공합니다.",
+        "기존 anomaly 정책, scheduled issue와 장중 runtime 불일치를 하나의 이상 징후 목록으로 통합합니다.",
+        "Strategist·Scanner·Monitor·Commander·Execution의 실제 trade artifact 필드를 단계별 계보로 표시합니다.",
+        "최신/직전 운영일의 시장 국면·플레이북·리스크·진입 권한·closeout 상태를 비교하고 실제 청산과 post-exit checkpoint 차이를 표시합니다.",
+        "새 API는 GET 전용이며 제어·승인·전략·평가·주문 동작을 추가하지 않습니다."
+      ],
+      "impact": "외부 인증 UI에서 운영자가 왜 거래가 없었는지, 어디서 판단이 바뀌었는지, 어떤 이상과 차이를 확인해야 하는지 빠르게 추적할 수 있습니다.",
+      "sources": [
+        "apps/api/services/operations.py",
+        "apps/api/routers/operations.py",
+        "apps/web/src/features/operations/OperationsPage.tsx",
+        "docs/web_observability/m7_5_operations_command_center_2026-08-30.md"
       ],
       "status": "current"
     }

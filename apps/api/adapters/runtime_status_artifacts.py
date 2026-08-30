@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 from ..infrastructure.bounded_reader import BoundedReadError, read_json_bounded
@@ -86,14 +87,38 @@ def load_scheduled_intelligence_artifacts(
     reports_root: Path,
     *,
     max_bytes: int,
+    day: str | None = None,
 ) -> ScheduledIntelligenceArtifacts:
     issues: list[str] = []
     runtime = reports_root / "runtime" / "scheduled_jobs"
-    preopen = _read_optional_object(runtime / "latest_preopen.json", max_bytes=max_bytes, invalid_issue="PREOPEN_MANIFEST_INVALID", issues=issues)
-    closeout = _read_optional_object(runtime / "latest_closeout.json", max_bytes=max_bytes, invalid_issue="CLOSEOUT_MANIFEST_INVALID", issues=issues)
-    day = str(preopen.get("day") or closeout.get("day") or "")[:10]
-    briefing = _read_optional_object(reports_root / "briefings" / day / "preopen_briefing.json", max_bytes=max_bytes, invalid_issue="PREOPEN_BRIEFING_INVALID", issues=issues) if day else {}
+    if day:
+        daily_root = runtime / day
+        preopen_path = daily_root / "preopen.json"
+        closeout_path = daily_root / "closeout.json"
+    else:
+        preopen_path = runtime / "latest_preopen.json"
+        closeout_path = runtime / "latest_closeout.json"
+    preopen = _read_optional_object(preopen_path, max_bytes=max_bytes, invalid_issue="PREOPEN_MANIFEST_INVALID", issues=issues)
+    closeout = _read_optional_object(closeout_path, max_bytes=max_bytes, invalid_issue="CLOSEOUT_MANIFEST_INVALID", issues=issues)
+    resolved_day = str(day or preopen.get("day") or closeout.get("day") or "")[:10]
+    briefing = _read_optional_object(reports_root / "briefings" / resolved_day / "preopen_briefing.json", max_bytes=max_bytes, invalid_issue="PREOPEN_BRIEFING_INVALID", issues=issues) if resolved_day else {}
     return ScheduledIntelligenceArtifacts(preopen, closeout, briefing, tuple(issues))
+
+
+def discover_scheduled_intelligence_days(reports_root: Path) -> list[str]:
+    runtime = reports_root / "runtime" / "scheduled_jobs"
+    if not runtime.is_dir():
+        return []
+    return sorted(
+        (
+            path.name
+            for path in runtime.iterdir()
+            if path.is_dir()
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", path.name)
+            and ((path / "preopen.json").is_file() or (path / "closeout.json").is_file())
+        ),
+        reverse=True,
+    )
 
 
 def _read_optional_object(

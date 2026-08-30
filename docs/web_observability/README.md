@@ -64,16 +64,20 @@ Current authority:
    - optional authenticated ingress for `https://agentra.win`
    - no host API port, router port-forward, or Trading Runtime exposure
    - Cloudflare Access email allowlist and OTP contract
-16. `product_data_contract_v1.md`
+16. `m7_5_operations_command_center_2026-08-30.md`
+   - operating timeline and anomaly consolidation
+   - trade decision lineage and bounded comparison surfaces
+   - GET-only observability and no-control boundary
+17. `product_data_contract_v1.md`
    - time, truth, cost-basis, and performance definitions
    - missing-data and availability semantics
    - internal/public data boundaries
-17. `combined_milestone_plan_2026-08-14.md`
+18. `combined_milestone_plan_2026-08-14.md`
    - product goal and information architecture
    - Q9-Q18 and current-research data mapping
    - generic read models and API surface
    - implementation milestones M0-M9
-18. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
+19. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
    - repository and infrastructure review
    - read-only and import-isolation constraints
    - Docker/Compose/Kubernetes design details

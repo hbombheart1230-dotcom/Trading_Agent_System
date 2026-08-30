@@ -9,11 +9,13 @@ import {
   Gauge,
   History,
   MessagesSquare,
+  Monitor,
   ShieldCheck,
 } from "lucide-react";
 
 export const NAV_ITEMS = [
   { id: "overview", label: "운영 요약", icon: Gauge, public: true },
+  { id: "operations", label: "운영 관제", icon: Monitor, public: false },
   { id: "performance", label: "성과", icon: ChartNoAxesCombined, public: true },
   { id: "trades", label: "거래", icon: ClipboardList, public: true },
   { id: "opportunities", label: "기회", icon: Binoculars, public: true },

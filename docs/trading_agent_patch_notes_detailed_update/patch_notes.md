@@ -96,6 +96,14 @@
 - 파일은 포맷된 읽기 전용 모달로 표시하고 변경·실행 기능은 추가하지 않았습니다.
 - Trading Runtime과 예약 실행 로직은 변경하지 않았습니다.
 
+### 2026-08-30 · M7.5 Operations Command Center
+
+- 장전·거래·장후 이벤트를 실제 완료 시각과 source를 포함한 운영 타임라인으로 표시합니다.
+- 기존 anomaly, 예약 작업 issue와 장중 runtime 불일치를 한곳에서 확인합니다.
+- Strategist → Scanner → Monitor → Commander → Execution의 거래 계보를 실제 artifact 기준으로 표시합니다.
+- 최신/직전 운영일의 전략 프레임과 closeout 상태, 실제 청산과 post-exit 최선 checkpoint를 비교합니다.
+- 모든 API는 GET 전용이며 Trading Runtime과 매매 행동에는 영향을 주지 않습니다.
+
 ---
 
 ## 2026-02-07 ~ 2026-02-10 · M1–M5 — Kiwoom API Catalog와 요청 파이프라인 골격

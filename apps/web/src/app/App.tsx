@@ -5,6 +5,7 @@ import { AppShell } from "../shared/layout/AppShell";
 import { pageFromHash, type PageId } from "./navigation";
 
 const OverviewPage = lazy(() => import("../features/overview/OverviewPage").then((module) => ({ default: module.OverviewPage })));
+const OperationsPage = lazy(() => import("../features/operations/OperationsPage").then((module) => ({ default: module.OperationsPage })));
 const PerformancePage = lazy(() => import("../features/performance/PerformancePage").then((module) => ({ default: module.PerformancePage })));
 const TradesPage = lazy(() => import("../features/trades/TradesPage").then((module) => ({ default: module.TradesPage })));
 const OpportunitiesPage = lazy(() => import("../features/opportunities/OpportunitiesPage").then((module) => ({ default: module.OpportunitiesPage })));
@@ -18,6 +19,7 @@ const DataQualityPage = lazy(() => import("../features/data-quality/DataQualityP
 
 const PAGES: Record<PageId, ComponentType> = {
   overview: OverviewPage,
+  operations: OperationsPage,
   performance: PerformancePage,
   trades: TradesPage,
   opportunities: OpportunitiesPage,

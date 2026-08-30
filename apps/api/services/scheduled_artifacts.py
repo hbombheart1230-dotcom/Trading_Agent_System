@@ -9,16 +9,19 @@ from ..models.runtime_status import ScheduledArtifactContentResponse
 from .runtime_status import build_scheduled_intelligence
 
 
+_PATH_SEPARATOR_TRANSLATION = str.maketrans({"\\": "/"})
+
+
 def build_scheduled_artifact_content(
     settings: ApiSettings,
     requested_path: str,
 ) -> ScheduledArtifactContentResponse | None:
-    normalized = requested_path.strip().replace("\\", "/")
+    normalized = requested_path.strip().translate(_PATH_SEPARATOR_TRANSLATION)
     if not normalized.startswith("reports/"):
         return None
 
     artifact_labels = {
-        artifact.path.replace("\\", "/"): artifact.label
+        artifact.path.translate(_PATH_SEPARATOR_TRANSLATION): artifact.label
         for job in build_scheduled_intelligence(settings).jobs
         for artifact in job.artifacts
     }

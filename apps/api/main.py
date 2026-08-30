@@ -9,6 +9,7 @@ from .routers.health import router as health_router
 from .routers.llm_operations import router as llm_operations_router
 from .routers.market import router as market_router
 from .routers.opportunities import router as opportunities_router
+from .routers.operations import router as operations_router
 from .routers.overview import router as overview_router
 from .routers.patch_notes import router as patch_notes_router
 from .routers.performance import router as performance_router
@@ -40,6 +41,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.include_router(performance_router)
     app.include_router(trades_router)
     app.include_router(opportunities_router)
+    app.include_router(operations_router)
     app.include_router(strategies_router)
     app.include_router(market_router)
     return app
