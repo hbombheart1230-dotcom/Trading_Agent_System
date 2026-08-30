@@ -89,6 +89,24 @@ def run_monitor_decision_path(
             "status": "error",
             "reason": f"{type(exc).__name__}: {exc}"[:300],
         }
+    try:
+        from libs.runtime.controlled_mock_lanes import inject_controlled_mock_lane_intent
+
+        state = inject_controlled_mock_lane_intent(state)
+        if bool((state.get("controlled_mock_lanes") or {}).get("injected")):
+            state = decision_node_fn(state)
+            shadow_runtime["controlled_mock_lane"] = str(
+                (state.get("controlled_mock_lanes") or {}).get("selected_lane") or ""
+            )
+    except Exception as exc:
+        state["controlled_mock_lanes"] = {
+            "schema_version": "controlled_mock_lanes.v1",
+            "enabled": True,
+            "evaluated": False,
+            "injected": False,
+            "reason": f"measurement_exception:{type(exc).__name__}",
+            "error": str(exc)[:300],
+        }
     state, execution_meta = execute_approved_monitor_decision(
         state,
         execute_fn=execute_fn,

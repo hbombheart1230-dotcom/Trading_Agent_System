@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 50,
+  "entry_count": 56,
   "entries": [
     {
       "date": "2026-02-07",
@@ -1307,6 +1307,170 @@
         "docs/trading_agent_patch_notes_detailed_update/README.md",
         "apps/api/routers/patch_notes.py",
         "apps/web/src/features/patch-notes/PatchNotesPage.tsx"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Q10 Lead-Market Forward Validation",
+      "title": "미국 야간시장과 08:50 선행정보의 한국장 Forward Edge 검증",
+      "stage": "Current Research",
+      "types": [
+        "CURRENT",
+        "Q10",
+        "SHADOW",
+        "OBSERVABILITY"
+      ],
+      "summary": "기존 삼성전자·SK하이닉스 Q10 기준선은 유지하면서, 미국 반도체·주가지수와 08:50 선물·환율이 삼성전자·SK하이닉스·KOSPI·KOSDAQ 개장 후 움직임을 예측하는지 앞으로의 실장 데이터로만 검증합니다.",
+      "details": [
+        "SOX·Nvidia·Micron·하이닉스 ADR와 Nasdaq/S&P500, US10Y, VIX 및 08:50 Nasdaq100/S&P500 선물·USD/KRW를 불변 스냅샷으로 저장합니다.",
+        "09:00·09:03·09:05·09:10·09:15·09:30·10:00·종가의 가격과 가능한 거래량, gap·forward return·MFE·MAE를 기록합니다.",
+        "UNDERREACTION·FAIR_REACTION·OVERREACTION·DIVERGENCE를 고정 규칙으로 분류하고 09:00/03/05/10 및 첫 눌림 가상 진입을 동일 비용 기준으로 비교합니다.",
+        "2026-08-31부터 prospective 데이터만 누적하며 과거 백필·백테스트·threshold 최적화·ML·주문 연결을 구조적으로 금지합니다.",
+        "새 기능은 독립 forward_validation 패키지로 분리했고 계측 실패가 기존 Q10 기준선을 중단시키지 않게 격리했습니다."
+      ],
+      "impact": "선행시장 가설을 기존 실거래 로직에 섞지 않고 실제 발생 데이터에서 검증할 수 있으며, 삼성 고유 이벤트와 하이닉스 FIRST_MOVE/EXTENDED 표본도 분리해 볼 수 있습니다.",
+      "sources": [
+        "docs/evaluation/q10_korea_lead_market_forward_validation.md",
+        "docs/evaluation/baseline_samsung_hynix_control.md",
+        "docs/daily_patch/2026-08-28_q10_korea_lead_market_forward_validation.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Scheduled Intelligence Evidence Detail",
+      "title": "예약 브리핑 카드에 원본 근거와 실행 상세 추가",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "OBSERVABILITY"
+      ],
+      "summary": "장전·장후 예약 카드의 한 줄 요약은 유지하면서 원본 파일, 전략 프레임, 모델, 메모리 적용 방식과 단계별 실행 결과를 상세 영역에서 확인할 수 있게 했습니다.",
+      "details": [
+        "장전 브리핑·메모리 전달 영수증·전략 메모리·Strategist 원본 경로를 표시합니다.",
+        "장후 manifest·전략 메모리·통합 인덱스 JSON/Markdown 경로를 표시합니다.",
+        "시장 국면·플레이북·전술·리스크·진입 권한·모델·메모리 모드와 closeout 완료 단계 수를 제공합니다.",
+        "원본 경로는 복사만 가능하고 UI에서 파일 변경이나 실행 호출은 할 수 없습니다.",
+        "장전 canonical 원본이 UTC 날짜 기준으로 전날 폴더에 저장되던 문제를 KST 파티션으로 수정했으며 기존 파일은 보존합니다."
+      ],
+      "impact": "운영자가 예약 작업의 성공 여부뿐 아니라 어떤 전략·메모리·산출물을 근거로 했는지 UI에서 바로 추적할 수 있습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-28_scheduled_intelligence_detail_ui.md",
+        "apps/api/domain/scheduled_intelligence_projection.py",
+        "apps/web/src/features/runtime-status/ScheduledIntelligencePanel.tsx"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Controlled Mock Four-Lane Execution",
+      "title": "Four independent mock-order validation lanes",
+      "stage": "Controlled Adoption",
+      "types": [
+        "CURRENT",
+        "EXECUTION",
+        "Q10",
+        "Q12"
+      ],
+      "summary": "Opening Alpha, BTC-Woori, Q10 Semiconductor and Q10 Index can each submit one daily Kiwoom mock-broker order attempt through the existing Executor.",
+      "details": [
+        "Opening Alpha keeps existing Strategist, Scanner and Commander selection authority and only applies a bounded Monitor override to HIGH_COMMON_DIRECTIONAL or CONFIRMED_RECURRENT_RANK.",
+        "Q12 requires the fixed BTC 08:55, FIRST_SURGE, breakout, opening-gap and local-confirmation conditions.",
+        "Q10 Semiconductor and Index require an immutable 08:50 lead-market snapshot and a fresh aligned Korean-market response.",
+        "Each independent lane has an atomic daily reservation ledger and existing position, pending-order, broker restriction and loss-reentry guards remain active.",
+        "Independent positions store their own intraday horizon provenance instead of inheriting unrelated Strategist output."
+      ],
+      "impact": "The mock account now produces execution and lifecycle evidence for the strongest fixed research lanes without contaminating Q9 agent attribution.",
+      "sources": [
+        "docs/evaluation/controlled_mock_four_lane_execution_2026-08-28.md",
+        "docs/daily_patch/2026-08-28_controlled_mock_four_lane_execution.md",
+        "libs/runtime/controlled_mock_lanes/"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Controlled Lane Report Evidence",
+      "title": "Q10/Q12 execution evidence and R3 authority are visible in trade reports",
+      "stage": "Reporting Observability",
+      "types": [
+        "CURRENT",
+        "REPORTER",
+        "Q10",
+        "Q12",
+        "OBSERVABILITY"
+      ],
+      "summary": "Trade reports now preserve the fixed Q10/Q12 signal evidence, hold window and Stage-3 horizon authority without changing trading behavior.",
+      "details": [
+        "The entry report surface records lane ID, signal ID, fixed evidence, signal score and the validation-only execution scope.",
+        "Closed-trade reports recover entry evidence from the persisted position strategy frame and the daily controlled-lane reservation ledger.",
+        "Reports explicitly state whether the Stage-3 Strategist horizon review may alter the active hold horizon.",
+        "Q10/Q12 controlled lanes remain frozen against Stage-3 horizon revision so their fixed-horizon comparison is not contaminated."
+      ],
+      "impact": "Operators can distinguish fixed deterministic validation orders from normal multi-agent trades and can see why R3 did or did not influence the exit horizon.",
+      "sources": [
+        "libs/reporting/controlled_mock_lane_report.py",
+        "libs/reporting/single_trade_report.py",
+        "libs/reporting/trade_report_markdown_clean.py",
+        "tests/test_controlled_mock_lane_report.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-29",
+      "version": "M7.4 Cloudflare Private Ingress",
+      "title": "Authenticated private Web ingress for agentra.win",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "DEPLOYMENT",
+        "SECURITY"
+      ],
+      "summary": "An optional Cloudflare Tunnel overlay publishes only the read-only Web gateway at agentra.win behind a single-operator Access policy.",
+      "details": [
+        "The local Web endpoint remains bound to 127.0.0.1 and the API keeps no host port.",
+        "The cloudflared connector joins only the edge network and routes to the existing web:8080 Nginx gateway.",
+        "The connector image is version-and-digest pinned, non-root, read-only and resource bounded.",
+        "The overlay requires a local secret token and remains inactive under the normal local Compose command.",
+        "Cloudflare Access email allowlisting and one-time PIN authentication are mandatory before connector startup.",
+        "The tunnel, apex DNS route and Access redirect were activated and verified on 2026-08-30."
+      ],
+      "impact": "The operator can open the UI from an external browser without router port forwarding or direct API and Trading Runtime exposure.",
+      "sources": [
+        "deploy/compose/compose.cloudflare.yaml",
+        "deploy/compose/README.md",
+        "docs/web_observability/m7_4_cloudflare_private_ingress_2026-08-29.md",
+        "docs/daily_patch/2026-08-29_cloudflare_private_ingress.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-30",
+      "version": "Scheduled Artifact Viewer",
+      "title": "예약 브리핑 원본 파일을 UI에서 직접 열람",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "OBSERVABILITY",
+        "SECURITY"
+      ],
+      "summary": "장전 브리핑·메모리 전달 영수증·전략 메모리·Strategist 원본과 장후 인덱스를 경로 복사 대신 읽기 전용 Viewer로 바로 확인할 수 있게 했습니다.",
+      "details": [
+        "예약 브리핑 카드에 표시된 JSON·Markdown artifact만 API에서 열람할 수 있습니다.",
+        "reports 루트 밖 경로, 경로 탈출, 미등록 파일과 크기 제한 초과 파일은 차단합니다.",
+        "원본은 포맷된 JSON 모달로 표시하며 변경·다운로드·실행 기능은 제공하지 않습니다.",
+        "API와 데이터 마운트는 기존 read-only 경계를 유지하고 Trading Runtime에는 의존성을 추가하지 않습니다."
+      ],
+      "impact": "외부 인증 UI에서도 예약 인텔리전스의 요약과 실제 근거를 같은 화면에서 빠르게 대조할 수 있습니다.",
+      "sources": [
+        "apps/api/services/scheduled_artifacts.py",
+        "apps/api/routers/runtime_status.py",
+        "apps/web/src/features/runtime-status/ScheduledArtifactViewer.tsx",
+        "tests/apps/api/test_runtime_status.py"
       ],
       "status": "current"
     }

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -20,6 +20,9 @@ from libs.contracts.agent_outputs import (
 from libs.runtime.llm_report_classifier import find_llm_run_dir, organize_llm_run
 
 
+KST = timezone(timedelta(hours=9))
+
+
 def _reports_root(state: Dict[str, Any] | None = None) -> Path:
     if isinstance(state, dict):
         raw = str(state.get("reports_root") or "").strip()
@@ -32,14 +35,22 @@ def _reports_root(state: Dict[str, Any] | None = None) -> Path:
 def _iso_day(value: Any) -> str:
     text = str(value or "").strip()
     if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
-        return text[:10]
+        if len(text) == 10:
+            return text
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(KST).strftime("%Y-%m-%d")
+        except ValueError:
+            return text[:10]
     try:
         epoch = int(float(value))
     except Exception:
         epoch = 0
     if epoch > 0:
-        return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(epoch, tz=KST).strftime("%Y-%m-%d")
+    return datetime.now(KST).strftime("%Y-%m-%d")
 
 
 def _resolve_day(state: Dict[str, Any]) -> str:
@@ -47,7 +58,7 @@ def _resolve_day(state: Dict[str, Any]) -> str:
         value = state.get(key)
         if value not in (None, ""):
             return _iso_day(value)
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(KST).strftime("%Y-%m-%d")
 
 
 def canonical_run_artifact_paths(

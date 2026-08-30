@@ -4718,17 +4718,24 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 }
             )
         position_age_seconds = _resolve_position_age_seconds(state, row, symbol)
-        horizon_review_due = position_review_due(
+        symbol_strategy_context = (
             position_strategy_context.get(symbol)
             if isinstance(position_strategy_context, dict)
-            else {},
+            else {}
+        )
+        symbol_strategy_context = (
+            symbol_strategy_context if isinstance(symbol_strategy_context, dict) else {}
+        )
+        horizon_revision_allowed = bool(
+            symbol_strategy_context.get("horizon_revision_allowed", True)
+        )
+        horizon_review_due = horizon_revision_allowed and position_review_due(
+            symbol_strategy_context,
             position_age_seconds=position_age_seconds,
             now_epoch=now_epoch,
         )
         position_horizon_state = ensure_horizon_state(
-            position_strategy_context.get(symbol)
-            if isinstance(position_strategy_context, dict)
-            else {}
+            symbol_strategy_context
         )
         carry_control = _assess_position_carry_control(
             state=state,
@@ -4771,6 +4778,7 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 "entry_state": _compact_monitor_entry_state_for_refresh(previous_entry_state),
                 "position_age_seconds": position_age_seconds,
                 "horizon_review_due": bool(horizon_review_due),
+                "horizon_revision_allowed": bool(horizon_revision_allowed),
                 "position_horizon_state": dict(position_horizon_state),
                 "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
                 "refresh_cooldown_remaining_sec": max(0, int(refresh_cooldown_until - now_epoch))
@@ -4831,6 +4839,8 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         candidates = []
         for item in rows_summary:
             if not isinstance(item, dict):
+                continue
+            if not bool(item.get("horizon_revision_allowed", True)):
                 continue
             if (
                 _coerce_int(item.get("hold_repeat_count"), 0) < 3

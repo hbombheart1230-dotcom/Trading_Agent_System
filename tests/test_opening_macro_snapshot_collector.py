@@ -14,10 +14,10 @@ from libs.market.opening_macro_snapshot_collector import (
 
 def test_schedule_is_fixed_to_opening_window() -> None:
     slots = scheduled_slots("2026-08-27")
-    assert [row.strftime("%H:%M") for row in slots[:3]] == ["08:55", "08:58", "08:59"]
-    assert slots[3].strftime("%H:%M") == "09:00"
+    assert [row.strftime("%H:%M") for row in slots[:4]] == ["08:50", "08:55", "08:58", "08:59"]
+    assert slots[4].strftime("%H:%M") == "09:00"
     assert slots[-1].strftime("%H:%M") == "09:20"
-    assert len(slots) == 24
+    assert len(slots) == 25
 
 
 def test_capture_is_idempotent_and_records_created_artifact(tmp_path: Path) -> None:

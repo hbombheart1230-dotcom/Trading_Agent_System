@@ -11,9 +11,11 @@ from zoneinfo import ZoneInfo
 from libs.runtime.opening_rank1_probe_cost_edge import evaluate_opening_probe_cost_edge
 
 
-SCHEMA_VERSION = "opening_rank1_controlled_probe.v2"
+SCHEMA_VERSION = "opening_rank1_controlled_probe.v3"
 KST = ZoneInfo("Asia/Seoul")
-ALLOWED_SETUP_TYPES = frozenset({"DIRECTIONAL_BREADTH", "FRESH_CHANGE_ACTIVATION"})
+ALLOWED_LANE_CONDITIONS = frozenset(
+    {"HIGH_COMMON_DIRECTIONAL", "CONFIRMED_RECURRENT_RANK"}
+)
 OVERRIDABLE_WAIT_REASONS = frozenset(
     {
         "below_vwap_reclaim_not_ready",
@@ -38,6 +40,7 @@ FALLBACK_COST_QUANT_BLOCKERS = frozenset(
     }
 )
 DEFAULT_LEDGER_ROOT = Path("data/logs/opening_rank1_controlled_probe")
+DEFAULT_OBSERVATION_ROOT = Path("data/logs/opening_alpha_rank_observations")
 
 
 def _text(value: Any) -> str:
@@ -129,6 +132,150 @@ def _probe_qty(normal_qty: int, qty_fraction: float) -> int:
     return max(1, min(qty, int(math.floor(qty * max(0.0, qty_fraction)))))
 
 
+def _asset_class(candidate: Mapping[str, Any]) -> str:
+    compact = candidate.get("compact_feature_snapshot")
+    compact = compact if isinstance(compact, Mapping) else {}
+    return _text(
+        candidate.get("asset_class_detected")
+        or candidate.get("asset_class")
+        or compact.get("asset_class_detected")
+        or compact.get("asset_class")
+    ).lower()
+
+
+def _risk_band(candidate: Mapping[str, Any]) -> tuple[str, float]:
+    explicit = _text(candidate.get("risk_band")).upper()
+    risk_score = _to_float(candidate.get("risk_score"))
+    if explicit:
+        return explicit, risk_score
+    if risk_score >= 0.7:
+        return "HIGH", risk_score
+    if risk_score >= 0.4:
+        return "MEDIUM", risk_score
+    return "LOW", risk_score
+
+
+def _completed_return_1m_pct(rows: list[Mapping[str, Any]] | None) -> float | None:
+    usable = [row for row in list(rows or []) if _to_float(row.get("close")) > 0.0]
+    if len(usable) < 2:
+        return None
+    previous = _to_float(usable[-2].get("close"))
+    current = _to_float(usable[-1].get("close"))
+    if previous <= 0.0:
+        return None
+    return round((current / previous - 1.0) * 100.0, 6)
+
+
+def rank_observation_path(day: str, *, root: Path | str | None = None) -> Path:
+    base = Path(
+        root
+        or os.getenv("OPENING_ALPHA_RANK_OBSERVATION_ROOT")
+        or DEFAULT_OBSERVATION_ROOT
+    )
+    return base / _text(day) / "rank1_observations.json"
+
+
+def load_rank_observations(
+    day: str, *, root: Path | str | None = None
+) -> list[dict[str, Any]]:
+    path = rank_observation_path(day, root=root)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    rows = payload.get("observations") if isinstance(payload, Mapping) else []
+    return [dict(row) for row in list(rows or []) if isinstance(row, Mapping)]
+
+
+def record_rank1_observation(
+    *,
+    day: str,
+    symbol: str,
+    observed_epoch: int,
+    run_id: str,
+    root: Path | str | None = None,
+) -> dict[str, Any]:
+    path = rank_observation_path(day, root=root)
+    rows = load_rank_observations(day, root=root)
+    key = (_text(symbol), int(observed_epoch))
+    if key[0] and not any(
+        (_text(row.get("symbol")), _to_int(row.get("observed_epoch"))) == key
+        for row in rows
+    ):
+        rows.append(
+            {
+                "symbol": key[0],
+                "observed_epoch": key[1],
+                "run_id": _text(run_id),
+            }
+        )
+    rows = sorted(rows, key=lambda row: _to_int(row.get("observed_epoch")))[-500:]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "opening_alpha_rank_observations.v1",
+        "day": _text(day),
+        "observations": rows,
+    }
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
+    temporary.replace(path)
+    return {"recorded": True, "path": str(path), "count": len(rows)}
+
+
+def classify_opening_alpha_condition(
+    *,
+    candidate: Mapping[str, Any] | None,
+    now_epoch: int,
+    prior_rank_observations: list[Mapping[str, Any]] | None,
+    recent_minute_rows: list[Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    row = dict(candidate or {})
+    symbol = _text(row.get("symbol"))
+    setup = classify_candidate_setup(row)
+    asset_class = _asset_class(row)
+    risk_band, risk_score = _risk_band(row)
+    return_1m = _completed_return_1m_pct(recent_minute_rows)
+    prior_same_symbol = [
+        item
+        for item in list(prior_rank_observations or [])
+        if _text(item.get("symbol")) == symbol
+        and 0 < int(now_epoch) - _to_int(item.get("observed_epoch")) <= 300
+    ]
+    high_common_directional = bool(
+        asset_class == "common_stock"
+        and risk_band == "HIGH"
+        and setup == "DIRECTIONAL_BREADTH"
+    )
+    confirmed_recurrent = bool(
+        prior_same_symbol and return_1m is not None and return_1m > 0.0
+    )
+    condition = (
+        "HIGH_COMMON_DIRECTIONAL"
+        if high_common_directional
+        else "CONFIRMED_RECURRENT_RANK"
+        if confirmed_recurrent
+        else ""
+    )
+    return {
+        "eligible": bool(condition),
+        "condition": condition,
+        "asset_class": asset_class or "unknown",
+        "risk_band": risk_band,
+        "risk_score": risk_score,
+        "candidate_setup": setup,
+        "prior_rank1_observations_5m": len(prior_same_symbol),
+        "completed_return_1m_pct": return_1m,
+        "conditions": {
+            "HIGH_COMMON_DIRECTIONAL": high_common_directional,
+            "CONFIRMED_RECURRENT_RANK": confirmed_recurrent,
+        },
+    }
+
+
 def evaluate_opening_rank1_controlled_probe(
     *,
     selected: Mapping[str, Any] | None,
@@ -147,6 +294,8 @@ def evaluate_opening_rank1_controlled_probe(
     is_top_pick: bool,
     same_symbol_reentry_detected: bool,
     broker_mode: str,
+    prior_rank_observations: list[Mapping[str, Any]] | None = None,
+    recent_minute_rows: list[Mapping[str, Any]] | None = None,
     enabled: Any = None,
     opening_end_minute: int = 20,
     qty_fraction: float = 0.25,
@@ -161,6 +310,12 @@ def evaluate_opening_rank1_controlled_probe(
     day, minutes_since_open = session_clock(now_epoch)
     rank = selected_rank(candidate)
     setup = classify_candidate_setup(candidate)
+    alpha_condition = classify_opening_alpha_condition(
+        candidate=candidate,
+        now_epoch=now_epoch,
+        prior_rank_observations=prior_rank_observations,
+        recent_minute_rows=recent_minute_rows,
+    )
     matched_quant_blockers = [
         _text(item) for item in list(enforcement.get("matched_blockers") or []) if _text(item)
     ]
@@ -185,7 +340,8 @@ def evaluate_opening_rank1_controlled_probe(
         "symbol": _text(candidate.get("symbol")),
         "scanner_rank": int(rank),
         "candidate_setup": setup,
-        "allowed_setup_types": sorted(ALLOWED_SETUP_TYPES),
+        "opening_alpha_condition": dict(alpha_condition),
+        "allowed_lane_conditions": sorted(ALLOWED_LANE_CONDITIONS),
         "original_wait_reason": _text(original_wait_reason),
         "base_entry_guard_reason": _text(base_entry_guard_reason),
         "matched_quant_blockers": matched_quant_blockers,
@@ -231,8 +387,8 @@ def evaluate_opening_rank1_controlled_probe(
         return reject("intrinsic_rank1_symbol_mismatch")
     if minutes_since_open < 0 or minutes_since_open > int(opening_end_minute):
         return reject("outside_opening_window")
-    if setup not in ALLOWED_SETUP_TYPES:
-        return reject("candidate_setup_not_allowed")
+    if not bool(alpha_condition.get("eligible")):
+        return reject("opening_alpha_condition_not_allowed")
     if same_symbol_reentry_detected:
         return reject("same_symbol_reentry_not_allowed")
     if int(prior_probe_count) >= 1:
@@ -320,6 +476,7 @@ def record_probe_submission(
         "symbol": _text(decision.get("symbol")),
         "scanner_rank": _to_int(decision.get("scanner_rank")),
         "candidate_setup": _text(decision.get("candidate_setup")),
+        "opening_alpha_condition": dict(decision.get("opening_alpha_condition") or {}),
         "probe_qty": _to_int(decision.get("probe_qty")),
         "original_wait_reason": _text(decision.get("original_wait_reason")),
         "overridden_quant_blockers": list(decision.get("overridden_quant_blockers") or []),
@@ -339,15 +496,19 @@ def record_probe_submission(
 
 
 __all__ = [
-    "ALLOWED_SETUP_TYPES",
+    "ALLOWED_LANE_CONDITIONS",
     "FALLBACK_COST_QUANT_BLOCKERS",
     "OVERRIDABLE_QUANT_BLOCKERS",
     "OVERRIDABLE_WAIT_REASONS",
     "SCHEMA_VERSION",
     "classify_candidate_setup",
+    "classify_opening_alpha_condition",
     "evaluate_opening_rank1_controlled_probe",
     "ledger_path",
     "load_probe_submissions",
+    "load_rank_observations",
+    "rank_observation_path",
+    "record_rank1_observation",
     "record_probe_submission",
     "selected_rank",
     "session_clock",

@@ -580,15 +580,23 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
         next_peak = max(_as_float(peak_map.get(symbol), 0.0), float(weighted_avg), float(price))
         if next_peak > 0.0:
             peak_map[symbol] = float(next_peak)
-        strategy_snapshot = _extract_strategist_output_snapshot(state)
+        strategy_snapshot = _extract_order_strategy_snapshot(order) or _extract_strategist_output_snapshot(state)
         if strategy_snapshot:
+            controlled_lane = bool(strategy_snapshot.get("controlled_mock_lane"))
             strategy_context_map[symbol] = {
                 "output": dict(strategy_snapshot),
                 "generated_epoch": _as_int(time.time(), 0),
-                "source": "buy_execution",
+                "source": (
+                    "controlled_mock_lane_buy_execution"
+                    if controlled_lane
+                    else "buy_execution"
+                ),
                 "horizon_state": initialize_horizon_state(
                     strategy_snapshot,
                     now_epoch=now_epoch,
+                ),
+                "horizon_revision_allowed": bool(
+                    strategy_snapshot.get("horizon_revision_allowed", True)
                 ),
             }
         entry_risk = _extract_entry_risk_from_order(order, symbol=symbol, now_epoch=now_epoch)
@@ -944,6 +952,18 @@ def _extract_strategist_output_snapshot(state: dict | None) -> dict:
     cached = persisted.get("strategist_output_cache") if isinstance(persisted.get("strategist_output_cache"), dict) else {}
     output = cached.get("output") if isinstance(cached.get("output"), dict) else {}
     return dict(output) if output else {}
+
+
+def _extract_order_strategy_snapshot(order: dict | None) -> dict:
+    if not isinstance(order, dict):
+        return {}
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    snapshot = (
+        meta.get("position_strategy_snapshot")
+        if isinstance(meta.get("position_strategy_snapshot"), dict)
+        else {}
+    )
+    return dict(snapshot) if snapshot else {}
 
 
 def _extract_strategy_policy_snapshot(state: dict | None) -> dict:

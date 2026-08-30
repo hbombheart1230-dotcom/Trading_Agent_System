@@ -104,7 +104,22 @@ export interface ScheduledIntelligence {
     memory_status: string | null;
     memory_source_day: string | null;
     summary: string | null;
+    details: Array<{ label: string; value: string }>;
+    artifacts: Array<{ label: string; path: string }>;
+    steps: Array<{ name: string; status: string }>;
     issues: string[];
   }>;
   issues: string[];
+}
+
+export interface ScheduledArtifactContent {
+  label: string;
+  path: string;
+  size_bytes: number;
+  format: "json" | "markdown";
+  json_content: unknown | null;
+  text_content: string | null;
+  generated_at: string;
+  read_only: true;
+  execution_callable: false;
 }

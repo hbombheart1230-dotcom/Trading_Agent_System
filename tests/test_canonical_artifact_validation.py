@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from libs.contracts.agent_outputs import AGENT_VALIDATION_SCHEMA_VERSION, validate_artifact
+from libs.runtime import canonical_artifacts
 from libs.runtime.canonical_artifacts import (
     llm_stage_manifest_path,
     llm_run_artifact_paths,
@@ -13,6 +14,12 @@ from libs.runtime.canonical_artifacts import (
     write_llm_artifact_bundle,
     write_strategist_artifact,
 )
+
+
+def test_canonical_day_partition_uses_kst_for_utc_timestamp() -> None:
+    assert canonical_artifacts._iso_day("2026-08-27T23:51:39+00:00") == "2026-08-28"
+    assert canonical_artifacts._iso_day("2026-08-28T09:15:00+09:00") == "2026-08-28"
+    assert canonical_artifacts._iso_day("2026-08-28") == "2026-08-28"
 
 
 def test_validate_artifact_reports_partial_when_required_fields_missing() -> None:

@@ -20,6 +20,7 @@ from libs.runtime.live_loop_process_query import query_live_loop_processes, read
 
 
 KST = ZoneInfo("Asia/Seoul")
+Q10_LEAD_MARKET_ACTIVATION_DAY = "2026-08-31"
 LOOP_PATTERNS = {
     "q10_samsung_hynix": "run_baseline_samsung_hynix.py",
     "q11_opening_opportunity": "run_opportunity_engine_shadow.py",
@@ -120,6 +121,8 @@ def _artifact(path: Path) -> dict[str, Any]:
         "exists": path.exists(),
         "size_bytes": path.stat().st_size if path.exists() else 0,
         "schema_version": payload.get("schema_version") or "",
+        "capture_status": payload.get("capture_status") or "",
+        "evidence_status": payload.get("evidence_status") or "",
     }
 
 
@@ -146,7 +149,7 @@ def _q9_checks(reports_root: Path, day: str) -> dict[str, Any]:
 
 
 def _baseline_artifacts(reports_root: Path, day: str) -> dict[str, Any]:
-    return {
+    artifacts = {
         "q10": {
             "decisions": _artifact(reports_root / "evaluation" / "baseline_samsung_hynix" / day / "baseline_samsung_hynix_decisions.json"),
             "forward": _artifact(reports_root / "evaluation" / "baseline_samsung_hynix" / day / "baseline_samsung_hynix_forward_returns.json"),
@@ -165,6 +168,18 @@ def _baseline_artifacts(reports_root: Path, day: str) -> dict[str, Any]:
             "hypothesis_cumulative": _artifact(reports_root / "evaluation" / "baseline_btc_woori_tech" / "hypothesis_validation" / "q12_btc_woori_hypothesis_cumulative.json"),
         },
     }
+    if day >= Q10_LEAD_MARKET_ACTIVATION_DAY:
+        forward_root = reports_root / "evaluation" / "baseline_samsung_hynix" / day / "q10_forward_validation"
+        artifacts["q10"].update(
+            {
+                "lead_market_preopen": _artifact(forward_root / "q10_preopen_signal_snapshot.json"),
+                "lead_market_reactions": _artifact(forward_root / "q10_actual_market_reactions.json"),
+                "lead_market_expected_actual": _artifact(forward_root / "q10_expected_vs_actual.json"),
+                "lead_market_shadow": _artifact(forward_root / "q10_shadow_entry_comparison.json"),
+                "lead_market_report": _artifact(forward_root / "q10_forward_validation_report.md"),
+            }
+        )
+    return artifacts
 
 
 def _evaluate(
@@ -201,6 +216,16 @@ def _evaluate(
             for key, record in rows.items():
                 if not record.get("exists"):
                     blockers.append({"code": f"{group}_{key}_missing", "path": record.get("path")})
+        if day >= Q10_LEAD_MARKET_ACTIVATION_DAY:
+            preopen = (artifacts.get("q10") or {}).get("lead_market_preopen") or {}
+            if preopen.get("capture_status") != "CAPTURED":
+                blockers.append(
+                    {
+                        "code": "q10_lead_market_preopen_not_captured",
+                        "capture_status": preopen.get("capture_status") or "MISSING",
+                        "path": preopen.get("path"),
+                    }
+                )
         if q9.get("day_validity_status") == "INVALID":
             blockers.append({"code": "q9_day_invalid", "blockers": q9.get("validity_blockers")})
         elif q9.get("day_validity_status") not in {"VALID", ""}:

@@ -8,6 +8,7 @@ import graphs.nodes.monitor_node as monitor_module
 from graphs.nodes.monitor_node import monitor_node
 from libs.runtime.opening_rank1_controlled_probe import (
     classify_candidate_setup,
+    classify_opening_alpha_condition,
     evaluate_opening_rank1_controlled_probe,
     load_probe_submissions,
     record_probe_submission,
@@ -24,10 +25,13 @@ def _epoch(hour: int = 9, minute: int = 10) -> int:
     return int(datetime(2026, 8, 17, hour, minute, tzinfo=KST).timestamp())
 
 
-def _candidate(*, fresh: bool = True) -> dict:
+def _candidate(*, fresh: bool = False) -> dict:
     return {
         "symbol": "005930",
+        "name": "Samsung Electronics",
+        "asset_class_detected": "common_stock",
         "rank": 1,
+        "risk_score": 0.8,
         "sources": ["top_change_rate", "top_value"] if fresh else ["top_value", "top_volume"],
         "score_breakdown": {
             "momentum": 0.1,
@@ -74,11 +78,12 @@ def _evaluate(**overrides) -> dict:
     return evaluate_opening_rank1_controlled_probe(**params)
 
 
-def test_fresh_change_rank1_probe_is_applied_with_quarter_size() -> None:
+def test_high_common_directional_rank1_probe_is_applied_with_quarter_size() -> None:
     result = _evaluate()
 
     assert result["applied"] is True
-    assert result["candidate_setup"] == "FRESH_CHANGE_ACTIVATION"
+    assert result["candidate_setup"] == "DIRECTIONAL_BREADTH"
+    assert result["opening_alpha_condition"]["condition"] == "HIGH_COMMON_DIRECTIONAL"
     assert result["probe_qty"] == 2
     assert result["qty_fraction_effective"] == 0.25
 
@@ -108,7 +113,30 @@ def test_liquidity_only_candidate_is_not_eligible() -> None:
 
     assert classify_candidate_setup(candidate) == "LIQUIDITY_ONLY"
     assert result["applied"] is False
-    assert result["reason"] == "candidate_setup_not_allowed"
+    assert result["reason"] == "opening_alpha_condition_not_allowed"
+
+
+def test_confirmed_recurrent_rank_is_eligible_without_high_risk() -> None:
+    candidate = _candidate(fresh=False)
+    candidate["risk_score"] = 0.2
+    condition = classify_opening_alpha_condition(
+        candidate=candidate,
+        now_epoch=_epoch(),
+        prior_rank_observations=[
+            {"symbol": "005930", "observed_epoch": _epoch(9, 7)}
+        ],
+        recent_minute_rows=[{"close": 100.0}, {"close": 100.5}],
+    )
+    result = _evaluate(
+        selected=candidate,
+        prior_rank_observations=[
+            {"symbol": "005930", "observed_epoch": _epoch(9, 7)}
+        ],
+        recent_minute_rows=[{"close": 100.0}, {"close": 100.5}],
+    )
+
+    assert condition["condition"] == "CONFIRMED_RECURRENT_RANK"
+    assert result["applied"] is True
 
 
 def test_probe_preserves_hard_safety_guards() -> None:
@@ -175,10 +203,10 @@ def test_probe_uses_frozen_setup_edge_only_for_missing_cost_evidence() -> None:
     assert result["overridden_quant_blockers"] == ["cost_edge_fail"]
     evidence = result["cost_edge_evidence"]
     assert evidence["fallback_applied"] is True
-    assert evidence["candidate_setup"] == "FRESH_CHANGE_ACTIVATION"
-    assert evidence["independent_day_symbol_count"] == 6
-    assert evidence["source_live_net_return_30m"] == 0.04875
-    assert evidence["conservative_net_return"] == 0.04068151
+    assert evidence["candidate_setup"] == "DIRECTIONAL_BREADTH"
+    assert evidence["independent_day_symbol_count"] == 18
+    assert evidence["source_live_net_return_30m"] == 0.014919
+    assert evidence["conservative_net_return"] == 0.00685051
     assert evidence["cost_basis"]["target_mock_drag_ratio"] == 0.01086849
 
 
@@ -345,7 +373,7 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
         assert kwargs["is_top_pick"] is True
         assert kwargs["selection_authority"]["aligned"] is True
         return {
-            "schema_version": "opening_rank1_controlled_probe.v2",
+            "schema_version": "opening_rank1_controlled_probe.v3",
             "applied": True,
             "eligible": True,
             "reason": "opening_rank1_controlled_probe_applied",
@@ -361,6 +389,12 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
 
     monkeypatch.setattr(monitor_module, "evaluate_opening_rank1_controlled_probe", _forced_probe)
     monkeypatch.setattr(monitor_module, "load_probe_submissions", lambda _day: [])
+    monkeypatch.setattr(monitor_module, "load_rank_observations", lambda _day: [])
+    monkeypatch.setattr(
+        monitor_module,
+        "record_rank1_observation",
+        lambda **_kwargs: {"recorded": True, "count": 1},
+    )
     monkeypatch.setattr(
         monitor_module,
         "record_probe_submission",

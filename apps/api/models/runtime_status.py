@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -144,7 +145,31 @@ class ScheduledJobStatus(BaseModel):
     memory_status: str | None
     memory_source_day: str | None
     summary: str | None
+    details: list["ScheduledJobDetail"]
+    artifacts: list["ScheduledArtifactRef"]
+    steps: list["ScheduledStepStatus"]
     issues: list[str]
+
+
+class ScheduledJobDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    value: str
+
+
+class ScheduledArtifactRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    path: str
+
+
+class ScheduledStepStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    status: str
 
 
 class ScheduledIntelligenceResponse(BaseModel):
@@ -156,3 +181,17 @@ class ScheduledIntelligenceResponse(BaseModel):
     execution_callable: bool = False
     jobs: list[ScheduledJobStatus]
     issues: list[str]
+
+
+class ScheduledArtifactContentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    path: str
+    size_bytes: int
+    format: str
+    json_content: Any | None = None
+    text_content: str | None = None
+    generated_at: datetime
+    read_only: bool = True
+    execution_callable: bool = False

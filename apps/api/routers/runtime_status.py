@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
-from ..models.runtime_status import RuntimeStatusResponse, ScheduledIntelligenceResponse, WatchdogHistoryResponse
+from ..infrastructure.bounded_reader import BoundedReadError
+from ..infrastructure.paths import PathAccessError
+from ..models.runtime_status import (
+    RuntimeStatusResponse,
+    ScheduledArtifactContentResponse,
+    ScheduledIntelligenceResponse,
+    WatchdogHistoryResponse,
+)
+from ..services.scheduled_artifacts import build_scheduled_artifact_content
 from ..services.runtime_status import build_runtime_status, build_scheduled_intelligence, build_watchdog_history
 
 router = APIRouter(prefix="/api/v1/runtime", tags=["runtime-status"])
@@ -24,3 +32,19 @@ def watchdog_history(
 @router.get("/scheduled-intelligence", response_model=ScheduledIntelligenceResponse)
 def scheduled_intelligence(request: Request) -> ScheduledIntelligenceResponse:
     return build_scheduled_intelligence(request.app.state.settings)
+
+
+@router.get("/scheduled-artifact", response_model=ScheduledArtifactContentResponse)
+def scheduled_artifact(
+    request: Request,
+    path: str = Query(min_length=1, max_length=1024),
+) -> ScheduledArtifactContentResponse:
+    try:
+        response = build_scheduled_artifact_content(request.app.state.settings, path)
+    except (BoundedReadError, OSError):
+        raise HTTPException(status_code=422, detail="artifact is not readable JSON") from None
+    except PathAccessError:
+        raise HTTPException(status_code=404, detail="artifact not found") from None
+    if response is None:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return response

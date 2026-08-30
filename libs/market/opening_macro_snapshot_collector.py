@@ -12,7 +12,7 @@ from libs.market.preopen_macro_snapshot import capture_preopen_macro_snapshot
 
 KST = ZoneInfo("Asia/Seoul")
 SCHEMA_VERSION = "opening_macro_snapshot_manifest.v1"
-SLOT_MINUTES = (8 * 60 + 55, 8 * 60 + 58, 8 * 60 + 59, *range(9 * 60, 9 * 60 + 21))
+SLOT_MINUTES = (8 * 60 + 50, 8 * 60 + 55, 8 * 60 + 58, 8 * 60 + 59, *range(9 * 60, 9 * 60 + 21))
 
 
 def scheduled_slots(day: str) -> list[datetime]:
@@ -33,7 +33,7 @@ def _read_manifest(path: Path, day: str) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "behavior_effect": "observation_only",
-        "scope": "opening_overshoot_08_55_to_09_20",
+        "scope": "opening_lead_market_08_50_to_09_20",
         "day": day,
         "slots": list(value.get("slots") or []),
     }

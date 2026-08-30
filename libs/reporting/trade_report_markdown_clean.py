@@ -69,6 +69,9 @@ from libs.reporting.quant_tactic_report import (
 from libs.reporting.strategist_quant_context_report import (
     render_strategist_quant_context_usage_lines as _render_strategist_quant_context_usage_lines_impl,
 )
+from libs.reporting.controlled_mock_lane_report import (
+    render_controlled_lane_report_lines as _render_controlled_lane_report_lines,
+)
 
 
 def _same_day_current_result(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -249,6 +252,7 @@ def render_trade_report_markdown_clean(report: Dict[str, Any]) -> str:
     lines.extend(_section("시장 환경 요약", _build_market_context(report)))
     lines.extend(_section("전략가 요약", _build_strategist_summary(report)))
     lines.extend(_section("전략 보유 기간", _build_strategy_horizon_lines(report)))
+    lines.extend(_section("통제 모의투자 레인 근거", _render_controlled_lane_report_lines(report)))
     lines.extend(_section("전략가 Refresh Trace", _build_strategist_refresh_trace(report)))
     lines.extend(_section("전략가 Quant Context 사용", _render_strategist_quant_context_usage_lines_impl(report)))
     lines.extend(_section("전략가 출력 근거", _build_strategist_output_surface(report)))
@@ -695,6 +699,12 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     lines.append(f"* 거래 유형: {story_type}")
     lines.append(f"* 상태: {status}")
     lines.append(f"* 실행 모드: {execution_mode}")
+    controlled_lane_lines = _render_controlled_lane_report_lines(report)
+    if controlled_lane_lines:
+        lines.append("")
+        lines.append("### 통제 모의투자 레인")
+        lines.append("")
+        lines.extend(controlled_lane_lines)
     if recovered_partial_exit:
         lines.append(f"* {_RECOVERED_PARTIAL_EXIT_NOTE}")
     if carryover_exit:

@@ -65,6 +65,37 @@
 - FastAPI와 React 기능을 독립 모듈로 구성하고 문서 경로만 read-only로 마운트했습니다.
 - 앞으로 모든 패치는 JSON과 Markdown 패치 노트를 같은 커밋에서 함께 갱신합니다.
 
+### 2026-08-28 · Q10 Lead-Market Forward Validation
+
+- 기존 삼성전자·SK하이닉스 Q10 기준선은 그대로 유지합니다.
+- SOX·Nvidia·Micron·하이닉스 ADR와 08:50 Nasdaq100/S&P500 선물·USD/KRW, US10Y·VIX를 개장 전 불변 스냅샷으로 저장합니다.
+- 삼성전자·SK하이닉스·KOSPI·KOSDAQ의 09:00 이후 체크포인트와 gap·MFE·MAE를 기록합니다.
+- 고정 예상 상태와 실제 opening gap을 UNDERREACTION·FAIR_REACTION·OVERREACTION·DIVERGENCE로 분류합니다.
+- 09:00/09:03/09:05/09:10 및 첫 눌림 진입은 주문 없이 shadow로만 비교합니다.
+- `2026-08-31` 이후 데이터만 누적하며 과거 백필·백테스트·threshold 최적화·ML·Executor 연결을 금지합니다.
+
+### 2026-08-28 · Scheduled Intelligence Evidence Detail
+
+- 장전·장후 예약 카드에 접이식 상세 보기를 추가했습니다.
+- 전략 프레임·리스크·모델·메모리 적용 방식과 단계별 실행 상태를 표시합니다.
+- 브리핑·메모리·Strategist·closeout·통합 인덱스 원본 경로를 확인하고 복사할 수 있습니다.
+- 장전 canonical 원본의 날짜 폴더를 UTC가 아닌 KST 거래일 기준으로 바로잡았습니다.
+- 읽기 전용 관측 기능이며 예약 실행·전략·메모리·매매 동작은 변경하지 않습니다.
+
+### 2026-08-29~30 · Cloudflare Private Ingress 활성화
+
+- `agentra.win`을 Cloudflare Tunnel의 `web:8080` origin에 연결했습니다.
+- Access는 운영자 이메일 allowlist와 One-time PIN으로 보호합니다.
+- 인증 없는 요청이 Access 로그인으로 이동하고 API·Trading Runtime은 직접 공개되지 않는 것을 확인했습니다.
+- Tunnel token은 Git에서 제외된 로컬 `.env`에만 보관합니다.
+
+### 2026-08-30 · Scheduled Artifact Viewer
+
+- 장전 브리핑·메모리 전달 영수증·전략 메모리·Strategist 원본과 장후 인덱스를 UI에서 직접 엽니다.
+- 예약 카드에 실제로 나열된 JSON·Markdown만 읽을 수 있으며 reports 루트 이탈과 미등록 파일은 차단합니다.
+- 파일은 포맷된 읽기 전용 모달로 표시하고 변경·실행 기능은 추가하지 않았습니다.
+- Trading Runtime과 예약 실행 로직은 변경하지 않았습니다.
+
 ---
 
 ## 2026-02-07 ~ 2026-02-10 · M1–M5 — Kiwoom API Catalog와 요청 파이프라인 골격
@@ -1088,3 +1119,31 @@ offline research와 실제 runtime 사이의 semantic drift를 줄임.
 - `impact`: 왜 중요한 변경인지
 - `sources`: 저장소 내부 근거 경로
 - `status`: historical/current
+# 2026-08-28 - Controlled Mock Four-Lane Execution
+
+- Opening Alpha now executes only for `HIGH_COMMON_DIRECTIONAL` or
+  `CONFIRMED_RECURRENT_RANK`, using the existing multi-agent selected candidate.
+- Q12 BTC-Woori, Q10 Semiconductor and Q10 Index can submit one Kiwoom mock order
+  attempt per lane/day through the existing Executor.
+- Independent lanes preserve Q9 attribution boundaries and store their own
+  strategy/horizon provenance.
+- Added lane reservation and opening recurrence artifacts under `data/logs/`.
+
+# 2026-08-28 - Controlled Lane Report Evidence
+
+- Q10/Q12 trade reports show the lane, signal ID, fixed hypothesis evidence,
+  score, hold window and mock-only execution scope.
+- Closed trades recover the original lane evidence from the position strategy
+  frame and daily reservation ledger instead of guessing from the exit cycle.
+- Reports show whether R3 horizon revision was allowed for the position.
+- Q10/Q12 controlled lanes keep R3 revision disabled so fixed-horizon validation
+  remains comparable; normal positions keep the existing R3-to-Monitor path.
+
+# 2026-08-29 - M7.4 Cloudflare Private Ingress
+
+- Added an optional `cloudflared` Compose overlay for `https://agentra.win`.
+- The existing Web Nginx is the only origin; API and Trading Runtime ports remain
+  private.
+- The connector is pinned, non-root, read-only and resource bounded.
+- Cloudflare Access must allow only the operator email with OTP before startup.
+- Normal local Compose operation does not load or start the Tunnel.

@@ -60,16 +60,20 @@ Current authority:
    - existing Preopen/Closeout result materialization without duplicate LLM calls
    - memory delivery receipt and active/advisory semantics
    - scheduled job status and briefing visibility in Overview
-15. `product_data_contract_v1.md`
+15. `m7_4_cloudflare_private_ingress_2026-08-29.md`
+   - optional authenticated ingress for `https://agentra.win`
+   - no host API port, router port-forward, or Trading Runtime exposure
+   - Cloudflare Access email allowlist and OTP contract
+16. `product_data_contract_v1.md`
    - time, truth, cost-basis, and performance definitions
    - missing-data and availability semantics
    - internal/public data boundaries
-16. `combined_milestone_plan_2026-08-14.md`
+17. `combined_milestone_plan_2026-08-14.md`
    - product goal and information architecture
    - Q9-Q18 and current-research data mapping
    - generic read models and API surface
    - implementation milestones M0-M9
-17. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
+18. `read_only_ui_docker_kubernetes_review_2026-08-14.md`
    - repository and infrastructure review
    - read-only and import-isolation constraints
    - Docker/Compose/Kubernetes design details

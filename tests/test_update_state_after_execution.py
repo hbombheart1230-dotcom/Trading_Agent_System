@@ -527,6 +527,43 @@ def test_update_state_mock_buy_stores_position_strategy_context(monkeypatch):
     assert (context.get("output") or {}).get("playbook") == "defensive"
 
 
+def test_controlled_mock_buy_uses_order_strategy_snapshot(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "strategist_output": {"playbook": "unrelated", "strategy_horizon": "scalp"},
+        "persisted_state": {"last_order_epoch": 10, "mock_positions": []},
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {
+                "action": "BUY",
+                "symbol": "041190",
+                "qty": 1,
+                "price": 6200,
+                "meta": {
+                    "position_strategy_snapshot": {
+                        "playbook": "controlled_signal_validation",
+                        "strategy_horizon": "intraday",
+                        "controlled_mock_lane": True,
+                        "horizon_revision_allowed": False,
+                    }
+                },
+            },
+        },
+    }
+
+    out = update_state_after_execution(state)
+    context = (
+        (out["persisted_state"].get("position_strategy_context") or {}).get("041190")
+        or {}
+    )
+    assert context["source"] == "controlled_mock_lane_buy_execution"
+    assert context["horizon_revision_allowed"] is False
+    assert context["output"]["playbook"] == "controlled_signal_validation"
+    assert context["horizon_state"]["entry_horizon"] == "intraday"
+
+
 def test_update_state_sanitizes_stale_position_strategy_context(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: 1234.0)
     state = {

@@ -22,6 +22,7 @@ from .data_provider import (
     market_snapshot_at,
 )
 from .forward_returns import attach_baseline_forward_returns, summarize_forward_returns
+from .forward_validation import build_q10_forward_validation
 from .q9_comparison import build_q9_role_comparison
 from .report import render_daily_report
 from .strategy import build_decision_snapshot
@@ -245,6 +246,33 @@ def build_baseline_artifacts(
         forward_path=forward_path,
         output_dir=output_dir,
     )
+    try:
+        forward_validation = build_q10_forward_validation(
+            day=day,
+            output_dir=output_dir,
+            state_path=state_path,
+            macro_root=macro_root,
+            candle_map=candle_map,
+            cost_pct=cost_pct,
+            slippage_pct=slippage_pct,
+        )
+    except Exception as exc:
+        error_path = output_dir / "q10_forward_validation" / "q10_forward_validation_error.json"
+        _write(
+            error_path,
+            {
+                "evaluation_program_id": "Q10_KOREA_LEAD_MARKET_FORWARD_VALIDATION",
+                "day": day,
+                "status": "MEASUREMENT_ERROR",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "main_q10_baseline_affected": False,
+            },
+        )
+        forward_validation = {
+            "q10_forward_validation_status": "MEASUREMENT_ERROR",
+            "q10_forward_validation_error": str(error_path),
+        }
     return {
         "decisions": str(decisions_path),
         "forward_returns": str(forward_path),
@@ -252,4 +280,5 @@ def build_baseline_artifacts(
         "daily_report_metadata": str(metadata_path),
         "unified_comparison_json": unified["json"],
         "unified_comparison_markdown": unified["markdown"],
+        **forward_validation,
     }

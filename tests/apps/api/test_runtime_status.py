@@ -223,12 +223,19 @@ def test_scheduled_intelligence_endpoint_projects_existing_manifests(api_setting
     (runtime / "latest_preopen.json").write_text(json.dumps({
         "day": "2026-08-27", "job": "preopen", "generated_at": "2026-08-27T08:51:00+09:00",
         "status": "SUCCESS", "issues": [],
+        "steps": {"market_snapshot": {"status": "SUCCESS"}},
     }), encoding="utf-8")
     briefing = api_settings.reports_root / "briefings" / "2026-08-27" / "preopen_briefing.json"
     briefing.parent.mkdir(parents=True)
     briefing.write_text(json.dumps({
-        "memory_delivery": {"status": "DELIVERED_ADVISORY", "source_day": "2026-08-26"},
-        "market_frame": {"one_line": "risk-on opening frame"},
+        "memory_delivery": {
+            "status": "DELIVERED_ADVISORY", "source_day": "2026-08-26",
+            "source_artifact": "reports/performance/2026-08-26/strategy_memory.json",
+            "application_mode": "surface_only",
+        },
+        "market_frame": {"one_line": "risk-on opening frame", "regime": "risk_on", "playbook": "breakout"},
+        "strategist": {"model": "fixture-model", "artifact": "reports/canonical/strategist.json"},
+        "data_quality_warnings": ["fixture_warning"],
     }), encoding="utf-8")
 
     with TestClient(create_app(api_settings)) as client:
@@ -239,7 +246,61 @@ def test_scheduled_intelligence_endpoint_projects_existing_manifests(api_setting
     payload = response.json()
     assert payload["jobs"][0]["status"] == "SUCCESS"
     assert payload["jobs"][0]["memory_status"] == "DELIVERED_ADVISORY"
+    assert payload["jobs"][0]["details"][0] == {"label": "시장 국면", "value": "risk_on"}
+    assert payload["jobs"][0]["artifacts"][2]["path"].endswith("strategy_memory.json")
+    assert payload["jobs"][0]["steps"] == [{"name": "market_snapshot", "status": "SUCCESS"}]
+    assert payload["jobs"][0]["issues"] == ["fixture_warning"]
     assert payload["jobs"][1]["status"] == "NOT_RUN"
     assert payload["read_only"] is True
     assert payload["execution_callable"] is False
     assert post.status_code == 405
+
+
+def test_scheduled_artifact_endpoint_reads_only_listed_json(api_settings) -> None:
+    runtime = api_settings.reports_root / "runtime" / "scheduled_jobs"
+    runtime.mkdir(parents=True)
+    (runtime / "latest_preopen.json").write_text(json.dumps({
+        "day": "2026-08-27", "job": "preopen", "generated_at": "2026-08-27T08:51:00+09:00",
+        "status": "SUCCESS", "issues": [], "steps": {},
+    }), encoding="utf-8")
+    briefing = api_settings.reports_root / "briefings" / "2026-08-27" / "preopen_briefing.json"
+    briefing.parent.mkdir(parents=True)
+    briefing.write_text(json.dumps({"market_frame": {"one_line": "fixture"}}), encoding="utf-8")
+    (runtime / "latest_closeout.json").write_text(json.dumps({
+        "day": "2026-08-27", "job": "closeout", "generated_at": "2026-08-27T16:01:00+09:00",
+        "status": "SUCCESS", "issues": [], "steps": {},
+        "daily_index": {"markdown": "reports/briefings/2026-08-27/daily_intelligence_index.md"},
+    }), encoding="utf-8")
+    markdown = api_settings.reports_root / "briefings" / "2026-08-27" / "daily_intelligence_index.md"
+    markdown.write_text("# Daily intelligence\n\n- fixture", encoding="utf-8")
+    unlisted = api_settings.reports_root / "private.json"
+    unlisted.write_text(json.dumps({"secret": True}), encoding="utf-8")
+
+    with TestClient(create_app(api_settings)) as client:
+        response = client.get(
+            "/api/v1/runtime/scheduled-artifact",
+            params={"path": "reports/briefings/2026-08-27/preopen_briefing.json"},
+        )
+        unlisted_response = client.get(
+            "/api/v1/runtime/scheduled-artifact",
+            params={"path": "reports/private.json"},
+        )
+        traversal_response = client.get(
+            "/api/v1/runtime/scheduled-artifact",
+            params={"path": "reports/../private.json"},
+        )
+        markdown_response = client.get(
+            "/api/v1/runtime/scheduled-artifact",
+            params={"path": "reports/briefings/2026-08-27/daily_intelligence_index.md"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["format"] == "json"
+    assert response.json()["json_content"] == {"market_frame": {"one_line": "fixture"}}
+    assert response.json()["read_only"] is True
+    assert response.json()["execution_callable"] is False
+    assert unlisted_response.status_code == 404
+    assert traversal_response.status_code == 404
+    assert markdown_response.status_code == 200
+    assert markdown_response.json()["format"] == "markdown"
+    assert markdown_response.json()["text_content"].startswith("# Daily intelligence")

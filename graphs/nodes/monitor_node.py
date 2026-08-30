@@ -37,7 +37,10 @@ from libs.runtime.monitor_entry_blockers import evaluate_entry_guard
 from libs.runtime.opening_rank1_controlled_probe import (
     evaluate_opening_rank1_controlled_probe,
     load_probe_submissions,
+    load_rank_observations,
+    record_rank1_observation,
     record_probe_submission,
+    selected_rank as _opening_probe_selected_rank,
     session_clock as _opening_probe_session_clock,
 )
 from libs.runtime.opening_rank1_probe_authority import resolve_opening_rank1_probe_authority
@@ -860,6 +863,7 @@ def _evaluate_monitor_entry_candidate(
 
     probe_day, _probe_minutes = _opening_probe_session_clock(now_epoch_for_entry)
     prior_probe_rows = load_probe_submissions(probe_day)
+    prior_rank_observations = load_rank_observations(probe_day)
     last_trade_day = (
         _opening_probe_session_clock(last_trade_epoch)[0]
         if last_trade_epoch > 0
@@ -891,7 +895,22 @@ def _evaluate_monitor_entry_candidate(
         is_top_pick=bool(allow_opening_rank1_controlled_probe),
         same_symbol_reentry_detected=same_symbol_reentry_detected,
         broker_mode=str(os.getenv("KIWOOM_MODE") or ""),
+        prior_rank_observations=prior_rank_observations,
+        recent_minute_rows=entry_rows,
     )
+    if (
+        bool(allow_opening_rank1_controlled_probe)
+        and _opening_probe_selected_rank(selected) == 1
+        and bool(opening_probe_selection_authority.get("evidence_available"))
+        and bool(opening_probe_selection_authority.get("aligned"))
+        and 0 <= _probe_minutes <= 20
+    ):
+        opening_rank1_controlled_probe["rank_observation"] = record_rank1_observation(
+            day=probe_day,
+            symbol=symbol,
+            observed_epoch=now_epoch_for_entry,
+            run_id=str(state.get("run_id") or ""),
+        )
     if bool(opening_rank1_controlled_probe.get("applied")):
         reservation = record_probe_submission(
             opening_rank1_controlled_probe,
