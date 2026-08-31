@@ -9,6 +9,9 @@ from libs.execution.executors.base import ExecutionResult, ExecutionDisabledErro
 from libs.core.http_client import HttpClient
 from libs.kiwoom.kiwoom_token_client import KiwoomTokenClient
 from libs.core.settings import Settings
+from libs.execution.guards.symbol_allowlist import (
+    parse_symbol_allowlist as _canonical_parse_symbol_allowlist,
+)
 
 
 class RealExecutor:
@@ -37,13 +40,13 @@ class RealExecutor:
 
         - If env var is missing/empty/whitespace => returns empty set (guard disabled).
         - Supports comma-separated values, e.g. "005930,000660".
+
+        Delegates to the canonical parser (libs/execution/guards/symbol_allowlist.py)
+        so this executor and the execute_from_packet guard chain share one
+        parsing/normalization implementation. Kept as a static method with the
+        same name/signature for backward compatibility with existing callers.
         """
-        if raw is None:
-            return set()
-        raw = raw.strip()
-        if not raw:
-            return set()
-        return {s.strip() for s in raw.split(",") if s.strip()}
+        return _canonical_parse_symbol_allowlist(raw)
 
     @staticmethod
     def _extract_symbol(req: PreparedRequest) -> Optional[str]:

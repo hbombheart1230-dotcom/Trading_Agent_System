@@ -23,6 +23,9 @@ from libs.execution.recent_order_guard import (
 from libs.runtime.canonical_artifacts import write_executor_artifact, write_supervisor_artifact
 from libs.runtime.asset_universe_policy import inspect_asset_universe_candidate
 from libs.runtime.decision_trace import append_decision_trace
+from libs.execution.guards.symbol_allowlist import (
+    parse_symbol_allowlist as _canonical_parse_symbol_allowlist,
+)
 
 
 def _import_api_catalog():
@@ -148,12 +151,12 @@ def _coerce_float(value: Any, default: float) -> float:
 
 
 def _parse_symbol_allowlist(raw: Optional[str]) -> set[str]:
-    if raw is None:
-        return set()
-    v = raw.strip()
-    if not v:
-        return set()
-    return {normalize_symbol(x) for x in v.split(",") if normalize_symbol(x)}
+    """Delegates to the canonical parser (libs/execution/guards/symbol_allowlist.py).
+
+    Kept as a thin wrapper (same name/signature) so existing call sites in
+    this module are unchanged.
+    """
+    return _canonical_parse_symbol_allowlist(raw)
 
 
 def _resolve_limit_env_value(primary: str, alias: str) -> Tuple[int, str]:
