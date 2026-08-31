@@ -1,13 +1,44 @@
 from __future__ import annotations
 
+import sqlite3
+
+import pytest
+
 from pathlib import Path
 
-from libs.core.path_isolation import resolve_runtime_write_path
+from libs.core.path_isolation import _pytest_isolated_write_root, resolve_runtime_write_path
 from libs.research.evidence_ledger import append_evidence_record
 from libs.runtime.kiwoom_market_status import KiwoomMarketStatusListener
+from libs.supervisor.intent_state_store import SQLiteIntentStateStore
+from libs.supervisor.intent_store import IntentStore
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _assert_contained(resolved: Path) -> None:
+    isolated_root = _pytest_isolated_write_root().resolve()
+    resolved.resolve().relative_to(isolated_root)  # raises ValueError if not contained
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "data/x.json",
+        "../data/x.json",
+        "../../x.json",
+        str(_REPO_ROOT / "data" / "x.json"),
+        "\\data\\x.json",
+        "C:data\\x.json",
+        "reports/../data/x.json",
+    ],
+)
+def test_resolve_runtime_write_path_never_escapes_isolated_root(raw: str):
+    resolved = resolve_runtime_write_path(raw)
+    _assert_contained(resolved)
+    # Must never land literally inside the real repo's reports/ or data/.
+    assert not str(resolved).startswith(str(_REPO_ROOT / "data"))
+    assert not str(resolved).startswith(str(_REPO_ROOT / "reports"))
 
 
 def test_resolve_runtime_write_path_redirects_repo_relative_literal():
@@ -98,3 +129,73 @@ def test_kiwoom_market_status_listener_injected_factory_bypasses_backstop(tmp_pa
 
         status = json.loads(listener_path.read_text(encoding="utf-8")).get("status")
         assert status != "blocked_external_network_pytest"
+
+
+def _wal_sidecar_paths(db_path: Path) -> tuple[Path, Path]:
+    return db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm")
+
+
+@pytest.mark.parametrize(
+    "ctor_path",
+    ["data/state/intent_state.db", "data/custom.db", "custom.db"],
+)
+def test_sqlite_intent_state_store_never_touches_real_repo(ctor_path: str):
+    real_db = _REPO_ROOT / "data" / "state" / "intent_state.db"
+    real_custom = _REPO_ROOT / ctor_path
+    before = real_db.stat().st_size if real_db.exists() else None
+    before_custom = real_custom.stat().st_size if real_custom.exists() else None
+
+    store = SQLiteIntentStateStore(ctor_path)
+    _assert_contained(store.path)
+    store.ensure_intent("p0-fix2-intent", initial_state="pending_approval")
+
+    after = real_db.stat().st_size if real_db.exists() else None
+    after_custom = real_custom.stat().st_size if real_custom.exists() else None
+    assert before == after
+    assert before_custom == after_custom
+
+    # WAL/SHM sidecars, if sqlite created any for this connection mode,
+    # must live alongside the isolated .db, never leak to the real repo.
+    wal, shm = _wal_sidecar_paths(store.path)
+    for sidecar in (wal, shm):
+        if sidecar.exists():
+            _assert_contained(sidecar)
+    real_wal, real_shm = _wal_sidecar_paths(real_db)
+    assert not real_wal.exists()
+    assert not real_shm.exists()
+
+
+def test_sqlite_intent_state_store_wal_mode_sidecars_stay_contained(tmp_path: Path):
+    store = SQLiteIntentStateStore("data/state/intent_state.db")
+    conn = sqlite3.connect(str(store.path))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE IF NOT EXISTS p0_fix2_probe (x INTEGER)")
+        conn.execute("INSERT INTO p0_fix2_probe VALUES (1)")
+        conn.commit()
+    finally:
+        conn.close()
+    wal, shm = _wal_sidecar_paths(store.path)
+    if wal.exists():
+        _assert_contained(wal)
+    if shm.exists():
+        _assert_contained(shm)
+    real_db = _REPO_ROOT / "data" / "state" / "intent_state.db"
+    real_wal, real_shm = _wal_sidecar_paths(real_db)
+    assert not real_wal.exists()
+    assert not real_shm.exists()
+
+
+@pytest.mark.parametrize(
+    "ctor_path",
+    ["data/logs/intents.jsonl", "data/state/custom.jsonl", "custom.jsonl"],
+)
+def test_intent_store_never_touches_real_repo(ctor_path: str):
+    real_target = _REPO_ROOT / ctor_path
+    before = real_target.stat().st_size if real_target.exists() else None
+
+    store = IntentStore(ctor_path)
+    _assert_contained(store.path)
+
+    after = real_target.stat().st_size if real_target.exists() else None
+    assert before == after
