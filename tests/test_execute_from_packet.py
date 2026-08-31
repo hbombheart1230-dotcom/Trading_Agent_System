@@ -1,10 +1,22 @@
 import json
 
+import pytest
+
 from libs.risk.intent import TradeIntent, RiskContext, ExecutionContext, TradeDecisionPacket
 from libs.core.api_response import ApiResponse
 from graphs.nodes.execute_from_packet import execute_from_packet
 import graphs.nodes.execute_from_packet as execute_from_packet_module
 import libs.runtime.asset_universe_policy as asset_universe_policy
+
+
+@pytest.fixture(autouse=True)
+def _isolate_canonical_reports(monkeypatch, tmp_path):
+    monkeypatch.setenv("REPORTS_ROOT", str(tmp_path / "reports"))
+
+
+# UNKNOWN-quarantine isolation is provided project-wide by the autouse
+# fixture in conftest.py (_isolate_unknown_quarantine_guard) -- no per-file
+# fixture needed here.
 
 
 def test_execute_from_packet_mock(tmp_path, monkeypatch):
@@ -1228,7 +1240,7 @@ def test_execute_from_packet_attempts_upper_limit_cancel_after_accept_when_reque
     assert cancel_info["cancel"]["order"]["api_id"] == "kt10003"
 
 
-def test_execute_from_packet_replaces_unfilled_sell_with_market_order(tmp_path, monkeypatch):
+def test_execute_from_packet_blocks_market_replacement_without_cancel_confirmation(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_MODE", "real")
     monkeypatch.setenv("KIWOOM_MODE", "mock")
     monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "true")
@@ -1305,16 +1317,21 @@ def test_execute_from_packet_replaces_unfilled_sell_with_market_order(tmp_path, 
 
     out = execute_from_packet(state)
     recovery = out["execution"]["unfilled_order_recovery"]
+    # Phase 1 Step 5B: CANCEL_ACCEPTED != CANCEL_CONFIRMED. The broker
+    # accepting the cancel *request* is not proof the original order is
+    # actually gone, and this codebase has no live broker-truth confirmation
+    # wired into this recovery path, so the market replacement SELL is
+    # fail-closed blocked rather than assumed safe.
     assert recovery["attempted"] is True
     assert recovery["cancel_ok"] is True
-    assert recovery["market_replacement_ok"] is True
-    assert recovery["reason"] == "sell_unfilled_market_replacement_submitted"
-    assert [row["api_id"] for row in captured] == ["kt10001", "kt10003", "kt10001"]
+    assert recovery["cancel_confirmed"] is False
+    assert recovery["market_replacement_blocked_reason"] == "cancel_confirmation_unavailable"
+    assert recovery["reason"] == "market_replacement_blocked_cancel_confirmation_unavailable"
+    assert "market_replacement" not in recovery
+    assert "market_replacement_ok" not in recovery
+    # Only SELL then CANCEL were submitted -- no second (replacement) SELL.
+    assert [row["api_id"] for row in captured] == ["kt10001", "kt10003"]
     assert captured[1]["body"]["orig_ord_no"] == "S000123"
-    assert captured[2]["body"]["stk_cd"] == "005930"
-    assert captured[2]["body"]["ord_qty"] == "10"
-    assert str(captured[2]["body"]["trde_tp"]) == "3"
-    assert str(captured[2]["body"].get("ord_uv") or "") == ""
 
 
 def test_execute_from_packet_cancels_pending_unfilled_buy_without_market_replacement(tmp_path, monkeypatch):

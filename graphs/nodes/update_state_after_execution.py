@@ -1304,6 +1304,13 @@ def update_state_after_execution(state: dict) -> dict:
     # update audit info always
     ps["last_execution_ok"] = ok
     ps["last_execution_reason"] = ex.get("reason") or ex.get("error") or ("blocked" if blocked else "")
+    # Phase 1 Step 5B: additive, observation-only. Does not change order_sent/
+    # fill/position bookkeeping below -- `ok` semantics and all existing
+    # branches are unchanged. Lets an operator see, from persisted_state
+    # alone, whether the last execution's `not ok` was a firm reject/not-sent
+    # or an unresolved UNKNOWN awaiting reconciliation.
+    ps["last_execution_broker_outcome"] = str(ex.get("broker_outcome") or "")
+    ps["last_execution_reconciliation_required"] = bool(ex.get("reconciliation_required"))
     _update_mock_broker_restricted_symbols(ps, ex)
 
     # Only set last_order_epoch when an order was actually sent.

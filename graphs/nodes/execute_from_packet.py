@@ -789,31 +789,19 @@ def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, exe
             result["after_hours_policy_required"] = True
         return result
 
-    market_order = _build_market_replacement_sell_order(
-        order,
-        remaining_qty,
-        reason=str(after_cancel_policy.get("market_replacement_reason") or "sell_unfilled_market_replacement"),
-    )
-    try:
-        market_req = _prepare_request(market_order, catalog)
-        market_execution_result = executor.execute(market_req)
-        market_payload = _normalize_execution(
-            allowed=True,
-            execution_result=market_execution_result,
-            allow_result=None,
-            order=market_order,
-            reason="sell_unfilled_market_replacement",
-            strategy_policy_summary=None,
-        )
-        result["market_replacement"] = market_payload
-        result["market_replacement_ok"] = bool(market_payload.get("ok"))
-        result["reason"] = "sell_unfilled_market_replacement_submitted"
-        return result
-    except Exception as exc:
-        result["market_replacement_ok"] = False
-        result["market_replacement_error"] = str(exc)
-        result["reason"] = "sell_market_replacement_error"
-        return result
+    # CANCEL_ACCEPTED != CANCEL_CONFIRMED (Phase 1 Step 5B). `cancel_ok` above
+    # only means the broker accepted the *cancel request*; it is not broker
+    # truth that the original order is actually gone. Submitting a market
+    # replacement SELL on that assumption risks a double sell if the
+    # original order was in fact filled (or still pending) at the broker.
+    # This codebase has no live broker-truth confirmation wired into this
+    # recovery path, so the replacement is fail-closed blocked until one
+    # exists -- confirmation-unavailable is treated the same as
+    # confirmation-denied, never as confirmation-granted.
+    result["cancel_confirmed"] = False
+    result["market_replacement_blocked_reason"] = "cancel_confirmation_unavailable"
+    result["reason"] = "market_replacement_blocked_cancel_confirmation_unavailable"
+    return result
 
 
 def _extract_order_symbol(order: Dict[str, Any]) -> str:
@@ -1012,6 +1000,100 @@ def _write_recent_sell_guard(path: Path, data: Dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
+
+
+# --- UNKNOWN broker-outcome quarantine (Phase 1 Step 5B) ---------------------
+#
+# When a mutation's broker outcome cannot be confirmed (timeout, connection
+# reset, malformed response, post-submission auth ambiguity), the affected
+# symbol is quarantined until an operator reconciles it against broker truth.
+# Scope is deliberately narrow: only the symbol that produced the UNKNOWN
+# outcome is blocked, not the whole universe. No TTL/auto-expiry is applied --
+# clearing a quarantine record is an out-of-band operator/reconciliation
+# action, not something this Step automates.
+
+
+def _unknown_quarantine_path(state: Dict[str, Any]) -> Path:
+    raw = state.get("unknown_quarantine_guard_path") or os.getenv(
+        "UNKNOWN_QUARANTINE_GUARD_PATH", "data/state/execution_unknown_quarantine.json"
+    )
+    return Path(str(raw))
+
+
+def _read_unknown_quarantine(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {"schema_version": "execution_unknown_quarantine.v1", "symbols": {}}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            symbols = data.get("symbols")
+            if not isinstance(symbols, dict):
+                data["symbols"] = {}
+            return data
+    except Exception:
+        pass
+    return {"schema_version": "execution_unknown_quarantine.v1", "symbols": {}}
+
+
+def _write_unknown_quarantine(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _evaluate_unknown_quarantine_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    details: Dict[str, Any] = {"guard_applied": True, "action": action}
+    if action not in ("BUY", "SELL", "CANCEL", "MODIFY"):
+        details["guard_applied"] = False
+        return True, "", details
+
+    symbol = _extract_order_symbol(order)
+    details["symbol"] = symbol
+    if not symbol:
+        details["symbol_evaluable"] = False
+        return True, "", details
+
+    path = _unknown_quarantine_path(state)
+    data = _read_unknown_quarantine(path)
+    record = data.get("symbols", {}).get(symbol) if isinstance(data.get("symbols"), dict) else None
+    if not isinstance(record, dict) or not record:
+        return True, "", details
+
+    details.update(
+        {
+            "quarantined": True,
+            "quarantined_at_epoch": _coerce_int(record.get("quarantined_at_epoch"), 0),
+            "quarantine_reason": str(record.get("reason") or ""),
+            "quarantine_run_id": str(record.get("run_id") or ""),
+            "quarantine_action": str(record.get("action") or ""),
+            "quarantine_exception_type": str(record.get("exception_type") or ""),
+        }
+    )
+    return False, "symbol_quarantined_pending_reconciliation", details
+
+
+def _quarantine_symbol_for_unknown_outcome(state: Dict[str, Any], order: Dict[str, Any], execution: Dict[str, Any]) -> None:
+    symbol = _extract_order_symbol(order)
+    if not symbol:
+        return
+    path = _unknown_quarantine_path(state)
+    data = _read_unknown_quarantine(path)
+    symbols = data.get("symbols")
+    if not isinstance(symbols, dict):
+        symbols = {}
+        data["symbols"] = symbols
+    if symbol in symbols:
+        return  # already quarantined -- don't overwrite an earlier record
+    symbols[symbol] = {
+        "quarantined_at_epoch": _recent_buy_guard_now_epoch(state),
+        "reason": "broker_outcome_unknown",
+        "action": str(order.get("action") or "").strip().upper(),
+        "run_id": str(state.get("run_id") or ""),
+        "exception_type": str(execution.get("exception_type") or ""),
+    }
+    _write_unknown_quarantine(path, data)
 
 
 def _position_qty_hint_from_order(order: Dict[str, Any]) -> int:
@@ -1850,26 +1932,52 @@ def _broker_code_success(value: Any) -> Optional[bool]:
     return False
 
 
-def _infer_execution_ok(payload: Dict[str, Any]) -> Tuple[bool, str]:
+def _classify_broker_outcome(payload: Dict[str, Any]) -> Tuple[str, str]:
+    """Classify NOT_SENT/ACCEPTED/REJECTED/UNKNOWN (Phase 1 Step 5B).
+
+    Priority:
+    1) RealExecutor's own mutation classification, when present
+       (libs/execution/guards/broker_mutation.py::classify_mutation_response,
+       set into ExecutionResult.meta['broker_outcome']) -- most authoritative,
+       since it already ran the real business-code check against the actual
+       HTTP response.
+    2) Mock executor: always synthesizes success (explicit rule, not a
+       "no signal -> assume true" fallback -- MockExecutor's entire contract
+       is "never calls network, never trades, always succeeds").
+    3) Explicit broker business code on the payload (defense-in-depth for
+       payload shapes that didn't go through RealExecutor's own
+       classification, e.g. legacy/test call sites).
+    4) Otherwise UNKNOWN. HTTP 2xx alone is never sufficient for ACCEPTED,
+       and a malformed/no-signal response is never silently treated as
+       success.
+    """
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    pre_classified = str(meta.get("broker_outcome") or "").strip().upper()
+    if pre_classified in ("NOT_SENT", "ACCEPTED", "REJECTED", "UNKNOWN"):
+        return pre_classified, "real_executor_meta"
+
+    # MockExecutor's own contract (libs/execution/executors/mock_executor.py):
+    # never calls network, never trades, always succeeds. Detected via
+    # meta['executor']=='mock' (set only by MockExecutor itself), NOT via
+    # payload['mode']=='mock' -- `mode` just reflects the configured
+    # EXECUTION_MODE and can be "mock" even when a test/tool injects a
+    # different executor that returns a real Kiwoom-shaped response (that
+    # response must still go through real business-code classification).
+    if str(meta.get("executor") or "").strip().lower() == "mock":
+        return "ACCEPTED", "mock_executor_default"
+
     broker = _broker_code_success(payload.get("broker_code"))
-    if broker is not None:
-        return bool(broker), "broker_code"
+    if broker is True:
+        return "ACCEPTED", "broker_code"
+    if broker is False:
+        return "REJECTED", "broker_code"
 
-    if "api_ok" in payload:
-        return bool(payload.get("api_ok")), "api_ok"
+    return "UNKNOWN", "no_business_signal"
 
-    status_code = payload.get("status_code")
-    try:
-        code = int(float(status_code))
-        return (200 <= code < 300), "status_code"
-    except Exception:
-        pass
 
-    if str(payload.get("mode") or "").strip().lower() == "mock":
-        return True, "mode_mock_default"
-
-    # Backward-compatible default when no execution signal exists.
-    return True, "default_true"
+def _infer_execution_ok(payload: Dict[str, Any]) -> Tuple[bool, str]:
+    outcome, source = _classify_broker_outcome(payload)
+    return outcome == "ACCEPTED", source
 
 
 def _supervisor_allow(supervisor: Any, order: Dict[str, Any], risk: Dict[str, Any]) -> Any:
@@ -2169,15 +2277,39 @@ def _normalize_execution(
         or ""
     ).strip()
 
+    meta_info: Dict[str, Any] = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
     ok = bool(allowed)
     ok_source = "allowed_gate"
+    broker_outcome = "" if allowed else "NOT_SENT"
     if allowed and execution_result is not None:
-        ok, ok_source = _infer_execution_ok(payload)
+        broker_outcome, ok_source = _classify_broker_outcome(payload)
+        ok = broker_outcome == "ACCEPTED"
         if not ok:
             cur = resolved_reason.strip().lower()
             if cur in ("", "allowed"):
-                bcode = str(payload.get("broker_code") or "").strip()
-                resolved_reason = f"broker_rejected:{bcode}" if bcode else "broker_rejected"
+                if broker_outcome == "REJECTED":
+                    bcode = str(payload.get("broker_code") or "").strip()
+                    resolved_reason = f"broker_rejected:{bcode}" if bcode else "broker_rejected"
+                elif broker_outcome == "UNKNOWN":
+                    # Do not collapse UNKNOWN into a rejection-shaped reason --
+                    # callers (quarantine, reporting) must be able to tell the
+                    # two apart.
+                    resolved_reason = "broker_outcome_unknown"
+                else:
+                    resolved_reason = "broker_not_sent"
+    elif allowed and execution_result is None:
+        broker_outcome = "NOT_SENT"
+
+    # BrokerOutcome contract (Phase 1 Step 5B): additive fields alongside the
+    # existing `ok`/`allowed` shape. Legacy `ok` compatibility is preserved
+    # (ACCEPTED -> ok=true; NOT_SENT/REJECTED/UNKNOWN -> ok=false), but
+    # `broker_outcome` lets downstream consumers distinguish UNKNOWN from a
+    # firm REJECTED/NOT_SENT instead of treating every `ok=false` the same.
+    submission_attempts_default = 0 if (not allowed or execution_result is None) else 1
+    reconciliation_required = bool(meta_info.get("reconciliation_required")) or (broker_outcome == "UNKNOWN")
+    broker_reference_missing = bool(meta_info.get("broker_reference_missing")) or (
+        broker_outcome == "ACCEPTED" and not top_level_order_id
+    )
 
     verdict = {
         "allowed": bool(allowed),
@@ -2196,6 +2328,12 @@ def _normalize_execution(
         "kiwoom_mode": str(payload.get("kiwoom_mode") or "").strip(),
         "broker_env": str(payload.get("broker_env") or "").strip(),
         "effective_mode": str(payload.get("effective_mode") or "").strip(),
+        "broker_outcome": str(broker_outcome or "UNKNOWN"),
+        "submission_phase": str(meta_info.get("submission_phase") or ("guard_blocked" if not allowed else "completed")),
+        "submission_attempts": _coerce_int(meta_info.get("submission_attempts"), submission_attempts_default),
+        "exception_type": str(meta_info.get("exception_type") or ""),
+        "reconciliation_required": bool(reconciliation_required),
+        "broker_reference_missing": bool(broker_reference_missing),
         "order": order,
         "payload": payload,
     }
@@ -2503,6 +2641,34 @@ def execute_from_packet(state: dict) -> dict:
                 supervisor_allowed=False,
                 supervisor_reason=symbol_reason,
                 supervisor_details=symbol_details,
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        quarantine_allowed, quarantine_reason, quarantine_details = _evaluate_unknown_quarantine_guard(state, order)
+        if not quarantine_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=quarantine_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["unknown_quarantine_guard"] = quarantine_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="unknown_quarantine_block",
+                payload={"allowed": False, "reason": quarantine_reason, **quarantine_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=quarantine_reason,
+                supervisor_details=quarantine_details,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -2911,6 +3077,8 @@ def execute_from_packet(state: dict) -> dict:
         allow_details = getattr(allow_result, "details", {})
         if isinstance(allow_details, dict) and allow_details:
             state["execution"]["supervisor_guard"] = dict(allow_details)
+        if str(state["execution"].get("broker_outcome") or "").strip().upper() == "UNKNOWN":
+            _quarantine_symbol_for_unknown_outcome(state, order, state["execution"])
         recent_buy_guard_update = _update_recent_buy_order_guard(state, order, state["execution"])
         if bool(recent_buy_guard_update.get("enabled")):
             state["execution"]["recent_buy_order_guard"] = recent_buy_guard_update
@@ -2973,7 +3141,25 @@ def execute_from_packet(state: dict) -> dict:
         return state
 
     except Exception as e:
-        state["execution"] = {"allowed": False, "reason": str(e)}
+        # Phase 1 Step 5B: RealExecutor's mutation path never lets a
+        # post-submission exception escape uncaught (see
+        # libs/execution/executors/real_executor.py::_execute_mutation) -- it
+        # converts those into a returned UNKNOWN-classified ExecutionResult
+        # instead. So anything that reaches this handler happened strictly
+        # before any broker mutation HTTP call was dispatched (preflight
+        # failure, token acquisition failure, a guard-evaluation bug, catalog
+        # load failure, etc.) -- definitionally NOT_SENT, never UNKNOWN.
+        state["execution"] = {
+            "allowed": False,
+            "ok": False,
+            "reason": str(e),
+            "broker_outcome": "NOT_SENT",
+            "submission_phase": "not_dispatched",
+            "submission_attempts": 0,
+            "exception_type": type(e).__name__,
+            "reconciliation_required": False,
+            "broker_reference_missing": False,
+        }
         if strategy_policy_summary:
             state["execution"]["strategy_policy_summary"] = dict(strategy_policy_summary)
         _append_execution_trace_entries(

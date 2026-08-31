@@ -12,6 +12,10 @@ from libs.core.settings import Settings
 from libs.execution.guards.symbol_allowlist import (
     parse_symbol_allowlist as _canonical_parse_symbol_allowlist,
 )
+from libs.execution.guards.broker_mutation import (
+    classify_mutation_response,
+    is_mutation_api_id,
+)
 
 
 class RealExecutor:
@@ -162,7 +166,18 @@ class RealExecutor:
           2) Allowlist guard
           3) Token issuance
           4) HTTP request
+
+        Broker mutation safety (Phase 1 Step 5B): when req targets a broker
+        mutation api_id (BUY/SELL/CANCEL/MODIFY), this method guarantees at
+        most one physical HTTP submission attempt, never automatically
+        replays that submission after a token-invalid-looking response, and
+        never lets a post-submission exception escape uncaught -- it is
+        converted into a BrokerOutcome-classified ExecutionResult instead
+        (see libs/execution/guards/broker_mutation.py). Non-mutation
+        (read/query/token) calls are entirely unaffected.
         """
+        is_mutation = is_mutation_api_id(getattr(req, "api_id", None))
+
         pf = self.preflight_check(req)
         if not bool(pf.get("ok")):
             code = str(pf.get("code") or "UNKNOWN")
@@ -173,8 +188,15 @@ class RealExecutor:
         token = auth_token
         token_from_cache = not bool(token)
         if not token:
-            ensure = self.tokens.ensure_token(dry_run=False)
-            token = ensure.token
+            try:
+                ensure = self.tokens.ensure_token(dry_run=False)
+                token = ensure.token
+            except Exception as exc:
+                if is_mutation:
+                    # Token acquisition failed strictly before the mutation
+                    # HTTP call was ever attempted -> definitely NOT_SENT.
+                    raise ExecutionDisabledError(f"[TOKEN_ACQUISITION_FAILED] {exc}") from exc
+                raise
 
         headers = dict(req.headers or {})
         headers.update({"Authorization": f"Bearer {token}"})
@@ -192,6 +214,10 @@ class RealExecutor:
             headers.setdefault("appsecret", self.s.kiwoom_app_secret)
 
         json_body = req.body if req.body or str(req.method or "").upper() == "POST" else None
+
+        if is_mutation:
+            return self._execute_mutation(req, headers=headers, json_body=json_body)
+
         url, resp = self.http.request(
             req.method,
             req.path,
@@ -216,3 +242,84 @@ class RealExecutor:
             assert resp is not None
             api_resp = ApiResponse.from_http(resp.status_code, resp.text)
         return ExecutionResult(response=api_resp, meta={"executor": "real", "url": url})
+
+    def _execute_mutation(
+        self,
+        req: PreparedRequest,
+        *,
+        headers: Dict[str, Any],
+        json_body: Optional[Dict[str, Any]],
+    ) -> ExecutionResult:
+        """One broker mutation transport attempt, classified into BrokerOutcome.
+
+        Invariant: one logical mutation -> at most one transport submission
+        attempt (retry_override=0). Never raises for anything that happens
+        during or after that single attempt -- always returns an
+        ExecutionResult with meta['broker_outcome'] in
+        {ACCEPTED, REJECTED, UNKNOWN} so the caller can quarantine on
+        UNKNOWN instead of losing provenance to an uncaught exception.
+        """
+        try:
+            url, resp = self.http.request(
+                req.method,
+                req.path,
+                headers=headers,
+                params=req.query,
+                json_body=json_body,
+                dry_run=False,
+                retry_override=0,
+            )
+        except Exception as exc:
+            return ExecutionResult(
+                response=ApiResponse(
+                    status_code=0,
+                    ok=False,
+                    payload={},
+                    error_code=None,
+                    error_message=str(exc),
+                    raw_text="",
+                ),
+                meta={
+                    "executor": "real",
+                    "broker_outcome": "UNKNOWN",
+                    "submission_phase": "mutation_http_call",
+                    "submission_attempts": 1,
+                    "exception_type": type(exc).__name__,
+                    "reconciliation_required": True,
+                },
+            )
+
+        assert resp is not None
+        api_resp = ApiResponse.from_http(resp.status_code, resp.text)
+
+        if self._is_invalid_token_response(api_resp):
+            # The mutation has already been submitted once. Do not refresh
+            # the token and replay the same mutation on a guess -- treat the
+            # outcome as unknown and let reconciliation resolve it.
+            return ExecutionResult(
+                response=api_resp,
+                meta={
+                    "executor": "real",
+                    "broker_outcome": "UNKNOWN",
+                    "submission_phase": "mutation_http_call",
+                    "submission_attempts": 1,
+                    "exception_type": "",
+                    "reconciliation_required": True,
+                    "note": "token_invalid_after_submission_no_replay",
+                },
+            )
+
+        payload = api_resp.payload if isinstance(api_resp.payload, dict) else {}
+        outcome, reference_missing = classify_mutation_response(payload)
+        return ExecutionResult(
+            response=api_resp,
+            meta={
+                "executor": "real",
+                "broker_outcome": outcome,
+                "submission_phase": "mutation_http_call",
+                "submission_attempts": 1,
+                "exception_type": "",
+                "reconciliation_required": outcome == "UNKNOWN",
+                "broker_reference_missing": reference_missing,
+            },
+        )

@@ -2680,6 +2680,17 @@ def build_executor_output_artifact(
                 max_len=64,
             ),
             "execution_ok": execution_ok,
+            # Phase 1 Step 5B: additive BrokerOutcome provenance. `execution_ok`
+            # stays a plain bool for backward compatibility; `broker_outcome`
+            # lets downstream consumers tell UNKNOWN (broker acceptance
+            # unconfirmed, must not be treated as a firm reject) apart from a
+            # true NOT_SENT/REJECTED.
+            "broker_outcome": _clip(execution.get("broker_outcome"), max_len=32),
+            "submission_phase": _clip(execution.get("submission_phase"), max_len=64),
+            "submission_attempts": _safe_int(execution.get("submission_attempts")),
+            "exception_type": _clip(execution.get("exception_type"), max_len=120),
+            "reconciliation_required": bool(execution.get("reconciliation_required")),
+            "broker_reference_missing": bool(execution.get("broker_reference_missing")),
             "quote_snapshot": quote_snapshot,
             "best_bid": _safe_float(execution.get("best_bid") if execution.get("best_bid") not in (None, "") else quote_snapshot.get("best_bid")),
             "best_ask": _safe_float(execution.get("best_ask") if execution.get("best_ask") not in (None, "") else quote_snapshot.get("best_ask")),
