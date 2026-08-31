@@ -5,6 +5,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from .common import AvailabilityStatus
 
 
+class PatchNoteProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    development_era: str | None = None
+    owner: str | None = None
+    reviewer: str | None = None
+    final_approval: str | None = None
+    verification: str | None = None
+    source_baseline: str | None = None
+    provenance_baseline: str | None = None
+
+
 class PatchNoteEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -18,6 +30,7 @@ class PatchNoteEntry(BaseModel):
     impact: str
     sources: list[str]
     status: str
+    provenance: PatchNoteProvenance | None = None
 
 
 class PatchNotesResponse(BaseModel):

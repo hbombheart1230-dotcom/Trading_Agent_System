@@ -33,6 +33,8 @@
   .patch-note-metrics > div:nth-last-child(-n+2) { border-bottom: 0; }
   .patch-note-body { grid-template-columns: 1fr; }
   .patch-note-body section:last-child { grid-column: auto; }
+  .patch-note-provenance { grid-column: auto; }
+  .patch-note-provenance dl { grid-template-columns: 1fr; }
   .patch-note-result { width: 100%; margin-left: 0; }
   .app-shell { display: block; }
   .workspace { min-width: 0; }

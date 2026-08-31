@@ -224,6 +224,11 @@
 .patch-note-entry summary p { margin: 0 0 10px; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
 .patch-note-body { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(220px, .8fr); gap: 14px; padding: 15px 16px 17px; border-top: 1px solid var(--line); background: var(--surface-soft); }
 .patch-note-body section:last-child { grid-column: 1 / -1; }
+.patch-note-provenance { grid-column: 1 / -1; padding: 12px; border: 1px solid #b9d5cf; border-radius: 6px; background: #f5faf8; }
+.patch-note-provenance dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; margin: 0; }
+.patch-note-provenance dl > div { min-width: 0; }
+.patch-note-provenance dt { color: var(--ink-muted); font-size: 9px; }
+.patch-note-provenance dd { margin: 3px 0 0; overflow-wrap: anywhere; color: var(--ink); font-size: 10px; font-weight: 650; }
 .patch-note-body h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 11px; }
 .patch-note-body p, .patch-note-body li { color: var(--ink-soft); font-size: 10px; line-height: 1.65; }
 .patch-note-body ul { margin: 0; padding-left: 17px; }

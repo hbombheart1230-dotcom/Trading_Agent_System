@@ -1505,7 +1505,7 @@
     {
       "date": "2026-08-31",
       "version": "Pre-Claude Refactoring Baseline",
-      "title": "개발 이력 및 AI provenance baseline 고정",
+      "title": "Pre-Claude Refactoring Baseline",
       "stage": "Development Governance",
       "types": [
         "CURRENT",
@@ -1530,7 +1530,14 @@
         "docs/development/evidence_index.md",
         "docs/development/change_provenance_template.yaml"
       ],
-      "status": "current"
+      "status": "current",
+      "provenance": {
+        "development_era": "Human + Codex-centered workflow",
+        "final_approval": "Human",
+        "verification": "2701 passed, 1 skipped",
+        "source_baseline": "6aa4e398e2e1c33482cab3dbf2518e7b03c18a10",
+        "provenance_baseline": "c94746b0974e44a80550a7e0af0c20b4101db639"
+      }
     }
   ]
 }

@@ -1,5 +1,15 @@
 import type { Availability } from "../../shared/api/types";
 
+export interface PatchNoteProvenance {
+  development_era?: string | null;
+  owner?: string | null;
+  reviewer?: string | null;
+  final_approval?: string | null;
+  verification?: string | null;
+  source_baseline?: string | null;
+  provenance_baseline?: string | null;
+}
+
 export interface PatchNoteEntry {
   date: string;
   version: string;
@@ -11,6 +21,7 @@ export interface PatchNoteEntry {
   impact: string;
   sources: string[];
   status: string;
+  provenance?: PatchNoteProvenance | null;
 }
 
 export interface PatchNotesResponse {

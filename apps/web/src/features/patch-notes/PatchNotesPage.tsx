@@ -1,10 +1,11 @@
-import { BookOpenText, CalendarDays, Filter, Search } from "lucide-react";
+import { BookOpenText, CalendarDays, Filter, Search, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { useApi } from "../../shared/api/useApi";
 import { DataState } from "../../shared/components/DataState";
 import { PageHeader } from "../../shared/components/PageHeader";
 import { StatusPill } from "../../shared/components/StatusPill";
+import { provenanceRows } from "./provenance";
 import type { PatchNoteEntry, PatchNotesResponse } from "./types";
 
 const ALL = "ALL";
@@ -14,6 +15,7 @@ function includesQuery(entry: PatchNoteEntry, query: string): boolean {
   const text = [
     entry.date, entry.version, entry.title, entry.stage, entry.summary, entry.impact,
     ...entry.types, ...entry.details,
+    ...provenanceRows(entry.provenance).flatMap((row) => [row.label, row.value]),
   ].join(" ").toLocaleLowerCase();
   return text.includes(query.toLocaleLowerCase());
 }
@@ -81,6 +83,19 @@ export function PatchNotesPage() {
                   <div className="tag-list">{entry.types.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>
                 </summary>
                 <div className="patch-note-body">
+                  {entry.provenance && provenanceRows(entry.provenance).length > 0 && (
+                    <section className="patch-note-provenance">
+                      <h3><ShieldCheck size={14} />Development Provenance</h3>
+                      <dl>
+                        {provenanceRows(entry.provenance).map((row) => (
+                          <div key={row.label}>
+                            <dt>{row.label}</dt>
+                            <dd className={row.mono ? "mono" : undefined}>{row.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </section>
+                  )}
                   <section><h3>변경 내용</h3><ul>{entry.details.map((detail) => <li key={detail}>{detail}</li>)}</ul></section>
                   <section className="patch-note-impact"><h3>운영 영향</h3><p>{entry.impact}</p></section>
                   <section><h3><BookOpenText size={14} />근거 문서</h3><ul className="patch-note-sources">{entry.sources.map((source) => <li className="mono" key={source}>{source}</li>)}</ul></section>
