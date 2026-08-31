@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 57,
+  "entry_count": 58,
   "entries": [
     {
       "date": "2026-02-07",
@@ -1499,6 +1499,36 @@
         "apps/api/routers/operations.py",
         "apps/web/src/features/operations/OperationsPage.tsx",
         "docs/web_observability/m7_5_operations_command_center_2026-08-30.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-31",
+      "version": "Pre-Claude Refactoring Baseline",
+      "title": "개발 이력 및 AI provenance baseline 고정",
+      "stage": "Development Governance",
+      "types": [
+        "CURRENT",
+        "ARCHITECTURE",
+        "PROVENANCE",
+        "DOCUMENTATION"
+      ],
+      "summary": "Git, source, tests, plans, and patch notes evidence was indexed to preserve the Human + Codex-centered pre-Claude refactoring baseline without changing trading behavior.",
+      "details": [
+        "The source baseline is fixed at 6aa4e398e2e1c33482cab3dbf2518e7b03c18a10 on 2026-08-31 with verification 2701 passed, 1 skipped.",
+        "Pre-Git M1-M13 chronology and agent attribution are explicitly marked as inferred, uncertain, or unknown rather than presented as repository fact.",
+        "Technical history is separated into Historical Architecture, Target Architecture, and Current AS-IS.",
+        "AI attribution uses VERIFIED, SUPPORTED, UNCERTAIN, and UNKNOWN; the post-2026-04-07 period is described as a Codex-centered workflow without assigning unsupported authorship to individual commits.",
+        "Current architecture mismatches are recorded as known debt or audit findings pending evidence-based disposition; none were fixed in this documentation change.",
+        "No source, runtime, strategy, execution, guard, DTO, or test behavior changed."
+      ],
+      "impact": "Future Claude Code refactoring and Codex cross-review can compare against a self-contained, evidence-indexed baseline while retaining the exact source commit as the code boundary.",
+      "sources": [
+        "docs/development/development_history.md",
+        "docs/development/ai_provenance.md",
+        "docs/development/pre_claude_refactoring_baseline_2026-08-31.md",
+        "docs/development/evidence_index.md",
+        "docs/development/change_provenance_template.yaml"
       ],
       "status": "current"
     }

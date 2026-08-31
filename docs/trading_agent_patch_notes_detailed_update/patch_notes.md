@@ -1191,3 +1191,22 @@ offline research와 실제 runtime 사이의 semantic drift를 줄임.
   the daily allowance.
 - Added an end-to-end mock integration test from candidate through persisted
   fill state.
+
+# 2026-08-31 - Pre-Claude Refactoring Provenance Baseline
+
+- Fixed the pre-Claude refactoring source baseline at
+  `6aa4e398e2e1c33482cab3dbf2518e7b03c18a10`; its recorded verification is
+  `2701 passed, 1 skipped`.
+- Added an evidence-indexed development history while preserving existing
+  historical and patch-note records without reinterpretation or rewriting.
+- Marked pre-Git M1-M13 chronology and attribution as inferred, and applied
+  `VERIFIED`, `SUPPORTED`, `UNCERTAIN`, and `UNKNOWN` provenance levels.
+- Separated Historical Architecture, Target Architecture, and Current AS-IS.
+- Described the period from 2026-04-07 as a supported Codex-centered workflow
+  without attributing individual commits to Codex when direct evidence is
+  absent.
+- Recorded current architecture mismatches only as known debt or audit
+  findings. No source, runtime, strategy, execution, guard, DTO, test, or
+  trading behavior was changed.
+- Added the reusable provenance record template and evidence index under
+  `docs/development/` for future Claude Code work and Codex cross-review.
