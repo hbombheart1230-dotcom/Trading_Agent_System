@@ -281,15 +281,21 @@ def _reader_positions_authoritative(*, mock_mode: bool, execution_mode: str, rea
     return str(execution_mode or "").strip().lower() == "real"
 
 
+_RECENT_BUY_GUARD_CANONICAL_PATH = Path("data/state/execution_recent_buy_guard.json")
+
+
 def _recent_buy_guard_path() -> Path:
-    return Path(
-        str(
-            os.getenv(
-                "EXECUTION_RECENT_BUY_GUARD_PATH",
-                "data/state/execution_recent_buy_guard.json",
-            )
-            or "data/state/execution_recent_buy_guard.json"
-        )
+    raw = os.getenv("EXECUTION_RECENT_BUY_GUARD_PATH", "") or str(_RECENT_BUY_GUARD_CANONICAL_PATH)
+    # Phase 1 Step 5B Safety Fix: this module has its own independent
+    # default-path resolution for the same recent-buy-guard file that
+    # graphs/nodes/execute_from_packet.py writes -- isolate it the same way
+    # (found during Step 5B Safety Fix's pytest production-path audit;
+    # read-only here, but an unisolated default is still a latent risk if
+    # this function is ever extended to write).
+    from libs.core.path_isolation import isolate_canonical_path_for_pytest
+
+    return isolate_canonical_path_for_pytest(
+        raw, canonical_path=_RECENT_BUY_GUARD_CANONICAL_PATH, isolated_name="execution_recent_buy_guard.json"
     )
 
 

@@ -310,7 +310,7 @@ class RealExecutor:
             )
 
         payload = api_resp.payload if isinstance(api_resp.payload, dict) else {}
-        outcome, reference_missing = classify_mutation_response(payload)
+        outcome, reference_missing = classify_mutation_response(payload, status_code=api_resp.status_code)
         return ExecutionResult(
             response=api_resp,
             meta={

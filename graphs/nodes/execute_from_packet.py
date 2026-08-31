@@ -26,6 +26,11 @@ from libs.runtime.decision_trace import append_decision_trace
 from libs.execution.guards.symbol_allowlist import (
     parse_symbol_allowlist as _canonical_parse_symbol_allowlist,
 )
+from libs.execution.guards.broker_mutation import (
+    classify_mutation_response,
+    is_mutation_api_id,
+)
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 
 
 def _import_api_catalog():
@@ -619,6 +624,33 @@ def _should_attempt_upper_limit_cancel(state: Dict[str, Any], execution: Dict[st
     return True, details
 
 
+def _propagate_cancel_unknown_outcome(state: Dict[str, Any], cancel_order: Dict[str, Any], cancel_payload: Dict[str, Any]) -> None:
+    """CANCEL UNKNOWN propagation (Phase 1 Step 5B Safety Fix).
+
+    A CANCEL submitted from a nested recovery helper (upper-limit
+    auto-cancel, unfilled-order recovery) can itself come back UNKNOWN --
+    the cancel request's own transport/response was ambiguous, same as any
+    other mutation. Previously this only ever surfaced as a nested
+    `cancel_ok=false` deep inside state["execution"]["upper_limit_cancel"]/
+    ["unfilled_order_recovery"], with no symbol quarantine and no top-level
+    reconciliation_required -- meaning the next tick could freely retry the
+    same CANCEL, re-enter the position, or otherwise treat the symbol as
+    clear. This makes an UNKNOWN cancel outcome quarantine the symbol and
+    mark the *top-level* execution provenance the same way a top-level
+    UNKNOWN would, regardless of which helper submitted it.
+    """
+    if str(cancel_payload.get("broker_outcome") or "").strip().upper() != "UNKNOWN":
+        return
+    _quarantine_symbol_for_unknown_outcome(
+        state, cancel_order, cancel_payload, reason="cancel_broker_outcome_unknown"
+    )
+    top_execution = state.get("execution")
+    if isinstance(top_execution, dict):
+        top_execution["reconciliation_required"] = True
+        top_execution.setdefault("cancel_broker_outcome", "UNKNOWN")
+        top_execution.setdefault("cancel_quarantine_symbol", _extract_order_symbol(cancel_order))
+
+
 def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor: Any, order: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
     attempt, details = _should_attempt_upper_limit_cancel(state, execution, order)
     result: Dict[str, Any] = {"attempted": bool(attempt), **details}
@@ -650,6 +682,7 @@ def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor
         )
         result["cancel"] = cancel_payload
         result["cancel_ok"] = bool(cancel_payload.get("ok"))
+        _propagate_cancel_unknown_outcome(state, cancel_order, cancel_payload)
         return result
     except Exception as exc:
         result["cancel_ok"] = False
@@ -760,6 +793,7 @@ def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, exe
         )
         result["cancel"] = cancel_payload
         result["cancel_ok"] = bool(cancel_payload.get("ok"))
+        _propagate_cancel_unknown_outcome(state, cancel_order, cancel_payload)
     except Exception as exc:
         result["cancel_ok"] = False
         result["cancel_error"] = str(exc)
@@ -921,7 +955,16 @@ def _recent_buy_guard_enabled(state: Dict[str, Any]) -> bool:
 
 def _recent_buy_guard_path(state: Dict[str, Any]) -> Path:
     raw = str(state.get("recent_buy_guard_path") or "").strip()
-    return Path(raw) if raw else _RECENT_BUY_GUARD_DEFAULT_PATH
+    if raw:
+        return Path(raw)
+    # Phase 1 Step 5B Safety Fix: project-wide pytest isolation, no per-test
+    # fixture required (see _reports_root in libs/runtime/canonical_artifacts.py
+    # for the same pattern).
+    return isolate_canonical_path_for_pytest(
+        _RECENT_BUY_GUARD_DEFAULT_PATH,
+        canonical_path=_RECENT_BUY_GUARD_DEFAULT_PATH,
+        isolated_name="execution_recent_buy_guard.json",
+    )
 
 
 def _recent_sell_guard_enabled(state: Dict[str, Any]) -> bool:
@@ -935,7 +978,13 @@ def _recent_sell_guard_enabled(state: Dict[str, Any]) -> bool:
 
 def _recent_sell_guard_path(state: Dict[str, Any]) -> Path:
     raw = str(state.get("recent_sell_guard_path") or "").strip()
-    return Path(raw) if raw else _RECENT_SELL_GUARD_DEFAULT_PATH
+    if raw:
+        return Path(raw)
+    return isolate_canonical_path_for_pytest(
+        _RECENT_SELL_GUARD_DEFAULT_PATH,
+        canonical_path=_RECENT_SELL_GUARD_DEFAULT_PATH,
+        isolated_name="execution_recent_sell_guard.json",
+    )
 
 
 def _recent_buy_guard_now_epoch(state: Dict[str, Any]) -> int:
@@ -1013,33 +1062,88 @@ def _write_recent_sell_guard(path: Path, data: Dict[str, Any]) -> None:
 # action, not something this Step automates.
 
 
+_UNKNOWN_QUARANTINE_DEFAULT_PATH = Path("data/state/execution_unknown_quarantine.json")
+
+
+class _QuarantineLockTimeout(Exception):
+    pass
+
+
 def _unknown_quarantine_path(state: Dict[str, Any]) -> Path:
-    raw = state.get("unknown_quarantine_guard_path") or os.getenv(
-        "UNKNOWN_QUARANTINE_GUARD_PATH", "data/state/execution_unknown_quarantine.json"
+    raw = state.get("unknown_quarantine_guard_path") or os.getenv("UNKNOWN_QUARANTINE_GUARD_PATH", "")
+    if str(raw or "").strip():
+        return Path(str(raw))
+    # Phase 1 Step 5B Safety Fix: project-wide pytest isolation (same
+    # primitive already used for the canonical event log / reports root),
+    # so no test file has to remember its own isolation fixture.
+    return isolate_canonical_path_for_pytest(
+        _UNKNOWN_QUARANTINE_DEFAULT_PATH,
+        canonical_path=_UNKNOWN_QUARANTINE_DEFAULT_PATH,
+        isolated_name="execution_unknown_quarantine.json",
     )
-    return Path(str(raw))
 
 
 def _read_unknown_quarantine(path: Path) -> Dict[str, Any]:
+    """Read the quarantine store.
+
+    Distinguishes "file does not exist yet" (normal, empty store -- must not
+    fail-closed or the system could never place a first order) from "file
+    exists but could not be safely read" (malformed JSON, wrong shape, I/O
+    error -- must fail-closed, since we cannot determine whether the symbol
+    is actually safe). Callers check the `_read_ok` marker, which is never
+    itself a real symbol key (symbols are 6-digit/alnum codes).
+    """
+    if not path.exists():
+        return {"schema_version": "execution_unknown_quarantine.v1", "symbols": {}, "_read_ok": True}
     try:
-        if not path.exists():
-            return {"schema_version": "execution_unknown_quarantine.v1", "symbols": {}}
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            symbols = data.get("symbols")
-            if not isinstance(symbols, dict):
-                data["symbols"] = {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("symbols"), dict):
+            data = dict(raw)
+            data["_read_ok"] = True
             return data
     except Exception:
         pass
-    return {"schema_version": "execution_unknown_quarantine.v1", "symbols": {}}
+    return {"schema_version": "execution_unknown_quarantine.v1", "symbols": {}, "_read_ok": False}
 
 
 def _write_unknown_quarantine(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    payload = {k: v for k, v in data.items() if k != "_read_ok"}
+    # Unique-per-writer tmp name: even with the lock below serializing
+    # writers, a distinct name avoids any possibility of two writers'
+    # temp files colliding if the lock is ever bypassed elsewhere.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
+
+
+def _acquire_quarantine_lock(path: Path, *, timeout_sec: float = 2.0, poll_sec: float = 0.02) -> Path:
+    """Minimal process-safe mutex: atomic exclusive-create of a lock file.
+
+    Reused for the read-modify-write section of quarantine writes so two
+    concurrent writers can't lose one another's update. Deliberately small
+    (no new storage framework) -- Step 5C's full SQLite lifecycle adapter is
+    the place for a more complete concurrency model.
+    """
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_sec
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return lock_path
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise _QuarantineLockTimeout(f"could not acquire quarantine lock: {lock_path}")
+            time.sleep(poll_sec)
+
+
+def _release_quarantine_lock(lock_path: Path) -> None:
+    try:
+        lock_path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _evaluate_unknown_quarantine_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
@@ -1057,6 +1161,12 @@ def _evaluate_unknown_quarantine_guard(state: Dict[str, Any], order: Dict[str, A
 
     path = _unknown_quarantine_path(state)
     data = _read_unknown_quarantine(path)
+    if not data.get("_read_ok", True):
+        # Cannot determine whether this symbol is actually quarantined ->
+        # fail-closed rather than silently proceeding as if it weren't.
+        details["quarantine_store_unreadable"] = True
+        return False, "quarantine_store_unreadable_fail_closed", details
+
     record = data.get("symbols", {}).get(symbol) if isinstance(data.get("symbols"), dict) else None
     if not isinstance(record, dict) or not record:
         return True, "", details
@@ -1074,26 +1184,46 @@ def _evaluate_unknown_quarantine_guard(state: Dict[str, Any], order: Dict[str, A
     return False, "symbol_quarantined_pending_reconciliation", details
 
 
-def _quarantine_symbol_for_unknown_outcome(state: Dict[str, Any], order: Dict[str, Any], execution: Dict[str, Any]) -> None:
+def _quarantine_symbol_for_unknown_outcome(
+    state: Dict[str, Any], order: Dict[str, Any], execution: Dict[str, Any], *, reason: str = "broker_outcome_unknown"
+) -> bool:
+    """Best-effort persistence. Returns whether the record was (or already
+    is) durably quarantined.
+
+    Deliberately swallows all persistence failures (lock timeout, I/O
+    error, malformed existing file) -- a quarantine *write* failure must
+    never propagate up and be mistaken, by the caller's exception handling,
+    for "the mutation was never sent". The caller is responsible for
+    recording broker_outcome=UNKNOWN / reconciliation_required=True on
+    state["execution"] regardless of whether this persistence succeeds.
+    """
     symbol = _extract_order_symbol(order)
     if not symbol:
-        return
+        return False
     path = _unknown_quarantine_path(state)
-    data = _read_unknown_quarantine(path)
-    symbols = data.get("symbols")
-    if not isinstance(symbols, dict):
-        symbols = {}
+    try:
+        lock_path = _acquire_quarantine_lock(path)
+    except _QuarantineLockTimeout:
+        return False
+    try:
+        data = _read_unknown_quarantine(path)
+        symbols = data.get("symbols") if isinstance(data.get("symbols"), dict) else {}
+        if symbol in symbols:
+            return True  # already quarantined -- don't overwrite an earlier record
+        symbols[symbol] = {
+            "quarantined_at_epoch": _recent_buy_guard_now_epoch(state),
+            "reason": str(reason or "broker_outcome_unknown"),
+            "action": str(order.get("action") or "").strip().upper(),
+            "run_id": str(state.get("run_id") or ""),
+            "exception_type": str(execution.get("exception_type") or ""),
+        }
         data["symbols"] = symbols
-    if symbol in symbols:
-        return  # already quarantined -- don't overwrite an earlier record
-    symbols[symbol] = {
-        "quarantined_at_epoch": _recent_buy_guard_now_epoch(state),
-        "reason": "broker_outcome_unknown",
-        "action": str(order.get("action") or "").strip().upper(),
-        "run_id": str(state.get("run_id") or ""),
-        "exception_type": str(execution.get("exception_type") or ""),
-    }
-    _write_unknown_quarantine(path, data)
+        _write_unknown_quarantine(path, data)
+        return True
+    except Exception:
+        return False
+    finally:
+        _release_quarantine_lock(lock_path)
 
 
 def _position_qty_hint_from_order(order: Dict[str, Any]) -> int:
@@ -1966,13 +2096,30 @@ def _classify_broker_outcome(payload: Dict[str, Any]) -> Tuple[str, str]:
     if str(meta.get("executor") or "").strip().lower() == "mock":
         return "ACCEPTED", "mock_executor_default"
 
-    broker = _broker_code_success(payload.get("broker_code"))
-    if broker is True:
-        return "ACCEPTED", "broker_code"
-    if broker is False:
-        return "REJECTED", "broker_code"
-
-    return "UNKNOWN", "no_business_signal"
+    # Defense-in-depth fallback for payload shapes that didn't go through
+    # RealExecutor's own classification (branch 1 above). Delegates to the
+    # same classify_mutation_response() RealExecutor uses, evaluated against
+    # the *raw* nested response_payload (not the single collapsed
+    # payload["broker_code"] field) so a response carrying multiple,
+    # possibly-conflicting business-code fields is still evaluated for
+    # contradictions here too -- one semantic owner
+    # (libs/execution/guards/broker_mutation.py), not two independently
+    # drifting implementations.
+    response_payload = payload.get("response_payload") if isinstance(payload.get("response_payload"), dict) else {}
+    if not response_payload:
+        # Some callers (older test doubles, legacy call sites) set a
+        # single already-collapsed payload["broker_code"] directly instead
+        # of going through _normalize_execution's own response_payload
+        # extraction. Synthesize a minimal one-field dict so those still
+        # get classified correctly, without losing the multi-field
+        # contradiction-checking benefit for callers that DO provide the
+        # raw nested payload.
+        collapsed_code = payload.get("broker_code")
+        if collapsed_code is not None and str(collapsed_code).strip():
+            response_payload = {"return_code": collapsed_code}
+    status_code = payload.get("status_code")
+    outcome, _ref_missing = classify_mutation_response(response_payload, status_code=status_code)
+    return outcome, "broker_code" if outcome != "UNKNOWN" else "no_business_signal"
 
 
 def _infer_execution_ok(payload: Dict[str, Any]) -> Tuple[bool, str]:
@@ -2138,10 +2285,21 @@ def _prepare_request(order: Dict[str, Any], catalog: Any) -> Any:
                         setattr(req, "headers", {})
                     if getattr(req, "body", None) is None:
                         setattr(req, "body", {})
+                    # Phase 1 Step 5B Safety Fix: defensively guarantee the
+                    # resolved mutation identity (e.g. "kt10000") is on the
+                    # request regardless of what the builder itself set, so
+                    # RealExecutor's is_mutation_api_id() check never
+                    # silently misses a real BUY/SELL/CANCEL.
+                    if not getattr(req, "api_id", None):
+                        setattr(req, "api_id", api_id)
                     return req
 
-                # not ready -> fall back to a safe NOOP request with hint
+                # not ready -> fall back to a safe NOOP request with hint.
+                # api_id is still set (not just embedded in body) so a
+                # missing-params fallback for a mutation still gets
+                # mutation-safe transport treatment.
                 return SimpleNamespace(
+                    api_id=api_id,
                     method="POST",
                     path="/__missing_params__",
                     headers={},
@@ -2151,8 +2309,15 @@ def _prepare_request(order: Dict[str, Any], catalog: Any) -> Any:
         except Exception:
             continue
 
-    # Fallback: minimal request
+    # Fallback: minimal request. Phase 1 Step 5B Safety Fix (CRITICAL gap):
+    # preserve the *original* logical operation identity (e.g. "ORDER_SUBMIT"
+    # or "kt10003") here even though catalog/spec resolution failed for every
+    # candidate -- is_mutation_api_id() recognizes the unresolved
+    # "ORDER_SUBMIT" alias too, so this fallback still gets retry_override=0
+    # / no-replay mutation-safe transport treatment instead of silently
+    # falling back to ordinary (retryable) request handling.
     return SimpleNamespace(
+        api_id=api_id_raw,
         method="POST",
         path="/orders",
         headers={},
@@ -2441,6 +2606,14 @@ def execute_from_packet(state: dict) -> dict:
     allow_result: Any = None
     portfolio_details: Dict[str, Any] = {}
     strategy_policy_summary: Dict[str, Any] = {}
+    # Core phase invariant (Phase 1 Step 5B Safety Fix): before the mutation
+    # endpoint is ever contacted, NOT_SENT is a valid classification for any
+    # exception. Once submission_dispatched flips True, NOT_SENT is no
+    # longer possible -- only ACCEPTED/REJECTED/UNKNOWN. Anything that goes
+    # wrong afterward (quarantine persistence, artifact/event write,
+    # parsing, or any other downstream exception) must not be allowed to
+    # overwrite an already-determined broker outcome with NOT_SENT.
+    submission_dispatched = False
 
     def _quote_snapshot_for_order(order_obj: Dict[str, Any]) -> Dict[str, Any]:
         symbol = _extract_order_symbol(order_obj)
@@ -3064,6 +3237,13 @@ def execute_from_packet(state: dict) -> dict:
 
         # Prepare request and execute
         req = _prepare_request(order, catalog)
+        # From this point on, any exception raised out of executor.execute()
+        # that is NOT the well-defined pre-submission marker
+        # (ExecutionDisabledError, raised only by preflight/token-acquisition
+        # failure per RealExecutor's own contract) must be treated as
+        # UNKNOWN, never NOT_SENT -- see the phase-invariant handling in the
+        # outer except block below.
+        submission_dispatched = True
         execution_result = executor.execute(req)
 
         state["execution"] = _normalize_execution(
@@ -3141,25 +3321,71 @@ def execute_from_packet(state: dict) -> dict:
         return state
 
     except Exception as e:
-        # Phase 1 Step 5B: RealExecutor's mutation path never lets a
-        # post-submission exception escape uncaught (see
-        # libs/execution/executors/real_executor.py::_execute_mutation) -- it
-        # converts those into a returned UNKNOWN-classified ExecutionResult
-        # instead. So anything that reaches this handler happened strictly
-        # before any broker mutation HTTP call was dispatched (preflight
-        # failure, token acquisition failure, a guard-evaluation bug, catalog
-        # load failure, etc.) -- definitionally NOT_SENT, never UNKNOWN.
+        # Core phase invariant (Phase 1 Step 5B Safety Fix): before the
+        # mutation endpoint is contacted, NOT_SENT is a valid classification.
+        # Once submission begins, NOT_SENT is never possible again -- only
+        # ACCEPTED/REJECTED/UNKNOWN.
+        from libs.execution.executors.base import ExecutionDisabledError as _ExecutionDisabledError
+
+        existing_execution = state.get("execution") if isinstance(state.get("execution"), dict) else {}
+        existing_outcome = str(existing_execution.get("broker_outcome") or "").strip().upper()
+
+        if existing_outcome in ("ACCEPTED", "REJECTED", "UNKNOWN"):
+            # state["execution"] already holds a broker outcome determined
+            # by the normal success path (_normalize_execution already ran)
+            # -- this exception happened *after* that, in downstream
+            # provenance work (quarantine persistence, artifact/event write,
+            # etc). A persistence/logging failure must never be mistaken for
+            # "the mutation was never sent" -- preserve the outcome exactly
+            # as already recorded, just annotate that something failed
+            # afterward.
+            existing_execution.setdefault("post_submission_error", str(e))
+            existing_execution.setdefault("post_submission_error_type", type(e).__name__)
+            try:
+                logger.log(
+                    run_id=run_id,
+                    stage="execute_from_packet",
+                    event="post_submission_error",
+                    payload={"error": str(e), "broker_outcome": existing_outcome},
+                )
+            except Exception:
+                pass
+            raise
+
+        if isinstance(e, _ExecutionDisabledError):
+            # RealExecutor's own contract: ExecutionDisabledError is raised
+            # only for preflight failure or token-acquisition failure that
+            # happens strictly before the mutation HTTP call -- definitely
+            # NOT_SENT regardless of submission_dispatched.
+            broker_outcome = "NOT_SENT"
+        elif submission_dispatched:
+            # We were about to (or did) call executor.execute() for the
+            # mutation and got some *other* exception type. RealExecutor's
+            # mutation path is designed to never let this happen (it
+            # converts post-submission problems into a returned
+            # UNKNOWN-classified ExecutionResult instead of raising) -- but
+            # for any other injected executor implementation, or a genuinely
+            # unexpected bug, do not assume NOT_SENT just because we don't
+            # have positive proof otherwise. Conservative/fail-closed: UNKNOWN.
+            broker_outcome = "UNKNOWN"
+        else:
+            # Never reached the point of calling executor.execute() at all
+            # (guard-evaluation bug, catalog load failure, etc).
+            broker_outcome = "NOT_SENT"
+
         state["execution"] = {
             "allowed": False,
             "ok": False,
             "reason": str(e),
-            "broker_outcome": "NOT_SENT",
-            "submission_phase": "not_dispatched",
-            "submission_attempts": 0,
+            "broker_outcome": broker_outcome,
+            "submission_phase": "mutation_http_call" if submission_dispatched else "not_dispatched",
+            "submission_attempts": 1 if (submission_dispatched and broker_outcome != "NOT_SENT") else 0,
             "exception_type": type(e).__name__,
-            "reconciliation_required": False,
+            "reconciliation_required": broker_outcome == "UNKNOWN",
             "broker_reference_missing": False,
         }
+        if broker_outcome == "UNKNOWN":
+            _quarantine_symbol_for_unknown_outcome(state, order, state["execution"])
         if strategy_policy_summary:
             state["execution"]["strategy_policy_summary"] = dict(strategy_policy_summary)
         _append_execution_trace_entries(

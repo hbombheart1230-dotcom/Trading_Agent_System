@@ -322,7 +322,13 @@ def test_classify_broker_outcome_execution_mode_mock_with_non_mock_executor_uses
     returns a real Kiwoom-shaped rejection must still be classified as
     REJECTED, not silently overridden to ACCEPTED."""
     outcome, source = _classify_broker_outcome(
-        {"mode": "mock", "meta": {"executor": "real"}, "broker_code": "20"}
+        {
+            "mode": "mock",
+            "meta": {"executor": "real"},
+            "broker_code": "20",
+            "status_code": 200,
+            "response_payload": {"return_code": "20", "return_msg": "rejected"},
+        }
     )
     assert outcome == "REJECTED"
 

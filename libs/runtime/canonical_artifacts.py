@@ -18,6 +18,7 @@ from libs.contracts.agent_outputs import (
     validate_artifact,
 )
 from libs.runtime.llm_report_classifier import find_llm_run_dir, organize_llm_run
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 
 
 KST = timezone(timedelta(hours=9))
@@ -29,7 +30,15 @@ def _reports_root(state: Dict[str, Any] | None = None) -> Path:
         if raw:
             return Path(raw)
     raw_env = str(os.getenv("REPORTS_ROOT", "reports")).strip() or "reports"
-    return Path(raw_env)
+    # Phase 1 Step 5B Safety Fix: project-wide pytest isolation. If a test
+    # doesn't explicitly override REPORTS_ROOT/state["reports_root"], this
+    # keeps canonical artifact writes out of the real reports/ tree without
+    # requiring every test file to carry its own isolation fixture (a
+    # missing per-file fixture is exactly how real reports/canonical/
+    # entries got contaminated by test runs before this fix).
+    return isolate_canonical_path_for_pytest(
+        raw_env, canonical_path="reports", isolated_name="reports"
+    )
 
 
 def _iso_day(value: Any) -> str:
