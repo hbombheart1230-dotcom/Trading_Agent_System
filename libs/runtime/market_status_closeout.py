@@ -11,6 +11,7 @@ from libs.runtime.kiwoom_market_status import (
     SESSION_OPEN_CODES,
     load_market_status,
 )
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 
 KST = timezone(timedelta(hours=9))
 
@@ -72,7 +73,8 @@ def apply_market_status_closeout_events(state: Dict[str, Any]) -> Dict[str, Any]
                 continue
             trigger = f"kiwoom_market_status_{code}"
             result = run_closeout_maintenance(day=day, trigger=trigger)
-            write_closeout_maintenance_report(result, reports_root=Path("reports"))
+            reports_root = isolate_canonical_path_for_pytest("reports", canonical_path="reports", isolated_name="reports")
+            write_closeout_maintenance_report(result, reports_root=reports_root)
             persisted["last_market_status_closeout_result"] = {
                 "event_id": event_id,
                 "code": code,

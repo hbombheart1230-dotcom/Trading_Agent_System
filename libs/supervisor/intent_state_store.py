@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
+
+_DEFAULT_INTENT_STATE_DB_PATH = "data/state/intent_state.db"
+
 
 INTENT_STATE_PENDING = "pending_approval"
 INTENT_STATE_APPROVED = "approved"
@@ -104,8 +108,16 @@ class IntentStateMachine:
 class SQLiteIntentStateStore:
     """SQLite-first intent state/journal store (M24-1 scaffold)."""
 
-    def __init__(self, path: str = "data/state/intent_state.db"):
-        self.path = Path(path)
+    def __init__(self, path: str = _DEFAULT_INTENT_STATE_DB_PATH):
+        # Call-time isolation check (not a bare default-parameter value):
+        # default expressions are evaluated once at module import, before
+        # PYTEST_CURRENT_TEST is set, so isolate_canonical_path_for_pytest
+        # must run here to see the correct running-under-pytest state.
+        self.path = isolate_canonical_path_for_pytest(
+            path,
+            canonical_path=_DEFAULT_INTENT_STATE_DB_PATH,
+            isolated_name="intent_state.db",
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 

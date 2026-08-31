@@ -1,5 +1,8 @@
+import hashlib
+import os
 import sys
 from pathlib import Path
+from typing import Dict, Tuple
 
 import pytest
 
@@ -8,70 +11,45 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-# --- Production-path write detector (Phase 1 Step 5B Safety Fix) ------------
+# --- Production-path write prevention (Phase 1 P0: pytest isolation) --------
 #
-# Primary protection is prevention: libs/runtime/canonical_artifacts.py's
-# _reports_root(), and graphs/nodes/execute_from_packet.py's
-# _unknown_quarantine_path()/_recent_buy_guard_path()/_recent_sell_guard_path(),
-# now all route through libs/core/path_isolation.py::isolate_canonical_path_for_pytest,
-# which redirects the *default* production path to a per-pid temp directory
-# whenever running under pytest -- automatically, for every test file,
-# without any test needing its own fixture. That is what actually stops the
-# writes.
+# libs/runtime/canonical_artifacts.py::_reports_root() and the guard-path
+# helpers in graphs/nodes/execute_from_packet.py already redirect their
+# *default* (unset-env) production path via
+# libs/core/path_isolation.py::isolate_canonical_path_for_pytest. That
+# primitive only redirects when the resolved candidate is exactly equal to
+# the canonical default -- by design, an *explicit* non-canonical override
+# (e.g. a test's own tmp_path) passes through untouched.
 #
-# This is the backstop: a session-wide (not per-test, to keep overhead low
-# across thousands of tests) file-count snapshot of the real reports/ and
-# data/ trees, compared at session end. It cannot pinpoint which test wrote
-# something, but it reliably turns "isolation silently broken somewhere"
-# into a hard, visible failure instead of quietly polluting production
-# artifacts -- which is what happened before this Step (see the completion
-# report for the incident this was written in response to).
-_PRODUCTION_WRITE_SURFACES = ("reports", "data")
-
-
-def _count_production_files() -> dict:
-    counts: dict = {}
-    for name in _PRODUCTION_WRITE_SURFACES:
-        base = ROOT / name
-        if not base.exists():
-            counts[name] = 0
-            continue
-        try:
-            counts[name] = sum(1 for p in base.rglob("*") if p.is_file())
-        except OSError:
-            counts[name] = -1  # unreadable -> don't claim a count, but don't crash collection either
-    return counts
-
-
-_production_snapshot_before: dict = {}
-
-
-def pytest_sessionstart(session):  # noqa: D401 - pytest hook
-    global _production_snapshot_before
-    _production_snapshot_before = _count_production_files()
-
-
-def pytest_sessionfinish(session, exitstatus):  # noqa: D401 - pytest hook
-    after = _count_production_files()
-    diffs = []
-    for name in _PRODUCTION_WRITE_SURFACES:
-        before_count = _production_snapshot_before.get(name, 0)
-        after_count = after.get(name, 0)
-        if before_count != after_count:
-            diffs.append(f"{name}/: {before_count} -> {after_count} files")
-    if diffs:
-        sys.stderr.write(
-            "\n" + "=" * 78 + "\n"
-            "PRODUCTION PATH WRITE DETECTED DURING TEST SESSION\n"
-            + "\n".join(f"  {d}" for d in diffs) + "\n"
-            "One or more tests wrote under reports/ or data/ despite the\n"
-            "project-wide pytest isolation in libs/core/path_isolation.py.\n"
-            "Do not delete/clean these files automatically -- they may be\n"
-            "real production artifacts. Investigate which test(s) ran and\n"
-            "fix their isolation before trusting this test run's results.\n"
-            + "=" * 78 + "\n"
-        )
-        session.exitstatus = 1
+# Root cause of the confirmed b.jsonl leak: application code sets
+# EVENT_LOG_PATH / STATE_STORE_PATH directly on os.environ (e.g.
+# libs/runtime/offhours_validation_runtime.py::apply_runtime_paths does
+# os.environ["EVENT_LOG_PATH"] = ..., not monkeypatch.setenv, because that
+# function's real job is to permanently repoint a *live* off-hours process's
+# env -- it is not test-aware and should not become test-aware). Once such a
+# raw write lands a real, non-canonical value like "b.jsonl" in os.environ,
+# it survives past that one test's teardown (monkeypatch never tracked it,
+# so it has nothing to undo) and leaks into every later test in the same
+# pytest process that reads that env var without setting its own override.
+#
+# A per-test full os.environ snapshot/restore closes this leak class
+# generically, for any current or future raw os.environ write, without
+# forcing a non-default value onto tests that intentionally exercise
+# "REPORTS_ROOT/EVENT_LOG_PATH left unset" behavior (several tests --
+# e.g. tests/test_run_mock_exam_day.py -- assert the *canonical* resolved
+# path as their expected value; injecting an isolated override
+# unconditionally for every test broke those). Restoring to "whatever this
+# test's environment was at its own setup time" preserves that class of
+# test while still guaranteeing no raw write can outlive the test that made
+# it.
+@pytest.fixture(autouse=True)
+def _restore_environ_after_each_test():
+    snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(snapshot)
 
 
 @pytest.fixture(autouse=True)
@@ -87,3 +65,131 @@ def _isolate_unknown_quarantine_guard(monkeypatch, tmp_path):
     symbol. Global + autouse so no test file has to remember to opt in.
     """
     monkeypatch.setenv("UNKNOWN_QUARANTINE_GUARD_PATH", str(tmp_path / "unknown_quarantine.json"))
+
+
+# --- Production-path write detector (Phase 1 P0: manifest-based) ------------
+#
+# The prior detector only compared file *counts* under reports/ and data/ at
+# session start vs. end. That misses: content modification of an existing
+# file (count unchanged), a same-count swap (one file deleted, a different
+# one created), and root-level files outside reports/+data/ entirely (e.g.
+# b.jsonl lives at the project root). This replaces it with a manifest of
+# (relative_path, size, mtime_ns) for every file under the watched roots,
+# diffed at session end for create/delete/modify.
+#
+# Full content hashing of the *entire* baseline is not attempted: the real
+# reports/ + data/ trees are ~470k files / ~90GB in this project, and hashing
+# that twice (before/after) on every pytest invocation would make every test
+# run infeasibly slow for marginal benefit (size+mtime_ns already reliably
+# detects any write -- a write that reproduces the exact prior size and
+# mtime_ns is not something an accidental leak or a normal writer produces).
+# content_hash is therefore computed lazily, only for entries the
+# size/mtime_ns diff already flagged as new or changed, purely to make the
+# failure report more useful (not to widen detection coverage).
+_PRODUCTION_WATCH_ROOTS = ("reports", "data")
+
+# Explicit exclusions for paths that are expected to churn independent of
+# any test (e.g. this repo has a concurrent external process writing to the
+# live runtime tree during market hours -- see completion report). Kept
+# empty by default; add glob-style relative prefixes here if a specific path
+# is confirmed to be legitimate non-test churn.
+_PRODUCTION_WATCH_EXCLUDE_PREFIXES: Tuple[str, ...] = ()
+
+
+def _is_excluded(rel_path: str) -> bool:
+    return any(rel_path.startswith(prefix) for prefix in _PRODUCTION_WATCH_EXCLUDE_PREFIXES)
+
+
+def _build_manifest() -> Dict[str, Tuple[int, int]]:
+    """Map relative_path -> (size, mtime_ns) for every file under the watched roots."""
+    manifest: Dict[str, Tuple[int, int]] = {}
+    for root_name in _PRODUCTION_WATCH_ROOTS:
+        base = ROOT / root_name
+        if not base.exists():
+            continue
+        stack = [base]
+        while stack:
+            current = stack.pop()
+            try:
+                entries = list(os.scandir(current))
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    rel = str(Path(entry.path).relative_to(ROOT)).replace("\\", "/")
+                    if _is_excluded(rel):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                    manifest[rel] = (st.st_size, st.st_mtime_ns)
+                except OSError:
+                    continue
+    return manifest
+
+
+def _content_hash(rel_path: str) -> str:
+    path = ROOT / rel_path
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError as exc:
+        return f"<unreadable: {exc}>"
+
+
+_production_manifest_before: Dict[str, Tuple[int, int]] = {}
+
+
+def pytest_sessionstart(session):  # noqa: D401 - pytest hook
+    global _production_manifest_before
+    _production_manifest_before = _build_manifest()
+
+
+def pytest_sessionfinish(session, exitstatus):  # noqa: D401 - pytest hook
+    after = _build_manifest()
+    before = _production_manifest_before
+
+    created = sorted(set(after) - set(before))
+    deleted = sorted(set(before) - set(after))
+    modified = sorted(
+        rel for rel in (set(after) & set(before)) if after[rel] != before[rel]
+    )
+
+    if not created and not deleted and not modified:
+        return
+
+    lines = []
+    for rel in created:
+        size, mtime_ns = after[rel]
+        lines.append(f"  CREATED  {rel}  size={size} mtime_ns={mtime_ns} sha256={_content_hash(rel)}")
+    for rel in deleted:
+        size, mtime_ns = before[rel]
+        lines.append(f"  DELETED  {rel}  (was size={size} mtime_ns={mtime_ns})")
+    for rel in modified:
+        before_size, before_mtime = before[rel]
+        after_size, after_mtime = after[rel]
+        lines.append(
+            f"  MODIFIED {rel}  size={before_size}->{after_size} "
+            f"mtime_ns={before_mtime}->{after_mtime} sha256_after={_content_hash(rel)}"
+        )
+
+    sys.stderr.write(
+        "\n" + "=" * 78 + "\n"
+        "PRODUCTION PATH WRITE DETECTED DURING TEST SESSION\n"
+        + "\n".join(lines) + "\n"
+        "One or more tests wrote under reports/ or data/ despite the\n"
+        "project-wide pytest isolation in conftest.py / libs/core/path_isolation.py.\n"
+        "Do not delete/clean these files automatically -- they may be\n"
+        "real production artifacts (this repo also has a concurrent external\n"
+        "process writing to the live runtime tree; check timestamps/paths\n"
+        "before assuming a test caused this). Investigate which test(s) ran\n"
+        "and fix their isolation before trusting this test run's results.\n"
+        + "=" * 78 + "\n"
+    )
+    session.exitstatus = 1

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from libs.core.evidence_identity import stable_evidence_id
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 from libs.ai.strategist_config import (
     strategist_llm_requested,
     strategist_llm_strict,
@@ -292,7 +293,7 @@ def _load_strategy_memory_advisory(state: Dict[str, Any], policy: Dict[str, Any]
         else os.getenv("STRATEGY_PERFORMANCE_AUTO_BUILD", "false")
     )
     auto_build = _is_trueish(auto_build_raw)
-    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    reports_root = isolate_canonical_path_for_pytest(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports", canonical_path="reports", isolated_name="reports")
     day = str(
         policy.get("strategy_performance_day")
         or state.get("day")
@@ -2379,7 +2380,7 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
         if isinstance(src, dict) and src:
             return dict(src)
 
-        reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+        reports_root = isolate_canonical_path_for_pytest(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports", canonical_path="reports", isolated_name="reports")
         day = str(policy.get("reporter_feedback_day") or state.get("day") or _resolve_state_day(state)).strip()
         try:
             packet = build_strategist_feedback_packet(
@@ -3099,7 +3100,7 @@ def _compact_read_model_facts_for_llm(facts: Any) -> Dict[str, Any]:
 
 def _load_deterministic_read_models(state: Dict[str, Any], candidates: List[str]) -> Dict[str, Any]:
     """Phase 6-2: Gather strictly deterministic read models for Strategist context."""
-    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    reports_root = isolate_canonical_path_for_pytest(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports", canonical_path="reports", isolated_name="reports")
     trades_root = reports_root / "trades"
     
     recent_trades = []
@@ -7576,7 +7577,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         recent_strategy_feedback.get("suggested_report_focus"),
         limit=8,
     )
-    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    reports_root = isolate_canonical_path_for_pytest(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports", canonical_path="reports", isolated_name="reports")
     read_model_facts = _load_deterministic_read_models(state, candidate_symbols)
     read_model_facts_summary = summarize_read_model_facts(read_model_facts)
     

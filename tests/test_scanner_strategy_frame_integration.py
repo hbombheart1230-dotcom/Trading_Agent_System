@@ -317,8 +317,15 @@ def test_scanner_output_records_commander_context_consumption():
     assert (selection_reason.get("tactic_suitability") or {}).get("schema_version") == "tactic_suitability.v1"
 
 
-def test_scanner_applies_symbol_prior_deterministically():
+def test_scanner_applies_symbol_prior_deterministically(tmp_path):
+    # _load_symbol_priors short-circuits to {} (skipping build_symbol_read_model
+    # entirely, mocked or not) whenever reports_root/trades doesn't exist --
+    # so under pytest isolation (reports_root no longer accidentally resolves
+    # to the real, populated project reports/ tree) this test must create its
+    # own trades/ dir for the mock below to actually get exercised.
+    (tmp_path / "trades").mkdir(parents=True, exist_ok=True)
     state = {
+        "reports_root": str(tmp_path),
         "candidates": [
             {"symbol": "005930", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
             {"symbol": "000660", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},

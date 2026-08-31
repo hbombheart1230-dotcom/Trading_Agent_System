@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from libs.core.symbols import normalize_symbol
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 
 
 SCHEMA_VERSION = "stage3_horizon_lineage.v1"
@@ -61,7 +62,8 @@ def _artifact_path(state: Mapping[str, Any]) -> Path | None:
     run_id = str(state.get("run_id") or "").strip()
     if not run_id:
         return None
-    reports_root = Path(str(state.get("reports_root") or "reports").strip() or "reports")
+    raw = str(state.get("reports_root") or "reports").strip() or "reports"
+    reports_root = isolate_canonical_path_for_pytest(raw, canonical_path="reports", isolated_name="reports")
     return reports_root / "canonical" / _day(state) / run_id / "stage3_horizon_lineage.json"
 
 

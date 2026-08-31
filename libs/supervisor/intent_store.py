@@ -6,6 +6,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
+
+_DEFAULT_INTENT_STORE_PATH = "data/logs/intents.jsonl"
+
 
 class IntentStore:
     """Very small persistence for supervisor intents.
@@ -14,8 +18,14 @@ class IntentStore:
       {"ts": 1234567890, "intent_id": "...", "intent": {...}}
     """
 
-    def __init__(self, path: str = "data/logs/intents.jsonl"):
-        self.path = Path(path)
+    def __init__(self, path: str = _DEFAULT_INTENT_STORE_PATH):
+        # Call-time isolation check -- see intent_state_store.py for why this
+        # cannot be baked into the default parameter expression itself.
+        self.path = isolate_canonical_path_for_pytest(
+            path,
+            canonical_path=_DEFAULT_INTENT_STORE_PATH,
+            isolated_name="intents.jsonl",
+        )
 
     @staticmethod
     def _ts_iso_utc(ts_epoch: int) -> str:

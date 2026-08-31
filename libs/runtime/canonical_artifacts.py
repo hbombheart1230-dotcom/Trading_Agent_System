@@ -25,10 +25,21 @@ KST = timezone(timedelta(hours=9))
 
 
 def _reports_root(state: Dict[str, Any] | None = None) -> Path:
+    # Phase 1 P0: state["reports_root"] must go through the same isolation
+    # check as the env fallback below. This used to return Path(raw)
+    # immediately whenever state carried *any* reports_root value -- but a
+    # test that explicitly sets state["reports_root"] = "reports" (the
+    # literal canonical default, just re-stated rather than left unset) is
+    # exactly the case isolate_canonical_path_for_pytest exists to catch,
+    # and skipping it here was a confirmed write into the real
+    # reports/canonical/ and reports/llm/ trees during pytest (see
+    # completion report: the "strategist-llm-test" run_id leak).
     if isinstance(state, dict):
         raw = str(state.get("reports_root") or "").strip()
         if raw:
-            return Path(raw)
+            return isolate_canonical_path_for_pytest(
+                raw, canonical_path="reports", isolated_name="reports"
+            )
     raw_env = str(os.getenv("REPORTS_ROOT", "reports")).strip() or "reports"
     # Phase 1 Step 5B Safety Fix: project-wide pytest isolation. If a test
     # doesn't explicitly override REPORTS_ROOT/state["reports_root"], this

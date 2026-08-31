@@ -25,6 +25,7 @@ from graphs.nodes.skill_contracts import (
     norm_symbol,
 )
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 from libs.runtime.asset_universe_policy import apply_asset_universe_filter
 from libs.runtime.canonical_artifacts import write_scanner_artifact
 from libs.runtime.commander_memory_application_trace import build_scanner_commander_memory_application_trace
@@ -190,7 +191,7 @@ def _resolve_scanner_repeat_guard_policy(policy: Dict[str, Any]) -> Dict[str, An
 
 def _resolve_reports_root(state: Dict[str, Any]) -> Path:
     raw = str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports"
-    return Path(raw)
+    return isolate_canonical_path_for_pytest(raw, canonical_path="reports", isolated_name="reports")
 
 
 def _load_symbol_priors(state: Dict[str, Any], candidates: List[Any]) -> Dict[str, Dict[str, Any]]:

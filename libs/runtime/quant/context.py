@@ -7,6 +7,7 @@ from typing import Any, Dict
 from libs.runtime.quant.factors import build_factor_snapshot_from_candidate
 from libs.runtime.quant.memory import load_quant_memory_packet
 from libs.runtime.quant.scorecard import build_quant_scorecard, compact_scorecard_for_llm
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 
 
 def _text(value: Any) -> str:
@@ -159,7 +160,9 @@ def build_strategist_quant_context(
     src = dict(payload or {})
     day = _resolve_day(src)
     explicit_reports_root = bool(_text(src.get("reports_root")))
-    reports_root = Path(_text(src.get("reports_root")) or "reports")
+    reports_root = isolate_canonical_path_for_pytest(
+        _text(src.get("reports_root")) or "reports", canonical_path="reports", isolated_name="reports"
+    )
     period_key = _text(src.get("quant_period_key") or src.get("weekly_period_key")) or _weekly_period_key(day)
     period_type = _text(src.get("quant_period_type")) or "weekly"
     commander_refresh_context = _mapping(src.get("commander_refresh_context"))
