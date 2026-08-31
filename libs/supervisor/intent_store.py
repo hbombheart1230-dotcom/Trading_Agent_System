@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from libs.core.path_isolation import isolate_canonical_path_for_pytest
+from libs.core.path_isolation import resolve_runtime_write_path
 
 _DEFAULT_INTENT_STORE_PATH = "data/logs/intents.jsonl"
 
@@ -21,11 +21,10 @@ class IntentStore:
     def __init__(self, path: str = _DEFAULT_INTENT_STORE_PATH):
         # Call-time isolation check -- see intent_state_store.py for why this
         # cannot be baked into the default parameter expression itself.
-        self.path = isolate_canonical_path_for_pytest(
-            path,
-            canonical_path=_DEFAULT_INTENT_STORE_PATH,
-            isolated_name="intents.jsonl",
-        )
+        # resolve_runtime_write_path (not isolate_canonical_path_for_pytest's
+        # exact-literal match) so any repository-relative path is isolated
+        # under pytest, not just the exact canonical default.
+        self.path = resolve_runtime_write_path(path)
 
     @staticmethod
     def _ts_iso_utc(ts_epoch: int) -> str:

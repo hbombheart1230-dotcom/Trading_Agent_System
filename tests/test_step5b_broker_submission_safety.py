@@ -21,11 +21,36 @@ from libs.core.http_client import HttpClient, HttpClientError
 from libs.execution.executors.base import ExecutionDisabledError
 from libs.execution.executors.real_executor import RealExecutor
 from libs.execution.guards.broker_mutation import classify_mutation_response, is_mutation_api_id
+from libs.kiwoom.kiwoom_token_client import EnsureTokenResult
 from graphs.nodes.execute_from_packet import (
     _classify_broker_outcome,
     _evaluate_unknown_quarantine_guard,
     execute_from_packet,
 )
+
+
+class _FakeTokenClient:
+    """Deterministic stand-in for KiwoomTokenClient (Phase 1 P0 corrective
+    commit, item 5). These tests exercise mutation *transport* safety --
+    what happens to the actual order-submission HTTP call -- not real
+    Kiwoom token acquisition. Before this fixture, RealExecutor's real
+    KiwoomTokenClient made these tests implicitly depend on a valid,
+    non-expired token happening to already be cached at the production
+    KIWOOM_TOKEN_CACHE_PATH default (a PRE_EXISTING gap, confirmed via
+    git-stash A/B comparison against 981acd1 to predate any P0 work): with
+    no such cache hit, ensure_token() would attempt a real HTTP token
+    refresh through the *same* _RecordingHttp double these tests use to
+    simulate a mutation-submission failure, so the token step failed first
+    instead of the order-submission step under test. This fake removes any
+    dependency on production credentials/cache/network entirely."""
+
+    def ensure_token(self, *, dry_run: bool = False, force_refresh: bool = False) -> EnsureTokenResult:
+        return EnsureTokenResult(
+            action="cache_hit",
+            token="test-fixture-token",
+            expires_at_epoch=9_999_999_999,
+            reason="deterministic test fixture",
+        )
 
 
 class _RecordingHttp:
@@ -60,7 +85,9 @@ def _mutation_req(*, api_id="kt10000", symbol="005930", qty=10, price=1000) -> P
 
 def _make_executor(http, *, execution_enabled="true"):
     os.environ["EXECUTION_ENABLED"] = execution_enabled
-    return RealExecutor(http=http)
+    ex = RealExecutor(http=http)
+    ex.tokens = _FakeTokenClient()
+    return ex
 
 
 # --- 1. Mutation registry -----------------------------------------------------

@@ -26,6 +26,7 @@ from libs.execution.guards.broker_mutation import (
     is_mutation_api_id,
     is_mutation_request,
 )
+from libs.kiwoom.kiwoom_token_client import EnsureTokenResult
 from graphs.nodes import execute_from_packet as efp
 from graphs.nodes.execute_from_packet import (
     _evaluate_unknown_quarantine_guard,
@@ -68,9 +69,26 @@ def _mutation_req(*, api_id="kt10000", symbol="005930") -> PreparedRequest:
     return PreparedRequest(api_id=api_id, method="POST", path="/api/dostk/ordr", headers={}, query={}, body={"stk_cd": symbol, "ord_qty": "10", "ord_uv": "1000"})
 
 
+class _FakeTokenClient:
+    """Deterministic stand-in for KiwoomTokenClient (Phase 1 P0 corrective
+    commit, item 5) -- see test_step5b_broker_submission_safety.py's copy
+    of this class for the full rationale (PRE_EXISTING_TEST_ENV_DEPENDENCY
+    on a real cached Kiwoom token)."""
+
+    def ensure_token(self, *, dry_run: bool = False, force_refresh: bool = False) -> EnsureTokenResult:
+        return EnsureTokenResult(
+            action="cache_hit",
+            token="test-fixture-token",
+            expires_at_epoch=9_999_999_999,
+            reason="deterministic test fixture",
+        )
+
+
 def _make_executor(http, *, execution_enabled="true"):
     os.environ["EXECUTION_ENABLED"] = execution_enabled
-    return RealExecutor(http=http)
+    ex = RealExecutor(http=http)
+    ex.tokens = _FakeTokenClient()
+    return ex
 
 
 def _api_catalog_path(tmp_path, extra_line: str = "") -> str:

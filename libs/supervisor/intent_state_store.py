@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from libs.core.path_isolation import isolate_canonical_path_for_pytest
+from libs.core.path_isolation import resolve_runtime_write_path
 
 _DEFAULT_INTENT_STATE_DB_PATH = "data/state/intent_state.db"
 
@@ -111,13 +111,14 @@ class SQLiteIntentStateStore:
     def __init__(self, path: str = _DEFAULT_INTENT_STATE_DB_PATH):
         # Call-time isolation check (not a bare default-parameter value):
         # default expressions are evaluated once at module import, before
-        # PYTEST_CURRENT_TEST is set, so isolate_canonical_path_for_pytest
-        # must run here to see the correct running-under-pytest state.
-        self.path = isolate_canonical_path_for_pytest(
-            path,
-            canonical_path=_DEFAULT_INTENT_STATE_DB_PATH,
-            isolated_name="intent_state.db",
-        )
+        # PYTEST_CURRENT_TEST is set, so this must run here to see the
+        # correct running-under-pytest state. resolve_runtime_write_path
+        # (not isolate_canonical_path_for_pytest's exact-literal match)
+        # so any repository-relative path -- not just the exact canonical
+        # default -- is isolated under pytest, e.g.
+        # SQLiteIntentStateStore("data/custom.db") or
+        # SQLiteIntentStateStore("custom.db").
+        self.path = resolve_runtime_write_path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 

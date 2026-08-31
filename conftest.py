@@ -1,6 +1,8 @@
 import hashlib
 import os
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -9,6 +11,33 @@ import pytest
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from libs.core.path_isolation import SESSION_MARKER_ENV, SESSION_ROOT_ENV  # noqa: E402
+
+
+# --- Explicit pytest session marker (Phase 1 P0 corrective commit) ----------
+#
+# libs/core/path_isolation.py::running_under_pytest() previously depended
+# solely on PYTEST_CURRENT_TEST, which pytest only sets during a specific
+# test's own setup/call/teardown phases -- it is unset during collection and
+# during session-scoped fixture setup, so isolation could silently not
+# apply to writes that happen in either of those windows. Set once here,
+# for the whole session, before collection begins.
+#
+# This also fixes subprocess isolation: a test that spawns a child process
+# via subprocess.run(...) without overriding env= inherits the *current*
+# os.environ, including these two vars once set here -- so the child's own
+# resolve_runtime_write_path() calls land in the exact same isolated root
+# as the parent, rather than computing a different one from its own PID.
+if not os.environ.get(SESSION_MARKER_ENV):
+    os.environ[SESSION_MARKER_ENV] = "1"
+if not os.environ.get(SESSION_ROOT_ENV):
+    os.environ[SESSION_ROOT_ENV] = str(
+        Path(tempfile.gettempdir())
+        / "trading_agent_system_pytest"
+        / f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
+        / "runtime_write_root"
+    )
 
 
 # --- Production-path write prevention (Phase 1 P0: pytest isolation) --------
