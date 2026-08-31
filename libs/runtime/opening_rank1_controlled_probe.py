@@ -460,6 +460,77 @@ def ledger_path(day: str, *, root: Path | str | None = None) -> Path:
     return base / _text(day) / "probe_submissions.json"
 
 
+def evaluation_path(day: str, *, root: Path | str | None = None) -> Path:
+    base = resolve_runtime_write_path(root or os.getenv("OPENING_RANK1_CONTROLLED_PROBE_LOG_ROOT") or DEFAULT_LEDGER_ROOT)
+    return base / _text(day) / "probe_evaluations.json"
+
+
+def load_probe_evaluations(
+    day: str, *, root: Path | str | None = None
+) -> list[dict[str, Any]]:
+    path = evaluation_path(day, root=root)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    rows = payload.get("evaluations") if isinstance(payload, Mapping) else []
+    return [dict(row) for row in list(rows or []) if isinstance(row, Mapping)]
+
+
+def record_probe_evaluation(
+    decision: Mapping[str, Any],
+    *,
+    run_id: str,
+    recorded_at: str,
+    root: Path | str | None = None,
+) -> dict[str, Any]:
+    day = _text(decision.get("day"))
+    path = evaluation_path(day, root=root)
+    rows = load_probe_evaluations(day, root=root)
+    key = (_text(run_id), _text(decision.get("symbol")))
+    row = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": key[0],
+        "recorded_at": _text(recorded_at),
+        "symbol": key[1],
+        "evaluated": bool(decision.get("evaluated")),
+        "eligible": bool(decision.get("eligible")),
+        "applied": bool(decision.get("applied")),
+        "reason": _text(decision.get("reason")),
+        "minutes_since_open": _to_int(decision.get("minutes_since_open")),
+        "scanner_rank": _to_int(decision.get("scanner_rank")),
+        "scanner_rank_source": _text(decision.get("scanner_rank_source")),
+        "candidate_setup": _text(decision.get("candidate_setup")),
+        "opening_alpha_condition": dict(decision.get("opening_alpha_condition") or {}),
+        "selection_authority": dict(decision.get("selection_authority") or {}),
+        "cost_edge_evidence": dict(decision.get("cost_edge_evidence") or {}),
+        "reservation": dict(decision.get("reservation") or {}),
+    }
+    for prior in rows:
+        if (_text(prior.get("run_id")), _text(prior.get("symbol"))) == key:
+            return {
+                "recorded": False,
+                "reason": "evaluation_already_recorded",
+                "path": str(path),
+                "count": len(rows),
+            }
+    rows.append(row)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "day": day,
+        "evaluations": rows[-500:],
+    }
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
+    temporary.replace(path)
+    return {"recorded": True, "path": str(path), "count": len(payload["evaluations"]), "row": row}
+
+
 def load_probe_submissions(day: str, *, root: Path | str | None = None) -> list[dict[str, Any]]:
     path = ledger_path(day, root=root)
     if not path.exists():
@@ -526,12 +597,15 @@ __all__ = [
     "classify_opening_alpha_condition",
     "evaluate_opening_rank1_controlled_probe",
     "effective_selected_rank",
+    "evaluation_path",
     "ledger_path",
+    "load_probe_evaluations",
     "load_probe_submissions",
     "load_rank_observations",
     "rank_observation_path",
     "record_rank1_observation",
     "record_probe_submission",
+    "record_probe_evaluation",
     "selected_rank",
     "session_clock",
 ]
