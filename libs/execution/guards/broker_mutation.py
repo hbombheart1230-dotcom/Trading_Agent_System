@@ -39,6 +39,44 @@ def is_mutation_api_id(api_id: Any) -> bool:
     return normalized in MUTATION_API_IDS or normalized in _UNRESOLVED_MUTATION_ALIASES
 
 
+_MUTATION_ACTIONS = frozenset({"buy", "sell", "cancel", "modify"})
+
+
+def is_mutation_request(req: Any) -> bool:
+    """Mutation detection (Phase 1 Step 5B Safety Fix 2).
+
+    api_id is the primary, most reliable signal (checked first). But a
+    custom order_builder or an alternate live mutation path (see
+    graphs/nodes/execute_order.py, libs/skills/runner.py) could construct a
+    request-like object where api_id is missing or unrecognized while the
+    request is still, unambiguously, a real mutation -- e.g. an action/side
+    field of "buy"/"sell"/"cancel"/"modify" on the request body. This cross
+    checks those secondary signals so api_id alone being empty/wrong can
+    never silently downgrade a real mutation to non-mutation (full retry,
+    token-refresh replay allowed) transport treatment. It is one-directional
+    by design: these secondary signals can only ADD a mutation
+    classification, never remove one that api_id already established, and
+    they never reclassify a genuine read/query call (which would need a
+    recognized mutation action to trigger this branch at all) as a
+    mutation.
+    """
+    if is_mutation_api_id(getattr(req, "api_id", None)):
+        return True
+
+    body = getattr(req, "body", None)
+    if isinstance(body, dict):
+        for key in ("action", "side", "operation"):
+            value = str(body.get(key) or "").strip().lower()
+            if value in _MUTATION_ACTIONS:
+                return True
+
+    action_attr = str(getattr(req, "action", "") or getattr(req, "operation", "") or "").strip().lower()
+    if action_attr in _MUTATION_ACTIONS:
+        return True
+
+    return False
+
+
 _BROKER_CODE_FIELDS = ("msg_cd", "message_code", "code", "rt_cd", "error_code", "err_cd", "return_code")
 _ORDER_REFERENCE_FIELDS = ("ord_no", "order_id", "orderId", "odno", "ODNO", "ordNo")
 
@@ -72,7 +110,7 @@ def order_reference_present(payload: Dict[str, Any]) -> bool:
     return False
 
 
-def _all_broker_code_signals(payload: Dict[str, Any]) -> list:
+def _all_broker_code_signals(payload: Dict[str, Any]) -> Tuple[list, bool]:
     """Every recognized business-code field's parsed success/reject signal.
 
     Unlike _broker_code_value (which stops at the first recognized field),
@@ -80,21 +118,26 @@ def _all_broker_code_signals(payload: Dict[str, Any]) -> list:
     codes (e.g. msg_cd says success, return_code says reject) is detectable
     instead of silently trusting whichever field happens to be checked
     first.
+
+    Returns (signals, has_unrecognized_value). Phase 1 Step 5B Safety Fix 2:
+    a recognized field (e.g. msg_cd) present with a value that doesn't parse
+    into a known success/reject signal (e.g. "UNRECOGNIZED") is itself
+    grounds for UNKNOWN -- it must not be silently ignored just because
+    some OTHER field happened to parse cleanly (return_code=0 +
+    msg_cd="UNRECOGNIZED" is ambiguous, not a clean ACCEPTED).
     """
     signals = []
+    has_unrecognized_value = False
     for key in _BROKER_CODE_FIELDS:
         value = payload.get(key)
         if value is None or not str(value).strip():
             continue
         outcome = _broker_code_is_success(str(value).strip())
-        if outcome is not None:
+        if outcome is None:
+            has_unrecognized_value = True
+        else:
             signals.append(outcome)
-        # A recognized field present with an unparseable value contributes
-        # no signal either way here; classify_mutation_response's "no
-        # signals at all" branch below still correctly falls through to
-        # UNKNOWN in that case (an unparseable code is not evidence of
-        # anything).
-    return signals
+    return signals, has_unrecognized_value
 
 
 def classify_mutation_response(payload: Dict[str, Any], *, status_code: Optional[int] = None) -> Tuple[str, bool]:
@@ -116,7 +159,12 @@ def classify_mutation_response(payload: Dict[str, Any], *, status_code: Optional
     if not isinstance(payload, dict):
         return "UNKNOWN", False
 
-    signals = _all_broker_code_signals(payload)
+    signals, has_unrecognized_value = _all_broker_code_signals(payload)
+    if has_unrecognized_value:
+        # A recognized business-code field is present but its value doesn't
+        # parse -- an unrecognized explicit signal is never silently
+        # dropped in favor of a cleaner-looking field elsewhere.
+        return "UNKNOWN", False
     if not signals:
         return "UNKNOWN", False
 
@@ -125,7 +173,10 @@ def classify_mutation_response(payload: Dict[str, Any], *, status_code: Optional
             try:
                 is_http_2xx = 200 <= int(status_code) < 300
             except Exception:
-                is_http_2xx = True  # unparseable status shouldn't itself veto an otherwise-clean success
+                # status_code was explicitly provided but couldn't be
+                # parsed -- an unrecognized explicit signal, not something
+                # to wave through as an assumed success.
+                return "UNKNOWN", False
             if not is_http_2xx:
                 # Business code says success but the transport layer says
                 # otherwise -- a real contradiction, not a confirmed outcome.

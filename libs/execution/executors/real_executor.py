@@ -14,7 +14,7 @@ from libs.execution.guards.symbol_allowlist import (
 )
 from libs.execution.guards.broker_mutation import (
     classify_mutation_response,
-    is_mutation_api_id,
+    is_mutation_request,
 )
 
 
@@ -176,7 +176,12 @@ class RealExecutor:
         (see libs/execution/guards/broker_mutation.py). Non-mutation
         (read/query/token) calls are entirely unaffected.
         """
-        is_mutation = is_mutation_api_id(getattr(req, "api_id", None))
+        # Phase 1 Step 5B Safety Fix 2: cross-checks api_id against
+        # action/side/operation on the request too, so a custom
+        # order_builder or an alternate live mutation path (execute_order.py,
+        # the tool-facade skill runner) can't silently escape mutation-safe
+        # transport treatment just because api_id ended up missing/wrong.
+        is_mutation = is_mutation_request(req)
 
         pf = self.preflight_check(req)
         if not bool(pf.get("ok")):

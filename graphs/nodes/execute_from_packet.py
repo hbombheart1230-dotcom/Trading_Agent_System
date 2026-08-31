@@ -641,14 +641,23 @@ def _propagate_cancel_unknown_outcome(state: Dict[str, Any], cancel_order: Dict[
     """
     if str(cancel_payload.get("broker_outcome") or "").strip().upper() != "UNKNOWN":
         return
-    _quarantine_symbol_for_unknown_outcome(
+    quarantined = _quarantine_symbol_for_unknown_outcome(
         state, cancel_order, cancel_payload, reason="cancel_broker_outcome_unknown"
     )
     top_execution = state.get("execution")
     if isinstance(top_execution, dict):
+        # Phase 1 Step 5B Safety Fix 2: the ORIGINAL order's own
+        # broker_outcome (e.g. ACCEPTED) is a separate, already-determined
+        # fact and must never be overwritten by this nested CANCEL's
+        # outcome -- these cancel_* fields are additive and namespaced so
+        # both are preserved distinctly in canonical artifact/event/state.
         top_execution["reconciliation_required"] = True
-        top_execution.setdefault("cancel_broker_outcome", "UNKNOWN")
-        top_execution.setdefault("cancel_quarantine_symbol", _extract_order_symbol(cancel_order))
+        top_execution["cancel_broker_outcome"] = "UNKNOWN"
+        top_execution["cancel_reconciliation_required"] = True
+        top_execution["cancel_submission_attempts"] = _coerce_int(cancel_payload.get("submission_attempts"), 0)
+        top_execution["cancel_exception_type"] = str(cancel_payload.get("exception_type") or "")
+        top_execution["cancel_quarantine_symbol"] = _extract_order_symbol(cancel_order)
+        top_execution["cancel_quarantine_persisted"] = bool(quarantined)
 
 
 def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor: Any, order: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
@@ -1051,104 +1060,102 @@ def _write_recent_sell_guard(path: Path, data: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-# --- UNKNOWN broker-outcome quarantine (Phase 1 Step 5B) ---------------------
+# --- UNKNOWN broker-outcome quarantine (Phase 1 Step 5B; storage model
+# redesigned for durability in Step 5B Safety Fix 2 after Codex REJECTed the
+# original single-JSON-file design) --------------------------------------
 #
-# When a mutation's broker outcome cannot be confirmed (timeout, connection
-# reset, malformed response, post-submission auth ambiguity), the affected
-# symbol is quarantined until an operator reconciles it against broker truth.
-# Scope is deliberately narrow: only the symbol that produced the UNKNOWN
-# outcome is blocked, not the whole universe. No TTL/auto-expiry is applied --
-# clearing a quarantine record is an out-of-band operator/reconciliation
-# action, not something this Step automates.
+# Primary invariant: once a mutation's broker outcome is UNKNOWN, no further
+# automatic mutation on that symbol may occur before an operator reconciles
+# it against broker truth -- durably, across ticks AND process restarts,
+# and even if the attempt to persist the quarantine itself fails.
+#
+# Storage model: one small lock/marker file per symbol
+# (<dir>/<symbol>.lock), created atomically (O_CREAT|O_EXCL, so concurrent
+# writers for the same symbol can't race or corrupt it) the moment an
+# UNKNOWN outcome is detected, before anything else. The guard's fail-closed
+# decision is based on the file's *existence*, never its parsed content --
+# so a crash between "file created" and "file fully written" still blocks.
+# The file is never auto-deleted by any code path here: clearing a
+# quarantine is an out-of-band operator/reconciliation action. There is no
+# separate aggregate index to keep in sync (each symbol's lock file is
+# independent), which also removes the old design's read-modify-write
+# lost-update risk entirely.
+#
+# If even the atomic file create fails (disk full, permission denied --
+# durable persistence itself is broken), _GLOBAL_MUTATION_HALT activates as
+# a last-resort, in-memory, process-wide fallback: while active, the guard
+# blocks every mutation regardless of symbol, for the remaining lifetime of
+# this process. This is explicitly NOT a substitute for the durable
+# per-symbol lock file (it does not survive a restart) -- it only covers
+# the narrow window where disk-based durability has itself failed.
 
 
-_UNKNOWN_QUARANTINE_DEFAULT_PATH = Path("data/state/execution_unknown_quarantine.json")
+_UNKNOWN_QUARANTINE_DEFAULT_DIR = Path("data/state/execution_unknown_quarantine")
+
+_GLOBAL_MUTATION_HALT: Dict[str, Any] = {"active": False, "reason": "", "since_epoch": 0, "pid": 0}
 
 
-class _QuarantineLockTimeout(Exception):
-    pass
+def _activate_global_mutation_halt(reason: str, *, now_epoch: int) -> None:
+    if _GLOBAL_MUTATION_HALT["active"]:
+        return
+    _GLOBAL_MUTATION_HALT["active"] = True
+    _GLOBAL_MUTATION_HALT["reason"] = str(reason or "")
+    _GLOBAL_MUTATION_HALT["since_epoch"] = int(now_epoch)
+    _GLOBAL_MUTATION_HALT["pid"] = os.getpid()
 
 
-def _unknown_quarantine_path(state: Dict[str, Any]) -> Path:
+def _unknown_quarantine_dir(state: Dict[str, Any]) -> Path:
     raw = state.get("unknown_quarantine_guard_path") or os.getenv("UNKNOWN_QUARANTINE_GUARD_PATH", "")
     if str(raw or "").strip():
         return Path(str(raw))
-    # Phase 1 Step 5B Safety Fix: project-wide pytest isolation (same
-    # primitive already used for the canonical event log / reports root),
-    # so no test file has to remember its own isolation fixture.
     return isolate_canonical_path_for_pytest(
-        _UNKNOWN_QUARANTINE_DEFAULT_PATH,
-        canonical_path=_UNKNOWN_QUARANTINE_DEFAULT_PATH,
-        isolated_name="execution_unknown_quarantine.json",
+        _UNKNOWN_QUARANTINE_DEFAULT_DIR,
+        canonical_path=_UNKNOWN_QUARANTINE_DEFAULT_DIR,
+        isolated_name="execution_unknown_quarantine",
     )
 
 
-def _read_unknown_quarantine(path: Path) -> Dict[str, Any]:
-    """Read the quarantine store.
+def _quarantine_lock_path(state: Dict[str, Any], symbol: str) -> Path:
+    return _unknown_quarantine_dir(state) / f"{symbol}.lock"
 
-    Distinguishes "file does not exist yet" (normal, empty store -- must not
-    fail-closed or the system could never place a first order) from "file
-    exists but could not be safely read" (malformed JSON, wrong shape, I/O
-    error -- must fail-closed, since we cannot determine whether the symbol
-    is actually safe). Callers check the `_read_ok` marker, which is never
-    itself a real symbol key (symbols are 6-digit/alnum codes).
+
+def _write_quarantine_lock_if_absent(lock_path: Path, payload: Dict[str, Any]) -> bool:
+    """Atomically create the per-symbol quarantine lock/marker file.
+
+    Returns True iff the lock durably exists after this call -- either we
+    just created it, or it already existed (from an earlier attempt, or a
+    prior process incarnation before a crash/restart); both cases mean the
+    symbol IS quarantined, which is success, not failure. Returns False
+    only when the file could not be created and does not already exist --
+    a genuine persistence failure.
     """
-    if not path.exists():
-        return {"schema_version": "execution_unknown_quarantine.v1", "symbols": {}, "_read_ok": True}
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and isinstance(raw.get("symbols"), dict):
-            data = dict(raw)
-            data["_read_ok"] = True
-            return data
-    except Exception:
-        pass
-    return {"schema_version": "execution_unknown_quarantine.v1", "symbols": {}, "_read_ok": False}
-
-
-def _write_unknown_quarantine(path: Path, data: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {k: v for k, v in data.items() if k != "_read_ok"}
-    # Unique-per-writer tmp name: even with the lock below serializing
-    # writers, a distinct name avoids any possibility of two writers'
-    # temp files colliding if the lock is ever bypassed elsewhere.
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _acquire_quarantine_lock(path: Path, *, timeout_sec: float = 2.0, poll_sec: float = 0.02) -> Path:
-    """Minimal process-safe mutex: atomic exclusive-create of a lock file.
-
-    Reused for the read-modify-write section of quarantine writes so two
-    concurrent writers can't lose one another's update. Deliberately small
-    (no new storage framework) -- Step 5C's full SQLite lifecycle adapter is
-    the place for a more complete concurrency model.
-    """
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + timeout_sec
-    while True:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         try:
-            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8"))
+        finally:
             os.close(fd)
-            return lock_path
-        except FileExistsError:
-            if time.monotonic() >= deadline:
-                raise _QuarantineLockTimeout(f"could not acquire quarantine lock: {lock_path}")
-            time.sleep(poll_sec)
-
-
-def _release_quarantine_lock(lock_path: Path) -> None:
-    try:
-        lock_path.unlink(missing_ok=True)
+        return True
+    except FileExistsError:
+        return True
     except Exception:
-        pass
+        try:
+            return lock_path.exists()
+        except Exception:
+            return False
 
 
 def _evaluate_unknown_quarantine_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
     action = str(order.get("action") or "").strip().upper()
     details: Dict[str, Any] = {"guard_applied": True, "action": action}
+
+    if _GLOBAL_MUTATION_HALT["active"]:
+        details["global_mutation_halt"] = True
+        details["global_mutation_halt_reason"] = str(_GLOBAL_MUTATION_HALT.get("reason") or "")
+        details["global_mutation_halt_since_epoch"] = _coerce_int(_GLOBAL_MUTATION_HALT.get("since_epoch"), 0)
+        return False, "global_mutation_halt_active", details
+
     if action not in ("BUY", "SELL", "CANCEL", "MODIFY"):
         details["guard_applied"] = False
         return True, "", details
@@ -1159,71 +1166,76 @@ def _evaluate_unknown_quarantine_guard(state: Dict[str, Any], order: Dict[str, A
         details["symbol_evaluable"] = False
         return True, "", details
 
-    path = _unknown_quarantine_path(state)
-    data = _read_unknown_quarantine(path)
-    if not data.get("_read_ok", True):
-        # Cannot determine whether this symbol is actually quarantined ->
-        # fail-closed rather than silently proceeding as if it weren't.
+    lock_path = _quarantine_lock_path(state, symbol)
+    try:
+        lock_exists = lock_path.exists()
+    except Exception:
+        # Cannot even determine whether a quarantine lock exists for this
+        # symbol -> cannot safely treat it as "not quarantined". A
+        # can't-safely-read state is never treated as empty.
         details["quarantine_store_unreadable"] = True
         return False, "quarantine_store_unreadable_fail_closed", details
 
-    record = data.get("symbols", {}).get(symbol) if isinstance(data.get("symbols"), dict) else None
-    if not isinstance(record, dict) or not record:
+    if not lock_exists:
         return True, "", details
 
-    details.update(
-        {
-            "quarantined": True,
-            "quarantined_at_epoch": _coerce_int(record.get("quarantined_at_epoch"), 0),
-            "quarantine_reason": str(record.get("reason") or ""),
-            "quarantine_run_id": str(record.get("run_id") or ""),
-            "quarantine_action": str(record.get("action") or ""),
-            "quarantine_exception_type": str(record.get("exception_type") or ""),
-        }
-    )
+    details["quarantined"] = True
+    try:
+        record = json.loads(lock_path.read_text(encoding="utf-8"))
+        if isinstance(record, dict):
+            details.update(
+                {
+                    "quarantine_pid": record.get("pid"),
+                    "quarantined_at_epoch": _coerce_int(record.get("created_at_epoch"), 0),
+                    "quarantine_reason": str(record.get("reason") or ""),
+                    "quarantine_operation": str(record.get("operation") or ""),
+                    "quarantine_run_id": str(record.get("run_id") or ""),
+                    "quarantine_exception_type": str(record.get("exception_type") or ""),
+                }
+            )
+    except Exception:
+        # Existence alone is the fail-closed signal, not successful
+        # parsing -- a partially-written or otherwise unreadable lock file
+        # (e.g. a crash mid-write) still blocks.
+        details["quarantine_lock_unreadable"] = True
     return False, "symbol_quarantined_pending_reconciliation", details
 
 
 def _quarantine_symbol_for_unknown_outcome(
     state: Dict[str, Any], order: Dict[str, Any], execution: Dict[str, Any], *, reason: str = "broker_outcome_unknown"
 ) -> bool:
-    """Best-effort persistence. Returns whether the record was (or already
-    is) durably quarantined.
+    """Durably quarantine `symbol`. Returns whether it is now (or already
+    was) durably blocked.
 
-    Deliberately swallows all persistence failures (lock timeout, I/O
-    error, malformed existing file) -- a quarantine *write* failure must
-    never propagate up and be mistaken, by the caller's exception handling,
-    for "the mutation was never sent". The caller is responsible for
-    recording broker_outcome=UNKNOWN / reconciliation_required=True on
-    state["execution"] regardless of whether this persistence succeeds.
+    On a genuine persistence failure (the lock file could not be created
+    and does not already exist -- or the order has no resolvable symbol at
+    all), activates the process-wide _GLOBAL_MUTATION_HALT fallback so the
+    failure can never be silently read as "safe to proceed" for ANY symbol.
+    Callers should still record broker_outcome=UNKNOWN /
+    reconciliation_required=True on state["execution"] regardless of this
+    return value -- the guard's own halt check is the actual enforcement
+    mechanism for subsequent calls, not the caller's handling of this
+    return value.
     """
     symbol = _extract_order_symbol(order)
+    now_epoch = _recent_buy_guard_now_epoch(state)
     if not symbol:
+        _activate_global_mutation_halt("unknown_outcome_missing_symbol", now_epoch=now_epoch)
         return False
-    path = _unknown_quarantine_path(state)
-    try:
-        lock_path = _acquire_quarantine_lock(path)
-    except _QuarantineLockTimeout:
-        return False
-    try:
-        data = _read_unknown_quarantine(path)
-        symbols = data.get("symbols") if isinstance(data.get("symbols"), dict) else {}
-        if symbol in symbols:
-            return True  # already quarantined -- don't overwrite an earlier record
-        symbols[symbol] = {
-            "quarantined_at_epoch": _recent_buy_guard_now_epoch(state),
-            "reason": str(reason or "broker_outcome_unknown"),
-            "action": str(order.get("action") or "").strip().upper(),
-            "run_id": str(state.get("run_id") or ""),
-            "exception_type": str(execution.get("exception_type") or ""),
-        }
-        data["symbols"] = symbols
-        _write_unknown_quarantine(path, data)
-        return True
-    except Exception:
-        return False
-    finally:
-        _release_quarantine_lock(lock_path)
+    lock_path = _quarantine_lock_path(state, symbol)
+    payload = {
+        "pid": os.getpid(),
+        "created_at_epoch": now_epoch,
+        "symbol": symbol,
+        "operation": str(order.get("action") or "").strip().upper(),
+        "reason": str(reason or "broker_outcome_unknown"),
+        "run_id": str(state.get("run_id") or ""),
+        "exception_type": str(execution.get("exception_type") or ""),
+    }
+    persisted = _write_quarantine_lock_if_absent(lock_path, payload)
+    if not persisted:
+        _activate_global_mutation_halt(f"quarantine_lock_write_failed:{symbol}", now_epoch=now_epoch)
+    return persisted
 
 
 def _position_qty_hint_from_order(order: Dict[str, Any]) -> int:
@@ -2226,6 +2238,24 @@ def _prepare_request(order: Dict[str, Any], catalog: Any) -> Any:
     """
     api_id_raw = str(order.get("api_id") or order.get("order_api_id") or "").strip()
     action = str(order.get("action") or "").strip().upper()
+
+    # Phase 1 Step 5B Safety Fix 2 (confirmed HIGH gap): a custom
+    # order_builder (state["order_builder"]) can return an order dict with
+    # action=BUY/SELL/CANCEL/MODIFY but no api_id/order_api_id at all. Without
+    # this, api_id_raw stays "" and the final fallback below would produce a
+    # PreparedRequest with an empty api_id -- silently escaping mutation
+    # detection (full retry, token-refresh replay allowed) even though the
+    # action is unambiguously a mutation. Infer a mutation-identifying
+    # api_id from action alone when none was provided; never overrides an
+    # explicitly-set api_id.
+    if not api_id_raw:
+        if action in ("BUY", "SELL"):
+            api_id_raw = "ORDER_SUBMIT"
+        elif action == "CANCEL":
+            api_id_raw = "kt10003"
+        elif action == "MODIFY":
+            api_id_raw = "kt10002"
+
     api_candidates = []
     if api_id_raw:
         api_candidates.append(api_id_raw)
