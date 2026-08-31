@@ -66,6 +66,7 @@ from libs.runtime.commander.integrated_chain_support import (
     load_integrated_chain_nodes,
     mark_strategist_executed,
     run_closeout_guard_fast_path,
+    run_controlled_mock_lane_path,
     run_monitor_decision_path,
     run_monitor_only_fast_path,
     run_pre_entry_exit_sweep_if_needed,
@@ -5717,7 +5718,7 @@ def _run_integrated_chain_impl(
 
     use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
     if use_monitor_only:
-        return run_monitor_only_fast_path(
+        state = run_monitor_only_fast_path(
             state,
             shadow_runtime=shadow_runtime,
             fast_path_payload=fast_path_payload,
@@ -5737,6 +5738,26 @@ def _run_integrated_chain_impl(
             intent_from_monitor_state_fn=_intent_from_monitor_state,
             build_packet_from_state_fn=_build_packet_from_state,
         )
+        monitor_execution = (
+            state.get("execution") if isinstance(state.get("execution"), dict) else {}
+        )
+        monitor_action = str(
+            ((monitor_execution.get("order") or {}).get("action") or "")
+        ).strip().upper()
+        if monitor_action in {"BUY", "SELL"}:
+            return state
+        state["intents"] = []
+        state, controlled_executed = run_controlled_mock_lane_path(
+            state,
+            shadow_runtime=shadow_runtime,
+            decision_node_fn=decision_node,
+            execute_fn=execute_fn,
+            emit_trade_report_fn=_emit_intraday_trade_report,
+            update_state_after_execution_fn=update_state_after_execution,
+            intent_from_monitor_state_fn=_intent_from_monitor_state,
+            build_packet_from_state_fn=_build_packet_from_state,
+        )
+        return state
 
     state["commander_decision"] = _build_commander_decision(
         state,
@@ -5761,6 +5782,21 @@ def _run_integrated_chain_impl(
         record_absent_later_stage_llm_reviews_fn=_record_absent_later_stage_llm_reviews,
     )
     if pre_entry_exit_executed:
+        return state
+
+    state["intents"] = []
+    state, controlled_executed = run_controlled_mock_lane_path(
+        state,
+        shadow_runtime=shadow_runtime,
+        decision_node_fn=decision_node,
+        execute_fn=execute_fn,
+        emit_trade_report_fn=_emit_intraday_trade_report,
+        update_state_after_execution_fn=update_state_after_execution,
+        intent_from_monitor_state_fn=_intent_from_monitor_state,
+        build_packet_from_state_fn=_build_packet_from_state,
+    )
+    if controlled_executed:
+        state["path"] = "controlled_mock_lane_pre_strategist"
         return state
 
     reused_strategist_cache, cache_payload = resolve_strategist_cache_use(

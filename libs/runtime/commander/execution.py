@@ -89,24 +89,6 @@ def run_monitor_decision_path(
             "status": "error",
             "reason": f"{type(exc).__name__}: {exc}"[:300],
         }
-    try:
-        from libs.runtime.controlled_mock_lanes import inject_controlled_mock_lane_intent
-
-        state = inject_controlled_mock_lane_intent(state)
-        if bool((state.get("controlled_mock_lanes") or {}).get("injected")):
-            state = decision_node_fn(state)
-            shadow_runtime["controlled_mock_lane"] = str(
-                (state.get("controlled_mock_lanes") or {}).get("selected_lane") or ""
-            )
-    except Exception as exc:
-        state["controlled_mock_lanes"] = {
-            "schema_version": "controlled_mock_lanes.v1",
-            "enabled": True,
-            "evaluated": False,
-            "injected": False,
-            "reason": f"measurement_exception:{type(exc).__name__}",
-            "error": str(exc)[:300],
-        }
     state, execution_meta = execute_approved_monitor_decision(
         state,
         execute_fn=execute_fn,
@@ -119,3 +101,59 @@ def run_monitor_decision_path(
         shadow_runtime["executor_action"] = str(execution_meta.get("executor_action") or "")
         shadow_runtime["executor_status"] = str(execution_meta.get("executor_status") or "")
     return state
+
+
+def run_controlled_mock_lane_path(
+    state: Dict[str, Any],
+    *,
+    shadow_runtime: Dict[str, Any],
+    decision_node_fn: StateFn,
+    execute_fn: StateFn,
+    emit_trade_report_fn: StateFn,
+    update_state_after_execution_fn: StateFn,
+    intent_from_monitor_state_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
+    build_packet_from_state_fn: Callable[..., Dict[str, Any]],
+    reports_root: Any = "reports",
+    ledger_root: Any = None,
+) -> Tuple[Dict[str, Any], bool]:
+    from libs.runtime.controlled_mock_lanes import (
+        finalize_controlled_mock_lane_submission,
+        inject_controlled_mock_lane_intent,
+    )
+
+    try:
+        state = inject_controlled_mock_lane_intent(
+            state,
+            reports_root=reports_root,
+            ledger_root=ledger_root,
+        )
+    except Exception as exc:
+        state["controlled_mock_lanes"] = {
+            "schema_version": "controlled_mock_lanes.v1",
+            "enabled": True,
+            "evaluated": False,
+            "injected": False,
+            "reason": f"measurement_exception:{type(exc).__name__}",
+            "error": str(exc)[:300],
+        }
+        return state, False
+    if not bool((state.get("controlled_mock_lanes") or {}).get("injected")):
+        return state, False
+
+    state = decision_node_fn(state)
+    shadow_runtime["controlled_mock_lane"] = str(
+        (state.get("controlled_mock_lanes") or {}).get("selected_lane") or ""
+    )
+    state, execution_meta = execute_approved_monitor_decision(
+        state,
+        execute_fn=execute_fn,
+        emit_trade_report_fn=emit_trade_report_fn,
+        update_state_after_execution_fn=update_state_after_execution_fn,
+        intent_from_monitor_state_fn=intent_from_monitor_state_fn,
+        build_packet_from_state_fn=build_packet_from_state_fn,
+    )
+    state = finalize_controlled_mock_lane_submission(state, ledger_root=ledger_root)
+    if execution_meta.get("executor_action") or execution_meta.get("executor_status"):
+        shadow_runtime["executor_action"] = str(execution_meta.get("executor_action") or "")
+        shadow_runtime["executor_status"] = str(execution_meta.get("executor_status") or "")
+    return state, str(state.get("decision") or "").strip().lower() == "approve"

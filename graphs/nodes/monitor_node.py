@@ -40,7 +40,6 @@ from libs.runtime.opening_rank1_controlled_probe import (
     load_rank_observations,
     record_rank1_observation,
     record_probe_submission,
-    selected_rank as _opening_probe_selected_rank,
     session_clock as _opening_probe_session_clock,
 )
 from libs.runtime.opening_rank1_probe_authority import resolve_opening_rank1_probe_authority
@@ -900,7 +899,7 @@ def _evaluate_monitor_entry_candidate(
     )
     if (
         bool(allow_opening_rank1_controlled_probe)
-        and _opening_probe_selected_rank(selected) == 1
+        and int(opening_rank1_controlled_probe.get("scanner_rank") or 0) == 1
         and bool(opening_probe_selection_authority.get("evidence_available"))
         and bool(opening_probe_selection_authority.get("aligned"))
         and 0 <= _probe_minutes <= 20

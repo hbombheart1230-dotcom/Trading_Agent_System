@@ -2,7 +2,28 @@
 
 > UI 노출용 상세 프로젝트 변경 이력. 저장소에 남아 있는 milestone 문서, daily patch, evaluation/research 문서를 시간순으로 재구성했다. Git commit metadata가 ZIP에 포함되지 않은 초기 구간은 정확한 일자를 임의 생성하지 않고 milestone 순서/범위로 표기했다.
 
-총 **44개 릴리즈/변경 구간**을 수록한다. 작은 버그 수정 하나하나를 전부 카드화하기보다, UI에서 의미가 있는 기능·정책·평가 단위로 묶되 각 카드 안에서 실제 세부 변경을 보여주는 방식이다.
+총 **45개 릴리즈/변경 구간**을 수록한다. 작은 버그 수정 하나하나를 전부 카드화하기보다, UI에서 의미가 있는 기능·정책·평가 단위로 묶되 각 카드 안에서 실제 세부 변경을 보여주는 방식이다.
+
+## 2026-08-31 · Opening Alpha 및 Q10/Q12 시각 정합성 복구
+**Stage:** Controlled Mock Validation
+**Tags:** OPENING_ALPHA · Q10 · Q12 · SCHEDULER · KIWOOM_MOCK
+
+### 변경 내용
+- Opening Alpha 후보에 Rank가 누락돼도 Scanner 원본 authority가 Rank-1 및 종목 일치를 증명하면 해당 Rank를 사용합니다.
+- Q10 선행시장 스냅샷을 09:00 baseline 루프에서 분리하고 기존 08:50 Preopen 예약 작업의 첫 단계에서 불변 파일로 저장합니다.
+- Q12 BTC 08:55 스냅샷 전용 스크립트와 평일 08:55 Windows 예약 작업을 추가했습니다.
+- Q12 캡처는 짧은 재시도를 지원하고 성공·누락·마감 후 지연을 일별 장부의 시도 이력으로 남깁니다.
+- 09:00 이후 Q12 baseline은 동결된 08:55 원본을 재사용하며, 실패한 캡처를 장후 데이터로 소급 복원하지 않습니다.
+
+### 운영 산출물
+- `reports/evaluation/baseline_samsung_hynix/YYYY-MM-DD/q10_forward_validation/q10_preopen_signal_snapshot.json`
+- `data/logs/q12_btc_0855/YYYY-MM-DD/btc_0855_snapshot.json`
+- `data/logs/q12_btc_0855/YYYY-MM-DD/capture_ledger.json`
+
+### 변경의 의미
+조건 완화 레인이 후보 객체의 누락 필드나 장중 루프 시작 시각 때문에 무조건 비활성화되는 문제를 제거했습니다. Rank-1 종목 일치, risk-off, 비용, 차트 하드 플로어와 일일 주문 한도는 유지합니다.
+
+---
 
 ## 2026-02-07 · v0.1 — 프로젝트 시작 — Traceable Core
 **Stage:** Foundation  
@@ -1155,3 +1176,18 @@ offline research와 실제 runtime 사이의 semantic drift를 줄임.
 - The connector is pinned, non-root, read-only and resource bounded.
 - Cloudflare Access must allow only the operator email with OTP before startup.
 - Normal local Compose operation does not load or start the Tunnel.
+
+# 2026-08-31 - Q10/Q12 Point-in-Time and Execution Wiring
+
+- Q10 lead-market inputs are frozen at 08:50 before the intraday loop, and Q12
+  BTC inputs are captured by a separate 08:55 scheduled task with a daily
+  submission ledger.
+- Q10/Q12 controlled candidate evaluation now runs before Strategist/Scanner,
+  so their early returns cannot suppress an otherwise valid fixed-lane signal.
+- Controlled lane evidence is split into evaluation, broker-attempt and
+  broker-accepted submission ledgers.
+- The daily lane limit is consumed only after broker acceptance or fill. Missing
+  input, no candidate and broker rejection remain visible without falsely using
+  the daily allowance.
+- Added an end-to-end mock integration test from candidate through persisted
+  fill state.

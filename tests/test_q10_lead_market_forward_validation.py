@@ -7,7 +7,10 @@ from pathlib import Path
 from libs.reporting.baseline_samsung_hynix.forward_validation.contracts import EXPERIMENT_GUARDS
 from libs.reporting.baseline_samsung_hynix.forward_validation.expected_actual import classify_reaction
 from libs.reporting.baseline_samsung_hynix.forward_validation.market_inputs import flatten_signal_inputs
-from libs.reporting.baseline_samsung_hynix.forward_validation.pipeline import build_q10_forward_validation
+from libs.reporting.baseline_samsung_hynix.forward_validation.pipeline import (
+    build_q10_forward_validation,
+    capture_q10_preopen_snapshot,
+)
 from libs.reporting.baseline_samsung_hynix.forward_validation.reaction_reader import build_actual_reactions
 from libs.reporting.baseline_samsung_hynix.forward_validation.scoring import (
     classify_hynix_extension,
@@ -115,6 +118,23 @@ def test_pipeline_is_prospective_and_preopen_snapshot_is_immutable(tmp_path: Pat
     snapshot = json.loads(Path(first["q10_preopen_snapshot"]).read_text(encoding="utf-8"))
     assert snapshot["signals"]["hynix_extension"]["state"] == "EXTENDED"
     assert snapshot["guards"] == EXPERIMENT_GUARDS
+
+
+def test_dedicated_q10_preopen_capture_writes_canonical_snapshot(tmp_path: Path) -> None:
+    provider = FixtureProvider()
+    result = capture_q10_preopen_snapshot(
+        day="2026-08-31",
+        reports_root=tmp_path / "reports",
+        state_path=tmp_path / "state.json",
+        now=datetime(2026, 8, 31, 8, 50, 5, tzinfo=KST),
+        lead_market_provider=provider,
+    )
+
+    assert result["q10_preopen_capture_status"] == "CAPTURED"
+    assert provider.calls == 1
+    path = Path(result["path"])
+    assert path.name == "q10_preopen_signal_snapshot.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["capture_status"] == "CAPTURED"
 
 
 def test_missed_capture_is_not_backfilled(tmp_path: Path) -> None:

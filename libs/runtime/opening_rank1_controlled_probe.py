@@ -79,6 +79,25 @@ def selected_rank(candidate: Mapping[str, Any] | None) -> int:
     return 0
 
 
+def effective_selected_rank(
+    candidate: Mapping[str, Any] | None,
+    selection_authority: Mapping[str, Any] | None,
+) -> tuple[int, str]:
+    candidate_rank = selected_rank(candidate)
+    if candidate_rank > 0:
+        return candidate_rank, "selected_candidate"
+
+    authority = selection_authority or {}
+    authority_rank = _to_int(authority.get("intrinsic_rank1_rank"))
+    if (
+        bool(authority.get("evidence_available"))
+        and bool(authority.get("aligned"))
+        and authority_rank == 1
+    ):
+        return authority_rank, "scanner_authority_intrinsic_rank1"
+    return 0, "missing"
+
+
 def classify_candidate_setup(candidate: Mapping[str, Any] | None) -> str:
     row = candidate or {}
     explicit = _text(row.get("candidate_setup") or row.get("setup_type")).upper()
@@ -308,7 +327,7 @@ def evaluate_opening_rank1_controlled_probe(
     risk_off = dict(risk_off_policy or {})
     authority = dict(selection_authority or {})
     day, minutes_since_open = session_clock(now_epoch)
-    rank = selected_rank(candidate)
+    rank, rank_source = effective_selected_rank(candidate, authority)
     setup = classify_candidate_setup(candidate)
     alpha_condition = classify_opening_alpha_condition(
         candidate=candidate,
@@ -339,6 +358,7 @@ def evaluate_opening_rank1_controlled_probe(
         "opening_end_minute": int(opening_end_minute),
         "symbol": _text(candidate.get("symbol")),
         "scanner_rank": int(rank),
+        "scanner_rank_source": rank_source,
         "candidate_setup": setup,
         "opening_alpha_condition": dict(alpha_condition),
         "allowed_lane_conditions": sorted(ALLOWED_LANE_CONDITIONS),
@@ -504,6 +524,7 @@ __all__ = [
     "classify_candidate_setup",
     "classify_opening_alpha_condition",
     "evaluate_opening_rank1_controlled_probe",
+    "effective_selected_rank",
     "ledger_path",
     "load_probe_submissions",
     "load_rank_observations",

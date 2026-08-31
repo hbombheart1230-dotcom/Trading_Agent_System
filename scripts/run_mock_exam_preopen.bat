@@ -11,6 +11,13 @@ if not exist "%PY%" (
 
 pushd "%ROOT%"
 
+rem Q10 owns an immutable 08:50 capture and must not depend on the 09:00 loop.
+"%PY%" "%ROOT%\scripts\capture_q10_preopen_snapshot.py" ^
+  --env-path "%ROOT%\.env" ^
+  --reports-root "%ROOT%\reports" ^
+  --state-path "%ROOT%\data\state.json"
+set "Q10_CAPTURE_RC=%ERRORLEVEL%"
+
 rem Capture point-in-time macro/index evidence before the first opening decision.
 "%PY%" "%ROOT%\scripts\capture_preopen_macro_snapshot.py" ^
   --env-path "%ROOT%\.env" ^

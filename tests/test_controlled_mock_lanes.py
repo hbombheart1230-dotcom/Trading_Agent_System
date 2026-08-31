@@ -6,7 +6,13 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from libs.runtime.controlled_mock_lanes.coordinator import (
+    finalize_controlled_mock_lane_submission,
     inject_controlled_mock_lane_intent,
+)
+from libs.runtime.controlled_mock_lanes.ledger import (
+    load_attempts,
+    load_evaluations,
+    load_submissions,
 )
 from libs.runtime.controlled_mock_lanes.signals import (
     build_q10_index_candidate,
@@ -187,7 +193,7 @@ def test_coordinator_injects_one_real_mock_intent_per_lane(
     assert first["intents"][0]["qty"] == 1
     assert first["intents"][0]["meta"]["position_strategy_snapshot"]["llm_used"] is False
     assert second["controlled_mock_lanes"]["injected"] is False
-    assert second["controlled_mock_lanes"]["reason"] == "no_eligible_independent_lane"
+    assert second["controlled_mock_lanes"]["reason"] == "submission_pending_broker_result"
 
 
 def test_existing_monitor_intent_has_priority(tmp_path: Path, monkeypatch) -> None:
@@ -206,3 +212,76 @@ def test_existing_monitor_intent_has_priority(tmp_path: Path, monkeypatch) -> No
 
     assert result["intents"] == [existing]
     assert result["controlled_mock_lanes"]["reason"] == "existing_monitor_intent_has_priority"
+
+
+def test_broker_rejection_records_attempt_without_consuming_daily_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    reports = tmp_path / "reports"
+    ledger = tmp_path / "ledger"
+    _write(
+        reports
+        / "evaluation"
+        / "baseline_btc_woori_tech"
+        / DAY
+        / "q12_btc_woori_hypothesis_validation.json",
+        _q12_payload(),
+    )
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    state = inject_controlled_mock_lane_intent(
+        {
+            "runtime_phase": "session",
+            "now_epoch": _epoch(9, 5),
+            "run_id": "rejected-run",
+            "portfolio_snapshot": {"positions": []},
+            "persisted_state": {},
+            "intents": [],
+        },
+        reports_root=reports,
+        ledger_root=ledger,
+    )
+    state["execution"] = {
+        "allowed": True,
+        "ok": False,
+        "reason": "broker_rejected:20",
+        "broker_code": "20",
+        "broker_message": "mock restricted",
+        "order": {"action": "BUY", "symbol": "041190", "qty": 1},
+    }
+
+    result = finalize_controlled_mock_lane_submission(state, ledger_root=ledger)
+
+    assert result["controlled_mock_lanes"]["submission_state"] == "BROKER_REJECTED"
+    assert len(load_attempts(DAY, root=ledger)) == 1
+    assert load_submissions(DAY, root=ledger) == []
+
+
+def test_missing_inputs_are_recorded_for_each_independent_lane(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    ledger = tmp_path / "ledger"
+
+    result = inject_controlled_mock_lane_intent(
+        {
+            "runtime_phase": "session",
+            "now_epoch": _epoch(9, 5),
+            "run_id": "missing-input-run",
+            "portfolio_snapshot": {"positions": []},
+            "persisted_state": {},
+            "intents": [],
+        },
+        reports_root=tmp_path / "empty-reports",
+        ledger_root=ledger,
+    )
+
+    rows = load_evaluations(DAY, root=ledger)
+    assert result["controlled_mock_lanes"]["injected"] is False
+    assert {row["lane_id"] for row in rows} == {
+        "BTC_WOORI",
+        "Q10_SEMICONDUCTOR",
+        "Q10_INDEX",
+    }
+    assert {row["status"] for row in rows} == {"INPUT_MISSING"}

@@ -239,6 +239,39 @@ def test_probe_rejects_missing_intrinsic_rank1_evidence() -> None:
     assert result["reason"] == "intrinsic_rank1_evidence_missing"
 
 
+def test_probe_uses_intrinsic_rank1_when_selected_candidate_rank_is_missing() -> None:
+    candidate = _candidate()
+    candidate.pop("rank")
+
+    result = _evaluate(selected=candidate)
+
+    assert result["applied"] is True
+    assert result["scanner_rank"] == 1
+    assert result["scanner_rank_source"] == "scanner_authority_intrinsic_rank1"
+
+
+def test_probe_does_not_infer_rank1_from_misaligned_authority() -> None:
+    candidate = _candidate()
+    candidate.pop("rank")
+
+    result = _evaluate(
+        selected=candidate,
+        selection_authority={
+            "status": "SYMBOL_MISMATCH",
+            "evidence_available": True,
+            "aligned": False,
+            "selected_symbol": "005930",
+            "intrinsic_rank1_symbol": "000660",
+            "intrinsic_rank1_rank": 1,
+        },
+    )
+
+    assert result["applied"] is False
+    assert result["scanner_rank"] == 0
+    assert result["scanner_rank_source"] == "missing"
+    assert result["reason"] == "scanner_rank1_required"
+
+
 def test_selection_authority_uses_pre_strategist_intrinsic_rank1() -> None:
     aligned = resolve_opening_rank1_probe_authority(
         state={

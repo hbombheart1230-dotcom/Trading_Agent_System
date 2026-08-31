@@ -90,6 +90,44 @@ def _preopen_snapshot(
     return snapshot
 
 
+def capture_q10_preopen_snapshot(
+    *,
+    day: str,
+    reports_root: Path,
+    state_path: Path,
+    now: datetime | None = None,
+    lead_market_provider: LeadMarketProvider | None = None,
+) -> dict[str, Any]:
+    if day < ACTIVATION_DAY:
+        return {
+            "q10_preopen_capture_status": "NOT_ACTIVE_PROSPECTIVE_ONLY",
+            "day": day,
+        }
+    current = (now or datetime.now(KST)).astimezone(KST)
+    path = (
+        reports_root
+        / "evaluation"
+        / "baseline_samsung_hynix"
+        / day
+        / "q10_forward_validation"
+        / "q10_preopen_signal_snapshot.json"
+    )
+    snapshot = _preopen_snapshot(
+        day=day,
+        path=path,
+        state_path=state_path,
+        now=current,
+        provider=lead_market_provider or YFinanceLeadMarketProvider(),
+    )
+    return {
+        "q10_preopen_capture_status": str(snapshot.get("capture_status") or "WAITING"),
+        "day": day,
+        "captured_at_kst": snapshot.get("captured_at_kst"),
+        "reason": str(snapshot.get("reason") or ""),
+        "path": str(path) if path.exists() else "",
+    }
+
+
 def build_q10_forward_validation(
     *, day: str, output_dir: Path, state_path: Path, macro_root: Path,
     candle_map: Mapping[str, list[Mapping[str, Any]]], cost_pct: float, slippage_pct: float,

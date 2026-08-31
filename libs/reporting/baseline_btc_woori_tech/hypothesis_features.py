@@ -39,6 +39,19 @@ def _latest_at(
 
 def _btc_0855(signal_payload: Mapping[str, Any], *, day: str) -> dict[str, Any]:
     target_epoch = _epoch(day, 8, 55)
+    capture_status = str(signal_payload.get("btc_0855_capture_status") or "").strip().upper()
+    if capture_status in {"MISSING", "MISSED"}:
+        return {
+            "status": "MISSING",
+            "reason": str(signal_payload.get("btc_0855_capture_reason") or "btc_0855_capture_unavailable"),
+            "target_epoch": target_epoch,
+            "return_24h_pct": None,
+            "thresholds": {
+                f"gte_{int(value)}pct": None
+                for value in HYPOTHESIS_BTC_THRESHOLDS_PCT
+            },
+            "observations": [],
+        }
     observations = []
     sources = signal_payload.get("sources")
     sources = sources if isinstance(sources, Mapping) else {}
