@@ -7,6 +7,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, Optional
 
+from libs.core.path_isolation import resolve_runtime_write_path
+
 _WRITE_LOCK = Lock()
 
 
@@ -28,10 +30,17 @@ def _sanitize(v: Any) -> Any:
 
 
 def _resolve_log_path(path: Optional[str | Path] = None) -> Path:
+    # call-time resolution (not a bare default-parameter value): both the
+    # explicit-argument branch and the env-fallback branch must run through
+    # resolve_runtime_write_path under pytest, since scanner/strategist/
+    # monitor node code calls append_evidence_record() (and friends) as
+    # part of their normal execution -- an explicit production-relative
+    # path here is not a deliberate test override, it is this module's own
+    # default threaded through by the caller.
     if path is not None:
-        return Path(path)
+        return resolve_runtime_write_path(path)
     raw = str(os.getenv("EVIDENCE_LEDGER_PATH", "data/evidence_ledger/events.jsonl") or "").strip()
-    return Path(raw or "data/evidence_ledger/events.jsonl")
+    return resolve_runtime_write_path(raw or "data/evidence_ledger/events.jsonl")
 
 
 def append_evidence_record(

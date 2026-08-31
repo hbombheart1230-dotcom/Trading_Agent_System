@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.core.settings import load_env_file
+from libs.core.path_isolation import resolve_runtime_write_path
 from libs.reporting.alert_notifier import notify_batch_result
 from scripts.run_m25_closeout_check import main as m25_closeout_main
 
@@ -266,11 +267,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
 
     day = str(args.day or _utc_day_now())
-    event_log_path = Path(str(args.event_log_path))
-    report_dir = Path(str(args.report_dir))
-    lock_path = Path(str(args.lock_path))
-    status_path = Path(str(args.status_json_path))
-    notify_event_log_path = Path(str(args.notify_event_log_path))
+    # resolve_runtime_write_path is a no-op outside pytest (production CLI
+    # defaults are unchanged) and passes through explicit tmp_path-based
+    # test args untouched (they're absolute + outside the repo). It only
+    # redirects a *production-relative* default when this script runs
+    # under pytest -- including when invoked as a subprocess by a test
+    # (PYTEST_CURRENT_TEST is inherited from the parent process's env).
+    event_log_path = resolve_runtime_write_path(str(args.event_log_path))
+    report_dir = resolve_runtime_write_path(str(args.report_dir))
+    lock_path = resolve_runtime_write_path(str(args.lock_path))
+    status_path = resolve_runtime_write_path(str(args.status_json_path))
+    notify_event_log_path = resolve_runtime_write_path(str(args.notify_event_log_path))
+    notify_state_path = resolve_runtime_write_path(str(args.notify_state_path))
 
     acquired, lock_reason = _acquire_lock(lock_path, lock_stale_sec=max(1, int(args.lock_stale_sec)))
     if not acquired:
@@ -325,7 +333,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         provider=str(args.notify_provider),
         webhook_url=str(args.notify_webhook_url),
         timeout_sec=max(1, int(args.notify_timeout_sec)),
-        state_path=str(args.notify_state_path),
+        state_path=str(notify_state_path),
         dedup_window_sec=max(0, int(args.notify_dedup_window_sec)),
         rate_limit_window_sec=max(0, int(args.notify_rate_limit_window_sec)),
         max_per_window=max(0, int(args.notify_max_per_window)),

@@ -88,6 +88,15 @@ def _isolate_unknown_quarantine_guard(monkeypatch, tmp_path):
 # failure report more useful (not to widen detection coverage).
 _PRODUCTION_WATCH_ROOTS = ("reports", "data")
 
+# Phase 1 P0 Fix 2: root-level runtime artifacts (b.jsonl is exactly this --
+# a file that lives directly at the repo root, never under reports/ or
+# data/, so the recursive scan above never saw it). This is a *non-recursive*
+# scan of the repo root's own files, filtered to extensions runtime code
+# actually writes -- not a full repo walk (venv/, .git/, node_modules-style
+# dirs are never touched by this).
+_ROOT_LEVEL_WATCH_EXTENSIONS = (".jsonl", ".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3")
+_ROOT_LEVEL_WATCH_SUFFIXES = ("-journal",)
+
 # Explicit exclusions for paths that are expected to churn independent of
 # any test (e.g. this repo has a concurrent external process writing to the
 # live runtime tree during market hours -- see completion report). Kept
@@ -100,9 +109,32 @@ def _is_excluded(rel_path: str) -> bool:
     return any(rel_path.startswith(prefix) for prefix in _PRODUCTION_WATCH_EXCLUDE_PREFIXES)
 
 
+def _is_root_level_watch_target(name: str) -> bool:
+    lower = name.lower()
+    return lower.endswith(_ROOT_LEVEL_WATCH_EXTENSIONS) or lower.endswith(_ROOT_LEVEL_WATCH_SUFFIXES)
+
+
 def _build_manifest() -> Dict[str, Tuple[int, int]]:
-    """Map relative_path -> (size, mtime_ns) for every file under the watched roots."""
+    """Map relative_path -> (size, mtime_ns) for every watched file."""
     manifest: Dict[str, Tuple[int, int]] = {}
+
+    try:
+        for entry in os.scandir(ROOT):
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                if not _is_root_level_watch_target(entry.name):
+                    continue
+                rel = entry.name
+                if _is_excluded(rel):
+                    continue
+                st = entry.stat(follow_symlinks=False)
+                manifest[rel] = (st.st_size, st.st_mtime_ns)
+            except OSError:
+                continue
+    except OSError:
+        pass
+
     for root_name in _PRODUCTION_WATCH_ROOTS:
         base = ROOT / root_name
         if not base.exists():
@@ -183,7 +215,8 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: D401 - pytest hook
         "\n" + "=" * 78 + "\n"
         "PRODUCTION PATH WRITE DETECTED DURING TEST SESSION\n"
         + "\n".join(lines) + "\n"
-        "One or more tests wrote under reports/ or data/ despite the\n"
+        "One or more tests wrote under reports/, data/, or a watched\n"
+        "root-level runtime artifact despite the\n"
         "project-wide pytest isolation in conftest.py / libs/core/path_isolation.py.\n"
         "Do not delete/clean these files automatically -- they may be\n"
         "real production artifacts (this repo also has a concurrent external\n"
