@@ -11,9 +11,15 @@ def render_report(
     decisions: Mapping[str, Any],
     forward: Mapping[str, Any],
     comparison: Mapping[str, Any],
+    controlled_validation: Mapping[str, Any] | None = None,
 ) -> str:
     cost = forward.get("cost_model") or {}
     fear_greed = decisions.get("crypto_fear_greed") if isinstance(decisions.get("crypto_fear_greed"), Mapping) else {}
+    controlled = dict(controlled_validation or {})
+    controlled_features = controlled.get("features") if isinstance(controlled.get("features"), Mapping) else {}
+    btc_0855 = controlled_features.get("btc_0855") if isinstance(controlled_features.get("btc_0855"), Mapping) else {}
+    btc_0855_status = str(btc_0855.get("status") or "NOT_EVALUATED")
+    controlled_status = "READY_FOR_CONDITION_CHECK" if btc_0855_status == "OBSERVED" else "INPUT_MISSING"
     lines = [
         "# Q12 BTC / Woori Technology Investment Baseline",
         "",
@@ -23,7 +29,9 @@ def render_report(
         "- Q9/Q10/main execution integration: none",
         "- OrderIntent / execution: disabled",
         f"- Decision policy: `{decisions.get('decision_policy_version') or 'legacy'}`",
-        f"- Evidence status: `{forward.get('evidence_status')}`",
+        f"- Intraday shadow forward evidence: `{forward.get('evidence_status')}`",
+        f"- Controlled lane 08:55 evidence: `{btc_0855_status}` / `{btc_0855.get('reason') or '-'}`",
+        f"- Controlled lane input status: `{controlled_status}`",
         (
             "- Crypto Fear & Greed: "
             f"`{fear_greed.get('value')}` / `{fear_greed.get('classification') or fear_greed.get('regime')}` "
@@ -146,7 +154,8 @@ def render_report(
         "## Boundary",
         "",
         "- This module is an independent control group.",
-        "- It cannot create OrderIntent or execute orders.",
+        "- This baseline report cannot create OrderIntent or execute orders.",
+        "- A separate controlled mock lane may consume the fixed 08:55 hypothesis artifact only when its required evidence is observed.",
         "- Results do not authorize Q9 or production strategy changes.",
     ]
     return "\n".join(lines) + "\n"

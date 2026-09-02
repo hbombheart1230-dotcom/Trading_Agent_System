@@ -48,6 +48,57 @@ def test_execute_from_packet_mock(tmp_path, monkeypatch):
     assert out["execution"]["payload"]["effective_mode"] == "mock_executor"
 
 
+def test_q10_controlled_lane_missing_target_quote_is_not_sent(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "false")
+    calls = {"count": 0}
+
+    class NeverCalledExecutor:
+        def execute(self, request):  # type: ignore[no-untyped-def]
+            calls["count"] += 1
+            raise AssertionError("broker API must not be called")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+    state = {
+        "run_id": "q10-missing-quote",
+        "catalog_path": str(cat),
+        "executor": NeverCalledExecutor(),
+        "portfolio_snapshot": {"positions": [], "open_positions": 0},
+        "persisted_state": {"mock_cash": 1_000_000.0},
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "251340",
+                "qty": 1,
+                "price": None,
+                "order_api_id": "ORDER_SUBMIT",
+                "order_type": "market",
+                "meta": {
+                    "controlled_mock_lane": {
+                        "lane_id": "Q10_INDEX",
+                        "signal_id": "Q10_INDEX_2026-09-02_kosdaq_09:05",
+                    }
+                },
+            },
+            "risk": {"open_positions": 0, "max_positions": 3},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "controlled_lane_executable_quote_missing"
+    assert out["execution"]["controlled_lane_execution_price_guard"]["broker_api_called"] is False
+    assert calls["count"] == 0
+
+
 def test_execute_from_packet_blocks_new_buy_inside_entry_closeout_buffer(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_MODE", "mock")
 
@@ -1439,6 +1490,80 @@ def test_execute_from_packet_allows_buy_when_mock_cash_sufficient(tmp_path, monk
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is True
     assert out["execution"]["payload"]["mode"] == "mock"
+
+
+def test_opening_alpha_blocks_pre_submit_best_ask_chase_without_broker_call(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+    calls = {"execute": 0}
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            calls["execute"] += 1
+            raise AssertionError("broker executor must not be called")
+
+    state = {
+        "catalog_path": str(cat),
+        "executor": CaptureExecutor(),
+        "persisted_state": {"mock_cash": 1_000_000.0, "mock_positions": []},
+        "skill_results": {
+            "market.quote": {
+                "005930": {
+                    "symbol": "005930",
+                    "cur": 10100.0,
+                    "best_ask": 10700.0,
+                    "_observed_epoch": 1000,
+                    "_observed_at_utc": "2026-09-01T00:02:50+00:00",
+                }
+            }
+        },
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 10100.0,
+                "order_api_id": "ORDER_SUBMIT",
+                "order_type": "market",
+                "meta": {
+                    "entry_lane": "opening_rank1_controlled_probe",
+                    "price": 10100.0,
+                    "current_price": 10100.0,
+                    "opening_rank1_controlled_probe": {
+                        "applied": True,
+                        "initial_signal_price": 10000.0,
+                        "cached_decision_price": 10100.0,
+                        "max_signal_price_drift_pct": 0.02,
+                    },
+                },
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+
+    assert calls["execute"] == 0
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["broker_outcome"] == "NOT_SENT"
+    assert out["execution"]["reason"] == "opening_alpha_execution_price_drift"
+    guard = out["execution"]["opening_alpha_execution_price_guard"]
+    assert guard["initial_signal_price"] == 10000.0
+    assert guard["cached_decision_price"] == 10100.0
+    assert guard["executable_price"] == 10700.0
+    assert guard["executable_price_source"] == "market.quote.best_ask"
+    assert guard["executable_price_observed_at"] == "2026-09-01T00:02:50+00:00"
+    assert round(guard["signal_to_cached_drift_pct"], 6) == 0.01
+    assert round(guard["signal_to_executable_drift_pct"], 6) == 0.07
+    assert guard["block_reason"] == "opening_alpha_execution_price_drift"
 
 
 def test_execute_from_packet_maps_order_submit_to_kiwoom_buy_api_when_available(tmp_path, monkeypatch):

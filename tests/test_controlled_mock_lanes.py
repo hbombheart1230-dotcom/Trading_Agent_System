@@ -13,6 +13,7 @@ from libs.runtime.controlled_mock_lanes.ledger import (
     load_attempts,
     load_evaluations,
     load_submissions,
+    reconcile_submissions_with_broker_orders,
 )
 from libs.runtime.controlled_mock_lanes.signals import (
     build_q10_index_candidate,
@@ -285,3 +286,47 @@ def test_missing_inputs_are_recorded_for_each_independent_lane(
         "Q10_INDEX",
     }
     assert {row["status"] for row in rows} == {"INPUT_MISSING"}
+
+
+def test_controlled_submission_reconciles_to_broker_fill(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    from libs.runtime.controlled_mock_lanes.ledger import record_accepted_submission, record_attempt
+
+    candidate = {"lane_id": "Q10_INDEX", "symbol": "251340", "signal_id": "q10-index"}
+    execution = {"order_id": "0013823", "broker_code": "0", "filled_qty": 0, "allowed": True, "ok": True}
+    record_attempt(
+        day=DAY,
+        candidate=candidate,
+        run_id="q10-run",
+        recorded_at="2026-08-31T09:05:00+09:00",
+        execution=execution,
+        status="BROKER_ACCEPTED",
+        root=ledger,
+    )
+    record_accepted_submission(
+        day=DAY,
+        candidate=candidate,
+        run_id="q10-run",
+        recorded_at="2026-08-31T09:05:00+09:00",
+        execution=execution,
+        root=ledger,
+    )
+    result = reconcile_submissions_with_broker_orders(
+        day=DAY,
+        broker_orders=[{
+            "ord_no": "0013823", "symbol": "251340", "ord_qty": 1,
+            "cntr_qty": 1, "ord_remnq": 0, "cntr_uv": 2525.0,
+            "status": "FILLED",
+        }],
+        recorded_at="2026-08-31T09:06:00+09:00",
+        root=ledger,
+    )
+    row = load_submissions(DAY, root=ledger)[0]
+    assert result["updated"] == 1
+    assert row["status"] == "FILLED"
+    assert row["filled_qty"] == 1
+    assert row["filled_price"] == 2525.0
+    attempt = load_attempts(DAY, root=ledger)[0]
+    assert result["attempts_updated"] == 1
+    assert attempt["status"] == "FILLED"
+    assert attempt["execution"]["filled_qty"] == 1

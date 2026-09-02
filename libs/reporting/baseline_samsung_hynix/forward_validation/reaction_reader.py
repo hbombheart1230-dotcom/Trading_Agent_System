@@ -36,6 +36,21 @@ def _point_at(rows: list[Mapping[str, Any]], epoch: int, max_lag_sec: int) -> di
     return dict(candidate)
 
 
+def _opening_point(rows: list[Mapping[str, Any]], day: str) -> dict[str, Any] | None:
+    """Return the first traded candle, never a zero-volume opening placeholder."""
+    opening_epoch = _checkpoint_epoch(day, "09:00")
+    latest_epoch = _checkpoint_epoch(day, "09:03")
+    for row in rows:
+        row_epoch = int(row.get("ts") or 0)
+        if row_epoch < opening_epoch or row_epoch > latest_epoch:
+            continue
+        volume = _number(row.get("volume"))
+        open_price = _number(row.get("open"))
+        if volume is not None and volume > 0.0 and open_price is not None and open_price > 0.0:
+            return dict(row)
+    return None
+
+
 def _close_point(rows: list[Mapping[str, Any]], day: str) -> dict[str, Any] | None:
     close_epoch = _checkpoint_epoch(day, "CLOSE")
     auction_start = close_epoch - 10 * 60
@@ -68,7 +83,10 @@ def _stock_reaction(
     )
     points: dict[str, Any] = {}
     for label in CHECKPOINTS:
-        point = _close_point(valid, day) if label == "CLOSE" else _point_at(valid, _checkpoint_epoch(day, label), 90)
+        if label == "09:00":
+            point = _opening_point(valid, day)
+        else:
+            point = _close_point(valid, day) if label == "CLOSE" else _point_at(valid, _checkpoint_epoch(day, label), 90)
         price_field = "open" if label == "09:00" else "close"
         points[label] = (
             {
@@ -115,6 +133,7 @@ def _stock_reaction(
         "day_high_return_pct": _pct(max(highs), previous_close) if highs else None,
         "day_low_return_pct": _pct(min(lows), previous_close) if lows else None,
         "evidence_status": "AVAILABLE" if open_price is not None else "INSUFFICIENT_EVIDENCE",
+        "actual_open_policy": "first_positive_volume_candle_0900_to_0903",
         "path": regular,
     }
 

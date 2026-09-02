@@ -293,6 +293,9 @@ def test_board_writes_json_and_readable_markdown(tmp_path: Path) -> None:
     assert Path(result["sensitivity_markdown_path"]).exists()
     assert Path(result["remaining_markdown_path"]).exists()
     assert Path(result["runtime_markdown_path"]).exists()
+    runtime = json.loads(Path(result["runtime_json_path"]).read_text(encoding="utf-8"))
+    assert runtime
+    assert runtime["schema_version"] == "immediate_opening_runtime_validation.v1"
     assert Path(result["latest_json_path"]).exists()
     assert Path(result["latest_markdown_path"]).exists()
 

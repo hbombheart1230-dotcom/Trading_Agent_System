@@ -10,8 +10,12 @@ from libs.runtime.opening_rank1_controlled_probe import (
     classify_candidate_setup,
     classify_opening_alpha_condition,
     evaluate_opening_rank1_controlled_probe,
+    load_probe_evaluations,
     load_probe_submissions,
+    load_rank_observations,
+    record_probe_evaluation,
     record_probe_submission,
+    record_rank1_observation,
 )
 from libs.runtime.opening_rank1_probe_authority import (
     resolve_opening_rank1_probe_authority,
@@ -137,6 +141,43 @@ def test_confirmed_recurrent_rank_is_eligible_without_high_risk() -> None:
 
     assert condition["condition"] == "CONFIRMED_RECURRENT_RANK"
     assert result["applied"] is True
+
+
+def test_probe_rejects_late_chase_after_rank1_signal_price_drift() -> None:
+    candidate = _candidate(fresh=False)
+    candidate["price"] = 103.0
+
+    result = _evaluate(
+        selected=candidate,
+        prior_rank_observations=[
+            {
+                "symbol": "005930",
+                "observed_epoch": _epoch(9, 7),
+                "observed_price": 100.0,
+            }
+        ],
+    )
+
+    assert result["applied"] is False
+    assert result["reason"] == "opening_alpha_signal_price_drift_exceeded"
+    assert round(result["opening_alpha_condition"]["signal_price_drift_pct"], 6) == 0.03
+
+
+def test_rank1_observation_persists_signal_price(tmp_path: Path) -> None:
+    recorded = record_rank1_observation(
+        day="2026-08-17",
+        symbol="005930",
+        observed_epoch=_epoch(9, 1),
+        run_id="signal-price",
+        observed_price=71300.0,
+        price_source="market.quote.cur",
+        root=tmp_path,
+    )
+
+    assert recorded["recorded"] is True
+    rows = load_rank_observations("2026-08-17", root=tmp_path)
+    assert rows[0]["observed_price"] == 71300.0
+    assert rows[0]["price_source"] == "market.quote.cur"
 
 
 def test_probe_preserves_hard_safety_guards() -> None:
@@ -392,6 +433,36 @@ def test_probe_ledger_allows_only_one_submission_per_day(tmp_path: Path) -> None
     assert rows[0]["run_id"] == "run-1"
 
 
+def test_probe_evaluation_records_rejection_reason_once_per_run_and_symbol(
+    tmp_path: Path,
+) -> None:
+    decision = {
+        **_evaluate(original_wait_reason="same_symbol_position_open"),
+        "selection_authority": {"aligned": True},
+    }
+
+    first = record_probe_evaluation(
+        decision,
+        run_id="run-rejected",
+        recorded_at="2026-08-17T00:10:00+00:00",
+        root=tmp_path,
+    )
+    second = record_probe_evaluation(
+        decision,
+        run_id="run-rejected",
+        recorded_at="2026-08-17T00:11:00+00:00",
+        root=tmp_path,
+    )
+
+    rows = load_probe_evaluations("2026-08-17", root=tmp_path)
+    assert first["recorded"] is True
+    assert second["recorded"] is False
+    assert second["reason"] == "evaluation_already_recorded"
+    assert len(rows) == 1
+    assert rows[0]["applied"] is False
+    assert rows[0]["reason"] == "wait_reason_not_overrideable"
+
+
 def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> None:
     rows = [
         {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
@@ -427,6 +498,11 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
         monitor_module,
         "record_rank1_observation",
         lambda **_kwargs: {"recorded": True, "count": 1},
+    )
+    monkeypatch.setattr(
+        monitor_module,
+        "record_probe_evaluation",
+        lambda *_args, **_kwargs: {"recorded": True, "reason": "recorded", "count": 1},
     )
     monkeypatch.setattr(
         monitor_module,

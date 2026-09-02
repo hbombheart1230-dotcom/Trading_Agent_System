@@ -1,7 +1,34 @@
 import json
 from pathlib import Path
 
-from libs.reporting.closeout_maintenance import write_closeout_maintenance_report
+from libs.reporting.closeout_maintenance import (
+    _build_opening_rank1_closeout_with_offline_fallback,
+    write_closeout_maintenance_report,
+)
+
+
+def test_opening_rank1_closeout_falls_back_to_local_evidence_on_network_failure(
+    tmp_path,
+) -> None:
+    calls = []
+
+    def builder(**kwargs):
+        calls.append(kwargs["allow_fresh_fetch"])
+        if kwargs["allow_fresh_fetch"]:
+            raise ConnectionError("mockapi unavailable")
+        return {"ok": True, "day_status": "FORWARD_INCOMPLETE"}
+
+    result = _build_opening_rank1_closeout_with_offline_fallback(
+        day="2026-09-01",
+        reports_root=tmp_path / "reports",
+        state_path=tmp_path / "state.json",
+        builder=builder,
+    )
+
+    assert calls == [True, False]
+    assert result["ok"] is True
+    assert result["degraded_offline_fallback"] is True
+    assert result["fresh_fetch_error"] == "mockapi unavailable"
 
 
 def test_write_closeout_maintenance_refreshes_q9_artifacts_after_json_exists(

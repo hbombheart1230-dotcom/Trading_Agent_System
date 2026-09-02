@@ -4205,7 +4205,8 @@ def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
     market = state.get("market_snapshot") if isinstance(state.get("market_snapshot"), dict) else {}
     price = it0.get("price")
-    if price in (None, ""):
+    controlled_lane = isinstance(meta.get("controlled_mock_lane"), dict)
+    if price in (None, "") and not controlled_lane:
         entry_metrics = meta.get("entry_metrics") if isinstance(meta.get("entry_metrics"), dict) else {}
         entry_cost_filter = meta.get("entry_cost_filter") if isinstance(meta.get("entry_cost_filter"), dict) else {}
         sizing = meta.get("sizing") if isinstance(meta.get("sizing"), dict) else {}

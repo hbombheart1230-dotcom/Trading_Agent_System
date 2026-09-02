@@ -214,6 +214,62 @@ def merge_minute_rows(*row_groups: Iterable[Mapping[str, Any]]) -> List[Dict[str
     return sorted(out, key=lambda row: (_epoch_seconds(row.get("ts")) or 0.0, str(row.get("raw_ts") or "")))
 
 
+def opening_rank1_eod_fallback_row(
+    *, reports_root: Path, day: str, symbol: str
+) -> tuple[Dict[str, Any] | None, Dict[str, Any]]:
+    path = (
+        Path(reports_root)
+        / "evaluation"
+        / "opening_rank1_shadow"
+        / str(day)
+        / "opening_rank1_shadow_daily.json"
+    )
+    payload = _read_json(path)
+    normalized = normalize_symbol(symbol or "", allow_test_symbols=True)
+    for raw in payload.get("episodes") or []:
+        episode = _as_dict(raw)
+        if normalize_symbol(episode.get("symbol") or "", allow_test_symbols=True) != normalized:
+            continue
+        eod = _as_dict(_as_dict(episode.get("checkpoints")).get("EOD"))
+        if str(eod.get("status") or "").strip().lower() != "observed":
+            continue
+        price = eod.get("price") if eod.get("price") not in (None, "") else eod.get("observed_price")
+        try:
+            close = float(price)
+        except Exception:
+            continue
+        observed_epoch = _epoch_seconds(eod.get("observed_epoch") or eod.get("observed_ts"))
+        if observed_epoch is None:
+            try:
+                observed_epoch = datetime.fromisoformat(str(day)).replace(
+                    hour=15, minute=30, tzinfo=KST
+                ).timestamp()
+            except Exception:
+                continue
+        observed_kst = datetime.fromtimestamp(observed_epoch, tz=timezone.utc).astimezone(KST)
+        row = {
+            "ts": int(observed_epoch),
+            "raw_ts": observed_kst.strftime("%Y%m%d%H%M%S"),
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": eod.get("volume"),
+            "source": "opening_rank1_shadow.EOD",
+            "eod_fallback": True,
+        }
+        return row, {
+            "applied": True,
+            "source": "opening_rank1_shadow.EOD",
+            "source_path": str(path),
+        }
+    return None, {
+        "applied": False,
+        "reason": "matching_observed_opening_rank1_eod_not_found",
+        "source_path": str(path),
+    }
+
+
 def fetch_fresh_minute_rows_for_symbol(symbol: str, *, run_id: str = "post_exit_shadow_recap") -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     normalized = normalize_symbol(symbol or "", allow_test_symbols=True)
     meta: Dict[str, Any] = {
@@ -552,6 +608,15 @@ def build_post_exit_shadow_recap(
                 fresh_minute_fetch = {**cached_fetch, "cache_hit": True}
             fresh_rows = same_day_closeout_rows_for_shadow(shadow, fresh_rows)
             rows = merge_minute_rows(rows, fresh_rows)
+        eod_fallback: Dict[str, Any] = {"applied": False}
+        if symbol and not _rows_reach_regular_close(rows):
+            fallback_row, eod_fallback = opening_rank1_eod_fallback_row(
+                reports_root=reports_root,
+                day=day,
+                symbol=symbol,
+            )
+            if fallback_row:
+                rows = merge_minute_rows(rows, [fallback_row])
         updated_shadow = (
             update_post_exit_shadow_with_price_observations(shadow, minute_rows=rows)
             if rows
@@ -578,6 +643,7 @@ def build_post_exit_shadow_recap(
                 "label": _trade_label(report_path, report, updated_shadow),
                 "source_minute_rows": len(rows),
                 "fresh_minute_fetch": fresh_minute_fetch,
+                "eod_fallback": eod_fallback,
             }
         )
 

@@ -21,6 +21,7 @@ from .ledger import (
     record_accepted_submission,
     record_attempt,
     record_evaluations,
+    reconcile_submissions_with_broker_orders,
     signal_already_attempted,
 )
 from .signals import (
@@ -300,6 +301,18 @@ def inject_controlled_mock_lane_intent(
         return finish("mock_broker_http_execution_required")
     if _text(state.get("runtime_phase") or "session").lower() != "session":
         return finish("session_phase_required")
+    try:
+        from graphs.nodes.skill_contracts import extract_account_orders_rows
+
+        broker_orders, _broker_order_meta = extract_account_orders_rows(state)
+    except Exception:
+        broker_orders = []
+    surface["broker_truth_reconciliation"] = reconcile_submissions_with_broker_orders(
+        day=day,
+        broker_orders=broker_orders,
+        recorded_at=datetime.fromtimestamp(now_epoch, tz=KST).isoformat(),
+        root=ledger_root,
+    )
     prior_surface = _mapping(state.get("controlled_mock_lanes"))
     if (
         prior_surface.get("injected")

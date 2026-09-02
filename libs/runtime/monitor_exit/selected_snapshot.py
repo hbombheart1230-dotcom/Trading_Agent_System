@@ -6,7 +6,7 @@ from graphs.nodes.skill_contracts import extract_market_quotes
 from libs.core.symbols import normalize_symbol
 from libs.runtime.feature_engine import build_feature_row
 from libs.runtime.monitor_exit.numeric import to_float
-from libs.runtime.monitor_exit.price_resolution import resolve_price_with_source
+from libs.runtime.monitor_exit.price_resolution import quote_observed_epoch, resolve_price_with_source
 
 
 def feature_alias_map(feature_row: Dict[str, Any], *, quote: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -152,6 +152,7 @@ def monitor_selected_snapshot_for_symbol(
     if features:
         base["features"] = dict(features)
     base["_monitor_price_source"] = str(price_source)
+    base["_monitor_quote_observed_epoch"] = quote_observed_epoch(quote)
     base["_monitor_feature_source"] = str(feature_source)
     prior_bar_low = prior_bar_low_for_symbol(state, sym)
     if prior_bar_low is not None and prior_bar_low > 0.0:

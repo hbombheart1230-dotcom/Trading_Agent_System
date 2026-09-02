@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 58,
+  "entry_count": 61,
   "entries": [
     {
       "date": "2026-02-07",
@@ -1538,6 +1538,101 @@
         "source_baseline": "6aa4e398e2e1c33482cab3dbf2518e7b03c18a10",
         "provenance_baseline": "c94746b0974e44a80550a7e0af0c20b4101db639"
       }
+    },
+    {
+      "date": "2026-08-31",
+      "version": "Controlled Lane Observability Integrity",
+      "title": "Controlled Lane Observability and Test Integrity",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "OBSERVABILITY",
+        "REPORTING",
+        "TEST_INTEGRITY"
+      ],
+      "summary": "The existing Opening Alpha and Q10/Q12 controlled policies are now observable without changing trading behavior, and execution tests can no longer contaminate live canonical artifacts.",
+      "details": [
+        "Opening Alpha records evaluated and rejected Rank-1 candidates with exact reasons during the opening window.",
+        "Operator daily summaries expose Q10 Semiconductor, Q10 Index, Q12 BTC-Woori and Opening Alpha evaluation, attempt and accepted-submission state.",
+        "Q12 reports separate intraday shadow-forward evidence from mandatory 08:55 controlled-lane input evidence.",
+        "Execution tests redirect canonical artifacts to pytest temporary storage instead of reports/canonical."
+      ],
+      "impact": "Operators can distinguish no candidate, missing input, guard rejection, broker attempt and accepted submission while preserving the existing mock trading policy.",
+      "sources": [
+        "docs/daily_patch/2026-08-31_controlled_lane_observability_integrity.md",
+        "libs/runtime/opening_rank1_controlled_probe.py",
+        "libs/reporting/controlled_validation_daily.py",
+        "libs/reporting/baseline_btc_woori_tech/report.py",
+        "tests/test_execute_from_packet.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-01",
+      "version": "Q12 Capture and Trade Truth Integrity",
+      "title": "Q12 Capture Rehydration and Trade Report Truth Alignment",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "Q12",
+        "REPORTING",
+        "INTEGRITY"
+      ],
+      "summary": "Q12 preserves the immutable 08:55 observation across long-running processes, while closed-trade summaries consistently use execution timestamps and broker realized PnL.",
+      "details": [
+        "Q12 signal payloads are rehydrated from the immutable 08:55 capture before decisions and hypothesis evaluation.",
+        "The hypothesis feature reads dedicated captured rows so newer incomplete provider rows cannot mask valid point-in-time momentum.",
+        "Closed-trade hold duration is calculated from entry and exit execution timestamps.",
+        "Final and LLM-facing summary text uses broker realized PnL and explicitly separates monitor mark observations.",
+        "No trading policy, threshold, eligibility, routing, approval or execution behavior changed."
+      ],
+      "impact": "Q12 evidence no longer regresses to missing after a valid capture, and operator reports no longer mix monitor drawdown snapshots with actual broker outcomes.",
+      "sources": [
+        "libs/reporting/baseline_btc_woori_tech/point_in_time_capture.py",
+        "libs/reporting/baseline_btc_woori_tech/hypothesis_features.py",
+        "libs/reporting/baseline_btc_woori_tech/pipeline.py",
+        "libs/reporting/trade_report_markdown_clean.py",
+        "tests/test_q12_btc_0855_capture.py",
+        "tests/test_trade_report_ai.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-01",
+      "version": "Opening Alpha Price Integrity",
+      "title": "Opening Alpha Signal and Exit Price Integrity",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "OPENING_ALPHA",
+        "EXECUTION_SAFETY",
+        "REPORTING"
+      ],
+      "summary": "Opening Alpha now bounds delayed signal-price drift, while held-symbol exits use timestamped current quotes and preserve freshness evidence.",
+      "details": [
+        "Open-position symbols are hydrated on every quote pass regardless of the Scanner candidate limit.",
+        "Hydrated quotes carry UTC observation timestamps; quotes older than 90 seconds use an account-position fallback or are rejected.",
+        "Opening Alpha persists the first Rank-1 signal price and rejects positive signal-to-entry drift above 2%.",
+        "Immediately before broker submission, Opening Alpha compares the initial signal price with the latest available best ask and returns NOT_SENT without a broker API call when drift exceeds 2%.",
+        "When a held-symbol quote older than the expected refresh cadence conflicts with the account current price on hard-stop status, the validated account/current source determines both STOP and HOLD outcomes.",
+        "Exit artifacts preserve quote age, account divergence, replacement source and stale-quote rejection evidence.",
+        "Post-exit recap can reuse an observed Opening Rank-1 EOD checkpoint when regular-close minute data is unavailable.",
+        "Alpha Board writes runtime validation from its authoritative builder instead of a canonical payload field that may be omitted.",
+        "The 16:00 Opening Rank-1 closeout refresh falls back to local artifacts when the Kiwoom history endpoint is unavailable and records the degraded source.",
+        "The 2026-09-01 post-exit recap was regenerated with all forward and EOD checkpoints observed."
+      ],
+      "impact": "The controlled relaxation can no longer chase a materially displaced Rank-1 signal or trigger a hard stop from an old quote without exposing and validating its price source.",
+      "sources": [
+        "graphs/nodes/hydrate_skill_results_node.py",
+        "libs/runtime/opening_rank1_controlled_probe.py",
+        "libs/runtime/monitor_exit/preview.py",
+        "libs/runtime/monitor_exit/observability.py",
+        "libs/reporting/post_exit_shadow_recap.py",
+        "libs/reporting/closeout_maintenance.py",
+        "libs/reporting/alpha_research_board/builder.py",
+        "tests/test_monitor_exit_price_freshness.py"
+      ],
+      "status": "current"
     }
   ]
 }

@@ -41,6 +41,10 @@ from libs.reporting.market_regime_rail_review import (
 from libs.reporting.q8_shadow_blocker_review import (
     build_q8_shadow_blocker_review,
 )
+from libs.reporting.controlled_validation_daily import (
+    build_controlled_validation_daily,
+    render_controlled_validation_daily_lines,
+)
 from libs.reporting.kiwoom_day_trade_diary_truth import match_trade_diary_row
 
 
@@ -2505,6 +2509,10 @@ def build_operator_daily_summary_artifact_payload(
             quant_shadow_evaluation=quant_shadow_evaluation,
         ),
         "strategist_llm_evaluation": build_strategist_llm_evaluation(rows, shadow_payloads),
+        "controlled_validation": build_controlled_validation_daily(
+            reports_root=reports_root,
+            day=normalized_day,
+        ),
         "symbol_summary": _symbol_rows(rows),
         "residual_positions": _build_residual_positions_payload(reports_root=reports_root, day=normalized_day),
     }
@@ -3004,6 +3012,9 @@ def render_operator_daily_summary_markdown(payload: Dict[str, Any]) -> str:
     lines.extend(_render_market_regime_rail_lines(payload))
     lines.extend(_render_q8_shadow_blocker_review_lines(payload))
     lines.extend(_render_strategist_llm_evaluation_lines(payload))
+    controlled_validation = payload.get("controlled_validation")
+    if isinstance(controlled_validation, dict):
+        lines.extend(render_controlled_validation_daily_lines(controlled_validation))
 
     lines += ["", "---", "", "## 종목별 요약", ""]
     if not symbols:

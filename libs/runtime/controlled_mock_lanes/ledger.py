@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from libs.core.symbols import normalize_symbol
+
 from .contracts import LEDGER_SCHEMA_VERSION
 
 
@@ -72,7 +74,7 @@ def lane_already_submitted(
 ) -> bool:
     return any(
         _text(row.get("lane_id")) == _text(lane_id)
-        and _text(row.get("status")) in {"BROKER_ACCEPTED", "FILLED"}
+        and _text(row.get("status")) in {"BROKER_ACCEPTED", "PARTIALLY_FILLED", "FILLED"}
         for row in load_submissions(day, root=root)
     )
 
@@ -183,8 +185,149 @@ def record_accepted_submission(
     return {"recorded": True, "reason": "accepted_submission_recorded", "path": str(path), "row": row}
 
 
+def _order_identity(value: Any) -> str:
+    text = _text(value)
+    stripped = text.lstrip("0")
+    return stripped or ("0" if text else "")
+
+
+def _integer(value: Any) -> int:
+    try:
+        return max(0, int(float(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def reconcile_submissions_with_broker_orders(
+    *,
+    day: str,
+    broker_orders: list[Mapping[str, Any]],
+    recorded_at: str,
+    root: Path | str | None = None,
+) -> dict[str, Any]:
+    path = ledger_path(day, root=root)
+    rows = load_submissions(day, root=root)
+    if not rows or not broker_orders:
+        return {"updated": 0, "path": str(path), "reason": "no_reconcilable_rows"}
+
+    indexed: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw in broker_orders:
+        order = dict(raw)
+        order_id = _order_identity(order.get("order_id") or order.get("ord_no"))
+        symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd") or order.get("code"))
+        if order_id and symbol:
+            indexed[(order_id, symbol)] = order
+
+    updated = 0
+    for row in rows:
+        key = (
+            _order_identity(row.get("order_id")),
+            normalize_symbol(row.get("symbol")),
+        )
+        truth = indexed.get(key)
+        if not truth:
+            continue
+        order_qty = _integer(truth.get("order_qty") or truth.get("ord_qty") or truth.get("qty"))
+        filled_qty = _integer(truth.get("filled_qty") or truth.get("cntr_qty"))
+        remaining_raw = truth.get("remaining_qty")
+        if remaining_raw in (None, ""):
+            remaining_raw = truth.get("ord_remnq") or truth.get("rmnd_qty")
+        remaining_qty = None if remaining_raw in (None, "") else _integer(remaining_raw)
+        status_text = " ".join(
+            _text(truth.get(key_name))
+            for key_name in ("status", "ord_st", "acpt_tp", "fill_status")
+        ).upper()
+        rejected = any(token in status_text for token in ("REJECT", "DENY", "CANCEL", "거부", "거절", "취소"))
+        if rejected and filled_qty <= 0:
+            next_status = "REJECTED"
+        elif filled_qty > 0 and (
+            remaining_qty == 0 or (order_qty > 0 and filled_qty >= order_qty)
+        ):
+            next_status = "FILLED"
+        elif filled_qty > 0:
+            next_status = "PARTIALLY_FILLED"
+        else:
+            next_status = "BROKER_ACCEPTED"
+        filled_price = truth.get("filled_price") or truth.get("cntr_uv") or truth.get("avg_price")
+        changed = any(
+            (
+                _text(row.get("status")) != next_status,
+                _integer(row.get("filled_qty")) != filled_qty,
+                row.get("filled_price") != filled_price and filled_price not in (None, ""),
+            )
+        )
+        row.update(
+            {
+                "status": next_status,
+                "filled_qty": filled_qty,
+                "filled_price": filled_price if filled_price not in (None, "") else row.get("filled_price"),
+                "broker_truth_synced_at": _text(recorded_at),
+                "broker_truth_order_qty": order_qty or None,
+                "broker_truth_remaining_qty": remaining_qty,
+            }
+        )
+        if changed:
+            updated += 1
+    if updated:
+        _write_rows(path, day=day, key="submissions", rows=rows)
+    attempt_rows = load_attempts(day, root=root)
+    attempt_updated = 0
+    for attempt in attempt_rows:
+        execution = attempt.get("execution") if isinstance(attempt.get("execution"), dict) else {}
+        key = (
+            _order_identity(execution.get("order_id") or attempt.get("order_id")),
+            normalize_symbol(attempt.get("symbol")),
+        )
+        truth = indexed.get(key)
+        if not truth:
+            continue
+        filled_qty = _integer(truth.get("filled_qty") or truth.get("cntr_qty"))
+        remaining_raw = truth.get("remaining_qty")
+        if remaining_raw in (None, ""):
+            remaining_raw = truth.get("ord_remnq") or truth.get("rmnd_qty")
+        remaining_qty = None if remaining_raw in (None, "") else _integer(remaining_raw)
+        order_qty = _integer(truth.get("order_qty") or truth.get("ord_qty") or truth.get("qty"))
+        if filled_qty > 0 and (remaining_qty == 0 or (order_qty > 0 and filled_qty >= order_qty)):
+            next_status = "FILLED"
+        elif filled_qty > 0:
+            next_status = "PARTIALLY_FILLED"
+        else:
+            next_status = _text(attempt.get("status")) or "BROKER_ACCEPTED"
+        filled_price = truth.get("filled_price") or truth.get("cntr_uv") or truth.get("avg_price")
+        if (
+            _text(attempt.get("status")) != next_status
+            or _integer(execution.get("filled_qty")) != filled_qty
+            or (filled_price not in (None, "") and execution.get("filled_price") != filled_price)
+        ):
+            attempt_updated += 1
+        execution["filled_qty"] = filled_qty
+        if filled_price not in (None, ""):
+            execution["filled_price"] = filled_price
+        execution["broker_truth_synced_at"] = _text(recorded_at)
+        attempt["execution"] = execution
+        attempt["status"] = next_status
+    if attempt_updated:
+        _write_rows(
+            attempts_path(day, root=root),
+            day=day,
+            key="attempts",
+            rows=attempt_rows,
+        )
+    return {
+        "updated": updated,
+        "attempts_updated": attempt_updated,
+        "path": str(path),
+        "reason": (
+            "broker_truth_reconciled"
+            if updated or attempt_updated
+            else "broker_truth_unchanged"
+        ),
+    }
+
+
 __all__ = [
     "attempts_path", "evaluations_path", "lane_already_submitted", "ledger_path",
     "load_attempts", "load_evaluations", "load_submissions", "record_accepted_submission",
-    "record_attempt", "record_evaluations", "signal_already_attempted",
+    "record_attempt", "record_evaluations", "reconcile_submissions_with_broker_orders",
+    "signal_already_attempted",
 ]

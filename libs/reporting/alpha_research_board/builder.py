@@ -640,7 +640,10 @@ def write_alpha_research_board(
     remaining_markdown_path.write_text(
         render_remaining_candidate_reviews(remaining), encoding="utf-8"
     )
-    runtime_validation = mapping(payload.get("runtime_validation"))
+    runtime_validation = build_immediate_opening_runtime_validation(
+        reports_root=reports_root,
+        through_day=through_day,
+    )
     runtime_json_path.write_text(
         json.dumps(runtime_validation, ensure_ascii=False, indent=2), encoding="utf-8"
     )

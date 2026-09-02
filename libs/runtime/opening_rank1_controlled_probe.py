@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
+from libs.core.symbols import normalize_symbol
 from libs.runtime.opening_rank1_probe_cost_edge import evaluate_opening_probe_cost_edge
 from libs.core.path_isolation import resolve_runtime_write_path
 
@@ -215,11 +216,13 @@ def record_rank1_observation(
     symbol: str,
     observed_epoch: int,
     run_id: str,
+    observed_price: float | None = None,
+    price_source: str = "",
     root: Path | str | None = None,
 ) -> dict[str, Any]:
     path = rank_observation_path(day, root=root)
     rows = load_rank_observations(day, root=root)
-    key = (_text(symbol), int(observed_epoch))
+    key = (normalize_symbol(symbol, allow_test_symbols=True), int(observed_epoch))
     if key[0] and not any(
         (_text(row.get("symbol")), _to_int(row.get("observed_epoch"))) == key
         for row in rows
@@ -229,6 +232,12 @@ def record_rank1_observation(
                 "symbol": key[0],
                 "observed_epoch": key[1],
                 "run_id": _text(run_id),
+                "observed_price": (
+                    float(observed_price)
+                    if observed_price is not None and _to_float(observed_price) > 0.0
+                    else None
+                ),
+                "price_source": _text(price_source),
             }
         )
     rows = sorted(rows, key=lambda row: _to_int(row.get("observed_epoch")))[-500:]
@@ -254,7 +263,7 @@ def classify_opening_alpha_condition(
     recent_minute_rows: list[Mapping[str, Any]] | None,
 ) -> dict[str, Any]:
     row = dict(candidate or {})
-    symbol = _text(row.get("symbol"))
+    symbol = normalize_symbol(row.get("symbol"), allow_test_symbols=True)
     setup = classify_candidate_setup(row)
     asset_class = _asset_class(row)
     risk_band, risk_score = _risk_band(row)
@@ -262,9 +271,30 @@ def classify_opening_alpha_condition(
     prior_same_symbol = [
         item
         for item in list(prior_rank_observations or [])
-        if _text(item.get("symbol")) == symbol
+        if normalize_symbol(item.get("symbol"), allow_test_symbols=True) == symbol
         and 0 < int(now_epoch) - _to_int(item.get("observed_epoch")) <= 300
     ]
+    feature_snapshot = (
+        row.get("compact_feature_snapshot")
+        if isinstance(row.get("compact_feature_snapshot"), Mapping)
+        else {}
+    )
+    current_price = _to_float(
+        row.get("price") or feature_snapshot.get("skill_quote_price")
+    )
+    priced_prior = [
+        item for item in prior_same_symbol if _to_float(item.get("observed_price")) > 0.0
+    ]
+    initial_observed_price = (
+        _to_float(min(priced_prior, key=lambda item: _to_int(item.get("observed_epoch"))).get("observed_price"))
+        if priced_prior
+        else 0.0
+    )
+    signal_price_drift_pct = (
+        float(current_price / initial_observed_price - 1.0)
+        if current_price > 0.0 and initial_observed_price > 0.0
+        else None
+    )
     high_common_directional = bool(
         asset_class == "common_stock"
         and risk_band == "HIGH"
@@ -289,6 +319,9 @@ def classify_opening_alpha_condition(
         "candidate_setup": setup,
         "prior_rank1_observations_5m": len(prior_same_symbol),
         "completed_return_1m_pct": return_1m,
+        "current_price": current_price or None,
+        "initial_observed_price": initial_observed_price or None,
+        "signal_price_drift_pct": signal_price_drift_pct,
         "conditions": {
             "HIGH_COMMON_DIRECTIONAL": high_common_directional,
             "CONFIRMED_RECURRENT_RANK": confirmed_recurrent,
@@ -319,6 +352,7 @@ def evaluate_opening_rank1_controlled_probe(
     enabled: Any = None,
     opening_end_minute: int = 20,
     qty_fraction: float = 0.25,
+    max_signal_price_drift_pct: float = 0.02,
 ) -> dict[str, Any]:
     candidate = dict(selected or {})
     entry = dict(entry_info or {})
@@ -362,6 +396,13 @@ def evaluate_opening_rank1_controlled_probe(
         "scanner_rank_source": rank_source,
         "candidate_setup": setup,
         "opening_alpha_condition": dict(alpha_condition),
+        "initial_signal_price": (
+            _to_float(alpha_condition.get("initial_observed_price"))
+            or _to_float(alpha_condition.get("current_price"))
+            or None
+        ),
+        "cached_decision_price": _to_float(alpha_condition.get("current_price")) or None,
+        "signal_to_cached_drift_pct": alpha_condition.get("signal_price_drift_pct"),
         "allowed_lane_conditions": sorted(ALLOWED_LANE_CONDITIONS),
         "original_wait_reason": _text(original_wait_reason),
         "base_entry_guard_reason": _text(base_entry_guard_reason),
@@ -377,6 +418,7 @@ def evaluate_opening_rank1_controlled_probe(
         ),
         "prior_probe_count": max(0, int(prior_probe_count)),
         "max_daily_probes": 1,
+        "max_signal_price_drift_pct": float(max_signal_price_drift_pct),
         "safety_contract": {
             "mock_only": True,
             "cost_filter_required": True,
@@ -386,6 +428,7 @@ def evaluate_opening_rank1_controlled_probe(
             "risk_off_block_preserved": True,
             "position_and_order_guards_preserved": True,
             "same_lane_reentry_allowed": False,
+            "signal_to_entry_price_drift_bounded": True,
             "exit_policy_unchanged": True,
         },
     }
@@ -410,6 +453,12 @@ def evaluate_opening_rank1_controlled_probe(
         return reject("outside_opening_window")
     if not bool(alpha_condition.get("eligible")):
         return reject("opening_alpha_condition_not_allowed")
+    signal_price_drift_pct = alpha_condition.get("signal_price_drift_pct")
+    if (
+        signal_price_drift_pct is not None
+        and float(signal_price_drift_pct) > float(max_signal_price_drift_pct)
+    ):
+        return reject("opening_alpha_signal_price_drift_exceeded")
     if same_symbol_reentry_detected:
         return reject("same_symbol_reentry_not_allowed")
     if int(prior_probe_count) >= 1:
@@ -452,6 +501,79 @@ def evaluate_opening_rank1_controlled_probe(
         and _text(base_entry_guard_reason) == "cost_adjusted_edge_not_ready"
         else ""
     )
+    return result
+
+
+def evaluate_opening_alpha_execution_price_guard(
+    *,
+    action: str,
+    order_meta: Mapping[str, Any] | None,
+    executable_price: Any,
+    executable_price_source: str,
+    executable_price_observed_at: Any = None,
+) -> dict[str, Any]:
+    meta = dict(order_meta or {})
+    probe = (
+        dict(meta.get("opening_rank1_controlled_probe") or {})
+        if isinstance(meta.get("opening_rank1_controlled_probe"), Mapping)
+        else {}
+    )
+    condition = (
+        dict(probe.get("opening_alpha_condition") or {})
+        if isinstance(probe.get("opening_alpha_condition"), Mapping)
+        else {}
+    )
+    applicable = bool(
+        _text(action).upper() == "BUY"
+        and _text(meta.get("entry_lane")) == "opening_rank1_controlled_probe"
+        and bool(probe.get("applied"))
+    )
+    initial_signal_price = (
+        _to_float(probe.get("initial_signal_price"))
+        or _to_float(condition.get("initial_observed_price"))
+        or _to_float(condition.get("current_price"))
+    )
+    cached_decision_price = (
+        _to_float(probe.get("cached_decision_price"))
+        or _to_float(condition.get("current_price"))
+        or _to_float(meta.get("current_price"))
+        or _to_float(meta.get("price"))
+    )
+    executable = _to_float(executable_price)
+    threshold = _to_float(probe.get("max_signal_price_drift_pct")) or 0.02
+    cached_drift = (
+        float(cached_decision_price / initial_signal_price - 1.0)
+        if initial_signal_price > 0.0 and cached_decision_price > 0.0
+        else None
+    )
+    executable_drift = (
+        float(executable / initial_signal_price - 1.0)
+        if initial_signal_price > 0.0 and executable > 0.0
+        else None
+    )
+    result = {
+        "schema_version": "opening_alpha_execution_price_guard.v1",
+        "applicable": applicable,
+        "allowed": True,
+        "initial_signal_price": initial_signal_price or None,
+        "cached_decision_price": cached_decision_price or None,
+        "executable_price": executable or None,
+        "executable_price_source": _text(executable_price_source),
+        "executable_price_observed_at": executable_price_observed_at,
+        "signal_to_cached_drift_pct": cached_drift,
+        "signal_to_executable_drift_pct": executable_drift,
+        "max_signal_price_drift_pct": float(threshold),
+        "block_reason": "",
+    }
+    if not applicable:
+        return result
+    if initial_signal_price <= 0.0 or executable <= 0.0:
+        result["allowed"] = False
+        result["block_reason"] = "opening_alpha_executable_price_unavailable"
+        return result
+    if executable_drift is not None and executable_drift > threshold:
+        result["allowed"] = False
+        result["block_reason"] = "opening_alpha_execution_price_drift"
     return result
 
 
@@ -595,6 +717,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "classify_candidate_setup",
     "classify_opening_alpha_condition",
+    "evaluate_opening_alpha_execution_price_guard",
     "evaluate_opening_rank1_controlled_probe",
     "effective_selected_rank",
     "evaluation_path",

@@ -13,6 +13,10 @@ from libs.reporting.event_log_reader import iter_jsonl_events
 from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.narrative_axes import build_narrative_explanation, narrative_axis_policy
 from libs.reporting.operator_candidate_decisions import load_candidate_decision_summary
+from libs.reporting.controlled_validation_daily import (
+    build_controlled_validation_daily,
+    render_controlled_validation_daily_lines,
+)
 from libs.reporting.report_metadata import (
     build_data_freshness,
     build_route_provenance,
@@ -1272,6 +1276,10 @@ def generate_operator_daily_summary(
 
     target_day = str(out.get("day") or day or "")
     canonical_report_root = _canonical_report_root(report_dir)
+    out["controlled_validation"] = build_controlled_validation_daily(
+        reports_root=canonical_report_root,
+        day=target_day,
+    )
     paths = daily_artifact_paths(canonical_report_root, target_day)
     js_path = paths["operator_summary_json"]
     md_path = paths["operator_summary_md"]
@@ -1386,6 +1394,11 @@ def generate_operator_daily_summary(
         "- semantics: candidate rejection occurs before OrderIntent; it is not an execution guard block.",
         "",
     ]
+    md_lines += render_controlled_validation_daily_lines(
+        out.get("controlled_validation")
+        if isinstance(out.get("controlled_validation"), dict)
+        else {}
+    )
     narrative_policy = out.get("narrative_axis_policy") if isinstance(out.get("narrative_axis_policy"), dict) else {}
     md_lines += [
         "## Narrative Axis Policy",

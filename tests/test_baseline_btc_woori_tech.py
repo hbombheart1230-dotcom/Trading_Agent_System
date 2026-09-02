@@ -374,6 +374,7 @@ def test_artifacts_have_no_order_intent_or_execution(tmp_path: Path) -> None:
     )
     decisions = json.loads(Path(result["decisions"]).read_text(encoding="utf-8"))
     forward = json.loads(Path(result["forward_returns"]).read_text(encoding="utf-8"))
+    report = Path(result["daily_report"]).read_text(encoding="utf-8")
 
     assert decisions["schema_version"] == DECISIONS_SCHEMA
     assert forward["schema_version"] == FORWARD_SCHEMA
@@ -382,6 +383,8 @@ def test_artifacts_have_no_order_intent_or_execution(tmp_path: Path) -> None:
     assert decisions["fixed_target"] == "041190.KQ"
     assert decisions["crypto_fear_greed"]["regime"] == "greed"
     assert decisions["crypto_fear_greed_behavior_effect"] == "observation_only"
+    assert "Controlled lane 08:55 evidence:" in report
+    assert "Controlled lane input status:" in report
     for row in decisions["decisions"]:
         assert row["order_execution_allowed"] is False
         assert row["order_intent"] is None

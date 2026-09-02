@@ -164,6 +164,7 @@ def build_monitor_exit_payload(
         "volatility_ratio": decision.get("volatility_ratio"),
         "volatility_regime": str(features.get("engine_regime") or ""),
         "price_source": str(decision.get("_price_source") or ""),
+        "price_freshness": dict(decision.get("price_freshness") or {}),
         "effective_price_source": str(decision.get("effective_price_source") or ""),
         "price_source_policy": PRICE_SOURCE_POLICY_TEXT,
         "feature_source": str(decision.get("_feature_source") or ""),

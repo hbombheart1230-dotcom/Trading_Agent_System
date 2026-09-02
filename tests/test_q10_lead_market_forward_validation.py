@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -169,3 +171,56 @@ def test_actual_reaction_and_shadow_metrics(tmp_path: Path) -> None:
     serialized = json.dumps(shadow)
     assert "OrderIntent" not in serialized
     assert "executor" not in serialized.lower()
+
+
+def test_zero_volume_open_placeholder_is_not_actual_open(tmp_path: Path) -> None:
+    day = "2026-09-02"
+    rows = [
+        {"ts": _epoch(day, "09:00") + 13, "open": 821.25, "high": 821.25,
+         "low": 821.25, "close": 821.25, "volume": 0},
+        {"ts": _epoch(day, "09:01") + 7, "open": 802.80, "high": 803.0,
+         "low": 802.0, "close": 802.5, "volume": 8347},
+        {"ts": _epoch(day, "09:05"), "open": 797.2, "high": 797.5,
+         "low": 796.8, "close": 797.02, "volume": 12000},
+    ]
+    reactions = build_actual_reactions(
+        day=day,
+        candle_map={"005930": rows},
+        macro_root=tmp_path,
+        signal_inputs={"samsung_previous_close": 821.25},
+    )
+    samsung = reactions["targets"]["samsung"]
+
+    assert samsung["points"]["09:00"]["price"] == 802.80
+    assert samsung["points"]["09:05"]["price"] == 797.02
+    assert samsung["opening_gap_pct"] == pytest.approx(-2.246575, abs=1e-6)
+    assert (797.02 / 802.80 - 1.0) * 100.0 == pytest.approx(-0.72, abs=0.01)
+    assert (797.02 / 821.25 - 1.0) * 100.0 == pytest.approx(-2.95, abs=0.01)
+    assert classify_reaction(
+        expected_state="RISK_OFF",
+        opening_gap_pct=samsung["opening_gap_pct"],
+    ) == "OVERREACTION"
+
+
+def test_actual_open_is_insufficient_without_positive_volume_candle(tmp_path: Path) -> None:
+    day = "2026-09-02"
+    reactions = build_actual_reactions(
+        day=day,
+        candle_map={
+            "005930": [{
+                "ts": _epoch(day, "09:00") + 13,
+                "open": 821.25,
+                "high": 821.25,
+                "low": 821.25,
+                "close": 821.25,
+                "volume": 0,
+            }]
+        },
+        macro_root=tmp_path,
+        signal_inputs={"samsung_previous_close": 821.25},
+    )
+
+    samsung = reactions["targets"]["samsung"]
+    assert samsung["points"]["09:00"]["status"] == "PENDING"
+    assert samsung["opening_gap_pct"] is None
+    assert samsung["evidence_status"] == "INSUFFICIENT_EVIDENCE"

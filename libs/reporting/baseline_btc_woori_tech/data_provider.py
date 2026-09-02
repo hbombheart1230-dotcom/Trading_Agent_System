@@ -201,19 +201,14 @@ def load_btc_signal_rows(
         "btc_usd": _momentum_rows(btc_usd_rows, source="yfinance:BTC-USD"),
         "coinbase_proxy": _momentum_rows(coin_rows, source="yfinance:COIN"),
     }
-    from .point_in_time_capture import load_capture_snapshot, load_captured_sources
+    from .point_in_time_capture import merge_capture_into_signal_payload
 
-    captured_snapshot = load_capture_snapshot(day)
-    captured_sources = load_captured_sources(day)
-    for source_name, captured_rows in captured_sources.items():
-        existing = list(sources.get(source_name) or [])
-        by_epoch = {
-            int(row.get("ts") or 0): dict(row)
-            for row in [*existing, *captured_rows]
-            if int(row.get("ts") or 0) > 0
-        }
-        sources[source_name] = [by_epoch[key] for key in sorted(by_epoch)]
-    available = [key for key, rows in sources.items() if rows]
+    captured_payload = merge_capture_into_signal_payload(
+        {"sources": sources},
+        day=day,
+    )
+    sources = dict(captured_payload.get("sources") or {})
+    available = list(captured_payload.get("available_sources") or [])
     # This daily history is research-only. It is deliberately excluded from
     # ``sources`` so existing Q12 eligibility and ranking cannot consume it.
     def daily_research_rows(ticker: str) -> list[dict[str, Any]]:
@@ -243,9 +238,9 @@ def load_btc_signal_rows(
             "woori_daily": woori_daily_rows,
         },
         "fallback_reason": "" if available else "btc_and_crypto_proxy_unavailable",
-        "btc_0855_capture_reused": bool(captured_sources),
-        "btc_0855_capture_status": str(captured_snapshot.get("capture_status") or ""),
-        "btc_0855_capture_reason": str(captured_snapshot.get("reason") or ""),
+        "btc_0855_capture_reused": bool(captured_payload.get("btc_0855_capture_reused")),
+        "btc_0855_capture_status": str(captured_payload.get("btc_0855_capture_status") or ""),
+        "btc_0855_capture_reason": str(captured_payload.get("btc_0855_capture_reason") or ""),
         "research_context_requested": bool(include_research_context),
     }
 

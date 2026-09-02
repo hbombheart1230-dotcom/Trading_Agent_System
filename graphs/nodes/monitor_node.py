@@ -38,6 +38,7 @@ from libs.runtime.opening_rank1_controlled_probe import (
     evaluate_opening_rank1_controlled_probe,
     load_probe_submissions,
     load_rank_observations,
+    record_probe_evaluation,
     record_rank1_observation,
     record_probe_submission,
     session_clock as _opening_probe_session_clock,
@@ -909,6 +910,8 @@ def _evaluate_monitor_entry_candidate(
             symbol=symbol,
             observed_epoch=now_epoch_for_entry,
             run_id=str(state.get("run_id") or ""),
+            observed_price=_to_float(selected.get("price")),
+            price_source=str(selected.get("_monitor_price_source") or ""),
         )
     if bool(opening_rank1_controlled_probe.get("applied")):
         reservation = record_probe_submission(
@@ -933,6 +936,12 @@ def _evaluate_monitor_entry_candidate(
             opening_rank1_controlled_probe["reason"] = str(
                 reservation.get("reason") or "probe_reservation_failed"
             )
+    if bool(allow_opening_rank1_controlled_probe) and 0 <= _probe_minutes <= 20:
+        opening_rank1_controlled_probe["evaluation_record"] = record_probe_evaluation(
+            opening_rank1_controlled_probe,
+            run_id=str(state.get("run_id") or ""),
+            recorded_at=str(state.get("ts") or now_epoch_for_entry),
+        )
     entry_info["opening_rank1_controlled_probe"] = dict(opening_rank1_controlled_probe)
     state["opening_rank1_controlled_probe"] = dict(opening_rank1_controlled_probe)
 
@@ -2010,6 +2019,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "asset_class_detected": str(decision.get("asset_class_detected") or ""),
                         "avg_price": avg_price if avg_price > 0.0 else None,
                         "price": price,
+                        "price_freshness": dict(decision.get("price_freshness") or {}),
                         "technical_price": decision.get("technical_price"),
                         "technical_price_source": str(decision.get("technical_price_source") or ""),
                         "effective_price": decision.get("effective_price"),
@@ -2109,6 +2119,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_technical_price_source": str(exit_info.get("technical_price_source") or ""),
         "exit_effective_price": exit_info.get("effective_price"),
         "exit_effective_price_source": str(exit_info.get("effective_price_source") or ""),
+        "exit_price_freshness": dict(exit_info.get("price_freshness") or {}),
+        "peak_update": (
+            dict(state["peak_update_events"][-1])
+            if isinstance(state.get("peak_update_events"), list)
+            and state.get("peak_update_events")
+            else {}
+        ),
         "exit_account_current_price": exit_info.get("account_current_price"),
         "exit_account_mark_price": exit_info.get("account_mark_price"),
         "exit_account_unrealized_pnl": exit_info.get("account_unrealized_pnl"),
@@ -3283,6 +3300,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "intent_side": str((state.get("monitor_output") or {}).get("intent_side") or "NOOP"),
             "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
             "price_source": str(exit_info.get("price_source") or ""),
+            "peak_update": (
+                dict(state["peak_update_events"][-1])
+                if isinstance(state.get("peak_update_events"), list)
+                and state.get("peak_update_events")
+                else {}
+            ),
             "feature_source": str(exit_info.get("feature_source") or ""),
             "entry_evaluated": bool(entry_info.get("evaluated")),
             "entry_triggered": bool(entry_info.get("triggered")),

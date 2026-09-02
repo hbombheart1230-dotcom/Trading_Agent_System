@@ -117,6 +117,16 @@ def test_q12_candidate_reaches_mock_broker_fill_without_strategist_or_scanner(
         "recent_buy_guard_path": str(tmp_path / "recent_buy_guard.json"),
         "recent_sell_guard_path": str(tmp_path / "recent_sell_guard.json"),
         "portfolio_snapshot": {"positions": [], "open_positions": 0},
+        "skill_results": {
+            "market.quote": {
+                "041190": {
+                    "symbol": "041190",
+                    "price": 6200,
+                    "best_ask": 6200,
+                    "best_bid": 6190,
+                }
+            }
+        },
         "persisted_state": {"mock_positions": [], "mock_cash": 1_000_000.0},
         "policy": {"max_positions": 3},
         "risk_context": {"max_positions": 3},

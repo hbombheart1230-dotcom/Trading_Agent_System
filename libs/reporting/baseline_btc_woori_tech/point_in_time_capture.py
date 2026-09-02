@@ -57,6 +57,53 @@ def load_captured_sources(
     }
 
 
+def merge_capture_into_signal_payload(
+    payload: Mapping[str, Any] | None,
+    *,
+    day: str,
+    root: Path | str = DEFAULT_ROOT,
+) -> dict[str, Any]:
+    """Rehydrate a signal payload from the immutable 08:55 capture.
+
+    The baseline process may keep an older in-memory payload across the capture
+    boundary. Reading the daily capture here makes the point-in-time artifact
+    authoritative without fetching or backfilling new market data.
+    """
+
+    result = dict(payload or {})
+    sources_value = result.get("sources")
+    sources = {
+        str(name): [dict(row) for row in list(rows or []) if isinstance(row, Mapping)]
+        for name, rows in (
+            sources_value.items() if isinstance(sources_value, Mapping) else []
+        )
+    }
+    snapshot = load_capture_snapshot(day, root=root)
+    captured_sources = load_captured_sources(day, root=root)
+    for source_name, captured_rows in captured_sources.items():
+        by_epoch = {
+            int(row.get("ts") or 0): dict(row)
+            for row in [*list(sources.get(source_name) or []), *captured_rows]
+            if int(row.get("ts") or 0) > 0
+        }
+        sources[source_name] = [by_epoch[epoch] for epoch in sorted(by_epoch)]
+
+    result["sources"] = sources
+    available_sources = sorted(name for name, rows in sources.items() if rows)
+    result["available_sources"] = available_sources
+    result["available"] = bool(available_sources)
+    result["btc_0855_capture_reused"] = bool(captured_sources)
+    result["btc_0855_capture_status"] = str(snapshot.get("capture_status") or "")
+    result["btc_0855_capture_reason"] = str(snapshot.get("reason") or "")
+    result["btc_0855_captured_sources"] = captured_sources
+    if available_sources and result.get("fallback_reason") in {
+        "fresh_fetch_disabled",
+        "btc_and_crypto_proxy_unavailable",
+    }:
+        result["fallback_reason"] = ""
+    return result
+
+
 def _target(day: str) -> datetime:
     return datetime.combine(date.fromisoformat(str(day)[:10]), time(8, 55), tzinfo=KST)
 
@@ -192,4 +239,5 @@ __all__ = [
     "capture_q12_btc_0855_snapshot",
     "load_capture_snapshot",
     "load_captured_sources",
+    "merge_capture_into_signal_payload",
 ]

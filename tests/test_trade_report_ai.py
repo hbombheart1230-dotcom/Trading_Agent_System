@@ -6150,3 +6150,54 @@ def test_render_trade_report_markdown_translates_timeline_and_final_conclusion()
     assert "- 기존 판단이 무효화되는 조건은" in markdown
 
 
+def test_trade_summary_uses_execution_timestamps_and_broker_pnl_for_closed_trade() -> None:
+    report = {
+        "trade_id": "TRD_20260901_001210_01",
+        "symbol": "001210",
+        "status": "closed",
+        "action": "SELL",
+        "truth_surface": {
+            "status": {"status": "closed"},
+            "price": {"broker_buy_price": 13830, "broker_fill_price": 13590},
+            "pnl": {
+                "value": -20687,
+                "pct": -0.0262,
+                "pnl_truth_source": "kiwoom.ka10170",
+            },
+        },
+        "shared_facts": {
+            "symbol": "001210",
+            "status": "closed",
+            "action": "SELL",
+            "holding_duration": "1.3m",
+            "pnl": -20687,
+            "pnl_pct": -0.0262,
+        },
+        "fact_payload": {
+            "trade": {
+                "entry_execution_details": {"ts": "2026-09-01T00:02:55+00:00"},
+                "exit_execution_details": {"ts": "2026-09-01T00:04:14+00:00"},
+            }
+        },
+        "holding_monitoring_story": {
+            "summary": "Position age was 30 seconds.",
+            "bullets": ["Current drawdown: -5.06%"],
+        },
+        "exit_decision": {"summary": "Current drawdown was -5.06%.", "bullets": []},
+        "final_operator_conclusion": {
+            "summary": "30초 보유 후 -5.06% 손실로 청산했습니다.",
+            "current_action": "SELL",
+        },
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    summary_input = mod.build_trade_summary_input(report)
+    final_section = summary.split("## 🔚 최종 판단", 1)[1]
+
+    assert "보유 시간: 1분 19초" in summary
+    assert "1분 19초 보유 후 손실 (-2.62%, -20,687원)" in final_section
+    assert "-5.06%" not in final_section
+    assert summary_input["decision_flow"]["holding_duration"] == "1분 19초"
+    assert summary_input["strategy_horizon"]["actual_hold_sec"] == 79.0
+    assert "-2.62%" in summary_input["decision_flow"]["final_operator_summary"]
+    assert "-5.06%" not in summary_input["decision_flow"]["final_operator_summary"]

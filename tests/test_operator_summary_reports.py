@@ -1130,3 +1130,62 @@ def test_operator_daily_summary_syncs_strategy_memory_artifacts(tmp_path: Path) 
     assert "entry_exit:breakout->peak_drawdown" in (
         memory.get("pattern_performance_snapshot", {}).get("problem_patterns") or []
     )
+
+
+def test_operator_daily_summary_exposes_controlled_lane_and_opening_alpha_status(
+    tmp_path: Path,
+) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-08-31"
+    controlled = tmp_path / "data" / "logs" / "controlled_mock_lanes" / day
+    opening = tmp_path / "data" / "logs" / "opening_rank1_controlled_probe" / day
+    _write_json(
+        controlled / "lane_evaluations.json",
+        {
+            "evaluations": [
+                {
+                    "lane_id": "Q10_SEMICONDUCTOR",
+                    "status": "NO_CANDIDATE",
+                    "reason": "preopen_snapshot_missing",
+                    "observation_count": 3,
+                },
+                {
+                    "lane_id": "BTC_WOORI",
+                    "status": "READY",
+                    "reason": "conditions_met",
+                    "observation_count": 1,
+                },
+            ]
+        },
+    )
+    _write_json(
+        controlled / "lane_attempts.json",
+        {"attempts": [{"lane_id": "BTC_WOORI", "status": "BROKER_REJECTED"}]},
+    )
+    _write_json(controlled / "lane_submissions.json", {"submissions": []})
+    _write_json(
+        opening / "probe_evaluations.json",
+        {
+            "evaluations": [
+                {
+                    "eligible": True,
+                    "applied": False,
+                    "reason": "non_overrideable_quant_blocker",
+                }
+            ]
+        },
+    )
+
+    md, _json, payload = generate_operator_daily_summary_artifact(
+        reports_root=reports,
+        day=day,
+    )
+
+    controlled_payload = payload["controlled_validation"]
+    assert controlled_payload["opening_alpha"]["evaluation_count"] == 1
+    assert controlled_payload["opening_alpha"]["applied_count"] == 0
+    assert controlled_payload["lanes"][0]["reason"] == "preopen_snapshot_missing"
+    text = md.read_text(encoding="utf-8")
+    assert "## Controlled Validation Lanes" in text
+    assert "Q12 BTC-Woori: `READY`" in text
+    assert "non_overrideable_quant_blocker=1" in text

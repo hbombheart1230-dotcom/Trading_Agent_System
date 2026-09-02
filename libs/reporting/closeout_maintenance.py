@@ -28,6 +28,39 @@ def _artifact_status(path: Any) -> Dict[str, Any]:
     return {"path": text, "exists": p.exists(), "size": p.stat().st_size if p.exists() else 0}
 
 
+def _build_opening_rank1_closeout_with_offline_fallback(
+    *,
+    day: str,
+    reports_root: Path,
+    state_path: Path,
+    builder: Any = None,
+) -> Dict[str, Any]:
+    if builder is None:
+        from libs.reporting.opening_rank1_shadow import build_opening_rank1_shadow
+
+        builder = build_opening_rank1_shadow
+    try:
+        result = builder(
+            day=day,
+            reports_root=reports_root,
+            state_path=state_path,
+            allow_fresh_fetch=True,
+        )
+        return dict(result or {})
+    except Exception as fresh_exc:
+        result = builder(
+            day=day,
+            reports_root=reports_root,
+            state_path=state_path,
+            allow_fresh_fetch=False,
+        )
+        return {
+            **dict(result or {}),
+            "degraded_offline_fallback": True,
+            "fresh_fetch_error": str(fresh_exc),
+        }
+
+
 def run_closeout_maintenance(
     *,
     day: str,
@@ -239,18 +272,17 @@ def run_closeout_maintenance(
         }
 
     try:
-        from libs.reporting.opening_rank1_shadow import (
-            build_opening_rank1_shadow,
-        )
-
-        opening_rank1 = build_opening_rank1_shadow(
+        opening_rank1 = _build_opening_rank1_closeout_with_offline_fallback(
             day=normalized_day,
             reports_root=reports_root,
             state_path=state_path or Path("data/state.json"),
-            allow_fresh_fetch=True,
         )
         out["steps"]["opening_rank1_prospective_shadow"] = {
             "ok": bool(opening_rank1.get("ok")),
+            "degraded_offline_fallback": bool(
+                opening_rank1.get("degraded_offline_fallback")
+            ),
+            "fresh_fetch_error": opening_rank1.get("fresh_fetch_error"),
             "day_status": opening_rank1.get("day_status"),
             "episode_count": opening_rank1.get("episode_count"),
             "observed_30m_count": opening_rank1.get("observed_30m_count"),

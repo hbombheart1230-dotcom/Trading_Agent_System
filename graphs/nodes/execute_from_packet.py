@@ -31,6 +31,9 @@ from libs.execution.guards.broker_mutation import (
     is_mutation_api_id,
 )
 from libs.core.path_isolation import isolate_canonical_path_for_pytest
+from libs.runtime.opening_rank1_controlled_probe import (
+    evaluate_opening_alpha_execution_price_guard,
+)
 
 
 def _import_api_catalog():
@@ -379,6 +382,8 @@ def _extract_upper_limit_quote_snapshot(state: Dict[str, Any], symbol: str) -> D
         "best_bid": 0.0,
         "change_pct": 0.0,
         "raw_row_present": False,
+        "observed_at": None,
+        "observed_epoch": None,
     }
     if not out["symbol"]:
         return out
@@ -403,6 +408,8 @@ def _extract_upper_limit_quote_snapshot(state: Dict[str, Any], symbol: str) -> D
     out["best_ask"] = _coerce_float(quote.get("best_ask") or quote.get("ask"), 0.0)
     out["best_bid"] = _coerce_float(quote.get("best_bid") or quote.get("bid"), 0.0)
     out["change_pct"] = _coerce_float(quote.get("change_pct"), 0.0)
+    out["observed_at"] = quote.get("_observed_at_utc") or quote.get("observed_at")
+    out["observed_epoch"] = quote.get("_observed_epoch") or quote.get("observed_epoch")
 
     raw_quote = quote.get("raw") if isinstance(quote.get("raw"), dict) else {}
     raw_rows = raw_quote.get("cntr_infr") if isinstance(raw_quote.get("cntr_infr"), list) else []
@@ -3226,6 +3233,130 @@ def execute_from_packet(state: dict) -> dict:
                 supervisor_details={**dict(portfolio_details or {}), **dict(degrade_details or {})},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        order_symbol = _extract_order_symbol(order)
+        quote_snapshot = _augment_quote_snapshot_with_spread(
+            _extract_upper_limit_quote_snapshot(state, order_symbol)
+        )
+        executable_price = _coerce_float(quote_snapshot.get("best_ask"), 0.0)
+        executable_price_source = "market.quote.best_ask"
+        if executable_price <= 0.0:
+            executable_price = _coerce_float(quote_snapshot.get("current_price"), 0.0)
+            executable_price_source = "market.quote.current_price"
+        order_meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+        controlled_lane = (
+            order_meta.get("controlled_mock_lane")
+            if isinstance(order_meta.get("controlled_mock_lane"), dict)
+            else {}
+        )
+        if action == "BUY" and controlled_lane:
+            quote_symbol = normalize_symbol(quote_snapshot.get("symbol"))
+            quote_valid = bool(
+                quote_snapshot.get("quote_present")
+                and quote_symbol == order_symbol
+                and executable_price > 0.0
+            )
+            if not quote_valid:
+                block_reason = (
+                    "controlled_lane_executable_quote_symbol_mismatch"
+                    if quote_symbol and quote_symbol != order_symbol
+                    else "controlled_lane_executable_quote_missing"
+                )
+                integrity = {
+                    "allowed": False,
+                    "block_reason": block_reason,
+                    "lane_id": str(controlled_lane.get("lane_id") or ""),
+                    "symbol": order_symbol,
+                    "quote_symbol": quote_symbol or None,
+                    "quote_present": bool(quote_snapshot.get("quote_present")),
+                    "executable_price": executable_price or None,
+                    "executable_price_source": executable_price_source,
+                    "broker_api_called": False,
+                }
+                state["execution"] = _normalize_execution(
+                    allowed=False,
+                    execution_result=None,
+                    allow_result=None,
+                    order=order,
+                    reason=block_reason,
+                    strategy_policy_summary=strategy_policy_summary,
+                )
+                state["execution"]["controlled_lane_execution_price_guard"] = integrity
+                _append_execution_trace_entries(
+                    state,
+                    order=order,
+                    execution=state["execution"],
+                    allow_result=None,
+                    strategy_policy_summary=strategy_policy_summary,
+                )
+                logger.log(
+                    run_id=run_id,
+                    stage="execute_from_packet",
+                    event="controlled_lane_execution_price_guard_block",
+                    payload=integrity,
+                )
+                _persist_execution_artifacts(
+                    supervisor_allowed=False,
+                    supervisor_reason=block_reason,
+                    supervisor_details=integrity,
+                )
+                logger.log(
+                    run_id=run_id,
+                    stage="execute_from_packet",
+                    event="end",
+                    payload={"ok": True},
+                )
+                return state
+        execution_price_guard = evaluate_opening_alpha_execution_price_guard(
+            action=action,
+            order_meta=order_meta,
+            executable_price=executable_price,
+            executable_price_source=executable_price_source,
+            executable_price_observed_at=(
+                quote_snapshot.get("observed_at") or quote_snapshot.get("observed_epoch")
+            ),
+        )
+        if not bool(execution_price_guard.get("allowed", True)):
+            block_reason = str(
+                execution_price_guard.get("block_reason")
+                or "opening_alpha_execution_price_integrity_blocked"
+            )
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=block_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["opening_alpha_execution_price_guard"] = dict(
+                execution_price_guard
+            )
+            _append_execution_trace_entries(
+                state,
+                order=order,
+                execution=state["execution"],
+                allow_result=None,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="opening_alpha_execution_price_guard_block",
+                payload=dict(execution_price_guard),
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=block_reason,
+                supervisor_details=dict(execution_price_guard),
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="end",
+                payload={"ok": True},
+            )
             return state
 
         # Supervisor verdict

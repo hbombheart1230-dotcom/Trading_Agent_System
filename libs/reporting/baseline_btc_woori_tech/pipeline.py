@@ -23,6 +23,7 @@ from .crypto_fear_greed import load_crypto_fear_greed_index, unavailable as unav
 from .data_provider import load_btc_signal_rows, load_woori_candles
 from .forward_returns import attach_forward_returns, summarize, summarize_policy_variant
 from .hypothesis_pipeline import build_hypothesis_validation_artifacts
+from .point_in_time_capture import merge_capture_into_signal_payload
 from .report import render_report
 from .strategy import build_decision_snapshot
 
@@ -98,6 +99,9 @@ def build_baseline_btc_woori_artifacts(
             "fallback_reason": "fresh_fetch_disabled",
         }
     )
+    # The 08:55 collector runs independently. Re-read its immutable artifact so
+    # a baseline process holding a pre-capture payload cannot report MISSING.
+    signal_payload = merge_capture_into_signal_payload(signal_payload, day=day)
     if crypto_fear_greed is not None:
         fear_greed_payload = dict(crypto_fear_greed)
     elif allow_fresh_fetch:
@@ -266,4 +270,15 @@ def build_baseline_btc_woori_artifacts(
         "comparison": str(comparison_path),
     }
     result.update({f"hypothesis_{key}": value for key, value in hypothesis.items()})
+    controlled_validation = _read(Path(hypothesis.get("daily_json") or ""))
+    report_path.write_text(
+        render_report(
+            day=day,
+            decisions=decisions_payload,
+            forward=forward_payload,
+            comparison=comparison,
+            controlled_validation=controlled_validation,
+        ),
+        encoding="utf-8",
+    )
     return result

@@ -53,7 +53,12 @@ def _btc_0855(signal_payload: Mapping[str, Any], *, day: str) -> dict[str, Any]:
             "observations": [],
         }
     observations = []
-    sources = signal_payload.get("sources")
+    captured_sources = signal_payload.get("btc_0855_captured_sources")
+    sources = (
+        captured_sources
+        if capture_status == "CAPTURED" and isinstance(captured_sources, Mapping) and captured_sources
+        else signal_payload.get("sources")
+    )
     sources = sources if isinstance(sources, Mapping) else {}
     for source_name in ("btc_krw", "btc_usd"):
         rows = sources.get(source_name)

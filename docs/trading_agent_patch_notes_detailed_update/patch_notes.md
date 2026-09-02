@@ -1210,3 +1210,56 @@ offline research와 실제 runtime 사이의 semantic drift를 줄임.
   trading behavior was changed.
 - Added the reusable provenance record template and evidence index under
   `docs/development/` for future Claude Code work and Codex cross-review.
+
+# 2026-08-31 - Controlled Lane Observability and Test Integrity
+
+- Confirmed the existing Opening Alpha relaxation and Q10/Q12 point-in-time
+  wiring without changing trading policy.
+- Added rejected-candidate evidence for Opening Alpha and surfaced Q10, Q12 and
+  Opening Alpha status in the operator daily summary.
+- Split Q12 intraday shadow evidence from the mandatory 08:55 controlled-lane
+  input status so missing snapshots cannot appear generally available.
+- Isolated execution tests from the live canonical report tree and identified
+  prior `.pytest-work` artifacts for evidence-based cleanup.
+
+# 2026-09-01 - Q12 Capture Rehydration and Trade Report Truth Alignment
+
+- Q12 now rehydrates every baseline payload from the immutable 08:55 capture,
+  including processes that were already holding a pre-capture in-memory payload.
+- Q12 hypothesis evaluation reads the dedicated captured source instead of a
+  newer provider row whose 24-hour momentum is not ready yet.
+- Closed-trade summaries derive hold duration from entry/exit execution
+  timestamps and keep broker realized PnL authoritative over monitor marks.
+- Deterministic, horizon, final conclusion and LLM display sections now use the
+  same execution duration and realized result.
+- Trading behavior, thresholds, order routing and lane eligibility were not
+  changed.
+
+# 2026-09-01 - Opening Alpha Price Integrity
+
+- Open positions are included in every market-quote hydration pass even when
+  their symbol falls outside the current Scanner candidate limit.
+- Every hydrated quote carries an observation timestamp. A quote older than 90
+  seconds is replaced by the current account-position price, or rejected when
+  no trustworthy fallback exists.
+- Opening Alpha records the first Rank-1 signal price and rejects a delayed
+  controlled-probe entry after positive signal-to-entry drift exceeds 2%.
+- Immediately before broker submission, Opening Alpha independently compares
+  the same initial signal price with the latest available best ask. A drift
+  above 2% is recorded as `opening_alpha_execution_price_drift` and exits as
+  `NOT_SENT` without calling the broker order API.
+- A held-symbol quote older than the expected refresh cadence is cross-checked
+  against the account current price when the two sources disagree on whether a
+  hard stop has fired. The validated current source wins in either direction;
+  a cached quote alone cannot force liquidation.
+- Exit artifacts retain quote age, divergence and replacement evidence for
+  later report reconstruction.
+- Post-exit recap reuses an observed Opening Rank-1 EOD checkpoint when minute
+  data cannot reach the regular close, and Alpha Board runtime validation is
+  generated directly instead of being lost during canonicalization.
+- If the 16:00 Opening Rank-1 closeout refresh cannot reach Kiwoom, it retries
+  once in offline/local-artifact mode and records the degraded source instead of
+  failing the entire closeout job.
+- The 2026-09-01 recap was regenerated with all +5/+15/+30/+60/EOD checkpoints
+  observed. No Scanner ranking, Strategist prompt or normal entry/exit threshold
+  was changed.
