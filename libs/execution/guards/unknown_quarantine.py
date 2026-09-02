@@ -42,6 +42,20 @@ This does NOT protect against a true whole-machine storage outage (both
 locations typically resolve to the same physical volume on a single-disk
 host); see `activate_global_mutation_halt`'s docstring and Step 5B Fix 4's
 report for the honestly-scoped residual risk that remains.
+
+New in Fix 5 (HIGH, closes the last Fix 4 audit finding): the Fix 4
+fallback marker used the real OS temp directory unconditionally, which a
+pytest run and a live production process both resolve to the exact same
+path -- so a pytest run could delete a real production halt marker, and a
+marker a pytest run created could be picked up by a live production
+process as a genuine global mutation halt. The fallback location now
+branches on the existing pytest-session detection
+(`libs.core.path_isolation.running_under_pytest`): under pytest it
+resolves under that same module's per-session isolated write root
+(`_pytest_isolated_write_root`, already used to isolate every other
+runtime write pytest makes), never the real OS temp path; outside pytest
+(production) it is byte-for-byte the same path Fix 4 always used. No new
+isolation mechanism was introduced.
 """
 
 import json
@@ -50,7 +64,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from libs.core.path_isolation import isolate_canonical_path_for_pytest
+from libs.core.path_isolation import (
+    isolate_canonical_path_for_pytest,
+    running_under_pytest,
+    _pytest_isolated_write_root,
+)
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -63,11 +81,23 @@ def _coerce_int(value: Any, default: int = 0) -> int:
 _UNKNOWN_QUARANTINE_DEFAULT_DIR = Path("data/state/execution_unknown_quarantine")
 _GLOBAL_MUTATION_HALT_MARKER_NAME = "_global_mutation_halt.lock"
 
-# Fix 4 (HIGH4): independent second location for the durable global-halt
-# marker (see module docstring). Deliberately NOT under the primary
-# quarantine directory, so a failure specific to that directory (deleted,
-# permission-changed, its volume full) doesn't also take out this copy.
-_GLOBAL_MUTATION_HALT_FALLBACK_DIR = Path(tempfile.gettempdir()) / "trading_agent_system_global_mutation_halt"
+def _global_mutation_halt_fallback_dir() -> Path:
+    """Fix 4 (HIGH4): independent second location for the durable
+    global-halt marker (see module docstring). Deliberately NOT under the
+    primary quarantine directory, so a failure specific to that directory
+    (deleted, permission-changed, its volume full) doesn't also take out
+    this copy.
+
+    Fix 5: under pytest, this must never be the real OS temp path -- a
+    production process and a pytest run resolving to the same literal path
+    would let pytest delete a real halt marker, or a pytest-created marker
+    get picked up by production as a genuine halt. Computed at call time
+    (not a module-level constant) so it responds correctly regardless of
+    whether pytest's session env vars were set before or after this module
+    was imported."""
+    if running_under_pytest():
+        return _pytest_isolated_write_root() / "global_mutation_halt_fallback"
+    return Path(tempfile.gettempdir()) / "trading_agent_system_global_mutation_halt"
 
 # Process-wide, module-level by design (mutated in place, shared by every
 # importer of this module -- graphs/nodes/execute_from_packet.py re-exports
@@ -129,10 +159,12 @@ def activate_global_mutation_halt(reason: str, *, now_epoch: int, override_path:
     marker from a prior incarnation exists.
 
     Fix 4 (HIGH4): the marker is written to two independent locations --
-    the primary quarantine dir and the OS temp dir
-    (_GLOBAL_MUTATION_HALT_FALLBACK_DIR) -- so a failure specific to one of
-    them (permissions, deletion, that one directory's volume being full)
-    still leaves a durable, restart-survivable trace via the other.
+    the primary quarantine dir and a fallback dir
+    (_global_mutation_halt_fallback_dir(), the real OS temp dir in
+    production, an isolated pytest root under pytest per Fix 5) -- so a
+    failure specific to one of them (permissions, deletion, that one
+    directory's volume being full) still leaves a durable,
+    restart-survivable trace via the other.
 
     Returns whether the halt is durably persisted to at least one of the
     two locations. In-memory, the halt is unconditionally active for the
@@ -162,7 +194,7 @@ def activate_global_mutation_halt(reason: str, *, now_epoch: int, override_path:
     persisted_fallback = False
     try:
         persisted_fallback = write_quarantine_lock_if_absent(
-            _GLOBAL_MUTATION_HALT_FALLBACK_DIR / _GLOBAL_MUTATION_HALT_MARKER_NAME, payload
+            _global_mutation_halt_fallback_dir() / _GLOBAL_MUTATION_HALT_MARKER_NAME, payload
         )
     except Exception:
         persisted_fallback = False
@@ -192,7 +224,7 @@ def global_mutation_halt_active(override_path: Optional[str] = None) -> Tuple[bo
         pass
     if marker_path is None:
         try:
-            fallback_path = _GLOBAL_MUTATION_HALT_FALLBACK_DIR / _GLOBAL_MUTATION_HALT_MARKER_NAME
+            fallback_path = _global_mutation_halt_fallback_dir() / _GLOBAL_MUTATION_HALT_MARKER_NAME
             if fallback_path.exists():
                 marker_path = fallback_path
         except Exception:

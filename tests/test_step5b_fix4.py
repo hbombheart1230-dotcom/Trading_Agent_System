@@ -47,7 +47,7 @@ import libs.execution.executors.real_executor as real_executor_module
 
 def _clear_fallback_marker():
     try:
-        (uq._GLOBAL_MUTATION_HALT_FALLBACK_DIR / uq._GLOBAL_MUTATION_HALT_MARKER_NAME).unlink()
+        (uq._global_mutation_halt_fallback_dir() / uq._GLOBAL_MUTATION_HALT_MARKER_NAME).unlink()
     except FileNotFoundError:
         pass
 
@@ -382,7 +382,7 @@ def test_t10_global_halt_survives_primary_directory_write_failure_via_fallback(t
     real_write = uq.write_quarantine_lock_if_absent
 
     def _fail_primary_only(lock_path, payload):
-        if str(uq._GLOBAL_MUTATION_HALT_FALLBACK_DIR) in str(lock_path):
+        if str(uq._global_mutation_halt_fallback_dir()) in str(lock_path):
             return real_write(lock_path, payload)
         return False  # primary quarantine dir simulated unwritable
 
@@ -393,7 +393,7 @@ def test_t10_global_halt_survives_primary_directory_write_failure_via_fallback(t
     assert uq.GLOBAL_MUTATION_HALT["active"] is True
     assert uq.GLOBAL_MUTATION_HALT["durable"] is True  # fallback temp-dir write succeeded
     assert not (qdir / uq._GLOBAL_MUTATION_HALT_MARKER_NAME).exists()
-    assert (uq._GLOBAL_MUTATION_HALT_FALLBACK_DIR / uq._GLOBAL_MUTATION_HALT_MARKER_NAME).exists()
+    assert (uq._global_mutation_halt_fallback_dir() / uq._GLOBAL_MUTATION_HALT_MARKER_NAME).exists()
 
     # Simulated restart: primary directory still "unwritable" in this
     # process too (irrelevant -- we only need to *read*, not write, to

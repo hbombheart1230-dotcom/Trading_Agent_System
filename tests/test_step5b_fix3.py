@@ -35,7 +35,7 @@ from libs.execution.guards import unknown_quarantine as uq
 
 def _clear_fallback_marker():
     try:
-        (uq._GLOBAL_MUTATION_HALT_FALLBACK_DIR / uq._GLOBAL_MUTATION_HALT_MARKER_NAME).unlink()
+        (uq._global_mutation_halt_fallback_dir() / uq._GLOBAL_MUTATION_HALT_MARKER_NAME).unlink()
     except FileNotFoundError:
         pass
 

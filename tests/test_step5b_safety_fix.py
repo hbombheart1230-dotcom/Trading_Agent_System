@@ -40,7 +40,7 @@ from graphs.nodes.execute_from_packet import (
 
 def _clear_fallback_marker():
     try:
-        (efp._unknown_quarantine._GLOBAL_MUTATION_HALT_FALLBACK_DIR / efp._unknown_quarantine._GLOBAL_MUTATION_HALT_MARKER_NAME).unlink()
+        (efp._unknown_quarantine._global_mutation_halt_fallback_dir() / efp._unknown_quarantine._GLOBAL_MUTATION_HALT_MARKER_NAME).unlink()
     except FileNotFoundError:
         pass
 
