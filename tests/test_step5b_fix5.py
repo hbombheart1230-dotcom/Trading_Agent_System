@@ -20,10 +20,19 @@ only -- RealExecutor, BrokerOutcome, the quarantine contract, and durable
 global halt *semantics* are all unchanged (see
 tests/test_step5b_fix4.py, still green, for that contract).
 
-Every test below is written to be safe to run against a real, possibly
-live, production system: none of them ever assume the real production
-fallback marker is absent, and none of them delete a marker they did not
-themselves create.
+Fix 6 (test-only, no production source changed): the original T3/T4 in
+this file verified pytest/production isolation by creating a placeholder
+at the REAL production fallback path when one wasn't already present, and
+deleting it afterward -- itself a HIGH, since the test proving the
+application never touches the real production safety marker was, by
+construction, writing to and deleting from it. T3/T4 now build an entirely
+simulated production root under `tmp_path` and monkeypatch only
+`tempfile.gettempdir()` (the one call the resolver's production branch
+makes) to point there, exercising the real branching logic without ever
+touching the real path. Every test in this file is safe to run against a
+real, possibly live, production system: none of them ever assume the real
+production fallback marker is absent, none of them write to or delete it,
+and each snapshots it read-only before/after to prove it as much.
 """
 from __future__ import annotations
 
@@ -95,59 +104,101 @@ def test_t2_pytest_halt_marker_write_does_not_touch_production_path(tmp_path):
     assert pytest_marker != production_marker
 
 
-# --- T3: pytest cleanup isolation ---------------------------------------------
+# --- T3 / T4 (Fix 6): simulated production root -- zero touches to the real
+# OS-temp production path ----------------------------------------------------
+#
+# The original T3/T4 (Fix 5) created a placeholder at the REAL production
+# fallback path (`%TEMP%\trading_agent_system_global_mutation_halt\...`) when
+# one wasn't already present, and deleted it afterward. That is itself a
+# HIGH: the test verifying pytest/production isolation was, by construction,
+# writing to and deleting from the real production safety marker -- exactly
+# what Fix 5 was supposed to make impossible. Fix 6 replaces both with a
+# fully simulated production root built entirely under `tmp_path`:
+#
+#   tmp_path/simulated_os_temp/trading_agent_system_global_mutation_halt/
+#       _global_mutation_halt.lock
+#
+# `tempfile.gettempdir()` -- the ONE call `_global_mutation_halt_fallback_dir()`
+# makes on its production branch -- is monkeypatched (module-global, since
+# `tempfile` is a singleton module object shared by every importer) to
+# return that simulated root for the duration of the guard-chain check only.
+# The pytest branch of the SAME resolver is unaffected by this: it reads
+# `TRADING_AGENT_PYTEST_ROOT`, an env var conftest.py materializes once at
+# session start, not a live `tempfile.gettempdir()` call -- so the real
+# branching logic in `_global_mutation_halt_fallback_dir()` is exercised
+# unmodified; only the *destination* of its production branch is redirected
+# onto disposable tmp_path storage. Before/after snapshots of the REAL
+# production path (taken with the monkeypatch NOT active) additionally prove
+# it was never referenced at all.
 
 
-def test_t3_pytest_teardown_cleanup_never_touches_production_marker():
-    production_marker = _production_fallback_marker_path()
-    pre_existing = production_marker.exists()
-    created_placeholder = False
-    if not pre_existing:
-        production_marker.parent.mkdir(parents=True, exist_ok=True)
-        production_marker.write_text(
-            json.dumps({"note": "test_t3 placeholder standing in for a real production marker"}),
-            encoding="utf-8",
-        )
-        created_placeholder = True
-    try:
-        before = _snapshot(production_marker)
-        # The exact cleanup helper every Fix3/Fix4/Fix5 test fixture's
-        # teardown calls.
-        _clear_pytest_fallback_marker()
-        after = _snapshot(production_marker)
-        assert before == after  # untouched by pytest's own fixture cleanup
-    finally:
-        if created_placeholder:
-            try:
-                production_marker.unlink()
-            except FileNotFoundError:
-                pass
+def test_t3_simulated_production_marker_not_visible_to_pytest_resolver(tmp_path, monkeypatch):
+    """Fix 6 replacement for the former real-path-touching T3/T4: a
+    (simulated) production halt marker exists, and pytest's own guard chain
+    must not treat it as active."""
+    real_production_marker = _production_fallback_marker_path()
+    before_real = _snapshot(real_production_marker)
+
+    fake_os_temp = tmp_path / "simulated_os_temp"
+    simulated_production_dir = fake_os_temp / "trading_agent_system_global_mutation_halt"
+    simulated_production_dir.mkdir(parents=True)
+    simulated_production_marker = simulated_production_dir / uq._GLOBAL_MUTATION_HALT_MARKER_NAME
+    simulated_production_marker.write_text(
+        json.dumps({"note": "simulated production marker for T3 -- never the real production path"}),
+        encoding="utf-8",
+    )
+    before_simulated = _snapshot(simulated_production_marker)
+    assert before_simulated[0] is True  # sanity: the simulated marker genuinely exists
+
+    monkeypatch.setattr(uq.tempfile, "gettempdir", lambda: str(fake_os_temp))
+    assert uq.running_under_pytest() is True  # genuinely under pytest -- takes the isolated-root branch
+    qdir = tmp_path / "quarantine"
+    active, _details = uq.global_mutation_halt_active(str(qdir))
+    assert active is False  # pytest resolver never looks at the (simulated) production location
+    monkeypatch.undo()  # restore the real tempfile.gettempdir() before touching real paths below
+
+    after_simulated = _snapshot(simulated_production_marker)
+    assert before_simulated == after_simulated  # simulated production marker completely untouched
+
+    after_real = _snapshot(real_production_marker)
+    assert before_real == after_real  # the REAL production path was never referenced at all
 
 
-# --- T4: production marker visibility isolation -------------------------------
+def test_t4_pytest_marker_not_visible_to_simulated_production_mode_resolver(tmp_path, monkeypatch):
+    """Fix 6: the reverse direction -- a pytest-isolated marker exists, and
+    a (simulated) production-mode resolver must not treat it as active."""
+    real_production_marker = _production_fallback_marker_path()
+    before_real = _snapshot(real_production_marker)
 
+    # Written via the REAL (unmocked) resolver -- under genuine pytest
+    # execution this always lands under the isolated root, never the real
+    # OS temp path (proven independently by T1/T2).
+    qdir = tmp_path / "quarantine"
+    uq.activate_global_mutation_halt("t4_pytest_marker", now_epoch=1000, override_path=str(qdir))
+    pytest_marker = uq._global_mutation_halt_fallback_dir() / uq._GLOBAL_MUTATION_HALT_MARKER_NAME
+    assert pytest_marker.exists()
+    # Isolate this test to the FALLBACK marker specifically -- the primary
+    # per-symbol-dir marker is a separate, override_path-scoped mechanism
+    # that would otherwise confound the assertion below.
+    primary_marker = uq._global_mutation_halt_marker_path(str(qdir))
+    primary_marker.unlink()
+    uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0, "durable": False})
 
-def test_t4_production_marker_not_visible_to_pytest_guard(tmp_path):
-    production_marker = _production_fallback_marker_path()
-    pre_existing = production_marker.exists()
-    created_placeholder = False
-    if not pre_existing:
-        production_marker.parent.mkdir(parents=True, exist_ok=True)
-        production_marker.write_text(
-            json.dumps({"pid": 999999, "activated_at_epoch": 1, "reason": "simulated_production_halt_for_t4"}),
-            encoding="utf-8",
-        )
-        created_placeholder = True
-    try:
-        uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0, "durable": False})
-        active, _details = uq.global_mutation_halt_active(str(tmp_path / "quarantine"))
-        assert active is False  # pytest's own guard must never see the production-path marker
-    finally:
-        if created_placeholder:
-            try:
-                production_marker.unlink()
-            except FileNotFoundError:
-                pass
+    fake_os_temp = tmp_path / "simulated_os_temp_for_production_mode"
+    fake_os_temp.mkdir()
+    monkeypatch.setattr(uq, "running_under_pytest", lambda: False)  # simulate a production-mode process
+    monkeypatch.setattr(uq.tempfile, "gettempdir", lambda: str(fake_os_temp))  # simulated production temp root only
+
+    simulated_production_marker = fake_os_temp / "trading_agent_system_global_mutation_halt" / uq._GLOBAL_MUTATION_HALT_MARKER_NAME
+    assert uq._global_mutation_halt_fallback_dir() == simulated_production_marker.parent
+
+    active, _details = uq.global_mutation_halt_active(str(qdir))
+    assert active is False  # simulated production-mode resolver sees no marker at its (simulated) location
+    monkeypatch.undo()  # restore running_under_pytest() and tempfile.gettempdir() before touching real paths
+
+    assert pytest_marker.exists()  # the pytest-isolated marker written earlier is untouched
+    after_real = _snapshot(real_production_marker)
+    assert before_real == after_real  # the REAL production path was never referenced at all
 
 
 # --- T5: pytest marker not visible to a (simulated) production-mode resolver --
@@ -178,6 +229,18 @@ def test_t5_pytest_isolated_marker_not_visible_to_production_mode_resolver(tmp_p
     # reality exactly -- proving the pytest-isolated marker written above
     # had zero influence on it.
     assert active == production_marker.exists()
+
+    # Fix 6: revert the running_under_pytest() patch BEFORE returning,
+    # rather than relying on monkeypatch's own auto-revert (which runs
+    # AFTER this file's autouse `_reset_global_mutation_halt` teardown --
+    # confirmed via instrumented unlink() tracing during Fix 6 verification
+    # -- so leaving it patched here made that teardown's
+    # `_clear_pytest_fallback_marker()` call resolve to the REAL production
+    # path and attempt to unlink it, even though no marker existed there to
+    # actually delete). This test only ever reads the real production
+    # marker (`.exists()` above); it must never risk writing to or deleting
+    # it via a leaked patch.
+    monkeypatch.undo()
 
 
 # --- T6: existing restart durability, inside the pytest isolated root --------
