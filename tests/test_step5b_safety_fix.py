@@ -38,15 +38,27 @@ from graphs.nodes.execute_from_packet import (
 )
 
 
+def _clear_fallback_marker():
+    try:
+        (efp._unknown_quarantine._GLOBAL_MUTATION_HALT_FALLBACK_DIR / efp._unknown_quarantine._GLOBAL_MUTATION_HALT_MARKER_NAME).unlink()
+    except FileNotFoundError:
+        pass
+
+
 @pytest.fixture(autouse=True)
 def _reset_global_mutation_halt():
     """_GLOBAL_MUTATION_HALT is process-wide, module-level state by design
     (that's the point -- it must survive across calls within one process
     lifetime). Reset it around every test in this file so one test
-    activating it can't leak into the next."""
-    efp._GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0})
+    activating it can't leak into the next. Also clears the Fix 4 (HIGH4)
+    OS-temp-dir fallback marker, which -- unlike the primary per-test
+    quarantine dir -- lives at a fixed path shared across the whole test
+    session."""
+    efp._GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0, "durable": False})
+    _clear_fallback_marker()
     yield
-    efp._GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0})
+    efp._GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0, "durable": False})
+    _clear_fallback_marker()
 
 
 class _RecordingHttp:

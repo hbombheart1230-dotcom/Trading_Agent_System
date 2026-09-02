@@ -294,37 +294,68 @@ class RealExecutor:
                 },
             )
 
-        assert resp is not None
-        api_resp = ApiResponse.from_http(resp.status_code, resp.text)
+        # Phase 1 Step 5B Fix 4 (HIGH1): the HTTP dispatch above already
+        # happened -- exactly one physical submission occurred. Everything
+        # from here on (response parsing, token-invalid check, mutation
+        # classification) must not be allowed to raise a raw exception out
+        # of this method: the caller cannot distinguish "nothing was sent"
+        # from "something was sent but we failed to understand the reply",
+        # and a naive caller-side retry after a raw exception would issue a
+        # *second* physical dispatch for the same logical mutation, breaking
+        # at-most-once. Convert any such exception into the same UNKNOWN
+        # contract as a transport-level failure.
+        try:
+            assert resp is not None
+            api_resp = ApiResponse.from_http(resp.status_code, resp.text)
 
-        if self._is_invalid_token_response(api_resp):
-            # The mutation has already been submitted once. Do not refresh
-            # the token and replay the same mutation on a guess -- treat the
-            # outcome as unknown and let reconciliation resolve it.
+            if self._is_invalid_token_response(api_resp):
+                # The mutation has already been submitted once. Do not
+                # refresh the token and replay the same mutation on a
+                # guess -- treat the outcome as unknown and let
+                # reconciliation resolve it.
+                return ExecutionResult(
+                    response=api_resp,
+                    meta={
+                        "executor": "real",
+                        "broker_outcome": "UNKNOWN",
+                        "submission_phase": "mutation_http_call",
+                        "submission_attempts": 1,
+                        "exception_type": "",
+                        "reconciliation_required": True,
+                        "note": "token_invalid_after_submission_no_replay",
+                    },
+                )
+
+            payload = api_resp.payload if isinstance(api_resp.payload, dict) else {}
+            outcome, reference_missing = classify_mutation_response(payload, status_code=api_resp.status_code)
             return ExecutionResult(
                 response=api_resp,
                 meta={
                     "executor": "real",
-                    "broker_outcome": "UNKNOWN",
+                    "broker_outcome": outcome,
                     "submission_phase": "mutation_http_call",
                     "submission_attempts": 1,
                     "exception_type": "",
-                    "reconciliation_required": True,
-                    "note": "token_invalid_after_submission_no_replay",
+                    "reconciliation_required": outcome == "UNKNOWN",
+                    "broker_reference_missing": reference_missing,
                 },
             )
-
-        payload = api_resp.payload if isinstance(api_resp.payload, dict) else {}
-        outcome, reference_missing = classify_mutation_response(payload, status_code=api_resp.status_code)
-        return ExecutionResult(
-            response=api_resp,
-            meta={
-                "executor": "real",
-                "broker_outcome": outcome,
-                "submission_phase": "mutation_http_call",
-                "submission_attempts": 1,
-                "exception_type": "",
-                "reconciliation_required": outcome == "UNKNOWN",
-                "broker_reference_missing": reference_missing,
-            },
-        )
+        except Exception as exc:
+            return ExecutionResult(
+                response=ApiResponse(
+                    status_code=getattr(resp, "status_code", 0) or 0,
+                    ok=False,
+                    payload={},
+                    error_code=None,
+                    error_message=str(exc),
+                    raw_text=getattr(resp, "text", "") or "",
+                ),
+                meta={
+                    "executor": "real",
+                    "broker_outcome": "UNKNOWN",
+                    "submission_phase": "mutation_response_parse",
+                    "submission_attempts": 1,
+                    "exception_type": type(exc).__name__,
+                    "reconciliation_required": True,
+                },
+            )

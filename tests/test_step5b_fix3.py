@@ -33,11 +33,20 @@ from libs.execution.guards import unknown_quarantine as uq
 # --- shared fixtures ---------------------------------------------------------
 
 
+def _clear_fallback_marker():
+    try:
+        (uq._GLOBAL_MUTATION_HALT_FALLBACK_DIR / uq._GLOBAL_MUTATION_HALT_MARKER_NAME).unlink()
+    except FileNotFoundError:
+        pass
+
+
 @pytest.fixture(autouse=True)
 def _reset_global_mutation_halt():
-    uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0})
+    uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0, "durable": False})
+    _clear_fallback_marker()
     yield
-    uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0})
+    uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0, "durable": False})
+    _clear_fallback_marker()
 
 
 def _api_catalog_path(tmp_path) -> str:
@@ -272,7 +281,7 @@ def test_high3_global_mutation_halt_marker_survives_simulated_restart(tmp_path):
 
     # "restart": brand new in-memory state, nothing carried over except the
     # durable marker file on disk.
-    uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0})
+    uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0, "durable": False})
     active, details = uq.global_mutation_halt_active(str(qdir))
     assert active is True
     assert details["reason"] == "disk_full_simulated"
@@ -291,7 +300,7 @@ def test_high3_execute_from_packet_reflects_durable_halt_after_restart(tmp_path)
     the current process."""
     qdir = tmp_path / "quarantine"
     uq.activate_global_mutation_halt("quarantine_lock_write_failed:999999", now_epoch=1, override_path=str(qdir))
-    uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0})  # simulate restart
+    uq.GLOBAL_MUTATION_HALT.update({"active": False, "reason": "", "since_epoch": 0, "pid": 0, "durable": False})  # simulate restart
 
     spy = _AcceptedExecutor()
     state = _base_state(tmp_path, executor=spy, symbol="000660", quarantine_dir=qdir)

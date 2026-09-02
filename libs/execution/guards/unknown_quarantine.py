@@ -28,10 +28,25 @@ New in Fix 3: GLOBAL_MUTATION_HALT is additionally backed by a durable,
 atomically-created marker file (same existence-based contract as a
 per-symbol lock), so a process restart also fails closed instead of
 silently losing the halt the moment the in-memory flag is gone.
+
+New in Fix 4 (HIGH4): the durable marker from Fix 3 lives under the same
+quarantine directory as per-symbol locks, so a single filesystem-level
+failure (disk full, permission change, directory corruption) affecting
+that directory could fail both writes at once, leaving no
+restart-survivable trace. The marker is now additionally written to a
+second, independent path -- the OS temp directory (`tempfile.gettempdir()`,
+the same primitive already used for pytest isolation in
+libs/core/path_isolation.py, not a new subsystem) -- so a restart still
+fails closed as long as at least one of the two locations is writable.
+This does NOT protect against a true whole-machine storage outage (both
+locations typically resolve to the same physical volume on a single-disk
+host); see `activate_global_mutation_halt`'s docstring and Step 5B Fix 4's
+report for the honestly-scoped residual risk that remains.
 """
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -48,11 +63,17 @@ def _coerce_int(value: Any, default: int = 0) -> int:
 _UNKNOWN_QUARANTINE_DEFAULT_DIR = Path("data/state/execution_unknown_quarantine")
 _GLOBAL_MUTATION_HALT_MARKER_NAME = "_global_mutation_halt.lock"
 
+# Fix 4 (HIGH4): independent second location for the durable global-halt
+# marker (see module docstring). Deliberately NOT under the primary
+# quarantine directory, so a failure specific to that directory (deleted,
+# permission-changed, its volume full) doesn't also take out this copy.
+_GLOBAL_MUTATION_HALT_FALLBACK_DIR = Path(tempfile.gettempdir()) / "trading_agent_system_global_mutation_halt"
+
 # Process-wide, module-level by design (mutated in place, shared by every
 # importer of this module -- graphs/nodes/execute_from_packet.py re-exports
 # this exact dict object as its own `_GLOBAL_MUTATION_HALT` name for
 # backward compatibility with existing test fixtures that reset it).
-GLOBAL_MUTATION_HALT: Dict[str, Any] = {"active": False, "reason": "", "since_epoch": 0, "pid": 0}
+GLOBAL_MUTATION_HALT: Dict[str, Any] = {"active": False, "reason": "", "since_epoch": 0, "pid": 0, "durable": False}
 
 
 def quarantine_dir(override_path: Optional[str] = None) -> Path:
@@ -98,49 +119,85 @@ def write_quarantine_lock_if_absent(lock_path: Path, payload: Dict[str, Any]) ->
             return False
 
 
-def activate_global_mutation_halt(reason: str, *, now_epoch: int, override_path: Optional[str] = None) -> None:
+def activate_global_mutation_halt(reason: str, *, now_epoch: int, override_path: Optional[str] = None) -> bool:
     """Activate the process-wide mutation halt and persist a durable marker
     (Phase 1 Step 5B Fix 3, closes HIGH3: the in-memory flag alone does not
     survive a process restart). The marker uses the exact same atomic,
     existence-based, never-auto-deleted contract as a per-symbol quarantine
     lock, so a fresh process that checks global_mutation_halt_active()
     before ever calling this function itself still fails closed if a
-    marker from a prior incarnation exists."""
+    marker from a prior incarnation exists.
+
+    Fix 4 (HIGH4): the marker is written to two independent locations --
+    the primary quarantine dir and the OS temp dir
+    (_GLOBAL_MUTATION_HALT_FALLBACK_DIR) -- so a failure specific to one of
+    them (permissions, deletion, that one directory's volume being full)
+    still leaves a durable, restart-survivable trace via the other.
+
+    Returns whether the halt is durably persisted to at least one of the
+    two locations. In-memory, the halt is unconditionally active for the
+    remainder of THIS process's lifetime regardless of the return value --
+    but callers/reports must not claim restart-survivability when this
+    returns False. A True whole-machine storage outage (both locations are
+    typically the same physical volume on a single-disk host) is a
+    residual risk this cannot close without external infrastructure, which
+    is out of scope for Step 5B."""
     if not GLOBAL_MUTATION_HALT["active"]:
         GLOBAL_MUTATION_HALT["active"] = True
         GLOBAL_MUTATION_HALT["reason"] = str(reason or "")
         GLOBAL_MUTATION_HALT["since_epoch"] = int(now_epoch)
         GLOBAL_MUTATION_HALT["pid"] = os.getpid()
+
+    payload = {
+        "pid": os.getpid(),
+        "activated_at_epoch": int(now_epoch),
+        "reason": str(reason or ""),
+    }
+    persisted_primary = False
     try:
-        write_quarantine_lock_if_absent(
-            _global_mutation_halt_marker_path(override_path),
-            {
-                "pid": os.getpid(),
-                "activated_at_epoch": int(now_epoch),
-                "reason": str(reason or ""),
-            },
+        persisted_primary = write_quarantine_lock_if_absent(_global_mutation_halt_marker_path(override_path), payload)
+    except Exception:
+        persisted_primary = False
+
+    persisted_fallback = False
+    try:
+        persisted_fallback = write_quarantine_lock_if_absent(
+            _GLOBAL_MUTATION_HALT_FALLBACK_DIR / _GLOBAL_MUTATION_HALT_MARKER_NAME, payload
         )
     except Exception:
-        # Durable marker write is best-effort on top of the in-memory flag,
-        # which is already active for the remaining lifetime of this
-        # process regardless.
-        pass
+        persisted_fallback = False
+
+    durable = bool(persisted_primary or persisted_fallback)
+    GLOBAL_MUTATION_HALT["durable"] = durable
+    return durable
 
 
 def global_mutation_halt_active(override_path: Optional[str] = None) -> Tuple[bool, Dict[str, Any]]:
-    """Returns (active, details). Checks the in-memory flag first, then the
-    durable marker file (Fix 3: covers a fresh process that never itself
-    called activate_global_mutation_halt but must still fail closed if a
-    marker from a prior incarnation exists). Hydrates the in-memory flag
-    when the marker is found so later checks in this same process are
-    cheap and consistent."""
+    """Returns (active, details). Checks the in-memory flag first, then
+    both durable marker locations -- primary quarantine dir and the Fix 4
+    OS-temp-dir fallback (covers a fresh process that never itself called
+    activate_global_mutation_halt but must still fail closed if a marker
+    from a prior incarnation exists at either location). Hydrates the
+    in-memory flag when a marker is found so later checks in this same
+    process are cheap and consistent."""
     if GLOBAL_MUTATION_HALT["active"]:
         return True, dict(GLOBAL_MUTATION_HALT)
+
+    marker_path: Optional[Path] = None
     try:
-        marker_path = _global_mutation_halt_marker_path(override_path)
-        if not marker_path.exists():
-            return False, {}
+        primary_path = _global_mutation_halt_marker_path(override_path)
+        if primary_path.exists():
+            marker_path = primary_path
     except Exception:
+        pass
+    if marker_path is None:
+        try:
+            fallback_path = _GLOBAL_MUTATION_HALT_FALLBACK_DIR / _GLOBAL_MUTATION_HALT_MARKER_NAME
+            if fallback_path.exists():
+                marker_path = fallback_path
+        except Exception:
+            pass
+    if marker_path is None:
         return False, {}
 
     details: Dict[str, Any] = {"reason": "durable_global_mutation_halt_marker_present", "since_epoch": 0}
@@ -157,6 +214,7 @@ def global_mutation_halt_active(override_path: Optional[str] = None) -> Tuple[bo
     GLOBAL_MUTATION_HALT["reason"] = str(details.get("reason") or "")
     GLOBAL_MUTATION_HALT["since_epoch"] = _coerce_int(details.get("since_epoch"), 0)
     GLOBAL_MUTATION_HALT["pid"] = os.getpid()
+    GLOBAL_MUTATION_HALT["durable"] = True
     return True, dict(GLOBAL_MUTATION_HALT)
 
 
