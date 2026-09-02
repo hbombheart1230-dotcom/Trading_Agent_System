@@ -300,7 +300,11 @@ def test_quarantine_write_failure_same_process_next_tick_mutation_zero(monkeypat
     def _boom(*a, **k):
         return False  # simulate: could not create, and doesn't already exist
 
-    monkeypatch.setattr(efp, "_write_quarantine_lock_if_absent", _boom)
+    # Phase 1 Step 5B Fix 3: the actual persistence call now lives in the
+    # shared libs/execution/guards/unknown_quarantine module (efp's own
+    # _write_quarantine_lock_if_absent is a thin wrapper around it, so
+    # patching the wrapper alone would no longer intercept anything).
+    monkeypatch.setattr(efp._unknown_quarantine, "write_quarantine_lock_if_absent", _boom)
     out = execute_from_packet(state)
     assert out["execution"]["broker_outcome"] == "UNKNOWN"
     assert efp._GLOBAL_MUTATION_HALT["active"] is True

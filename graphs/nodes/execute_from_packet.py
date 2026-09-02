@@ -30,6 +30,7 @@ from libs.execution.guards.broker_mutation import (
     classify_mutation_response,
     is_mutation_api_id,
 )
+from libs.execution.guards import unknown_quarantine as _unknown_quarantine
 from libs.core.path_isolation import isolate_canonical_path_for_pytest
 from libs.runtime.opening_rank1_controlled_probe import (
     evaluate_opening_alpha_execution_price_guard,
@@ -685,9 +686,11 @@ def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor
         "dmst_stex_tp": str(order.get("dmst_stex_tp") or "KRX"),
         "rationale": "upper_limit_buy_auto_cancel",
     }
+    dispatched = False
     try:
         cancel_req = _prepare_request(cancel_order, catalog)
         cancel_execution_result = executor.execute(cancel_req)
+        dispatched = True
         cancel_payload = _normalize_execution(
             allowed=True,
             execution_result=cancel_execution_result,
@@ -703,6 +706,21 @@ def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor
     except Exception as exc:
         result["cancel_ok"] = False
         result["cancel_error"] = str(exc)
+        if dispatched:
+            # Phase 1 Step 5B Fix 3 (HIGH2): executor.execute() already
+            # returned before this exception -- it was raised during
+            # response classification/normalization, not transport, so the
+            # mutation was physically submitted. The cancel's true broker
+            # outcome is unknowable from here; never let that escape as a
+            # bare error string with no quarantine -- treat it exactly like
+            # any other post-dispatch UNKNOWN outcome.
+            unknown_cancel_payload = {
+                "broker_outcome": "UNKNOWN",
+                "exception_type": type(exc).__name__,
+                "submission_attempts": 1,
+            }
+            result["cancel"] = unknown_cancel_payload
+            _propagate_cancel_unknown_outcome(state, cancel_order, unknown_cancel_payload)
         return result
 
 
@@ -796,9 +814,11 @@ def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, exe
         order_id,
         reason=str(start_policy.get("cancel_reason") or ""),
     )
+    dispatched = False
     try:
         cancel_req = _prepare_request(cancel_order, catalog)
         cancel_execution_result = executor.execute(cancel_req)
+        dispatched = True
         cancel_payload = _normalize_execution(
             allowed=True,
             execution_result=cancel_execution_result,
@@ -813,6 +833,16 @@ def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, exe
     except Exception as exc:
         result["cancel_ok"] = False
         result["cancel_error"] = str(exc)
+        if dispatched:
+            # Phase 1 Step 5B Fix 3 (HIGH2) -- see the matching comment in
+            # _attempt_upper_limit_cancel for the full rationale.
+            unknown_cancel_payload = {
+                "broker_outcome": "UNKNOWN",
+                "exception_type": type(exc).__name__,
+                "submission_attempts": 1,
+            }
+            result["cancel"] = unknown_cancel_payload
+            _propagate_cancel_unknown_outcome(state, cancel_order, unknown_cancel_payload)
         return result
 
     if action == "BUY" or not bool(result.get("cancel_ok")) or remaining_qty <= 0:
@@ -1097,152 +1127,71 @@ def _write_recent_sell_guard(path: Path, data: Dict[str, Any]) -> None:
 # the narrow window where disk-based durability has itself failed.
 
 
-_UNKNOWN_QUARANTINE_DEFAULT_DIR = Path("data/state/execution_unknown_quarantine")
+# Phase 1 Step 5B Fix 3: the quarantine store/guard/global-halt mechanism
+# now lives in libs/execution/guards/unknown_quarantine.py, shared with
+# libs/skills/runner.py::CompositeSkillRunner (closes the confirmed HIGH gap
+# where that path -- and everything built on it, ToolFacade/ExecutorAgent --
+# could resubmit an already-UNKNOWN-quarantined mutation because it never
+# checked or wrote this state). _GLOBAL_MUTATION_HALT below is the *same*
+# dict object as the shared module's GLOBAL_MUTATION_HALT (mutable, shared
+# by reference), kept under this name for existing test fixtures
+# (tests/test_step5b_safety_fix.py::_reset_global_mutation_halt) that reset
+# it directly.
+_GLOBAL_MUTATION_HALT: Dict[str, Any] = _unknown_quarantine.GLOBAL_MUTATION_HALT
 
-_GLOBAL_MUTATION_HALT: Dict[str, Any] = {"active": False, "reason": "", "since_epoch": 0, "pid": 0}
 
-
-def _activate_global_mutation_halt(reason: str, *, now_epoch: int) -> None:
-    if _GLOBAL_MUTATION_HALT["active"]:
-        return
-    _GLOBAL_MUTATION_HALT["active"] = True
-    _GLOBAL_MUTATION_HALT["reason"] = str(reason or "")
-    _GLOBAL_MUTATION_HALT["since_epoch"] = int(now_epoch)
-    _GLOBAL_MUTATION_HALT["pid"] = os.getpid()
+def _unknown_quarantine_override_path(state: Dict[str, Any]) -> Optional[str]:
+    raw = str(state.get("unknown_quarantine_guard_path") or "").strip()
+    return raw or None
 
 
 def _unknown_quarantine_dir(state: Dict[str, Any]) -> Path:
-    raw = state.get("unknown_quarantine_guard_path") or os.getenv("UNKNOWN_QUARANTINE_GUARD_PATH", "")
-    if str(raw or "").strip():
-        return Path(str(raw))
-    return isolate_canonical_path_for_pytest(
-        _UNKNOWN_QUARANTINE_DEFAULT_DIR,
-        canonical_path=_UNKNOWN_QUARANTINE_DEFAULT_DIR,
-        isolated_name="execution_unknown_quarantine",
-    )
+    return _unknown_quarantine.quarantine_dir(_unknown_quarantine_override_path(state))
 
 
 def _quarantine_lock_path(state: Dict[str, Any], symbol: str) -> Path:
-    return _unknown_quarantine_dir(state) / f"{symbol}.lock"
+    return _unknown_quarantine.quarantine_lock_path(symbol, _unknown_quarantine_override_path(state))
 
 
 def _write_quarantine_lock_if_absent(lock_path: Path, payload: Dict[str, Any]) -> bool:
-    """Atomically create the per-symbol quarantine lock/marker file.
-
-    Returns True iff the lock durably exists after this call -- either we
-    just created it, or it already existed (from an earlier attempt, or a
-    prior process incarnation before a crash/restart); both cases mean the
-    symbol IS quarantined, which is success, not failure. Returns False
-    only when the file could not be created and does not already exist --
-    a genuine persistence failure.
-    """
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        try:
-            os.write(fd, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8"))
-        finally:
-            os.close(fd)
-        return True
-    except FileExistsError:
-        return True
-    except Exception:
-        try:
-            return lock_path.exists()
-        except Exception:
-            return False
+    return _unknown_quarantine.write_quarantine_lock_if_absent(lock_path, payload)
 
 
 def _evaluate_unknown_quarantine_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
     action = str(order.get("action") or "").strip().upper()
-    details: Dict[str, Any] = {"guard_applied": True, "action": action}
-
-    if _GLOBAL_MUTATION_HALT["active"]:
-        details["global_mutation_halt"] = True
-        details["global_mutation_halt_reason"] = str(_GLOBAL_MUTATION_HALT.get("reason") or "")
-        details["global_mutation_halt_since_epoch"] = _coerce_int(_GLOBAL_MUTATION_HALT.get("since_epoch"), 0)
-        return False, "global_mutation_halt_active", details
-
     if action not in ("BUY", "SELL", "CANCEL", "MODIFY"):
-        details["guard_applied"] = False
-        return True, "", details
+        return True, "", {"guard_applied": False, "action": action}
 
     symbol = _extract_order_symbol(order)
-    details["symbol"] = symbol
     if not symbol:
-        details["symbol_evaluable"] = False
-        return True, "", details
+        return True, "", {"guard_applied": True, "action": action, "symbol_evaluable": False}
 
-    lock_path = _quarantine_lock_path(state, symbol)
-    try:
-        lock_exists = lock_path.exists()
-    except Exception:
-        # Cannot even determine whether a quarantine lock exists for this
-        # symbol -> cannot safely treat it as "not quarantined". A
-        # can't-safely-read state is never treated as empty.
-        details["quarantine_store_unreadable"] = True
-        return False, "quarantine_store_unreadable_fail_closed", details
-
-    if not lock_exists:
-        return True, "", details
-
-    details["quarantined"] = True
-    try:
-        record = json.loads(lock_path.read_text(encoding="utf-8"))
-        if isinstance(record, dict):
-            details.update(
-                {
-                    "quarantine_pid": record.get("pid"),
-                    "quarantined_at_epoch": _coerce_int(record.get("created_at_epoch"), 0),
-                    "quarantine_reason": str(record.get("reason") or ""),
-                    "quarantine_operation": str(record.get("operation") or ""),
-                    "quarantine_run_id": str(record.get("run_id") or ""),
-                    "quarantine_exception_type": str(record.get("exception_type") or ""),
-                }
-            )
-    except Exception:
-        # Existence alone is the fail-closed signal, not successful
-        # parsing -- a partially-written or otherwise unreadable lock file
-        # (e.g. a crash mid-write) still blocks.
-        details["quarantine_lock_unreadable"] = True
-    return False, "symbol_quarantined_pending_reconciliation", details
+    allowed, reason, shared_details = _unknown_quarantine.evaluate_unknown_quarantine_guard(
+        symbol, override_path=_unknown_quarantine_override_path(state)
+    )
+    details: Dict[str, Any] = {"guard_applied": True, "action": action, **shared_details}
+    return allowed, reason, details
 
 
 def _quarantine_symbol_for_unknown_outcome(
     state: Dict[str, Any], order: Dict[str, Any], execution: Dict[str, Any], *, reason: str = "broker_outcome_unknown"
 ) -> bool:
-    """Durably quarantine `symbol`. Returns whether it is now (or already
-    was) durably blocked.
-
-    On a genuine persistence failure (the lock file could not be created
-    and does not already exist -- or the order has no resolvable symbol at
-    all), activates the process-wide _GLOBAL_MUTATION_HALT fallback so the
-    failure can never be silently read as "safe to proceed" for ANY symbol.
-    Callers should still record broker_outcome=UNKNOWN /
-    reconciliation_required=True on state["execution"] regardless of this
-    return value -- the guard's own halt check is the actual enforcement
-    mechanism for subsequent calls, not the caller's handling of this
-    return value.
-    """
-    symbol = _extract_order_symbol(order)
-    now_epoch = _recent_buy_guard_now_epoch(state)
-    if not symbol:
-        _activate_global_mutation_halt("unknown_outcome_missing_symbol", now_epoch=now_epoch)
-        return False
-    lock_path = _quarantine_lock_path(state, symbol)
-    payload = {
-        "pid": os.getpid(),
-        "created_at_epoch": now_epoch,
-        "symbol": symbol,
-        "operation": str(order.get("action") or "").strip().upper(),
-        "reason": str(reason or "broker_outcome_unknown"),
-        "run_id": str(state.get("run_id") or ""),
-        "exception_type": str(execution.get("exception_type") or ""),
-    }
-    persisted = _write_quarantine_lock_if_absent(lock_path, payload)
-    if not persisted:
-        _activate_global_mutation_halt(f"quarantine_lock_write_failed:{symbol}", now_epoch=now_epoch)
-    return persisted
+    """Durably quarantine the order's symbol. Returns whether it is now (or
+    already was) durably blocked. Callers should still record
+    broker_outcome=UNKNOWN / reconciliation_required=True on
+    state["execution"] regardless of this return value -- the guard's own
+    halt check (_evaluate_unknown_quarantine_guard) is the actual
+    enforcement mechanism for subsequent calls, not the caller's handling
+    of this return value."""
+    return _unknown_quarantine.quarantine_symbol_for_unknown_outcome(
+        symbol=_extract_order_symbol(order),
+        operation=str(order.get("action") or ""),
+        now_epoch=_recent_buy_guard_now_epoch(state),
+        run_id=str(state.get("run_id") or ""),
+        exception_type=str(execution.get("exception_type") or ""),
+        reason=reason,
+        override_path=_unknown_quarantine_override_path(state),
+    )
 
 
 def _position_qty_hint_from_order(order: Dict[str, Any]) -> int:

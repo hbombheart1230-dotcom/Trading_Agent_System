@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
 from libs.catalog.api_catalog import ApiCatalog
 from libs.catalog.api_request_builder import ApiRequestBuilder, PrepareResult, PreparedRequest
 from libs.core.event_logger import EventLogger
+from libs.core.symbols import normalize_symbol
 from libs.execution.executors import get_executor
+from libs.execution.guards.broker_mutation import is_mutation_api_id
+from libs.execution.guards.unknown_quarantine import (
+    evaluate_unknown_quarantine_guard,
+    quarantine_symbol_for_unknown_outcome,
+)
 from libs.core.settings import Settings
 
 from .registry import SkillRegistry, SkillSpec
@@ -138,11 +145,58 @@ class CompositeSkillRunner:
                     meta={"api_id": api_id, "step": idx},
                 )
 
+            # Phase 1 Step 5B Fix 3 (HIGH1): this is a second, independent
+            # live mutation path (reached via ToolFacade.order_execute /
+            # ExecutorAgent.execute_order, both of which call this method)
+            # that previously never checked or wrote the durable UNKNOWN
+            # quarantine state graphs/nodes/execute_from_packet.py's guard
+            # chain uses -- so a symbol quarantined by one path was not
+            # respected by the other, and an UNKNOWN outcome from *this*
+            # path never quarantined anything, letting the same logical
+            # mutation be resubmitted. Scoped strictly to mutation api_ids
+            # (kt10000/kt10001/kt10002/kt10003); read/token steps are
+            # unaffected.
+            is_mutation = is_mutation_api_id(api_id)
+            mutation_symbol = normalize_symbol(ctx.get("stk_cd") or args.get("symbol")) if is_mutation else ""
+            if is_mutation and mutation_symbol:
+                guard_allowed, guard_reason, guard_details = evaluate_unknown_quarantine_guard(mutation_symbol)
+                if not guard_allowed:
+                    self.events.log(run_id=run_id, stage="skill_execute", event="quarantine_block", payload={
+                        "skill": skill, "api_id": api_id, "step": idx, "symbol": mutation_symbol,
+                        "reason": guard_reason, **guard_details,
+                    })
+                    return SkillRunResult(
+                        action="error",
+                        skill=skill,
+                        outputs=spec.outputs,
+                        data=None,
+                        missing=[],
+                        question="",
+                        meta={
+                            "api_id": api_id,
+                            "step": idx,
+                            "blocked_reason": guard_reason,
+                            "symbol": mutation_symbol,
+                            "quarantine": guard_details,
+                        },
+                    )
+
             self.events.log(run_id=run_id, stage="skill_execute", event="call", payload={
                 "skill": skill, "api_id": api_id, "step": idx, "path": prep.request.path
             })
 
             res = self.executor.execute(prep.request)  # real/mock governed by env
+            if is_mutation and mutation_symbol:
+                broker_outcome = str((res.meta or {}).get("broker_outcome") or "").strip().upper()
+                if broker_outcome == "UNKNOWN":
+                    quarantine_symbol_for_unknown_outcome(
+                        symbol=mutation_symbol,
+                        operation=str(args.get("side") or "").upper() or "MUTATION",
+                        now_epoch=int(time.time()),
+                        run_id=run_id,
+                        exception_type=str((res.meta or {}).get("exception_type") or ""),
+                        reason="broker_outcome_unknown",
+                    )
             payload = res.response.payload if res and res.response else {}
             payloads.append(payload)
             step_meta.append({"api_id": api_id, "url": (res.meta or {}).get("url")})
