@@ -58,6 +58,40 @@ def _close_point(rows: list[Mapping[str, Any]], day: str) -> dict[str, Any] | No
     return dict(eligible[-1]) if eligible else None
 
 
+def _last_available_point_before_close(
+    rows: list[Mapping[str, Any]], day: str, *, max_lookback_sec: int
+) -> dict[str, Any] | None:
+    """2026-09-03 daily audit (P2-A, revised): informational-only lookup of
+    the most recent data point actually observed before the close
+    checkpoint, for use ONLY when `_close_point` found nothing in the real
+    close window. This value is NEVER written into `points["CLOSE"]`,
+    never used for `return_from_previous_close_pct`, `forward_windows`, or
+    any other Q10 reaction/scoring calculation -- it exists purely so a
+    report reader can see "the last thing we actually observed was X, Y
+    seconds before close" without that value ever being mistaken for a
+    verified close print. Root cause: KOSPI/KOSDAQ macro-indicator
+    snapshots are a byproduct of the Strategist node's own
+    global_sentiment_breakdown cycle (compute_global_sentiment_signal),
+    not a dedicated, independently-schedulable capture job -- there is no
+    existing safe path to force one specifically at 15:30 KST close
+    (confirmed: libs/market/opening_macro_snapshot_collector.py's own
+    scheduled slots are hard-capped to the 08:50-09:20 preopen window by
+    design, unrelated to this gap)."""
+    close_epoch = _checkpoint_epoch(day, "CLOSE")
+    prior = [row for row in rows if int(row.get("ts") or 0) <= close_epoch + 60]
+    if not prior:
+        return None
+    candidate = prior[-1]
+    lag = close_epoch - int(candidate.get("ts") or 0)
+    if lag < 0 or lag > max_lookback_sec:
+        return None
+    return {
+        "ts": int(candidate.get("ts") or 0),
+        "price": _number(candidate.get("close")),
+        "lag_sec": int(lag),
+    }
+
+
 def _forward_window(rows: list[Mapping[str, Any]], *, entry_ts: int, entry_price: float | None) -> dict[str, Any]:
     if entry_price in (None, 0.0):
         return {"status": "PENDING", "return_to_close_pct": None, "mfe_pct": None, "mae_pct": None}
@@ -75,7 +109,12 @@ def _forward_window(rows: list[Mapping[str, Any]], *, entry_ts: int, entry_price
 
 
 def _stock_reaction(
-    *, day: str, target: Mapping[str, Any], rows: list[Mapping[str, Any]], previous_close: float | None
+    *,
+    day: str,
+    target: Mapping[str, Any],
+    rows: list[Mapping[str, Any]],
+    previous_close: float | None,
+    last_available_lookback_sec: int = 0,
 ) -> dict[str, Any]:
     valid = sorted(
         (dict(row) for row in rows if int(row.get("ts") or 0) > 0 and _number(row.get("close")) is not None),
@@ -85,8 +124,10 @@ def _stock_reaction(
     for label in CHECKPOINTS:
         if label == "09:00":
             point = _opening_point(valid, day)
+        elif label == "CLOSE":
+            point = _close_point(valid, day)
         else:
-            point = _close_point(valid, day) if label == "CLOSE" else _point_at(valid, _checkpoint_epoch(day, label), 90)
+            point = _point_at(valid, _checkpoint_epoch(day, label), 90)
         price_field = "open" if label == "09:00" else "close"
         points[label] = (
             {
@@ -98,6 +139,17 @@ def _stock_reaction(
             }
             if point
             else {"status": "PENDING", "price": None, "volume": None}
+        )
+    # 2026-09-03 daily audit (P2-A, revised): when CLOSE has no real
+    # close-window data, surface the last actually-observed point as a
+    # SEPARATE, additive, clearly-labeled field -- never as the CLOSE
+    # value itself, and never fed into return/forward-window math. Only
+    # computed when a caller opts in (last_available_lookback_sec > 0,
+    # currently only _index_reaction); stocks are unaffected.
+    last_available_point_before_close = None
+    if points["CLOSE"]["status"] != "OBSERVED" and last_available_lookback_sec > 0:
+        last_available_point_before_close = _last_available_point_before_close(
+            valid, day, max_lookback_sec=last_available_lookback_sec
         )
     regular = [
         row for row in valid
@@ -135,6 +187,9 @@ def _stock_reaction(
         "evidence_status": "AVAILABLE" if open_price is not None else "INSUFFICIENT_EVIDENCE",
         "actual_open_policy": "first_positive_volume_candle_0900_to_0903",
         "path": regular,
+        # 2026-09-03 daily audit (P2-A, revised): informational only --
+        # never a substitute CLOSE value. See _last_available_point_before_close.
+        "last_available_point_before_close": last_available_point_before_close,
     }
 
 
@@ -165,9 +220,24 @@ def load_index_timeline(*, day: str, macro_root: Path, index_name: str) -> list[
     return [row for _, row in sorted({int(row["ts"]): row for row in rows}.items())]
 
 
+_INDEX_LAST_AVAILABLE_LOOKBACK_SEC = 30 * 60
+"""2026-09-03 daily audit (P2-A, revised): bounded lookback for the
+index-only `last_available_point_before_close` informational field --
+covers the observed ~15.5 minute gap (last snapshot 15:15:32 KST vs.
+close 15:30 KST) with margin. This value is NEVER written into
+points["CLOSE"]; it only bounds how far back the informational lookup is
+allowed to reach before giving up entirely."""
+
+
 def _index_reaction(*, day: str, target: Mapping[str, Any], rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     previous_close = next((_number(row.get("previous_close")) for row in rows if _number(row.get("previous_close")) is not None), None)
-    result = _stock_reaction(day=day, target=target, rows=rows, previous_close=previous_close)
+    result = _stock_reaction(
+        day=day,
+        target=target,
+        rows=rows,
+        previous_close=previous_close,
+        last_available_lookback_sec=_INDEX_LAST_AVAILABLE_LOOKBACK_SEC,
+    )
     result["source"] = "kiwoom_ka20009_macro_snapshots"
     return result
 

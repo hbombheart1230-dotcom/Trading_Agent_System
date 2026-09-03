@@ -454,6 +454,93 @@ def _augment_quote_snapshot_with_spread(snapshot: Dict[str, Any] | None) -> Dict
     return quote
 
 
+def _quote_snapshot_has_valid_price(snapshot: Dict[str, Any]) -> bool:
+    return bool(snapshot.get("quote_present")) and (
+        _coerce_float(snapshot.get("best_ask"), 0.0) > 0.0
+        or _coerce_float(snapshot.get("current_price"), 0.0) > 0.0
+    )
+
+
+def _refresh_executable_quote_if_missing(
+    state: Dict[str, Any], symbol: str, quote_snapshot: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """2026-09-03 daily audit (P1-A): one live, synchronous market.quote
+    re-fetch for `symbol` when the pre-hydrated snapshot has nothing usable
+    -- a pure market-data READ (never a broker mutation; Step5B's
+    mutation-safety machinery is untouched), never a fallback to a
+    Scanner-cached/stale price.
+
+    Root cause this addresses: graphs/nodes/scanner_node.py's one-time
+    market.quote hydration fan-out is capped at candidate_k (default 5)
+    symbols from Scanner's own composite ranking; a symbol later chosen via
+    a different selection mechanism (e.g. opening_rank1_controlled_probe's
+    intrinsic-rank1 authority) that falls outside that top-K set never has
+    its quote fetched, so every later `_extract_upper_limit_quote_snapshot`
+    lookup for it comes back empty. This does not change guard thresholds
+    or semantics -- it only gives the existing guard a chance to see a real
+    quote before concluding one is unavailable. If the refresh itself
+    fails, is unavailable, or returns a quote for the wrong symbol, the
+    original (empty) snapshot is returned unchanged and the existing
+    NOT_SENT path proceeds exactly as before.
+    """
+    refresh_meta: Dict[str, Any] = {"attempted": False, "used": False, "reason": ""}
+    if _quote_snapshot_has_valid_price(quote_snapshot) or not symbol:
+        return quote_snapshot, refresh_meta
+
+    try:
+        from graphs.nodes.hydrate_skill_results_node import _resolve_runner, _fetch_market_quotes
+    except Exception as exc:
+        refresh_meta["reason"] = f"import_failed:{type(exc).__name__}"
+        return quote_snapshot, refresh_meta
+
+    try:
+        runner, runner_source, _runner_errors = _resolve_runner(state)
+    except Exception as exc:
+        refresh_meta.update({"attempted": True, "reason": f"resolve_runner_exception:{type(exc).__name__}"})
+        return quote_snapshot, refresh_meta
+
+    if runner is None or not hasattr(runner, "run"):
+        refresh_meta.update({"attempted": True, "reason": "runner_unavailable", "runner_source": runner_source})
+        return quote_snapshot, refresh_meta
+
+    refresh_meta.update({"attempted": True, "runner_source": runner_source})
+    run_id = str(state.get("run_id") or "execute_from_packet-quote-refresh")
+    try:
+        market_quote_value, fetch_meta = _fetch_market_quotes(runner, run_id=run_id, symbols=[symbol])
+    except Exception as exc:
+        refresh_meta["reason"] = f"fetch_exception:{type(exc).__name__}"
+        return quote_snapshot, refresh_meta
+
+    refresh_meta["fetch_meta"] = fetch_meta
+    if not isinstance(market_quote_value, dict) or symbol not in market_quote_value:
+        refresh_meta["reason"] = "quote_not_ready"
+        return quote_snapshot, refresh_meta
+
+    fresh_row = market_quote_value[symbol]
+    if normalize_symbol(fresh_row.get("symbol") or symbol) != symbol:
+        # Defensive: never let a wrong-symbol response through (T3).
+        refresh_meta["reason"] = "quote_symbol_mismatch"
+        return quote_snapshot, refresh_meta
+
+    skill_results = dict(state.get("skill_results") or {}) if isinstance(state.get("skill_results"), dict) else {}
+    existing_market_quote = skill_results.get("market.quote")
+    merged = dict(existing_market_quote) if isinstance(existing_market_quote, dict) else {}
+    merged[symbol] = fresh_row
+    skill_results["market.quote"] = merged
+    state["skill_results"] = skill_results
+
+    refreshed_snapshot = _augment_quote_snapshot_with_spread(
+        _extract_upper_limit_quote_snapshot(state, symbol)
+    )
+    if not _quote_snapshot_has_valid_price(refreshed_snapshot):
+        refresh_meta["reason"] = "refreshed_quote_still_empty"
+        return quote_snapshot, refresh_meta
+
+    refresh_meta.update({"used": True, "reason": "live_requote_succeeded"})
+    refreshed_snapshot["refresh_source"] = "live_requote"
+    return refreshed_snapshot, refresh_meta
+
+
 def _order_entry_chart_guard_snapshot(order: Dict[str, Any]) -> Dict[str, Any]:
     meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
     metrics = meta.get("entry_metrics") if isinstance(meta.get("entry_metrics"), dict) else {}
@@ -3188,11 +3275,24 @@ def execute_from_packet(state: dict) -> dict:
         quote_snapshot = _augment_quote_snapshot_with_spread(
             _extract_upper_limit_quote_snapshot(state, order_symbol)
         )
+        if action == "BUY":
+            quote_snapshot, quote_refresh_meta = _refresh_executable_quote_if_missing(
+                state, order_symbol, quote_snapshot
+            )
+            if quote_refresh_meta.get("attempted"):
+                logger.log(
+                    run_id=run_id,
+                    stage="execute_from_packet",
+                    event="executable_quote_refresh",
+                    payload={"symbol": order_symbol, **quote_refresh_meta},
+                )
         executable_price = _coerce_float(quote_snapshot.get("best_ask"), 0.0)
         executable_price_source = "market.quote.best_ask"
         if executable_price <= 0.0:
             executable_price = _coerce_float(quote_snapshot.get("current_price"), 0.0)
             executable_price_source = "market.quote.current_price"
+        if bool(quote_snapshot.get("refresh_source")):
+            executable_price_source = f"{executable_price_source}.live_refresh"
         order_meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
         controlled_lane = (
             order_meta.get("controlled_mock_lane")
