@@ -321,3 +321,113 @@ def test_t7_refresh_helper_never_calls_a_mutation_api_and_broker_calls_stay_zero
     assert refreshed["best_ask"] == pytest.approx(8150.0)
     assert len(runner.calls) == 1
     assert runner.calls[0]["skill"] == "market.quote"  # never a mutation skill (order.place / order.cancel)
+
+
+# --- 2026-09-04: same upstream gap, second call site (order_limit_guard's --
+# own price resolution). Reproduces today's real incident: Q10_INDEX's
+# KODEX 200 (069500) signal was correctly identified and attempted twice
+# (09:05, 09:10), but both were BROKER_REJECTED with reason
+# order_notional_price_missing -- _resolve_order_price_for_notional_with_source
+# found no price anywhere (order/meta/state rows/market.quote cache) because
+# 069500, like 004310 the day before, was never in scanner_node.py's
+# hydration fan-out. Fixed by extracting the P1-A refresh core into
+# `_ensure_live_market_quote` and calling it from this second site too. ---
+
+
+def test_order_limit_guard_blocks_on_missing_price_when_no_runner_available(tmp_path, monkeypatch):
+    """Matches the pre-existing, still-green
+    tests/test_execute_from_packet.py::test_execute_from_packet_blocks_buy_when_notional_guard_price_missing
+    -- confirms this exact scenario (no skill_runner in state at all) is
+    completely unaffected by the fix: still fails closed exactly as before."""
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    monkeypatch.setenv("MAX_ORDER_NOTIONAL", "1000000")
+    monkeypatch.setenv("MAX_NOTIONAL", "")
+
+    state = {
+        "catalog_path": _catalog_path(tmp_path),
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "069500", "qty": 1, "price": None, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "order_notional_price_missing"
+
+
+def test_order_limit_guard_reproduces_and_closes_todays_kodex200_incident(tmp_path, monkeypatch):
+    """Reproduces 2026-09-04's actual Q10_INDEX/KODEX 200 (069500)
+    BROKER_REJECTED incident exactly (qty/order shape matches the real
+    controlled-lane submission), then confirms the fix: with a live
+    skill_runner available, the guard now finds a real quote via one
+    market.quote re-fetch instead of blocking."""
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    monkeypatch.setenv("MAX_ORDER_NOTIONAL", "50000000")
+    monkeypatch.setenv("MAX_NOTIONAL", "")
+
+    symbol = "069500"
+    runner = _FakeSkillRunner(quote_by_symbol={symbol: {"symbol": symbol, "price": 35870.0, "best_ask": 35880.0, "best_bid": 35860.0}})
+    state = {
+        "run_id": "kodex200-2026-09-04",
+        "catalog_path": _catalog_path(tmp_path),
+        "skill_runner": runner,
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": symbol, "qty": 10, "price": None, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["skill"] == "market.quote"
+    assert runner.calls[0]["args"]["symbol"] == symbol
+    assert out["execution"]["reason"] != "order_notional_price_missing"
+    guard = out["execution"].get("order_limit_guard") or {}
+    if guard:
+        assert guard.get("price_evaluable", True) is not False
+        if guard.get("price") is not None:
+            assert "live_refresh" in str(guard.get("price_source") or "")
+
+
+def test_order_limit_guard_refresh_failure_still_blocks_no_fallback(tmp_path, monkeypatch):
+    """If the live refresh itself fails (e.g. transient error), the guard
+    must still fail closed -- never fall back to a stale/cached price."""
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    monkeypatch.setenv("MAX_ORDER_NOTIONAL", "1000000")
+    monkeypatch.setenv("MAX_NOTIONAL", "")
+
+    symbol = "069500"
+    runner = _FakeSkillRunner(raise_exc=RuntimeError("kiwoom quote endpoint timeout"))
+    state = {
+        "run_id": "kodex200-refresh-fail",
+        "catalog_path": _catalog_path(tmp_path),
+        "skill_runner": runner,
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": symbol, "qty": 1, "price": None, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "order_notional_price_missing"
+    assert len(runner.calls) == 1  # refresh was attempted, and its failure was not masked
+
+
+def test_ensure_live_market_quote_wrong_symbol_never_used():
+    """Direct unit test: the shared helper rejects a wrong-symbol response
+    defensively, same invariant as the original T3."""
+    symbol = "069500"
+    runner = _FakeSkillRunner(wrong_symbol_row={"symbol": "005930", "price": 70000.0})
+    state: Dict[str, Any] = {"run_id": "wrong-symbol-direct", "skill_runner": runner}
+
+    meta = efp._ensure_live_market_quote(state, symbol)
+
+    assert meta["used"] is False
+    assert meta["reason"] == "quote_symbol_mismatch"
+    assert "market.quote" not in (state.get("skill_results") or {})

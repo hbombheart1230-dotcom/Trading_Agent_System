@@ -301,9 +301,18 @@ def _evaluate_order_limit_guard(state: Dict[str, Any], order: Dict[str, Any]) ->
         return False, "order_qty_limit_exceeded", details
 
     if max_notional > 0 and qty > 0 and price <= 0:
-        details["price_evaluable"] = False
-        details["limit_exceeded"] = "notional_price_missing"
-        return False, "order_notional_price_missing", details
+        # 2026-09-04: only reach for a live re-fetch at the exact moment
+        # this guard is about to fail closed on a missing price -- see
+        # _live_refresh_price_candidate.
+        refreshed = _live_refresh_price_candidate(state, _extract_order_symbol(order))
+        if refreshed is not None:
+            price, price_source = refreshed
+            details["price"] = float(price)
+            details["price_source"] = str(price_source)
+        if price <= 0:
+            details["price_evaluable"] = False
+            details["limit_exceeded"] = "notional_price_missing"
+            return False, "order_notional_price_missing", details
 
     if max_notional > 0 and qty > 0 and price > 0:
         notional = float(qty) * float(price)
@@ -461,47 +470,76 @@ def _quote_snapshot_has_valid_price(snapshot: Dict[str, Any]) -> bool:
     )
 
 
-def _refresh_executable_quote_if_missing(
-    state: Dict[str, Any], symbol: str, quote_snapshot: Dict[str, Any]
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """2026-09-03 daily audit (P1-A): one live, synchronous market.quote
-    re-fetch for `symbol` when the pre-hydrated snapshot has nothing usable
-    -- a pure market-data READ (never a broker mutation; Step5B's
-    mutation-safety machinery is untouched), never a fallback to a
-    Scanner-cached/stale price.
+def _ensure_live_market_quote(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    """2026-09-04 (extends the 2026-09-03 daily audit P1-A fix): one live,
+    synchronous market.quote re-fetch for `symbol`, merged into
+    `state["skill_results"]["market.quote"]` on success -- a pure
+    market-data READ (never a broker mutation; Step5B's mutation-safety
+    machinery is untouched), never a fallback to a Scanner-cached/stale
+    price.
 
-    Root cause this addresses: graphs/nodes/scanner_node.py's one-time
-    market.quote hydration fan-out is capped at candidate_k (default 5)
-    symbols from Scanner's own composite ranking; a symbol later chosen via
-    a different selection mechanism (e.g. opening_rank1_controlled_probe's
-    intrinsic-rank1 authority) that falls outside that top-K set never has
-    its quote fetched, so every later `_extract_upper_limit_quote_snapshot`
-    lookup for it comes back empty. This does not change guard thresholds
-    or semantics -- it only gives the existing guard a chance to see a real
-    quote before concluding one is unavailable. If the refresh itself
-    fails, is unavailable, or returns a quote for the wrong symbol, the
-    original (empty) snapshot is returned unchanged and the existing
-    NOT_SENT path proceeds exactly as before.
-    """
+    Shared by every price-lookup call site in this module that can hit the
+    same root cause: graphs/nodes/scanner_node.py's one-time market.quote
+    hydration fan-out is capped at candidate_k (default 5) symbols from
+    Scanner's own composite ranking, or is scoped to whatever candidate
+    pool a controlled-lane/opening-alpha mechanism injects -- a symbol
+    chosen via a different selection path than that fan-out never has its
+    quote fetched, so every later `_extract_upper_limit_quote_snapshot` /
+    `_extract_market_quotes_safe` lookup for it comes back empty. Confirmed
+    2026-09-04: this also produced `order_notional_price_missing` BROKER
+    rejections for the Q10_INDEX controlled lane's KODEX 200 (069500)
+    signal, via `_resolve_order_price_for_notional_with_source`'s own
+    market.quote lookup -- a separate call site from the one this helper
+    was originally written for, sharing the identical upstream gap.
+
+    Returns a meta dict with "attempted"/"used"/"reason". Never changes
+    any guard threshold or semantics -- it only gives existing price
+    lookups a chance to see a real quote before concluding one is
+    unavailable. If the refresh fails, is unavailable, or returns a quote
+    for the wrong symbol, `state` is left untouched.
+
+    2026-09-04: multiple independent call sites within a single
+    execute_from_packet() run can need a price for the same symbol
+    (order_limit_guard and mock_cash_guard both resolve one via
+    `_resolve_order_price_for_notional_with_source`, plus the
+    controlled-lane/opening-alpha guard's own call). Memoized per
+    (state, symbol) via a plain dict on `state` -- itself a fresh object
+    per run -- so at most ONE live market.quote call is made per symbol
+    per run, regardless of how many consumers need the price; later
+    callers reuse the same outcome (including a prior failure, which is
+    not retried)."""
+    cache = state.get("_live_quote_refresh_cache")
+    if not isinstance(cache, dict):
+        cache = {}
+        state["_live_quote_refresh_cache"] = cache
+    if symbol in cache:
+        return dict(cache[symbol])
+
+    refresh_meta = _ensure_live_market_quote_uncached(state, symbol)
+    cache[symbol] = dict(refresh_meta)
+    return refresh_meta
+
+
+def _ensure_live_market_quote_uncached(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
     refresh_meta: Dict[str, Any] = {"attempted": False, "used": False, "reason": ""}
-    if _quote_snapshot_has_valid_price(quote_snapshot) or not symbol:
-        return quote_snapshot, refresh_meta
+    if not symbol:
+        return refresh_meta
 
     try:
         from graphs.nodes.hydrate_skill_results_node import _resolve_runner, _fetch_market_quotes
     except Exception as exc:
         refresh_meta["reason"] = f"import_failed:{type(exc).__name__}"
-        return quote_snapshot, refresh_meta
+        return refresh_meta
 
     try:
         runner, runner_source, _runner_errors = _resolve_runner(state)
     except Exception as exc:
         refresh_meta.update({"attempted": True, "reason": f"resolve_runner_exception:{type(exc).__name__}"})
-        return quote_snapshot, refresh_meta
+        return refresh_meta
 
     if runner is None or not hasattr(runner, "run"):
         refresh_meta.update({"attempted": True, "reason": "runner_unavailable", "runner_source": runner_source})
-        return quote_snapshot, refresh_meta
+        return refresh_meta
 
     refresh_meta.update({"attempted": True, "runner_source": runner_source})
     run_id = str(state.get("run_id") or "execute_from_packet-quote-refresh")
@@ -509,18 +547,18 @@ def _refresh_executable_quote_if_missing(
         market_quote_value, fetch_meta = _fetch_market_quotes(runner, run_id=run_id, symbols=[symbol])
     except Exception as exc:
         refresh_meta["reason"] = f"fetch_exception:{type(exc).__name__}"
-        return quote_snapshot, refresh_meta
+        return refresh_meta
 
     refresh_meta["fetch_meta"] = fetch_meta
     if not isinstance(market_quote_value, dict) or symbol not in market_quote_value:
         refresh_meta["reason"] = "quote_not_ready"
-        return quote_snapshot, refresh_meta
+        return refresh_meta
 
     fresh_row = market_quote_value[symbol]
     if normalize_symbol(fresh_row.get("symbol") or symbol) != symbol:
         # Defensive: never let a wrong-symbol response through (T3).
         refresh_meta["reason"] = "quote_symbol_mismatch"
-        return quote_snapshot, refresh_meta
+        return refresh_meta
 
     skill_results = dict(state.get("skill_results") or {}) if isinstance(state.get("skill_results"), dict) else {}
     existing_market_quote = skill_results.get("market.quote")
@@ -529,6 +567,26 @@ def _refresh_executable_quote_if_missing(
     skill_results["market.quote"] = merged
     state["skill_results"] = skill_results
 
+    refresh_meta.update({"used": True, "reason": "live_requote_succeeded"})
+    return refresh_meta
+
+
+def _refresh_executable_quote_if_missing(
+    state: Dict[str, Any], symbol: str, quote_snapshot: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """2026-09-03 daily audit (P1-A): see `_ensure_live_market_quote` for
+    the shared refresh mechanism. This wrapper re-derives the
+    controlled-lane/opening-alpha quote snapshot shape after a successful
+    refresh; if the refresh fails or the re-derived snapshot is still
+    empty, the original (empty) snapshot is returned unchanged and the
+    existing NOT_SENT path proceeds exactly as before."""
+    if _quote_snapshot_has_valid_price(quote_snapshot) or not symbol:
+        return quote_snapshot, {"attempted": False, "used": False, "reason": ""}
+
+    refresh_meta = _ensure_live_market_quote(state, symbol)
+    if not refresh_meta.get("used"):
+        return quote_snapshot, refresh_meta
+
     refreshed_snapshot = _augment_quote_snapshot_with_spread(
         _extract_upper_limit_quote_snapshot(state, symbol)
     )
@@ -536,7 +594,6 @@ def _refresh_executable_quote_if_missing(
         refresh_meta["reason"] = "refreshed_quote_still_empty"
         return quote_snapshot, refresh_meta
 
-    refresh_meta.update({"used": True, "reason": "live_requote_succeeded"})
     refreshed_snapshot["refresh_source"] = "live_requote"
     return refreshed_snapshot, refresh_meta
 
@@ -1705,6 +1762,39 @@ def _resolve_order_price_for_notional_with_source(state: Dict[str, Any], order: 
     if not price_candidates:
         return 0.0, ""
     return max(price_candidates, key=lambda item: item[0])
+
+
+def _live_refresh_price_candidate(state: Dict[str, Any], symbol: str) -> Tuple[float, str] | None:
+    """2026-09-04: last-resort, on-demand live market.quote re-fetch for a
+    symbol whose price every other source in
+    `_resolve_order_price_for_notional_with_source` already failed to
+    find. Deliberately NOT called unconditionally from inside that
+    function (which runs on every BUY order from multiple guards) --
+    callers invoke this ONLY at the exact point they are about to fail
+    closed for a missing price, so a live quote call happens at most once
+    per symbol per run (memoized in `_ensure_live_market_quote`) and only
+    when it will actually be used. Confirmed 2026-09-04: this closes the
+    Q10_INDEX/KODEX 200 (069500) `order_notional_price_missing` BROKER
+    rejection -- same upstream gap as the 2026-09-03 daily audit's P1-A
+    fix (scanner_node.py's hydration fan-out never covered this symbol),
+    surfacing at this separate call site. Never a broker mutation, never a
+    fallback to a stale/cached value."""
+    if not symbol:
+        return None
+    refresh_meta = _ensure_live_market_quote(state, symbol)
+    if not refresh_meta.get("used"):
+        return None
+    quotes = _extract_market_quotes_safe(state)
+    quote = quotes.get(symbol)
+    if not isinstance(quote, dict):
+        return None
+    quote_px, quote_key = _positive_price_from_row(
+        quote,
+        ("best_ask", "ask", "price", "cur", "current_price", "last_price", "best_bid", "bid"),
+    )
+    if quote_px <= 0.0:
+        return None
+    return quote_px, f"market.quote.{quote_key}.live_refresh"
 
 
 def _resolve_order_price_for_notional(state: Dict[str, Any], order: Dict[str, Any]) -> float:
