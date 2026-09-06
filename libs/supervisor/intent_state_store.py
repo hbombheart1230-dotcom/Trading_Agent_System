@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -287,6 +288,59 @@ class SQLiteIntentStateStore:
             "reason": tr.reason,
         }
         return out
+
+    def claim_execution(self, intent_id: str, *, fingerprint: str, owner: str) -> Dict[str, Any]:
+        """Admit an already policy-approved order and claim it atomically.
+
+        Existing pending/rejected/terminal rows are never approved implicitly.
+        The binding table is metadata in this same authoritative database.
+        """
+        if not intent_id or not fingerprint or not owner:
+            raise ValueError('execution identity, fingerprint and owner required')
+        ts = _now_epoch()
+        with closing(self._connect()) as conn, conn:
+            conn.execute('BEGIN IMMEDIATE')
+            conn.execute('CREATE TABLE IF NOT EXISTS intent_execution_binding '
+                         '(intent_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, owner TEXT NOT NULL)')
+            current = conn.execute('SELECT state FROM intent_state WHERE intent_id=?', (intent_id,)).fetchone()
+            binding = conn.execute('SELECT fingerprint FROM intent_execution_binding WHERE intent_id=?', (intent_id,)).fetchone()
+            if binding and binding['fingerprint'] != fingerprint:
+                return {'claimed': False, 'reason': 'intent_identity_conflict'}
+            if current and current['state'] != INTENT_STATE_APPROVED:
+                return {'claimed': False, 'reason': 'intent_already_owned_or_not_approved', 'state': current['state']}
+            if not current:
+                conn.execute('INSERT INTO intent_state VALUES (?, ?, ?, ?)', (intent_id, INTENT_STATE_PENDING, ts, 1))
+                for before, after in [('', INTENT_STATE_PENDING), (INTENT_STATE_PENDING, INTENT_STATE_APPROVED)]:
+                    conn.execute('INSERT INTO intent_journal(intent_id,ts,from_state,to_state,reason,meta_json) '
+                                 'VALUES(?,?,?,?,?,?)', (intent_id, ts, before, after, 'runtime_policy_approved', '{}'))
+                conn.execute('UPDATE intent_state SET state=?, version=2 WHERE intent_id=? AND state=?',
+                             (INTENT_STATE_APPROVED, intent_id, INTENT_STATE_PENDING))
+            updated = conn.execute('UPDATE intent_state SET state=?,updated_ts=?,version=version+1 '
+                                   'WHERE intent_id=? AND state=?',
+                                   (INTENT_STATE_EXECUTING, ts, intent_id, INTENT_STATE_APPROVED))
+            if updated.rowcount != 1:
+                raise RuntimeError('intent_CAS_expected_approved')
+            conn.execute('INSERT INTO intent_execution_binding VALUES(?,?,?) '
+                         'ON CONFLICT(intent_id) DO UPDATE SET owner=excluded.owner', (intent_id, fingerprint, owner))
+            conn.execute('INSERT INTO intent_journal(intent_id,ts,from_state,to_state,reason,meta_json) VALUES(?,?,?,?,?,?)',
+                         (intent_id, ts, INTENT_STATE_APPROVED, INTENT_STATE_EXECUTING, 'execution_owner_CAS', '{}'))
+        return {'claimed': True, 'state': INTENT_STATE_EXECUTING}
+
+    def finish_execution(self, intent_id: str, *, owner: str, execution: Dict[str, Any]) -> None:
+        outcome = execution.get('broker_outcome')
+        target = INTENT_STATE_EXECUTED if outcome == 'ACCEPTED' else (
+            INTENT_STATE_FAILED if outcome in {'NOT_SENT', 'REJECTED'} else INTENT_STATE_EXECUTING)
+        with closing(self._connect()) as conn, conn:
+            conn.execute('BEGIN IMMEDIATE')
+            updated = conn.execute('UPDATE intent_state SET state=?,updated_ts=?,version=version+1 '
+                'WHERE intent_id=? AND state=? AND EXISTS '
+                '(SELECT 1 FROM intent_execution_binding WHERE intent_id=? AND owner=?)',
+                (target, _now_epoch(), intent_id, INTENT_STATE_EXECUTING, intent_id, owner))
+            if updated.rowcount != 1:
+                raise RuntimeError('intent_execution_owner_mismatch')
+            conn.execute('INSERT INTO intent_journal(intent_id,ts,from_state,to_state,reason,meta_json,execution_json) '
+                'VALUES(?,?,?,?,?,?,?)', (intent_id, _now_epoch(), INTENT_STATE_EXECUTING, target,
+                 'broker_outcome_recorded', '{}', json.dumps(execution, ensure_ascii=False, default=str)))
 
     def list_journal(self, intent_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
         iid = str(intent_id or "").strip()

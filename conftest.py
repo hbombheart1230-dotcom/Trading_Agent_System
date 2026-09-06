@@ -94,6 +94,8 @@ def _isolate_unknown_quarantine_guard(monkeypatch, tmp_path):
     symbol. Global + autouse so no test file has to remember to opt in.
     """
     monkeypatch.setenv("UNKNOWN_QUARANTINE_GUARD_PATH", str(tmp_path / "unknown_quarantine.json"))
+    # A fresh authoritative CAS database per test; subprocesses inherit it.
+    monkeypatch.setenv('INTENT_STATE_DB_PATH', str(tmp_path / 'intent_state.db'))
 
 
 # --- Production-path write detector (Phase 1 P0: manifest-based) ------------

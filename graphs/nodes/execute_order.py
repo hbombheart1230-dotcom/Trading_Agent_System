@@ -74,31 +74,28 @@ def execute_order(state: dict) -> dict:
         return state
 
     executor = get_executor(s)
-    result = executor.execute(prep.request)
+    def normalize_legacy(result):
+        if result is None:
+            return {'allowed': False, 'ok': False, 'broker_outcome': 'NOT_SENT'}
+        result_meta = dict(getattr(result, 'meta', None) or {})
+        outcome = str(result_meta.get('broker_outcome') or '').strip().upper()
+        if not outcome:
+            outcome = 'ACCEPTED' if bool(result.response.ok) else 'REJECTED'
+        return {'allowed': True, 'status_code': result.response.status_code,
+                'ok': result.response.ok, 'payload': result.response.payload,
+                'error_code': result.response.error_code, 'error_message': result.response.error_message,
+                'meta': result.meta, 'broker_outcome': outcome, 'reconciliation_required': outcome == 'UNKNOWN'}
 
-    result_meta = dict(getattr(result, "meta", None) or {})
-    broker_outcome = str(result_meta.get("broker_outcome") or "").strip().upper()
-    if not broker_outcome:
-        # Non-mutation or an executor that doesn't emit BrokerOutcome
-        # (e.g. MockExecutor) -- fall back to the plain ok flag rather than
-        # asserting a broker_outcome that was never actually determined.
-        broker_outcome = "ACCEPTED" if bool(result.response.ok) else "REJECTED"
-
-    state["execution"] = {
-        "allowed": True,
-        "status_code": result.response.status_code,
-        "ok": result.response.ok,
-        "payload": result.response.payload,
-        "error_code": result.response.error_code,
-        "error_message": result.response.error_message,
-        "meta": result.meta,
-        "broker_outcome": broker_outcome,
-        "reconciliation_required": broker_outcome == "UNKNOWN",
-    }
+    from libs.execution.intent_execution_owner import execute_owned_order
+    guard_order.update({key: req_body.get(key) for key in ('orig_ord_no', 'cncl_qty', 'mdfy_qty', 'mdfy_uv')})
+    guard_order.update(qty=req_body.get('ord_qty'), price=req_body.get('ord_uv'), intent_id=state.get('intent_id'))
+    state['execution'] = execute_owned_order(state=state, order=guard_order, request=prep.request,
+                                            executor=executor, normalize=normalize_legacy)
+    broker_outcome = state['execution']['broker_outcome']
     if broker_outcome == "UNKNOWN":
         _quarantine_symbol_for_unknown_outcome(state, guard_order, state["execution"])
     try:
-        logger.end({"allowed": True, "ok": result.response.ok})
+        logger.end({"allowed": state['execution']['allowed'], "ok": state['execution']['ok']})
     except Exception:
         pass
     return state

@@ -831,18 +831,16 @@ def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor
         "rationale": "upper_limit_buy_auto_cancel",
     }
     dispatched = False
+    def normalize_cancel(result):
+        nonlocal dispatched
+        dispatched = result is not None
+        return _normalize_execution(allowed=True, execution_result=result, allow_result=None,
+            order=cancel_order, reason='upper_limit_buy_auto_cancel', strategy_policy_summary=None)
     try:
         cancel_req = _prepare_request(cancel_order, catalog)
-        cancel_execution_result = executor.execute(cancel_req)
-        dispatched = True
-        cancel_payload = _normalize_execution(
-            allowed=True,
-            execution_result=cancel_execution_result,
-            allow_result=None,
-            order=cancel_order,
-            reason="upper_limit_buy_auto_cancel",
-            strategy_policy_summary=None,
-        )
+        from libs.execution.intent_execution_owner import execute_owned_order
+        cancel_payload = execute_owned_order(state=state, order=cancel_order, request=cancel_req,
+            executor=executor, child=True, normalize=normalize_cancel)
         result["cancel"] = cancel_payload
         result["cancel_ok"] = bool(cancel_payload.get("ok"))
         _propagate_cancel_unknown_outcome(state, cancel_order, cancel_payload)
@@ -859,6 +857,7 @@ def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor
             # bare error string with no quarantine -- treat it exactly like
             # any other post-dispatch UNKNOWN outcome.
             unknown_cancel_payload = {
+                "intent_id": cancel_order.get('intent_id', ''),
                 "broker_outcome": "UNKNOWN",
                 "exception_type": type(exc).__name__,
                 "submission_attempts": 1,
@@ -959,18 +958,16 @@ def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, exe
         reason=str(start_policy.get("cancel_reason") or ""),
     )
     dispatched = False
+    def normalize_cancel(result):
+        nonlocal dispatched
+        dispatched = result is not None
+        return _normalize_execution(allowed=True, execution_result=result, allow_result=None,
+            order=cancel_order, reason=str(cancel_order.get('rationale') or ''), strategy_policy_summary=None)
     try:
         cancel_req = _prepare_request(cancel_order, catalog)
-        cancel_execution_result = executor.execute(cancel_req)
-        dispatched = True
-        cancel_payload = _normalize_execution(
-            allowed=True,
-            execution_result=cancel_execution_result,
-            allow_result=None,
-            order=cancel_order,
-            reason=str(cancel_order.get("rationale") or ""),
-            strategy_policy_summary=None,
-        )
+        from libs.execution.intent_execution_owner import execute_owned_order
+        cancel_payload = execute_owned_order(state=state, order=cancel_order, request=cancel_req,
+            executor=executor, child=True, normalize=normalize_cancel)
         result["cancel"] = cancel_payload
         result["cancel_ok"] = bool(cancel_payload.get("ok"))
         _propagate_cancel_unknown_outcome(state, cancel_order, cancel_payload)
@@ -981,6 +978,7 @@ def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, exe
             # Phase 1 Step 5B Fix 3 (HIGH2) -- see the matching comment in
             # _attempt_upper_limit_cancel for the full rationale.
             unknown_cancel_payload = {
+                "intent_id": cancel_order.get('intent_id', ''),
                 "broker_outcome": "UNKNOWN",
                 "exception_type": type(exc).__name__,
                 "submission_attempts": 1,
@@ -2640,6 +2638,7 @@ def _normalize_execution(
     )
 
     verdict = {
+        "intent_id": order.get('intent_id', ''),
         "allowed": bool(allowed),
         "ok": bool(ok),
         "execution_ok": bool(ok),
@@ -2777,6 +2776,9 @@ def execute_from_packet(state: dict) -> dict:
     # parsing, or any other downstream exception) must not be allowed to
     # overwrite an already-determined broker outcome with NOT_SENT.
     submission_dispatched = False
+    def _mark_submission_dispatched():
+        nonlocal submission_dispatched
+        submission_dispatched = True
 
     def _quote_snapshot_for_order(order_obj: Dict[str, Any]) -> Dict[str, Any]:
         symbol = _extract_order_symbol(order_obj)
@@ -2859,6 +2861,9 @@ def execute_from_packet(state: dict) -> dict:
         else:
             order = _build_order_from_intent(intent)
         order = _apply_mock_broker_order_safety(order)
+        from libs.execution.intent_identity import bind_intent
+        if str(order.get('action') or '').upper() != 'NOOP':
+            bind_intent(state, order, intent)
         risk_for_supervisor, strategy_policy_summary = _augment_supervisor_risk_context(
             state=state,
             packet=packet,
@@ -3543,16 +3548,11 @@ def execute_from_packet(state: dict) -> dict:
         # failure per RealExecutor's own contract) must be treated as
         # UNKNOWN, never NOT_SENT -- see the phase-invariant handling in the
         # outer except block below.
-        submission_dispatched = True
-        execution_result = executor.execute(req)
-
-        state["execution"] = _normalize_execution(
-            allowed=True,
-            execution_result=execution_result,
-            allow_result=allow_result,
-            order=order,
-            strategy_policy_summary=strategy_policy_summary,
-        )
+        from libs.execution.intent_execution_owner import execute_owned_order
+        state["execution"] = execute_owned_order(state=state, order=order, request=req,
+            executor=executor, on_submit=_mark_submission_dispatched, normalize=lambda result: _normalize_execution(
+                allowed=True, execution_result=result, allow_result=allow_result,
+                order=order, strategy_policy_summary=strategy_policy_summary))
         state["execution"]["portfolio_guard"] = portfolio_details
         allow_details = getattr(allow_result, "details", {})
         if isinstance(allow_details, dict) and allow_details:
@@ -3674,6 +3674,7 @@ def execute_from_packet(state: dict) -> dict:
             broker_outcome = "NOT_SENT"
 
         state["execution"] = {
+            "intent_id": order.get('intent_id', ''),
             "allowed": False,
             "ok": False,
             "reason": str(e),

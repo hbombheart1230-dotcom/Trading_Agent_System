@@ -1,8 +1,20 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 62,
+  "entry_count": 63,
   "entries": [
+    {
+      "date": "2026-09-06",
+      "version": "Step5C",
+      "title": "Durable order-intent execution ownership",
+      "stage": "Execution Safety",
+      "types": ["EXECUTION_SAFETY"],
+      "summary": "Atomic SQLite ownership prevents replay of one order intent across concurrent calls and restarts.",
+      "details": ["Explicit intent identity is preserved; payload conflicts fail closed.", "CAS/backend failure submits no broker request; UNKNOWN/crash requires reconciliation.", "Existing guards, Supervisor policy and Step5B mutation safety are unchanged."],
+      "impact": "Logical execution ownership is independent of broker transport safety.",
+      "sources": ["docs/development/step5c_execution_owner.md"],
+      "status": "current"
+    },
     {
       "date": "2026-09-05",
       "version": "PRE-Step5C",

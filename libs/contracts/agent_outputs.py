@@ -2601,6 +2601,7 @@ def build_supervisor_output_artifact(
     artifact.update(
         {
             "invoked_agents": ["supervisor"],
+            "intent_id": str(order.get('intent_id') or ''),
             "command": str(order.get("action") or "").strip().upper(),
             "decision": "approve" if allowed else "block",
             "approval_result": bool(allowed),
@@ -2686,6 +2687,9 @@ def build_executor_output_artifact(
             # unconfirmed, must not be treated as a firm reject) apart from a
             # true NOT_SENT/REJECTED.
             "broker_outcome": _clip(execution.get("broker_outcome"), max_len=32),
+            "intent_id": str(execution.get('intent_id') or order.get('intent_id') or ''),
+            "intent_claim": _dict(execution.get('intent_claim')),
+            "intent_state_persistence_error": str(execution.get('intent_state_persistence_error') or ''),
             "submission_phase": _clip(execution.get("submission_phase"), max_len=64),
             "submission_attempts": _safe_int(execution.get("submission_attempts")),
             "exception_type": _clip(execution.get("exception_type"), max_len=120),

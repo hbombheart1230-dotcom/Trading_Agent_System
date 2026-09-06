@@ -1273,3 +1273,11 @@ offline research와 실제 runtime 사이의 semantic drift를 줄임.
 - Separate actual operation authority, validation evidence and promotion.
 - Strategy rules and Step5B mutation safety remain unchanged. See
   `docs/development/pre_step5c_owner_closeout.md` for limits and provenance.
+
+## 2026-09-06 - Step5C durable execution ownership
+
+- Canonical intent_id and atomic SQLite approved-to-executing ownership.
+- Concurrent/restarted duplicate calls cannot resubmit the same intent.
+- Backend failure submits zero orders; UNKNOWN/crash remains reconciliation-required.
+- Existing guards, Supervisor approval and Step5B transport policy are unchanged.
+- See `docs/development/step5c_execution_owner.md` for scope and lifecycle semantics.
