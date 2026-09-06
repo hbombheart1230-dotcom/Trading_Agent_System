@@ -406,6 +406,134 @@ def inject_controlled_mock_lane_intent(
     return state
 
 
+# 2026-09-05 Codex audit: `execution` (state["execution"]) not accepted does
+# NOT mean the broker rejected it -- most non-accept outcomes here are guards
+# (order_notional_price_missing, executable_quote_missing, price drift block,
+# etc.) that block BEFORE any broker API call, i.e. Step5B BrokerOutcome
+# NOT_SENT, not REJECTED. `_normalize_execution()` in execute_from_packet.py
+# already computes the correct Step5B classification into
+# `execution["broker_outcome"]` -- this reads that value instead of
+# re-deriving a collapsed accepted/not-accepted boolean. Falls back to a
+# minimal allowed/ok-based heuristic only for execution dicts that never went
+# through `_normalize_execution` (e.g. hand-built test doubles), and never
+# guesses REJECTED without an explicit broker-side signal.
+_VALID_BROKER_OUTCOMES = frozenset({"NOT_SENT", "ACCEPTED", "REJECTED", "UNKNOWN"})
+
+
+# 2026-09-05 PRE-STEP5C CLEANUP FIX 2 (item 4, Codex independent re-audit):
+# the original fallback guessed REJECTED from any truthy broker_code/
+# broker_message, and NOT_SENT from allowed=False alone -- both wrong.
+# broker_code=="0" is Kiwoom's own no-business-error convention (see
+# KiwoomMarketIndexReader._request: `if not code or code == "0": return`),
+# so treating it as a rejection signal was a straight misclassification. A
+# timeout/ambiguous broker_message was also being read as a confident
+# rejection when it actually means we do not know what happened. And
+# allowed=False does not by itself PROVE the broker was never contacted --
+# it is only proof when there is no positive dispatch evidence either.
+# Rewritten around real dispatch evidence (Step5B fields written by
+# execute_from_packet.py::_normalize_execution: submission_attempts,
+# submission_phase) plus response evidence (broker_code/broker_message/
+# order_id, which can only exist if a response was actually received):
+#   explicit execution["broker_outcome"] -> authoritative (unchanged)
+#   proven never dispatched                -> NOT_SENT
+#   dispatched + explicit success          -> ACCEPTED
+#   dispatched + explicit broker rejection -> REJECTED
+#   dispatched + timeout/ambiguous/no clear signal -> UNKNOWN
+#   evidence insufficient either way       -> UNKNOWN (fail-honest default)
+# 2026-09-05 PRE-STEP5C CLEANUP FIX 3 (item 7, second independent Codex
+# re-audit -- rejected FIX 2's version of this fallback too): still too
+# willing to infer. Concretely wrong before this pass:
+#   - `{}` (no fields at all) resolved to NOT_SENT, because
+#     `bool(execution.get("allowed"))` treats an ABSENT "allowed" key the
+#     same as an explicit `allowed=False`. An empty dict proves nothing --
+#     it must resolve to UNKNOWN, not NOT_SENT.
+#   - a bare `broker_message` (e.g. descriptive text mentioning
+#     "pre_submit"/"rejected" that is NOT a genuine broker business-code
+#     response) could trigger REJECTED on its own. Message TEXT is never
+#     sufficient evidence of an explicit broker rejection response by
+#     itself now -- only a real, non-"0" `broker_code` counts.
+# Rewritten around EXPLICIT, PROVEN facts only:
+#   explicit execution["broker_outcome"]        -> authoritative (unchanged)
+#   proven no physical dispatch (an EXPLICIT
+#     allowed=False / guard_blocked phase, with
+#     no dispatch evidence otherwise)            -> NOT_SENT
+#   dispatched + explicit success                -> ACCEPTED
+#   dispatched + explicit broker_code reject
+#     (non-"0", not an ambiguous/timeout signal) -> REJECTED
+#   everything else (insufficient evidence,
+#     timeout/ambiguous, message-text-only)      -> UNKNOWN
+_AMBIGUOUS_OUTCOME_MARKERS = ("timeout", "ambiguous", "parse")
+
+
+def _resolve_broker_outcome(execution: Mapping[str, Any]) -> str:
+    declared = str(execution.get("broker_outcome") or "").strip().upper()
+    if declared in _VALID_BROKER_OUTCOMES:
+        return declared
+
+    has_allowed_key = "allowed" in execution
+    allowed_value = bool(execution.get("allowed")) if has_allowed_key else None
+
+    submission_attempts = 0
+    try:
+        submission_attempts = int(execution.get("submission_attempts") or 0)
+    except (TypeError, ValueError):
+        submission_attempts = 0
+    submission_phase = str(execution.get("submission_phase") or "").strip().lower()
+    broker_code = str(execution.get("broker_code") or "").strip()
+    broker_message = str(execution.get("broker_message") or "").strip()
+    order_id = str(execution.get("order_id") or execution.get("ord_no") or "").strip()
+
+    explicitly_not_dispatched = submission_phase in {"guard_blocked", "not_dispatched"}
+    # Message text alone is deliberately NOT dispatch evidence -- only a
+    # genuine broker-side identifier (code/order id) or an explicit
+    # Step5B phase/attempt count counts.
+    dispatched_evidence = bool(
+        submission_attempts > 0
+        or submission_phase in {"completed", "mutation_http_call", "dispatched"}
+        or broker_code
+        or order_id
+    )
+
+    proven_not_dispatched = explicitly_not_dispatched and not dispatched_evidence
+    if explicitly_not_dispatched and (execution.get('ok') is True or execution.get('execution_ok') is True):
+        return 'UNKNOWN'
+    if proven_not_dispatched:
+        return "NOT_SENT"
+    if not dispatched_evidence:
+        # Insufficient evidence either way -- an empty dict proves
+        # nothing, never guessed as NOT_SENT.
+        return "UNKNOWN"
+
+    if explicitly_not_dispatched:
+        return 'UNKNOWN'
+
+    reason = str(execution.get("reason") or "").strip().lower()
+    combined_text = f"{reason} {broker_message}".lower()
+    if any(marker in combined_text for marker in _AMBIGUOUS_OUTCOME_MARKERS):
+        return "UNKNOWN"
+    if broker_code.isdigit() and int(broker_code) != 0:
+        if execution.get('ok') is True or execution.get('execution_ok') is True:
+            return 'UNKNOWN'
+        return "REJECTED"
+    if order_id and (broker_code == '0' or execution.get('ok') is True or execution.get('execution_ok') is True):
+        return 'ACCEPTED'
+    # A bare broker_message with no genuine broker_code is never, by
+    # itself, proof of an explicit broker rejection response.
+    return "UNKNOWN"
+
+
+_SUBMISSION_STATE_BY_BROKER_OUTCOME = {
+    "NOT_SENT": "PRE_SUBMISSION_BLOCKED",
+    "REJECTED": "BROKER_REJECTED",
+    "UNKNOWN": "BROKER_OUTCOME_UNKNOWN",
+}
+_ATTEMPT_STATUS_BY_BROKER_OUTCOME = {
+    "NOT_SENT": "PRE_SUBMISSION_BLOCKED",
+    "REJECTED": "BROKER_REJECTED",
+    "UNKNOWN": "BROKER_OUTCOME_UNKNOWN",
+}
+
+
 def finalize_controlled_mock_lane_submission(
     state: dict[str, Any], *, ledger_root: Path | str | None = None
 ) -> dict[str, Any]:
@@ -433,10 +561,9 @@ def finalize_controlled_mock_lane_submission(
             surface["submission_state"] = "EXECUTION_RESULT_MISSING"
         state["controlled_mock_lanes"] = surface
         return state
-    accepted = bool(execution.get("allowed")) and bool(
-        execution.get("ok") or execution.get("execution_ok")
-    )
-    status = "BROKER_ACCEPTED" if accepted else "BROKER_REJECTED"
+    broker_outcome = _resolve_broker_outcome(execution)
+    accepted = broker_outcome == "ACCEPTED"
+    status = "BROKER_ACCEPTED" if accepted else _ATTEMPT_STATUS_BY_BROKER_OUTCOME.get(broker_outcome, "BROKER_OUTCOME_UNKNOWN")
     day = _text(surface.get("day"))
     recorded_at = datetime.fromtimestamp(_now_epoch(state), tz=KST).isoformat()
     attempt = record_attempt(
@@ -446,6 +573,7 @@ def finalize_controlled_mock_lane_submission(
         recorded_at=recorded_at,
         execution=execution,
         status=status,
+        broker_outcome=broker_outcome,
         root=ledger_root,
     )
     surface["attempt_ledger"] = dict(attempt)
@@ -463,7 +591,7 @@ def finalize_controlled_mock_lane_submission(
             _mapping(submission.get("row")).get("status")
         ) or "BROKER_ACCEPTED"
     else:
-        surface["submission_state"] = "BROKER_REJECTED"
+        surface["submission_state"] = _SUBMISSION_STATE_BY_BROKER_OUTCOME.get(broker_outcome, "BROKER_OUTCOME_UNKNOWN")
     state["controlled_mock_lanes"] = surface
     return state
 

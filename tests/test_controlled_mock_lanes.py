@@ -258,6 +258,175 @@ def test_broker_rejection_records_attempt_without_consuming_daily_limit(
     assert load_submissions(DAY, root=ledger) == []
 
 
+# --- 2026-09-05 Codex audit: NOT_SENT vs BROKER_REJECTED separation ------
+#
+# Root cause: `finalize_controlled_mock_lane_submission()` collapsed every
+# non-accepted `execution` into a blanket "BROKER_REJECTED", regardless of
+# whether a broker API call ever happened. A pre-submission guard block
+# (order_notional_price_missing, executable_quote_missing, a price-drift
+# guard) makes ZERO broker calls -- Step5B's own BrokerOutcome contract
+# classifies these as NOT_SENT, never REJECTED. Fixed via
+# `_resolve_broker_outcome()`, which reads the already-correct
+# `execution["broker_outcome"]` (set by execute_from_packet.py's
+# `_normalize_execution()`) instead of re-deriving a collapsed boolean.
+
+
+def _inject(tmp_path: Path, monkeypatch, *, run_id: str) -> dict:
+    reports = tmp_path / "reports"
+    ledger = tmp_path / "ledger"
+    _write(
+        reports
+        / "evaluation"
+        / "baseline_btc_woori_tech"
+        / DAY
+        / "q12_btc_woori_hypothesis_validation.json",
+        _q12_payload(),
+    )
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    return inject_controlled_mock_lane_intent(
+        {
+            "runtime_phase": "session",
+            "now_epoch": _epoch(9, 5),
+            "run_id": run_id,
+            "portfolio_snapshot": {"positions": []},
+            "persisted_state": {},
+            "intents": [],
+        },
+        reports_root=reports,
+        ledger_root=ledger,
+    )
+
+
+def test_price_missing_guard_block_is_not_sent_not_rejected(tmp_path: Path, monkeypatch) -> None:
+    """T1: order_notional_price_missing blocks before any broker call."""
+    ledger = tmp_path / "ledger"
+    state = _inject(tmp_path, monkeypatch, run_id="price-missing-run")
+    state["execution"] = {
+        "allowed": False,
+        "ok": False,
+        "broker_outcome": "NOT_SENT",
+        "reason": "order_notional_price_missing",
+        "order": {"action": "BUY", "symbol": "041190", "qty": 1},
+    }
+
+    result = finalize_controlled_mock_lane_submission(state, ledger_root=ledger)
+
+    assert result["controlled_mock_lanes"]["submission_state"] == "PRE_SUBMISSION_BLOCKED"
+    attempt = load_attempts(DAY, root=ledger)[0]
+    assert attempt["status"] == "PRE_SUBMISSION_BLOCKED"
+    assert attempt["execution"]["broker_outcome"] == "NOT_SENT"
+
+
+def test_quote_refresh_failure_is_not_sent_not_rejected(tmp_path: Path, monkeypatch) -> None:
+    """T2: a live quote-refresh failure also blocks pre-submission."""
+    ledger = tmp_path / "ledger"
+    state = _inject(tmp_path, monkeypatch, run_id="quote-refresh-fail-run")
+    state["execution"] = {
+        "allowed": False,
+        "ok": False,
+        "broker_outcome": "NOT_SENT",
+        "reason": "executable_quote_missing",
+        "order": {"action": "BUY", "symbol": "041190", "qty": 1},
+    }
+
+    result = finalize_controlled_mock_lane_submission(state, ledger_root=ledger)
+
+    assert result["controlled_mock_lanes"]["submission_state"] == "PRE_SUBMISSION_BLOCKED"
+    attempt = load_attempts(DAY, root=ledger)[0]
+    assert attempt["status"] == "PRE_SUBMISSION_BLOCKED"
+    assert attempt["execution"]["broker_outcome"] == "NOT_SENT"
+
+
+def test_price_drift_guard_is_not_sent_not_rejected(tmp_path: Path, monkeypatch) -> None:
+    """T3: a price-drift guard block is also a pre-submission block."""
+    ledger = tmp_path / "ledger"
+    state = _inject(tmp_path, monkeypatch, run_id="price-drift-run")
+    state["execution"] = {
+        "allowed": False,
+        "ok": False,
+        "broker_outcome": "NOT_SENT",
+        "reason": "opening_alpha_execution_price_drift",
+        "order": {"action": "BUY", "symbol": "041190", "qty": 1},
+    }
+
+    result = finalize_controlled_mock_lane_submission(state, ledger_root=ledger)
+
+    assert result["controlled_mock_lanes"]["submission_state"] == "PRE_SUBMISSION_BLOCKED"
+    attempt = load_attempts(DAY, root=ledger)[0]
+    assert attempt["status"] == "PRE_SUBMISSION_BLOCKED"
+    assert attempt["execution"]["broker_outcome"] == "NOT_SENT"
+
+
+def test_real_broker_rejection_is_still_broker_rejected(tmp_path: Path, monkeypatch) -> None:
+    """T4: an actual broker-side rejection is still classified REJECTED."""
+    ledger = tmp_path / "ledger"
+    state = _inject(tmp_path, monkeypatch, run_id="real-rejection-run")
+    state["execution"] = {
+        "allowed": True,
+        "ok": False,
+        "broker_outcome": "REJECTED",
+        "reason": "broker_rejected:20",
+        "broker_code": "20",
+        "broker_message": "mock restricted",
+        "order": {"action": "BUY", "symbol": "041190", "qty": 1},
+    }
+
+    result = finalize_controlled_mock_lane_submission(state, ledger_root=ledger)
+
+    assert result["controlled_mock_lanes"]["submission_state"] == "BROKER_REJECTED"
+    attempt = load_attempts(DAY, root=ledger)[0]
+    assert attempt["status"] == "BROKER_REJECTED"
+    assert attempt["execution"]["broker_outcome"] == "REJECTED"
+
+
+def test_accepted_execution_is_still_broker_accepted(tmp_path: Path, monkeypatch) -> None:
+    """T5: an accepted execution is unaffected by this fix."""
+    ledger = tmp_path / "ledger"
+    state = _inject(tmp_path, monkeypatch, run_id="accepted-run")
+    state["execution"] = {
+        "allowed": True,
+        "ok": True,
+        "execution_ok": True,
+        "broker_outcome": "ACCEPTED",
+        "order_id": "0099001",
+        "order": {"action": "BUY", "symbol": "041190", "qty": 1},
+    }
+
+    result = finalize_controlled_mock_lane_submission(state, ledger_root=ledger)
+
+    assert result["controlled_mock_lanes"]["submission_state"] not in ("BROKER_REJECTED", "PRE_SUBMISSION_BLOCKED")
+    attempt = load_attempts(DAY, root=ledger)[0]
+    assert attempt["status"] == "BROKER_ACCEPTED"
+    assert attempt["execution"]["broker_outcome"] == "ACCEPTED"
+    assert len(load_submissions(DAY, root=ledger)) == 1
+
+
+def test_post_dispatch_unknown_outcome_is_neither_rejected_nor_accepted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """T6: UNKNOWN (post-dispatch uncertain) must never be collapsed into
+    BROKER_REJECTED or BROKER_ACCEPTED -- Step5B quarantine/reconciliation
+    relies on this three-way distinction being preserved end to end."""
+    ledger = tmp_path / "ledger"
+    state = _inject(tmp_path, monkeypatch, run_id="unknown-outcome-run")
+    state["execution"] = {
+        "allowed": True,
+        "ok": False,
+        "broker_outcome": "UNKNOWN",
+        "reason": "broker_outcome_unknown",
+        "order": {"action": "BUY", "symbol": "041190", "qty": 1},
+    }
+
+    result = finalize_controlled_mock_lane_submission(state, ledger_root=ledger)
+
+    assert result["controlled_mock_lanes"]["submission_state"] == "BROKER_OUTCOME_UNKNOWN"
+    attempt = load_attempts(DAY, root=ledger)[0]
+    assert attempt["status"] == "BROKER_OUTCOME_UNKNOWN"
+    assert attempt["execution"]["broker_outcome"] == "UNKNOWN"
+    assert len(load_submissions(DAY, root=ledger)) == 0
+
+
 def test_missing_inputs_are_recorded_for_each_independent_lane(
     tmp_path: Path, monkeypatch
 ) -> None:

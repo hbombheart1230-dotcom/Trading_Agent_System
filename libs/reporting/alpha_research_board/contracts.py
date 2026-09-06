@@ -104,6 +104,14 @@ ROW_COLUMNS = (
     "next_action",
     "source_artifacts",
     "updated_through_day",
+    # 2026-09-05 PRE-STEP5C cleanup (Codex audit item 4): additive fields
+    # separating three previously-conflated meanings that `status` alone
+    # cannot express -- see canonical.py::_operation_status /
+    # _fixed_validation_status / _production_promotion_status. `status`
+    # itself is unchanged; these never override or replace it.
+    "operation_status",
+    "fixed_validation_status",
+    "production_promotion_status",
 )
 
 ALLOWED_STATUSES = (

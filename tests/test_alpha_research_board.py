@@ -17,6 +17,7 @@ from libs.reporting.alpha_research_board.remaining_reviews import evaluate_bound
 from libs.reporting.alpha_research_board.runtime_validation import (
     build_immediate_opening_runtime_validation,
 )
+from libs.reporting.alpha_research_board.canonical import canonicalize_board
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -424,3 +425,429 @@ def test_runtime_validation_closes_after_five_fixed_sessions(tmp_path: Path) -> 
         reports_root=root, through_day="2026-08-28"
     )
     assert result["decision"] == "FAIL_RUNTIME_INTEGRITY"
+
+
+# --- 2026-09-05 PRE-STEP5C cleanup (Codex audit item 4): operation vs.
+# fixed-validation vs. production-promotion status separation -----------
+#
+# Root cause: `remaining_reviews.py::_bounded_review()` derives its
+# decision (e.g. "READY_FOR_FIXED_RUNTIME_VALIDATION") purely from
+# HISTORICAL sensitivity checks and never learns whether
+# `runtime_validation.py`'s own fixed 5-session window has since run and
+# reached its own, independent verdict -- so the board could keep
+# implying promotion-readiness for a candidate whose fixed validation had
+# already FAILED (2026-09-04: IMMEDIATE_OPENING_PROBE, N=5/WR20%/PF1.01,
+# decision FAIL_RUNTIME_EFFECT). These tests exercise `canonicalize_board`
+# directly, with a hand-built `legacy` payload that reproduces exactly
+# that stale-decision shape.
+
+
+def _minimal_legacy_board(*, final_offline_decision: str, board_bucket: str, runtime_validation: dict) -> dict:
+    return {
+        "candidates": [
+            {
+                "candidate_id": "IMMEDIATE_OPENING_PROBE",
+                "operation_authority": {"enabled": True, "mode": "controlled_mock"},
+                "board_bucket": board_bucket,
+                "final_offline_review": {
+                    "decision": final_offline_decision,
+                    "rationale": "기본 성과와 종목·일자·최대 수익 제거 민감도를 모두 통과함.",
+                },
+                "historical": {"sample_count": 22, "win_rate": 0.636, "profit_factor": 3.60},
+                "next_action": "기존 observer로 고정된 5거래일 prospective 런 검증 수행.",
+                "source_keys": [],
+            }
+        ],
+        "settled_findings": [],
+        "runtime_validation": runtime_validation,
+    }
+
+
+def _row_for(payload: dict, candidate_id: str) -> dict:
+    return next(row for row in payload["candidates"] if row["candidate_id"] == candidate_id)
+
+
+def test_fixed_validation_failed_does_not_stop_controlled_mock_operation(tmp_path: Path) -> None:
+    """T1/T2: a FAILED fixed-window validation must be reported honestly,
+    but must NOT, by itself, be read as "the controlled-mock experiment
+    must stop" -- those are different decisions (validation failed !=
+    experiment must stop)."""
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={
+            "candidate_id": "IMMEDIATE_OPENING_PROBE",
+            "window_complete": True,
+            "decision": "FAIL_RUNTIME_EFFECT",
+        },
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_FAILED"
+    assert row["operation_status"] == "CONTROLLED_MOCK_CONTINUES"
+
+
+def test_fixed_validation_failed_blocks_production_promotion(tmp_path: Path) -> None:
+    """A FAILED fixed validation must always block production promotion,
+    regardless of a stale historical-readiness decision string."""
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={
+            "candidate_id": "IMMEDIATE_OPENING_PROBE",
+            "window_complete": True,
+            "decision": "FAIL_RUNTIME_EFFECT",
+        },
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["production_promotion_status"] == "PRODUCTION_PROMOTION_NOT_ALLOWED"
+    # The legacy status/decision fields are untouched by this fix.
+    assert row["decision"] == "READY_FOR_FIXED_RUNTIME_VALIDATION"
+
+
+def test_fixed_validation_pending_before_window_completes(tmp_path: Path) -> None:
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={
+            "candidate_id": "IMMEDIATE_OPENING_PROBE",
+            "window_complete": False,
+            "decision": "COLLECTING",
+        },
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_PENDING"
+    assert row["production_promotion_status"] == "PRODUCTION_PROMOTION_NOT_ALLOWED"
+    assert row["operation_status"] == "CONTROLLED_MOCK_CONTINUES"
+
+
+def test_fixed_validation_not_yet_run_for_candidate_with_no_runtime_report(tmp_path: Path) -> None:
+    """A candidate with no runtime_validation report at all (the common
+    case -- today only IMMEDIATE_OPENING_PROBE has one) must be reported
+    as NOT_YET_RUN, never silently defaulted to PASSED or FAILED."""
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_NOT_YET_RUN"
+    assert row["production_promotion_status"] == "PRODUCTION_PROMOTION_NOT_ALLOWED"
+
+
+def test_fixed_validation_passed_case_still_requires_promoted_status_for_promotion(tmp_path: Path) -> None:
+    """A PASSED fixed validation alone does not grant production
+    promotion -- an explicit PROMOTED board decision is also required."""
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={
+            "candidate_id": "IMMEDIATE_OPENING_PROBE",
+            "window_complete": True,
+            "decision": "PASS_RUNTIME_VALIDATION",
+        },
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_PASSED"
+    assert row["status"] != "PROMOTED"
+    assert row["production_promotion_status"] == "PRODUCTION_PROMOTION_NOT_ALLOWED"
+
+
+def test_closed_candidate_reports_operation_stopped(tmp_path: Path) -> None:
+    legacy = _minimal_legacy_board(
+        final_offline_decision="REJECT_BASE_EFFECT",
+        board_bucket="CLOSED_AFTER_SENSITIVITY_REVIEW",
+        runtime_validation={},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["status"] == "CLOSED"
+    # 2026-09-05 FIX 2 (item 8): renamed from CONTROLLED_MOCK_STOPPED --
+    # "stopped" implied it was once a controlled-mock execution, which is
+    # not knowable/true for most candidates; NOT_RUNNING is honest for any
+    # closed candidate regardless of what it was before closing.
+    assert row["operation_status"] == "NOT_RUNNING"
+    assert row["production_promotion_status"] == "PRODUCTION_PROMOTION_NOT_ALLOWED"
+
+
+def test_board_backward_compatibility_existing_columns_and_status_unchanged(tmp_path: Path) -> None:
+    """T5: the pre-existing `status`/`board_bucket`/`decision` semantics
+    and the frozen ROW_COLUMNS/candidate-registry contract must survive
+    unchanged -- the three new fields are purely additive."""
+    payload = build_alpha_research_board(
+        reports_root=_fixture_reports(tmp_path), through_day="2026-08-21"
+    )
+    assert tuple(payload["row_columns"]) == ROW_COLUMNS
+    for row in payload["candidates"]:
+        assert tuple(row) == ROW_COLUMNS
+        assert row["operation_status"] in {
+            "CONTROLLED_MOCK_CONTINUES", "SHADOW_CONTINUES", "NOT_RUNNING", "UNKNOWN_OPERATION_STATUS",
+        }
+        assert row["production_promotion_status"] in {
+            "PRODUCTION_PROMOTION_ALLOWED",
+            "PRODUCTION_PROMOTION_NOT_ALLOWED",
+        }
+    assert payload["integrity"]["candidate_registry_matches"] is True
+
+
+# ===========================================================================
+# 2026-09-05 PRE-STEP5C CLEANUP FIX 2, item 8 -- Alpha Board operation
+# truth and evidence truth (Codex independent re-audit)
+# ===========================================================================
+
+
+def test_item8_t1_controlled_mock_active_candidate(tmp_path: Path) -> None:
+    """T1: a genuine controlled-mock-probe-backed candidate (board_bucket
+    not SHADOW/observation-flavored) reports CONTROLLED_MOCK_CONTINUES."""
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["operation_status"] == "CONTROLLED_MOCK_CONTINUES"
+
+
+def test_item8_t2_shadow_only_candidate(tmp_path: Path) -> None:
+    """T2: a SHADOW-only candidate (source_status carrying "SHADOW", the
+    real shape builder.py assigns to e.g. BTC_STRONG_BULL_LOCAL_
+    CONFIRMATION_V1 / HIGH_COMMON_SHORT_ALPHA_V1) must never claim
+    CONTROLLED_MOCK_CONTINUES."""
+    legacy = {
+        "candidates": [
+            {
+                "candidate_id": "IMMEDIATE_OPENING_PROBE",
+                "board_bucket": "BACKGROUND_RUNTIME_REQUIRED",
+                "source_status": "PROSPECTIVE_SHADOW_FROM_2026_08_25",
+                "source_keys": [],
+            }
+        ],
+        "settled_findings": [],
+        "runtime_validation": {},
+    }
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["operation_status"] == "SHADOW_CONTINUES"
+    assert row["operation_status"] != "CONTROLLED_MOCK_CONTINUES"
+
+
+def test_item8_t3_disabled_closed_candidate(tmp_path: Path) -> None:
+    """T3: a CLOSED candidate reports NOT_RUNNING, never CONTINUES of any
+    flavor."""
+    legacy = _minimal_legacy_board(
+        final_offline_decision="REJECT_BASE_EFFECT",
+        board_bucket="CLOSED_AFTER_SENSITIVITY_REVIEW",
+        runtime_validation={},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["operation_status"] == "NOT_RUNNING"
+
+
+def test_item8_t4_fail_runtime_effect_is_a_genuine_failed_verdict(tmp_path: Path) -> None:
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={"candidate_id": "IMMEDIATE_OPENING_PROBE", "window_complete": True, "decision": "FAIL_RUNTIME_EFFECT"},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_FAILED"
+
+
+def test_item8_t5_insufficient_evidence_is_not_conflated_with_failed(tmp_path: Path) -> None:
+    """T5: INSUFFICIENT_RUNTIME_SAMPLE (a measurement problem, not a
+    performance verdict) must never be reported as FIXED_VALIDATION_FAILED."""
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={"candidate_id": "IMMEDIATE_OPENING_PROBE", "window_complete": True, "decision": "INSUFFICIENT_RUNTIME_SAMPLE"},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_INSUFFICIENT_EVIDENCE"
+    assert row["fixed_validation_status"] != "FIXED_VALIDATION_FAILED"
+
+
+def test_item8_t5b_fail_runtime_integrity_is_insufficient_evidence_not_failed(tmp_path: Path) -> None:
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={"candidate_id": "IMMEDIATE_OPENING_PROBE", "window_complete": True, "decision": "FAIL_RUNTIME_INTEGRITY"},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_INSUFFICIENT_EVIDENCE"
+
+
+def test_item8_t6_pending_before_window_completes(tmp_path: Path) -> None:
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={"candidate_id": "IMMEDIATE_OPENING_PROBE", "window_complete": False, "decision": "COLLECTING"},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_PENDING"
+
+
+def test_item8_t7_pass_runtime_validation(tmp_path: Path) -> None:
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={"candidate_id": "IMMEDIATE_OPENING_PROBE", "window_complete": True, "decision": "PASS_RUNTIME_VALIDATION"},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_PASSED"
+
+
+def test_item8_t8_validation_fail_does_not_stop_controlled_mock(tmp_path: Path) -> None:
+    legacy = _minimal_legacy_board(
+        final_offline_decision="READY_FOR_FIXED_RUNTIME_VALIDATION",
+        board_bucket="RUNTIME_VALIDATION_NEXT",
+        runtime_validation={"candidate_id": "IMMEDIATE_OPENING_PROBE", "window_complete": True, "decision": "FAIL_RUNTIME_EFFECT"},
+    )
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["fixed_validation_status"] == "FIXED_VALIDATION_FAILED"
+    assert row["operation_status"] == "CONTROLLED_MOCK_CONTINUES"
+
+
+def test_item8_t9_shadow_candidate_never_claims_controlled_mock_running(tmp_path: Path) -> None:
+    """T9: a SHADOW-classified candidate must not claim
+    CONTROLLED_MOCK_CONTINUES even when its (legacy, pre-existing) status
+    field is not CLOSED."""
+    legacy = {
+        "candidates": [
+            {
+                "candidate_id": "IMMEDIATE_OPENING_PROBE",
+                "board_bucket": "OBSERVE_FIXED",
+                "source_status": "OBSERVATION_ONLY",
+                "source_keys": [],
+            }
+        ],
+        "settled_findings": [],
+        "runtime_validation": {},
+    }
+    payload = canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04")
+    row = _row_for(payload, "IMMEDIATE_OPENING_PROBE")
+
+    assert row["status"] != "CLOSED"
+    assert row["operation_status"] == "SHADOW_CONTINUES"
+    assert row["operation_status"] != "CONTROLLED_MOCK_CONTINUES"
+
+
+# ===========================================================================
+# 2026-09-05 PRE-STEP5C CLEANUP FIX 3 (item 8, second independent Codex
+# re-audit): Codex's exact reproduction -- source_status="DISABLED" or any
+# genuinely unrecognized value fell through to CONTROLLED_MOCK_CONTINUES
+# (the previous design's DEFAULT branch). Rebuilt around a positive
+# allowlist of candidate IDs actually backed by opening_rank1_controlled_
+# probe.py -- unrecognized values now resolve to UNKNOWN_OPERATION_STATUS,
+# never promoted to "active".
+# ===========================================================================
+
+
+def _board_with(candidate_id: str, **fields) -> dict:
+    return {
+        "candidates": [{"candidate_id": candidate_id, "source_keys": [], **fields}],
+        "settled_findings": [],
+        "runtime_validation": {},
+    }
+
+
+def test_fix3_item8_t1_controlled(tmp_path: Path) -> None:
+    legacy = _board_with("IMMEDIATE_OPENING_PROBE", board_bucket="RUNTIME_VALIDATION_NEXT", source_status="COLLECTING")
+    legacy['candidates'][0]['operation_authority'] = {'enabled': True, 'mode': 'controlled_mock'}
+    row = _row_for(canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04"), "IMMEDIATE_OPENING_PROBE")
+
+    assert row["operation_status"] == "CONTROLLED_MOCK_CONTINUES"
+
+
+def test_fix3_item8_t2_shadow(tmp_path: Path) -> None:
+    legacy = _board_with("IMMEDIATE_OPENING_PROBE", board_bucket="BACKGROUND_RUNTIME_REQUIRED", source_status="PROSPECTIVE_SHADOW_FROM_2026_08_25")
+    row = _row_for(canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04"), "IMMEDIATE_OPENING_PROBE")
+
+    assert row["operation_status"] == "SHADOW_CONTINUES"
+
+
+def test_fix3_item8_t3_disabled_is_not_running(tmp_path: Path) -> None:
+    """Codex's exact reproduction: source_status="DISABLED" must resolve
+    to NOT_RUNNING, never CONTROLLED_MOCK_CONTINUES."""
+    legacy = _board_with("IMMEDIATE_OPENING_PROBE", board_bucket="RUNTIME_VALIDATION_NEXT", source_status="DISABLED")
+    row = _row_for(canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04"), "IMMEDIATE_OPENING_PROBE")
+
+    assert row["operation_status"] == "NOT_RUNNING"
+    assert row["operation_status"] != "CONTROLLED_MOCK_CONTINUES"
+
+
+def test_fix3_item8_t4_closed(tmp_path: Path) -> None:
+    legacy = _board_with(
+        "IMMEDIATE_OPENING_PROBE",
+        board_bucket="CLOSED_AFTER_SENSITIVITY_REVIEW",
+        final_offline_review={"decision": "REJECT_BASE_EFFECT", "rationale": "x"},
+    )
+    row = _row_for(canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04"), "IMMEDIATE_OPENING_PROBE")
+
+    assert row["status"] == "CLOSED"
+    assert row["operation_status"] == "NOT_RUNNING"
+
+
+def test_fix3_item8_t5_unknown_value_is_unknown_not_controlled(tmp_path: Path) -> None:
+    """Codex's exact reproduction: an unrecognized source_status value on
+    a candidate NOT positively identified as a controlled-mock-probe lane
+    must resolve to UNKNOWN_OPERATION_STATUS, never CONTROLLED_MOCK_
+    CONTINUES (the previous design's fall-through default)."""
+    legacy = _board_with(
+        "SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1",
+        board_bucket="SOME_NEW_UNRECOGNIZED_BUCKET", source_status="SOME_NEW_UNRECOGNIZED_STATUS",
+    )
+    row = _row_for(canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04"), "SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1")
+
+    assert row["operation_status"] == "UNKNOWN_OPERATION_STATUS"
+    assert row["operation_status"] != "CONTROLLED_MOCK_CONTINUES"
+
+
+def test_fix3_item8_t6_missing_fields_is_unknown(tmp_path: Path) -> None:
+    legacy = _board_with("SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1")
+    row = _row_for(canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04"), "SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1")
+
+    assert row["operation_status"] == "UNKNOWN_OPERATION_STATUS"
+
+
+def test_fix3_item8_t7_no_candidate_ever_falsely_claims_controlled_mock(tmp_path: Path) -> None:
+    """Sweep every candidate NOT on the controlled-mock-probe allowlist
+    with a variety of unrecognized/empty inputs -- none may ever resolve
+    to CONTROLLED_MOCK_CONTINUES."""
+    unrecognized_inputs = [
+        {},
+        {"source_status": "WHATEVER"},
+        {"board_bucket": "WHATEVER"},
+        {"source_status": "", "board_bucket": ""},
+    ]
+    for candidate_id in ("SAMSUNG_HYNIX_FIXED_UNIVERSE_TOP1", "R1_SCANNER_RISK_HIGH_30M_V1"):
+        for fields in unrecognized_inputs:
+            legacy = _board_with(candidate_id, **fields)
+            row = _row_for(canonicalize_board(legacy, reports_root=tmp_path, through_day="2026-09-04"), candidate_id)
+            assert row["operation_status"] != "CONTROLLED_MOCK_CONTINUES", (candidate_id, fields, row["operation_status"])

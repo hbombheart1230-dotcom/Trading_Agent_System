@@ -115,7 +115,8 @@ def record_evaluations(
 
 def record_attempt(
     *, day: str, candidate: Mapping[str, Any], run_id: str, recorded_at: str,
-    execution: Mapping[str, Any], status: str, root: Path | str | None = None,
+    execution: Mapping[str, Any], status: str, broker_outcome: str = "",
+    root: Path | str | None = None,
 ) -> dict[str, Any]:
     path = attempts_path(day, root=root)
     rows = load_attempts(day, root=root)
@@ -143,6 +144,11 @@ def record_attempt(
             "broker_message": _text(execution.get("broker_message")),
             "filled_qty": execution.get("filled_qty"),
             "filled_price": execution.get("filled_price"),
+            # 2026-09-05: Step5B BrokerOutcome (NOT_SENT/ACCEPTED/REJECTED/
+            # UNKNOWN), additive -- lets readers distinguish a pre-submission
+            # guard block (zero broker calls) from an actual broker-side
+            # rejection without re-deriving it from `status`/`reason` text.
+            "broker_outcome": _text(broker_outcome) or _text(execution.get("broker_outcome")),
         },
     }
     rows.append(row)

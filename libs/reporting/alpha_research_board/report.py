@@ -106,6 +106,13 @@ def render_alpha_research_board(payload: Mapping[str, Any]) -> str:
                 "",
                 f"- Hypothesis: {_cell(row.get('hypothesis'))}",
                 f"- Status: `{row.get('status')}`",
+                # 2026-09-05 PRE-STEP5C cleanup (Codex audit item 4): these three
+                # are independently derived (see canonical.py) -- a FAILED fixed
+                # validation never implies the experiment stopped, and neither
+                # alone implies production promotion.
+                f"- Operation: `{row.get('operation_status')}`",
+                f"- Fixed-window validation: `{row.get('fixed_validation_status')}`",
+                f"- Production promotion: `{row.get('production_promotion_status')}`",
                 f"- Features: {_feature_summary(row.get('feature_evidence'))}",
                 f"- Sample quality: {_cell(row.get('sample_quality'))}",
                 f"- Concentration: {_cell(concentration_text)}",

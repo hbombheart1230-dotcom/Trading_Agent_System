@@ -1,8 +1,20 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 61,
+  "entry_count": 62,
   "entries": [
+    {
+      "date": "2026-09-05",
+      "version": "PRE-Step5C",
+      "title": "Observation and execution truth cleanup",
+      "stage": "Execution Safety",
+      "types": ["EXECUTION_SAFETY", "REPORTING"],
+      "summary": "Canonical rank, fail-honest broker outcomes and evidence-backed Q10 observation persistence.",
+      "details": ["Unverified index close is informational only.", "Permanent logical-attempt claims prevent crash replay; manifest writes are serialized.", "Actual operation and validation evidence are separate."],
+      "impact": "No strategy threshold or Step5B mutation policy changes.",
+      "sources": ["docs/development/pre_step5c_owner_closeout.md"],
+      "status": "current"
+    },
     {
       "date": "2026-02-07",
       "version": "v0.1",

@@ -81,6 +81,16 @@ def build_controlled_validation_daily(
         latest = lane_evaluations[-1] if lane_evaluations else {}
         lane_attempts = [row for row in attempts if str(row.get("lane_id") or "") == lane_id]
         lane_submissions = [row for row in submissions if str(row.get("lane_id") or "") == lane_id]
+        # 2026-09-05 Codex audit: `status` on each attempt row now honestly
+        # distinguishes PRE_SUBMISSION_BLOCKED (guard blocked before any
+        # broker call, Step5B NOT_SENT) from BROKER_REJECTED (an actual
+        # broker-side rejection) -- see coordinator.py::_resolve_broker_outcome.
+        # This additive breakdown lets a "rejected count" be read directly
+        # without it silently absorbing NOT_SENT attempts.
+        attempt_status_counts: dict[str, int] = {}
+        for row in lane_attempts:
+            label = str(row.get("status") or "") or "UNKNOWN"
+            attempt_status_counts[label] = attempt_status_counts.get(label, 0) + 1
         lane_rows.append(
             {
                 "lane_id": lane_id,
@@ -89,6 +99,7 @@ def build_controlled_validation_daily(
                 "reason": str(latest.get("reason") or ""),
                 "observation_count": int(latest.get("observation_count") or 0),
                 "attempt_count": len(lane_attempts),
+                "attempt_status_counts": attempt_status_counts,
                 "submission_count": len(lane_submissions),
                 "latest_submission_status": str((lane_submissions[-1] if lane_submissions else {}).get("status") or ""),
             }

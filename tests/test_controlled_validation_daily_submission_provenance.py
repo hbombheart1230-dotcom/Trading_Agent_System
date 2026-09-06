@@ -80,6 +80,38 @@ def test_actual_broker_dispatch_is_reflected_as_attempted(tmp_path):
     assert opening["broker_outcome_counts"] == {"ACCEPTED": 1}
 
 
+def test_lane_attempt_status_counts_separate_not_sent_from_broker_rejected(tmp_path):
+    """2026-09-05 Codex audit T7: a lane's attempt-status breakdown must
+    keep PRE_SUBMISSION_BLOCKED (Step5B NOT_SENT -- zero broker calls, e.g.
+    order_notional_price_missing) in its own bucket, never folded into
+    BROKER_REJECTED (an actual broker-side rejection)."""
+    day = "2026-01-04"
+    reports_root = tmp_path / "reports"
+    controlled_root = tmp_path / "data" / "logs" / "controlled_mock_lanes" / day
+
+    _write_json(
+        controlled_root / "lane_attempts.json",
+        {
+            "attempts": [
+                {"lane_id": "Q10_INDEX", "status": "PRE_SUBMISSION_BLOCKED", "execution": {"broker_outcome": "NOT_SENT"}},
+                {"lane_id": "Q10_INDEX", "status": "PRE_SUBMISSION_BLOCKED", "execution": {"broker_outcome": "NOT_SENT"}},
+                {"lane_id": "Q10_INDEX", "status": "BROKER_REJECTED", "execution": {"broker_outcome": "REJECTED"}},
+            ]
+        },
+    )
+
+    payload = build_controlled_validation_daily(reports_root=reports_root, day=day)
+    q10_index = next(row for row in payload["lanes"] if row["lane_id"] == "Q10_INDEX")
+
+    assert q10_index["attempt_count"] == 3
+    assert q10_index["attempt_status_counts"] == {
+        "PRE_SUBMISSION_BLOCKED": 2,
+        "BROKER_REJECTED": 1,
+    }
+    # The rejected bucket alone must never include the NOT_SENT attempts.
+    assert q10_index["attempt_status_counts"]["BROKER_REJECTED"] == 1
+
+
 def test_missing_executor_artifact_is_handled_gracefully(tmp_path):
     day = "2026-01-03"
     reports_root = tmp_path / "reports"

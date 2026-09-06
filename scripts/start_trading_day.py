@@ -83,6 +83,19 @@ SHADOW_LOOPS = {
             "300",
         ],
     },
+    # 2026-09-05 PRE-STEP5C cleanup follow-up: Q10 Index (KOSPI/KOSDAQ)
+    # 09:30/10:00/CLOSE observation capture. Reuses this exact same
+    # shadow-loop lifecycle (start/watchdog auto-restart, --day-scoped
+    # process matching, stale/duplicate cleanup) -- no new scheduler.
+    "q10_index_observation": {
+        "pattern": "run_q10_index_observation_collector.py",
+        "cmd": [
+            "scripts/run_q10_index_observation_collector.py",
+            "--loop",
+            "--poll-sec",
+            "30",
+        ],
+    },
 }
 
 
@@ -430,6 +443,43 @@ def run_start(day: str) -> dict[str, Any]:
     return payload
 
 
+def _q10_closeout_recovery(day: str, *, _capture: Any = None, _now_fn: Any = None) -> dict[str, Any]:
+    """2026-09-05 PRE-STEP5C CLEANUP FIX 2 (item 7, Codex independent
+    re-audit): the Q10 Index collector's bounded CLOSE closeout re-query
+    can still be legitimately pending a few minutes after the main
+    session window closes at 15:30 (_session_stack_window_open), which is
+    also when the watchdog would otherwise stop trying to recover crashed
+    shadow loops -- if the collector subprocess died in that gap, nothing
+    would ever run its closeout re-query.
+
+    Rather than widening the watchdog's shadow-loop recovery window (which
+    would also extend the MAIN live trading loop's own recovery window,
+    since both are gated by the same `_session_stack_window_open` check --
+    explicitly out of scope: "main trading process lifecycle 대규모 변경
+    금지"), this calls the collector's closeout function directly,
+    in-process, independent of whether the collector subprocess itself is
+    alive. It is always safe to call at any time of day: closeout_requery_
+    if_missing() internally refuses to act before CLOSE's own scheduled
+    time plus its grace period has actually elapsed, and is a cheap,
+    idempotent manifest read once CLOSE is already AVAILABLE. Touches only
+    the collector's own observation manifest -- never production state,
+    locks, or halt markers, and never the main trading process."""
+    try:
+        from libs.market.q10_index_observation_collector import (
+            capture_q10_index_snapshot,
+            closeout_requery_if_missing,
+        )
+
+        root = ROOT / "data" / "logs" / "q10_index_observations"
+        kwargs: dict[str, Any] = {"day": day, "root": root}
+        kwargs["capture"] = _capture if _capture is not None else capture_q10_index_snapshot
+        if _now_fn is not None:
+            kwargs["now_fn"] = _now_fn
+        return dict(closeout_requery_if_missing(**kwargs))
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def run_watchdog(day: str, *, lookback_min: int) -> dict[str, Any]:
     now = datetime.now(KST)
     supervisor_state = _supervisor_state(day)
@@ -447,10 +497,12 @@ def run_watchdog(day: str, *, lookback_min: int) -> dict[str, Any]:
             "shadow_loops": {"running": {}},
             "event_health": {"available": False, "reason": "outside_regular_session_start_window"},
             "supervisor": supervisor,
+            "q10_closeout_recovery": _q10_closeout_recovery(day),
         }
         payload["status_path"] = str(_write_status(day, "watchdog", payload))
         return payload
     shadow = _ensure_shadow_loops(day, replace_stale=True)
+    q10_closeout_recovery = _q10_closeout_recovery(day)
     live_before = _live_status()
     decision = evaluate_supervisor(live_before, supervisor_state, now=now)
     live_start = {"skipped": True, "reason": "already_running"}
@@ -499,6 +551,7 @@ def run_watchdog(day: str, *, lookback_min: int) -> dict[str, Any]:
         "supervisor": supervisor,
         "blockers": blockers,
         "ok": not blockers,
+        "q10_closeout_recovery": q10_closeout_recovery,
     }
     payload["status_path"] = str(_write_status(day, "watchdog", payload))
     return payload

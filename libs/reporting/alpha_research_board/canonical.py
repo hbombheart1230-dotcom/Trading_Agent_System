@@ -139,6 +139,113 @@ def _normalize_status(candidate_id: str, row: Mapping[str, Any]) -> str:
     return "DISCOVERY"
 
 
+# 2026-09-05 PRE-STEP5C cleanup (Codex audit item 4): `status` alone was
+# being read as if it answered three different questions at once --
+# whether the controlled-mock/shadow experiment keeps running, whether an
+# actual FIXED-WINDOW runtime validation has completed and what its
+# verdict was, and whether production promotion is allowed. In practice
+# `remaining_reviews.py::_bounded_review()` derives its decision (e.g.
+# READY_FOR_FIXED_RUNTIME_VALIDATION) purely from HISTORICAL sensitivity
+# checks, and never learns that `runtime_validation.py`'s own fixed
+# 5-session window already ran and reached its own, independent verdict
+# (e.g. FAIL_RUNTIME_EFFECT for IMMEDIATE_OPENING_PROBE, 2026-09-04) --
+# the two never cross-reference each other, so the board could keep
+# showing a promotion-implying decision after the fixed validation had
+# already failed. These three functions read the *actual* fixed-window
+# result (when one exists) and answer each question independently and
+# honestly, without changing `status`/`board_bucket` or the experiment's
+# own operation contract in any way. FAILED fixed validation must never,
+# by itself, imply the controlled-mock experiment must stop -- those are
+# different decisions made for different reasons.
+# 2026-09-05 PRE-STEP5C CLEANUP FIX 2 (item 8, Codex independent
+# re-audit): "status != CLOSED -> CONTROLLED_MOCK_CONTINUES" was an
+# over-generalization. Of the 14 registered candidates, only the ones
+# actually backed by opening_rank1_controlled_probe.py's mock-order-
+# executing mechanism (IMMEDIATE_OPENING_PROBE / CONFIRMED_RECURRENT_RANK
+# / DISLOCATION_REBOUND / OPEN_0_20_RANK1_30M, sourced from
+# opening_rank1_shadow_cumulative.json's controlled-probe episodes) are a
+# genuine controlled-mock execution. Every other candidate is either pure
+# SHADOW/observation (source_status containing "SHADOW", or
+# "OBSERVATION_ONLY"/"NEGATIVE_CONTROL", or board_bucket=="OBSERVE_FIXED")
+# -- e.g. BTC_STRONG_BULL_LOCAL_CONFIRMATION_V1 and HIGH_COMMON_SHORT_
+# ALPHA_V1 are explicitly built with source_status=
+# "PROSPECTIVE_SHADOW_FROM_2026_08_25" in builder.py, never a controlled-
+# mock lane. Derived from the EXISTING source_status/board_bucket fields
+# already computed for each candidate -- neither field's own value or
+# meaning is changed, this only reads them.
+# 2026-09-05 PRE-STEP5C CLEANUP FIX 3 (item 8, second independent Codex
+# re-audit -- rejected FIX 2's version too): the previous design fell
+# through to CONTROLLED_MOCK_CONTINUES as its DEFAULT for anything not
+# explicitly recognized as SHADOW -- so source_status="DISABLED", or any
+# genuinely unknown/unexpected value, was silently promoted to "active".
+# Rebuilt around a POSITIVE allowlist: only the candidate IDs actually
+# backed by opening_rank1_controlled_probe.py's real mock-order-executing
+# mechanism (traced via builder.py::_opening_rows, sourced from
+# opening_rank1_shadow_cumulative.json's controlled-probe episodes) may
+# ever resolve to CONTROLLED_MOCK_CONTINUES -- grounded in stable code
+# structure (which candidate IDs this repo's controlled-probe module
+# actually governs), not inferred from free-text status fields that could
+# say anything, including nothing. Anything else falls to
+# UNKNOWN_OPERATION_STATUS rather than being promoted to "active".
+_CONTROLLED_MOCK_PROBE_CANDIDATE_IDS = frozenset(
+    {"IMMEDIATE_OPENING_PROBE", "CONFIRMED_RECURRENT_RANK", "DISLOCATION_REBOUND"}
+)
+_SHADOW_SOURCE_STATUS_VALUES = frozenset({"OBSERVATION_ONLY", "NEGATIVE_CONTROL"})
+
+
+def _operation_status(candidate_id: str, status: str, legacy_row: Mapping[str, Any]) -> str:
+    if status == "CLOSED":
+        return "NOT_RUNNING"
+    source_status = str(legacy_row.get("source_status") or "").upper()
+    board_bucket = str(legacy_row.get("board_bucket") or "").upper()
+    authority = legacy_row.get('operation_authority')
+    if isinstance(authority, Mapping) and authority.get('enabled') is False:
+        return 'NOT_RUNNING'
+
+    if "DISABLED" in source_status or "DISABLED" in board_bucket:
+        return "NOT_RUNNING"
+    if (
+        "SHADOW" in source_status
+        or source_status in _SHADOW_SOURCE_STATUS_VALUES
+        or board_bucket == "OBSERVE_FIXED"
+    ):
+        return "SHADOW_CONTINUES"
+    if candidate_id in _CONTROLLED_MOCK_PROBE_CANDIDATE_IDS and isinstance(authority, Mapping) and authority.get('enabled') is True and authority.get('mode') == 'controlled_mock':
+        return "CONTROLLED_MOCK_CONTINUES"
+    # Unrecognized candidate identity, and no explicit shadow/disabled
+    # signal either -- never promoted to "active" without positive
+    # evidence that this candidate is actually a controlled-mock lane.
+    return "UNKNOWN_OPERATION_STATUS"
+
+
+def _fixed_validation_status(candidate_id: str, runtime_validation: Mapping[str, Any]) -> str:
+    if str(runtime_validation.get("candidate_id") or "") != candidate_id:
+        return "FIXED_VALIDATION_NOT_YET_RUN"
+    if not bool(runtime_validation.get("window_complete")):
+        return "FIXED_VALIDATION_PENDING"
+    decision = str(runtime_validation.get("decision") or "")
+    if decision == "PASS_RUNTIME_VALIDATION":
+        return "FIXED_VALIDATION_PASSED"
+    if decision == "FAIL_RUNTIME_EFFECT":
+        # A genuine tested-and-failed verdict: performance/sensitivity
+        # checks ran against real data and did not pass.
+        return "FIXED_VALIDATION_FAILED"
+    if decision in ("INSUFFICIENT_RUNTIME_SAMPLE", "FAIL_RUNTIME_INTEGRITY"):
+        # A measurement/data problem (too few episodes, invalid sessions,
+        # missing coverage) -- never a real performance verdict. Must not
+        # be conflated with FAIL_RUNTIME_EFFECT above (item 8).
+        return "FIXED_VALIDATION_INSUFFICIENT_EVIDENCE"
+    # Unrecognized/unexpected decision string -- fail-honest default,
+    # never silently assumed to be a genuine tested-and-failed verdict.
+    return "FIXED_VALIDATION_INSUFFICIENT_EVIDENCE"
+
+
+def _production_promotion_status(status: str, fixed_validation_status: str) -> str:
+    if status == "PROMOTED" and fixed_validation_status == "FIXED_VALIDATION_PASSED":
+        return "PRODUCTION_PROMOTION_ALLOWED"
+    return "PRODUCTION_PROMOTION_NOT_ALLOWED"
+
+
 def _decision(row: Mapping[str, Any]) -> str:
     return str(
         mapping(row.get("final_offline_review")).get("decision")
@@ -330,10 +437,12 @@ def canonicalize_board(
         },
     )
 
+    runtime_validation = mapping(legacy.get("runtime_validation"))
     rows: list[dict[str, Any]] = []
     for question_id, candidate_id, hypothesis in CANDIDATE_REGISTRY:
         legacy_row = legacy_rows.get(candidate_id, {})
         status = _normalize_status(candidate_id, legacy_row)
+        fixed_validation_status = _fixed_validation_status(candidate_id, runtime_validation)
         row = {
             "question_id": question_id,
             "candidate_id": candidate_id,
@@ -368,6 +477,9 @@ def canonicalize_board(
             ),
             "source_artifacts": _source_artifacts(legacy_row, sources),
             "updated_through_day": through_day,
+            "operation_status": _operation_status(candidate_id, status, legacy_row),
+            "fixed_validation_status": fixed_validation_status,
+            "production_promotion_status": _production_promotion_status(status, fixed_validation_status),
         }
         rows.append(row)
 

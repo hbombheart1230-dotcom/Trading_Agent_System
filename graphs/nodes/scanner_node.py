@@ -3585,6 +3585,23 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         ranked_symbols = [str((row or {}).get("symbol") or "") for row in list(scan_results_sorted) if isinstance(row, dict)]
         if selected_symbol in ranked_symbols:
             selected_rank = int(ranked_symbols.index(selected_symbol) + 1)
+    if isinstance(selected, dict) and selected_rank > 0:
+        # 2026-09-04 Scanner rank plumbing fix: propagate the same canonical
+        # rank that lands in scanner.json (via selected_rank above) onto the
+        # state["selected"] candidate dict itself -- `selected` and
+        # `state["selected"]` are the same object (state["selected"] =
+        # selected was assigned earlier, by reference), so this mutation is
+        # visible to every downstream reader of state["selected"], notably
+        # libs/runtime/opening_rank1_controlled_probe.py::selected_rank(),
+        # which checks a "scanner_rank" key with top priority. Purely
+        # additive (new dict keys only); does not touch scoring, ranking,
+        # or cascade logic.
+        # 2026-09-05: direct assignment, not setdefault -- this value IS the
+        # canonical truth freshly computed this cycle, so it must never be
+        # shadowed by a stale/contaminated "scanner_rank" the candidate dict
+        # happened to already carry (e.g. reused across cycles upstream).
+        selected["scanner_rank"] = int(selected_rank)
+        selected["scanner_rank_source"] = "canonical"
     selected_score_total = float(_to_float((selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0
     second_score_total = float(_to_float((scan_results_sorted[1] or {}).get("score_total") or (scan_results_sorted[1] or {}).get("score"))) if len(scan_results_sorted) > 1 and isinstance(scan_results_sorted[1], dict) else 0.0
     margin_vs_second = float(selected_score_total - second_score_total) if isinstance(selected, dict) else 0.0

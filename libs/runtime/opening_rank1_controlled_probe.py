@@ -72,9 +72,32 @@ def _is_enabled(value: Any = None) -> bool:
     return raw not in {"0", "false", "no", "off", "disabled"}
 
 
+# 2026-09-05: legacy per-candidate key names never written by
+# scanner_node.py itself in production (kept only for backward
+# compatibility with degraded/legacy/test inputs). Each is mapped to its
+# own distinct provenance label -- never "canonical" -- so a value read
+# from one of these can never be mislabeled as having come from the
+# authoritative Scanner computation.
+_LEGACY_RANK_SOURCE_BY_KEY: dict[str, str] = {
+    "rank": "legacy_rank_field",
+    "priority_rank": "legacy_priority_rank_field",
+    "selected_rank": "legacy_selected_rank_field",
+}
+
+
 def selected_rank(candidate: Mapping[str, Any] | None) -> int:
+    """Read a candidate's own rank. Canonical Scanner rank (2026-09-04
+    plumbing fix: `state["selected"]["scanner_rank"]`, propagated by
+    graphs/nodes/scanner_node.py from the same computation that lands in
+    scanner.json) is authoritative and checked first; legacy/alternate key
+    names are consulted only when it is absent, for backward compatibility
+    with degraded/legacy candidate inputs. 2026-09-05: reordered (was
+    rank -> priority_rank -> scanner_rank -> selected_rank) so a stale
+    legacy `rank`/`priority_rank`/`selected_rank` value can never outrank
+    a present canonical `scanner_rank`. See `effective_selected_rank()`
+    for the paired value/provenance resolution used by the probe."""
     row = candidate or {}
-    for key in ("rank", "priority_rank", "scanner_rank", "selected_rank"):
+    for key in ("scanner_rank", "rank", "priority_rank", "selected_rank"):
         rank = _to_int(row.get(key))
         if rank > 0:
             return rank
@@ -85,9 +108,29 @@ def effective_selected_rank(
     candidate: Mapping[str, Any] | None,
     selection_authority: Mapping[str, Any] | None,
 ) -> tuple[int, str]:
-    candidate_rank = selected_rank(candidate)
-    if candidate_rank > 0:
-        return candidate_rank, "selected_candidate"
+    """Resolve the candidate's rank AND the exact field/source it came
+    from together, in the same decision branch, so a returned rank value
+    can never be paired with a provenance label it didn't actually come
+    from. Precedence: canonical `scanner_rank` -> legacy `rank` -> legacy
+    `priority_rank` -> legacy `selected_rank` -> intrinsic-ranked-top20
+    fallback (kept unchanged, for inputs that carry none of the above) ->
+    missing. 2026-09-04: before the scanner plumbing fix, `state["selected"]`
+    never carried a rank key at all, so the canonical branch was silently
+    dead in production -- every candidate fell through to the less
+    reliable fallback below, regardless of its real canonical rank.
+    2026-09-05: previously this collapsed all four key names into a single
+    hardcoded "canonical" label regardless of which one actually produced
+    the value (a value/provenance mismatch for legacy-only inputs), and
+    checked `rank`/`priority_rank` ahead of `scanner_rank` (a stale legacy
+    value could outrank a present canonical one). Both are fixed here."""
+    row = candidate or {}
+    canonical_rank = _to_int(row.get("scanner_rank"))
+    if canonical_rank > 0:
+        return canonical_rank, "canonical"
+    for key in ("rank", "priority_rank", "selected_rank"):
+        legacy_rank = _to_int(row.get(key))
+        if legacy_rank > 0:
+            return legacy_rank, _LEGACY_RANK_SOURCE_BY_KEY[key]
 
     authority = selection_authority or {}
     authority_rank = _to_int(authority.get("intrinsic_rank1_rank"))

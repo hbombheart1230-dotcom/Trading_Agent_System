@@ -1263,3 +1263,13 @@ offline research와 실제 runtime 사이의 semantic drift를 줄임.
 - The 2026-09-01 recap was regenerated with all +5/+15/+30/+60/EOD checkpoints
   observed. No Scanner ranking, Strategist prompt or normal entry/exit threshold
   was changed.
+
+## 2026-09-05 - PRE-Step5C observation and execution truth
+
+- Preserve canonical Scanner rank and explicit broker outcomes.
+- Keep unverified index observations out of reaction/return calculations.
+- Serialize manifest updates and retain permanent per-attempt claim receipts;
+  incomplete acquisition is never automatically replayed.
+- Separate actual operation authority, validation evidence and promotion.
+- Strategy rules and Step5B mutation safety remain unchanged. See
+  `docs/development/pre_step5c_owner_closeout.md` for limits and provenance.
