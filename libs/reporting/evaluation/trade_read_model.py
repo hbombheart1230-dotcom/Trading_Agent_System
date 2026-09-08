@@ -369,6 +369,7 @@ def _daily_q9_snapshot(
 def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
     legacy = build_legacy_trade_read_model(str(trade_dir))
     bundle = read_json(trade_dir / "lifecycle_bundle.json")
+    ai_report = read_json(trade_dir / "reports" / "ai_trade_report.json")
     legacy_facts = legacy.get("facts") if isinstance(legacy.get("facts"), dict) else {}
     trade_id = str(legacy_facts.get("trade_id") or bundle.get("trade_id") or trade_dir.name)
     day = str(bundle.get("day") or trade_dir.parts[-3])
@@ -597,6 +598,13 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         "trade_id": trade_id,
         "day": day,
         "symbol": symbol,
+        "controlled_mock_lane": (
+            dict(bundle.get("controlled_mock_lane") or {})
+            if isinstance(bundle.get("controlled_mock_lane"), dict)
+            else dict(ai_report.get("controlled_mock_lane") or {})
+            if isinstance(ai_report.get("controlled_mock_lane"), dict)
+            else {}
+        ),
         "status": str(
             lifecycle.get("status")
             or ((bundle.get("shared_facts") or {}).get("status") if isinstance(bundle.get("shared_facts"), dict) else "")

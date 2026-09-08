@@ -2696,6 +2696,7 @@ def build_executor_output_artifact(
             "reconciliation_required": bool(execution.get("reconciliation_required")),
             "broker_reference_missing": bool(execution.get("broker_reference_missing")),
             "quote_snapshot": quote_snapshot,
+            "opening_alpha_execution_price_guard": _dict(execution.get("opening_alpha_execution_price_guard")),
             "best_bid": _safe_float(execution.get("best_bid") if execution.get("best_bid") not in (None, "") else quote_snapshot.get("best_bid")),
             "best_ask": _safe_float(execution.get("best_ask") if execution.get("best_ask") not in (None, "") else quote_snapshot.get("best_ask")),
             "spread_bps": _safe_float(execution.get("spread_bps") if execution.get("spread_bps") not in (None, "") else quote_snapshot.get("spread_bps")),

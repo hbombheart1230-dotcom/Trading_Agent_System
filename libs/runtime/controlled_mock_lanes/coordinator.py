@@ -148,6 +148,8 @@ def _load_candidates(
     output = []
     diagnostics: list[dict[str, Any]] = []
     q12_payload = read_json(q12_hypothesis_path(reports_root, day))
+    from libs.reporting.baseline_btc_woori_tech.input_delivery import load_candidate_input
+    q12_payload = load_candidate_input(reports_root=reports_root, day=day, now_epoch=now_epoch, legacy=q12_payload)
     q12 = build_q12_candidate(q12_payload, now_epoch=now_epoch)
     if q12:
         output.append(q12)
@@ -162,9 +164,16 @@ def _load_candidates(
             reason = _text(q12_btc.get("reason")) or "btc_0855_not_observed"
         else:
             reason = "q12_fixed_conditions_not_met"
+        status = "INPUT_MISSING" if input_missing else "NO_CANDIDATE"
+        if not input_missing and q12_payload.get('delivery_status') == 'INPUT_DELAY':
+            status, reason = 'INPUT_DELAY', q12_payload.get('delivery_reason')
+        elif not input_missing and float(q12_btc.get('return_24h_pct') or 0) >= 4 and not any(
+            _mapping(_mapping(q12_features.get('entry_methods')).get(m)).get('status') == 'OBSERVED' for m in ('09:03', '09:05')
+        ):
+            status, reason = 'LOCAL_CONFIRMATION_PENDING', 'woori_0903_0905_input_pending'
         diagnostics.append({
             "lane_id": "BTC_WOORI",
-            "status": "INPUT_MISSING" if input_missing else "NO_CANDIDATE",
+            "status": status,
             "reason": reason,
             "signal_id": "",
         })

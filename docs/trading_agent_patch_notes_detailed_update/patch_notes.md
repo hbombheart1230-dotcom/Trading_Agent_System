@@ -1281,3 +1281,41 @@ offline research와 실제 runtime 사이의 semantic drift를 줄임.
 - Backend failure submits zero orders; UNKNOWN/crash remains reconciliation-required.
 - Existing guards, Supervisor approval and Step5B transport policy are unchanged.
 - See `docs/development/step5c_execution_owner.md` for scope and lifecycle semantics.
+# 2026-09-07 Q12 vNext
+
+## Q12 V2 corrective update
+
+Weekday 08:45 Q12 preopen task launches the existing day-scoped runner before
+the immutable 08:55 capture. The 09:00 stack reuses that runner. Strategy and
+order execution conditions are unchanged.
+
+US session comparison now uses BTC at the same two US closes, with weekend BTC
+movement separate. V1 records remain immutable. An opening-only input worker
+publishes original Q12 features independently of the full report, and runtime
+reads the canonical 08:55 BTC source directly. No threshold or broker-path change.
+See docs/evaluation/q12_vnext_delivery_time_alignment.md.
+
+Add versioned COIN/MSTR confirmation, opening reaction, A/B candidate comparison,
+and immutable forward observations. Existing live Q12, Commander and Executor
+are unchanged. Missing data is UNKNOWN, not a new live veto. Definitions and
+limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
+
+# 2026-09-07 - Controlled Lane Cost, VWAP, and Report Integrity
+
+- Connected `CONFIRMED_RECURRENT_RANK` to its approved lane evidence instead of
+  requiring an unrelated candidate setup classification. Explicit negative
+  cost evidence remains blocking.
+- Restricted intraday VWAP exits to current-session minute evidence and rejected
+  daily feature-engine VWAP distance as an exit trigger.
+- Recovered Q10/Q12 report identity only by exact entry order or run ID, marked
+  main Scanner rank as not applicable, and anchored timing to the lane signal.
+- Regenerated the 000660 Q10 report with complete post-exit EOD evidence. No Q10
+  entry rule, Scanner ranking, cost threshold, or horizon policy was changed.
+# 2026-09-08 Opening Alpha Observation Integrity
+
+- Record missing Rank prices from existing fresh quote/minute evidence, without additional API calls.
+- Preserve passing executable-price guard results in event logs and canonical Executor artifacts.
+- Remove the incorrect fixed one-share cost wording. Unverified Opening Alpha LLM causal claims are not presented as established findings; raw responses remain intact.
+- No entry/exit threshold or strategy changes. See `docs/daily_patch/2026-09-08_opening_alpha_observation_integrity.md`.
+- Follow-up: align stale max-hold/min-hold assertions with the current safety contract and isolate default metrics output during pytest.
+- Final clean-room regression: 3,048 passed, 1 skipped, 0 failed; production-path manifest clean.

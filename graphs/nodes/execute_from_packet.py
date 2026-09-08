@@ -2768,6 +2768,7 @@ def execute_from_packet(state: dict) -> dict:
     allow_result: Any = None
     portfolio_details: Dict[str, Any] = {}
     strategy_policy_summary: Dict[str, Any] = {}
+    execution_price_guard: Dict[str, Any] = {}
     # Core phase invariant (Phase 1 Step 5B Safety Fix): before the mutation
     # endpoint is ever contacted, NOT_SENT is a valid classification for any
     # exception. Once submission_dispatched flips True, NOT_SENT is no
@@ -2833,6 +2834,8 @@ def execute_from_packet(state: dict) -> dict:
         try:
             execution_payload = state.get("execution") if isinstance(state.get("execution"), dict) else {}
             if execution_payload:
+                if execution_price_guard.get("applicable"):
+                    execution_payload["opening_alpha_execution_price_guard"] = dict(execution_price_guard)
                 _ensure_execution_quote_snapshot(execution_payload)
                 write_executor_artifact(state, execution=execution_payload, order=order)
         except Exception:
@@ -3461,6 +3464,12 @@ def execute_from_packet(state: dict) -> dict:
                 quote_snapshot.get("observed_at") or quote_snapshot.get("observed_epoch")
             ),
         )
+        if execution_price_guard.get("applicable"):
+            logger.log(
+                run_id=run_id, stage="execute_from_packet",
+                event="opening_alpha_execution_price_guard_evaluated",
+                payload=dict(execution_price_guard),
+            )
         if not bool(execution_price_guard.get("allowed", True)):
             block_reason = str(
                 execution_price_guard.get("block_reason")
@@ -3554,6 +3563,8 @@ def execute_from_packet(state: dict) -> dict:
                 allowed=True, execution_result=result, allow_result=allow_result,
                 order=order, strategy_policy_summary=strategy_policy_summary))
         state["execution"]["portfolio_guard"] = portfolio_details
+        if execution_price_guard.get("applicable"):
+            state["execution"]["opening_alpha_execution_price_guard"] = dict(execution_price_guard)
         allow_details = getattr(allow_result, "details", {})
         if isinstance(allow_details, dict) and allow_details:
             state["execution"]["supervisor_guard"] = dict(allow_details)

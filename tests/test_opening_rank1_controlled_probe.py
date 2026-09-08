@@ -143,6 +143,50 @@ def test_confirmed_recurrent_rank_is_eligible_without_high_risk() -> None:
     assert result["applied"] is True
 
 
+def test_confirmed_recurrent_rank_uses_lane_cost_evidence_not_setup_bucket() -> None:
+    candidate = _candidate(fresh=False)
+    candidate["risk_score"] = 0.2
+    candidate["score_breakdown"] = {"momentum": 0.1}
+    result = _evaluate(
+        selected=candidate,
+        prior_rank_observations=[{"symbol": "005930", "observed_epoch": _epoch(9, 7)}],
+        recent_minute_rows=[{"close": 100.0}, {"close": 100.5}],
+        base_entry_guard_blocked=True,
+        base_entry_guard_reason="cost_adjusted_edge_not_ready",
+        entry_cost_filter={
+            "enabled": True, "passed": False,
+            "fail_reasons": ["directional_edge_evidence_missing", "estimated_gross_edge_missing"],
+            "min_cost_adjusted_edge_pct": 0.001,
+        },
+        quant_entry_enforcement={"blocked": True, "matched_blockers": ["cost_edge_fail"]},
+    )
+    assert result["applied"] is True
+    evidence = result["cost_edge_evidence"]
+    assert evidence["lane_condition"] == "CONFIRMED_RECURRENT_RANK"
+    assert evidence["evidence_scope"] == "lane_condition"
+    assert evidence["candidate_setup"] == "LIQUIDITY_ONLY"
+    assert evidence["independent_day_symbol_count"] == 3
+    assert evidence["conservative_net_return"] == 0.04673851
+
+
+def test_confirmed_recurrent_rank_does_not_override_real_negative_cost_evidence() -> None:
+    candidate = _candidate(fresh=False)
+    candidate["risk_score"] = 0.2
+    result = _evaluate(
+        selected=candidate,
+        prior_rank_observations=[{"symbol": "005930", "observed_epoch": _epoch(9, 7)}],
+        recent_minute_rows=[{"close": 100.0}, {"close": 100.5}],
+        entry_cost_filter={
+            "enabled": True, "passed": False,
+            "fail_reasons": ["estimated_gross_edge_below_cost_floor"],
+            "estimated_gross_edge_pct": 0.001,
+        },
+    )
+    assert result["applied"] is False
+    assert result["reason"] == "cost_adjusted_edge_not_ready"
+    assert result["cost_edge_evidence"]["fallback_applied"] is False
+
+
 def test_probe_rejects_late_chase_after_rank1_signal_price_drift() -> None:
     candidate = _candidate(fresh=False)
     candidate["price"] = 103.0

@@ -385,8 +385,9 @@ def _build_trade_report_inputs(
     strategist = _entry_strategist_context(state, symbol)
     execution_ts = str(execution.get("ts") or state.get("ts") or _utc_iso()).strip()
     execution_details = _execution_details_from_state(state)
+    prior_entry = _load_json_dict(trade_paths["entry_json"])
     controlled_mock_lane = build_controlled_lane_report_surface(
-        state, day=day, root=root
+        state, day=day, root=root, prior_entry=prior_entry
     )
     entry_execution_details = dict(execution_details if action == "BUY" else _null_execution_details())
     exit_execution_details = dict(execution_details if action == "SELL" else _null_execution_details())
@@ -398,6 +399,11 @@ def _build_trade_report_inputs(
         or monitor.get("decision_summary")
         or "Entry context was recovered from the preserved strategist frame."
     )
+    if controlled_mock_lane:
+        entry_reason = (
+            f"{controlled_mock_lane.get('lane_label') or controlled_mock_lane.get('lane_id')} 독립 결정 레인이 "
+            f"{symbol}을 선택했습니다. 메인 Scanner 순위는 이 거래에 적용되지 않습니다."
+        )
     exit_reason = str(
         monitor.get("decision_summary")
         or monitor.get("entry_exit_reason")
@@ -493,6 +499,20 @@ def _build_trade_report_inputs(
     story_contract = build_story_contract(bundle_out)
     market_context_human = build_market_context_human(dict(strategist))
     scanner_reason_human = build_scanner_reason_human(dict(scanner), dict(strategist))
+    if controlled_mock_lane:
+        scanner_reason_human = {
+            "summary": entry_reason,
+            "comparison": "This trade did not use the main Scanner ranking authority.",
+            "bullets": [
+                f"Independent lane: {controlled_mock_lane.get('lane_id')}",
+                "Scanner rank: not applicable",
+                f"Signal ID: {controlled_mock_lane.get('signal_id') or 'not_captured'}",
+            ],
+            "selected_symbol": symbol,
+            "selected_rank": None,
+            "universe_size": None,
+            "selection_authority": "deterministic_independent_lane",
+        }
     filters_human = build_filters_human(dict(scanner), dict(strategist), dict(supervisor))
     monitor_reason_human = build_monitor_reason_human(dict(monitor), dict(execution_view))
     canonical_scanner = (

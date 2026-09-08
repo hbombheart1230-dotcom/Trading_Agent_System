@@ -561,7 +561,7 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
         else:
             cause_lines.append("상위 후보 탈락 후 차순위 후보에서 진입이 성립됨")
     if cost_analysis.get("mock_cost_warning") and cost_drag_pct is not None:
-        cause_lines.append(f"1주 모의투자 수수료/세금이 손익률을 {_fmt_pct(cost_drag_pct)} 압박")
+        cause_lines.append(f"모의투자 수수료/세금이 손익률을 {_fmt_pct(cost_drag_pct)} 압박")
     if not cause_lines:
         cause_lines.append("진입/청산 구조의 반복성은 당일 패턴 섹션에서 추가 확인 필요")
 
@@ -1637,6 +1637,15 @@ def _build_summary_llm_evaluation_section(
         _summary_eval_sentence(evaluation.get("root_cause")),
         report or {},
     )
+    trade = _as_dict(_as_dict((report or {}).get("fact_payload")).get("trade"))
+    entry = _as_dict(trade.get("entry_summary"))
+    opening_probe = entry.get("reason_human") == "opening_rank1_controlled_probe"
+    if opening_probe:
+        root_cause = (
+            "Opening Alpha 예외 진입 거래입니다. 기존 진입 대기/차단 항목과 최종 레인 승인 결과는 구분해야 합니다. "
+            "기존 blocker의 존재만으로 손실 원인이나 무단 우회를 단정할 수 없습니다. "
+            "LLM 원문 해석은 검증되지 않았으며 원본 응답 파일에 보존합니다."
+        )
     if root_cause:
         lines.append(f"* 원인 해석: {root_cause}")
 
@@ -1645,6 +1654,8 @@ def _build_summary_llm_evaluation_section(
         for item in _listify(evaluation.get("priority_actions"))
         if str(item or "").strip()
     ]
+    if opening_probe:
+        actions = ["레인 승인 근거, 실제 체결 가격, 최종 청산 트리거를 대조해 원인을 검증합니다."]
     if actions:
         lines.append("")
         lines.append("### 우선 액션")

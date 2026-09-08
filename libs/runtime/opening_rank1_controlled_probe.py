@@ -420,6 +420,7 @@ def evaluate_opening_rank1_controlled_probe(
     probe_qty = _probe_qty(normal_qty, qty_fraction)
     probe_cost_edge = evaluate_opening_probe_cost_edge(
         candidate_setup=setup,
+        lane_condition=_text(alpha_condition.get("condition")),
         entry_cost_filter=cost,
     )
 

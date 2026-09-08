@@ -246,6 +246,12 @@ def build_baseline_btc_woori_artifacts(
         isinstance(rows, list) and rows for rows in signal_sources.values()
     )
     if hypothesis_daily.exists() and (not candle_rows or not has_signal_rows):
+        from .input_delivery import merge_fresh_btc_into_preserved_report
+        from .vnext.storage import publish
+        preserved = _read(hypothesis_daily)
+        refreshed = merge_fresh_btc_into_preserved_report(preserved, signal_payload, day)
+        if refreshed != preserved:
+            publish(hypothesis_daily, refreshed)
         hypothesis_root = reports_root / "evaluation" / "baseline_btc_woori_tech" / "hypothesis_validation"
         hypothesis = {
             "daily_json": str(hypothesis_daily),
@@ -281,4 +287,15 @@ def build_baseline_btc_woori_artifacts(
         ),
         encoding="utf-8",
     )
+    # Optional reporting-only extension runs after all existing Q12 artifacts.
+    # Failure cannot affect the production candidate contract or broker path.
+    try:
+        from .vnext.pipeline import build_vnext
+        result['vnext'] = build_vnext(
+            day=day, reports_root=reports_root, signals=signal_payload,
+            candles=candle_rows, control_payload=controlled_validation,
+            cost_pct=cost_pct, slippage_pct=slippage_pct, allow_fetch=allow_fresh_fetch,
+        )
+    except Exception as exc:
+        result['vnext'] = {'status': 'INSUFFICIENT_EVIDENCE', 'reason': type(exc).__name__}
     return result

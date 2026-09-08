@@ -1492,9 +1492,12 @@ def test_execute_from_packet_allows_buy_when_mock_cash_sufficient(tmp_path, monk
     assert out["execution"]["payload"]["mode"] == "mock"
 
 
+@pytest.mark.parametrize("best_ask,blocked", [(10700.0, True), (10100.0, False)])
 def test_opening_alpha_blocks_pre_submit_best_ask_chase_without_broker_call(
     tmp_path,
     monkeypatch,
+    best_ask,
+    blocked,
 ) -> None:
     monkeypatch.setenv("EXECUTION_MODE", "mock")
     cat = tmp_path / "api_catalog.jsonl"
@@ -1507,7 +1510,12 @@ def test_opening_alpha_blocks_pre_submit_best_ask_chase_without_broker_call(
     class CaptureExecutor:
         def execute(self, req):  # type: ignore[no-untyped-def]
             calls["execute"] += 1
-            raise AssertionError("broker executor must not be called")
+            assert not blocked, "broker executor must not be called"
+            class Result:
+                payload = {"mode": "mock", "return_code": 0, "ord_no": "test-order"}
+                response = None
+                meta = {"broker_outcome": "ACCEPTED"}
+            return Result()
 
     state = {
         "catalog_path": str(cat),
@@ -1518,7 +1526,7 @@ def test_opening_alpha_blocks_pre_submit_best_ask_chase_without_broker_call(
                 "005930": {
                     "symbol": "005930",
                     "cur": 10100.0,
-                    "best_ask": 10700.0,
+                    "best_ask": best_ask,
                     "_observed_epoch": 1000,
                     "_observed_at_utc": "2026-09-01T00:02:50+00:00",
                 }
@@ -1551,6 +1559,16 @@ def test_opening_alpha_blocks_pre_submit_best_ask_chase_without_broker_call(
 
     out = execute_from_packet(state)
 
+    if not blocked:
+        from libs.contracts.agent_outputs import build_executor_output_artifact
+        assert calls["execute"] == 1
+        guard = out["execution"]["opening_alpha_execution_price_guard"]
+        assert guard["applicable"] is True
+        assert guard["allowed"] is True
+        assert guard["executable_price"] == best_ask
+        artifact = build_executor_output_artifact(out, execution=out["execution"], order={})
+        assert artifact["opening_alpha_execution_price_guard"] == guard
+        return
     assert calls["execute"] == 0
     assert out["execution"]["allowed"] is False
     assert out["execution"]["broker_outcome"] == "NOT_SENT"

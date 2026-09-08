@@ -1,8 +1,51 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 63,
+  "entry_count": 67,
   "entries": [
+    {
+      "date": "2026-09-08",
+      "version": "Opening Alpha Provenance Correction",
+      "title": "Rank price and passed guard audit trail",
+      "stage": "Trading Operations",
+      "types": ["DATA_INTEGRITY", "REPORTING"],
+      "summary": "Preserve available Rank observation prices and successful executable-price checks; correct misleading trade summary text.",
+      "details": [
+        "Missing selected price falls back to already available recent quote or timestamped minute close; no API calls or historical fabrication.",
+        "Applicable executable-price guard decisions are logged on pass and block and included in canonical Executor output.",
+        "Remove the hardcoded one-share cost description and quarantine unverified Opening Alpha LLM causal recommendations from the operator summary. Raw responses remain unchanged.",
+        "Eligibility, cost thresholds, sizing and exit conditions remain unchanged.",
+        "Stale max-hold/min-hold test expectations were aligned to the current safety contract, and metrics output now uses pytest write-path isolation without changing production paths.",
+        "Clean-room full regression completed with 3048 passed, 1 skipped and no production-path manifest leak."
+      ],
+      "impact": "Operational evidence is distinguishable from unverified LLM interpretation.",
+      "sources": ["docs/daily_patch/2026-09-08_opening_alpha_observation_integrity.md"],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-07",
+      "version": "Q12-vNext-V2",
+      "title": "Aligned US-session confirmation and timely Q12 inputs",
+      "stage": "Forward Validation",
+      "types": ["REPORTING", "DATA_INTEGRITY"],
+      "summary": "Separate matched US-session BTC return from weekend BTC movement; remove Q12 input dependence on report completion.",
+      "details": ["V1 evidence is preserved; V2 uses exchange-calendar session closes and explicit missing matched references.", "A lightweight opening input worker and direct 08:55 source read eliminate stale BTC MISSING caused by absent Woori candles.", "Weekday 08:45 Q12 preopen task starts the same day-scoped runner before capture; 09:00 reuses it.", "Candidate thresholds, scoring and broker execution are unchanged; data delivery timing is corrected."],
+      "impact": "Weekend interpretation correction is shadow-only; input delivery repair can restore previously delayed eligible candidates.",
+      "sources": ["docs/evaluation/q12_vnext_delivery_time_alignment.md"],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-07",
+      "version": "Q12-vNext",
+      "title": "Q12 crypto-equity forward confirmation",
+      "stage": "Forward Validation",
+      "types": ["REPORTING"],
+      "summary": "Independent versioned COIN/MSTR confirmation and A/B shadow observations reuse existing Q12 evidence.",
+      "details": ["Original Q12 candidate and execution contracts are unchanged.", "Missing US sessions and minute evidence remain UNKNOWN; no older-close substitution.", "Immutable observations and cost-adjusted forward outcomes retain restart provenance."],
+      "impact": "Reporting only; no historical backtest or additional broker order path.",
+      "sources": ["docs/evaluation/q12_vnext_crypto_equity_confirmation.md"],
+      "status": "current"
+    },
     {
       "date": "2026-09-06",
       "version": "Step5C",
@@ -1655,6 +1698,38 @@
         "libs/reporting/closeout_maintenance.py",
         "libs/reporting/alpha_research_board/builder.py",
         "tests/test_monitor_exit_price_freshness.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-07",
+      "version": "Controlled Lane Input and Report Integrity",
+      "title": "Opening Alpha Cost Evidence and Q10 VWAP Integrity",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "OPENING_ALPHA",
+        "Q10",
+        "EXECUTION_INTEGRITY",
+        "REPORTING"
+      ],
+      "summary": "Controlled-lane cost evidence, intraday VWAP provenance, Q10 attribution, and entry timing now use their canonical sources.",
+      "details": [
+        "CONFIRMED_RECURRENT_RANK uses its approved lane evidence only when the normal cost filter lacks directional or gross evidence; explicit negative cost evidence still blocks.",
+        "Intraday VWAP exits accept current-session minute VWAP or deterministic session OHLCV/volume-derived VWAP and reject daily feature-engine VWAP distance.",
+        "Q10/Q12 trade attribution requires an exact entry order ID or entry run ID instead of same-symbol guessing.",
+        "Independent controlled lanes expose Scanner rank as not applicable and calculate entry delay from the lane signal epoch.",
+        "The 2026-09-07 SK Hynix report was regenerated with its Q10 identity and observed post-exit EOD path."
+      ],
+      "impact": "The approved recurrent Rank-1 relaxation can execute without bypassing real cost failures, and Q10 results can be evaluated without false VWAP exits or main-Scanner attribution drift.",
+      "sources": [
+        "docs/daily_patch/2026-09-07_q10_vwap_and_opening_alpha_integrity.md",
+        "libs/runtime/opening_rank1_probe_cost_edge.py",
+        "libs/runtime/monitor_exit/session_vwap.py",
+        "libs/reporting/controlled_mock_lane_report.py",
+        "libs/reporting/evaluation/entry_timing_attribution.py",
+        "tests/test_opening_rank1_controlled_probe.py",
+        "tests/test_monitor_exit_guard.py"
       ],
       "status": "current"
     }

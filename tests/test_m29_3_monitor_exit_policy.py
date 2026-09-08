@@ -391,6 +391,18 @@ def test_m29_3_monitor_exit_policy_vwap_extension_take_profit_emits_sell_intent(
         },
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0, "hold_sec": 900}]},
         "market_snapshot": {"symbol": "AAA", "price": 101.3},
+        "minute_ohlcv_by_symbol": {
+            "AAA": [
+                {
+                    "open": 100.0,
+                    "high": 101.3,
+                    "low": 99.8,
+                    "close": 101.3,
+                    "vwap": 97.87,
+                    "volume": 1000,
+                }
+            ]
+        },
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,
@@ -415,7 +427,8 @@ def test_m29_3_monitor_exit_policy_vwap_extension_take_profit_emits_sell_intent(
     assert out["intents"][0]["side"] == "SELL"
     assert out["intents"][0]["meta"]["exit_reason"] == "vwap_extension_take_profit"
     assert out["monitor"]["exit_reason"] == "vwap_extension_take_profit"
-    assert out["monitor_exit"]["vwap_distance"] == 0.035
+    assert out["monitor_exit"]["vwap_distance"] == pytest.approx((101.3 - 97.87) / 97.87)
+    assert "current_session_minute_vwap" in out["monitor_exit"]["vwap_distance_source"]
 
 
 def test_m29_3_monitor_exit_policy_resistance_take_profit_emits_sell_intent():

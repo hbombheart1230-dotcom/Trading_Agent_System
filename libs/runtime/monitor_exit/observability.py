@@ -148,6 +148,7 @@ def build_monitor_exit_payload(
         "trailing_drawdown": decision.get("trailing_drawdown"),
         "peak_drawdown": decision.get("peak_drawdown"),
         "vwap_distance": decision.get("vwap_distance"),
+        "vwap_distance_source": str(decision.get("vwap_distance_source") or ""),
         "engine_vwap_distance_rejected": bool(decision.get("engine_vwap_distance_rejected")),
         "engine_vwap_distance_rejected_value": decision.get("engine_vwap_distance_rejected_value"),
         "engine_vwap_distance_rejected_reason": str(

@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 from graphs.nodes.skill_contracts import extract_market_quotes, extract_minute_ohlcv_by_symbol
 from libs.core.symbols import normalize_symbol
 from libs.runtime.monitor_exit.numeric import to_float
+from libs.runtime.monitor_exit.session_vwap import rows_with_session_vwap
 
 
 def quote_for_symbol(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
@@ -37,12 +38,17 @@ def fresh_minute_vwap_distance_for_symbol(
         return None, "no_symbol"
     if not rows:
         return None, "minute_vwap_unavailable"
-    latest = rows[-1] if isinstance(rows[-1], dict) else {}
+    session_rows, vwap_source = rows_with_session_vwap(rows)
+    if not session_rows:
+        return None, vwap_source
+    latest = session_rows[-1]
     current_vwap = to_float(latest.get("vwap"))
     current_price = to_float(price)
     if current_price <= 0.0:
         current_price = to_float(latest.get("close"))
     if current_vwap <= 0.0 or current_price <= 0.0:
         return None, "minute_vwap_or_price_unavailable"
-    return float((current_price - current_vwap) / current_vwap), f"{source}.vwap_distance"
-
+    return (
+        float((current_price - current_vwap) / current_vwap),
+        f"{source}.{vwap_source}.vwap_distance",
+    )

@@ -905,13 +905,18 @@ def _evaluate_monitor_entry_candidate(
         and bool(opening_probe_selection_authority.get("aligned"))
         and 0 <= _probe_minutes <= 20
     ):
+        from libs.runtime.opening_rank1_observation_price import resolve_observation_price
+
+        observation_price = resolve_observation_price(
+            selected=selected, quote=quote_for_entry, rows=entry_rows,
+            now_epoch=now_epoch_for_entry,
+        )
         opening_rank1_controlled_probe["rank_observation"] = record_rank1_observation(
             day=probe_day,
             symbol=symbol,
             observed_epoch=now_epoch_for_entry,
             run_id=str(state.get("run_id") or ""),
-            observed_price=_to_float(selected.get("price")),
-            price_source=str(selected.get("_monitor_price_source") or ""),
+            **observation_price,
         )
     if bool(opening_rank1_controlled_probe.get("applied")):
         reservation = record_probe_submission(

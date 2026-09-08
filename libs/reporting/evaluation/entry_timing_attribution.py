@@ -242,6 +242,7 @@ def build_entry_timing_attribution_report(
         trade_id = str(model.get("trade_id") or "")
         symbol = str(model.get("symbol") or "")
         selection = _mapping(model.get("selection"))
+        controlled_lane = _mapping(model.get("controlled_mock_lane"))
         entry = _mapping(model.get("entry"))
         outcome = _mapping(model.get("outcome"))
         horizon_contract = _mapping(model.get("horizon_contract"))
@@ -252,27 +253,31 @@ def build_entry_timing_attribution_report(
         )
         decision_id = str(selection.get("q9_decision_id") or "")
         window = windows.get(decision_id, {})
-        decision_epoch = int(_num(window.get("decision_epoch")) or _epoch(window.get("generated_at")))
+        independent_lane = str(controlled_lane.get("selection_authority") or "") == "deterministic_independent_lane"
+        lane_signal_epoch = int(_num(controlled_lane.get("signal_epoch")) or 0)
+        decision_epoch = (
+            lane_signal_epoch
+            if independent_lane and lane_signal_epoch > 0
+            else int(_num(window.get("decision_epoch")) or _epoch(window.get("generated_at")))
+        )
         entry_epoch = _epoch(entry.get("timestamp"))
         entry_price = _num(entry.get("price"))
-        scanner_time = decision_epoch
+        scanner_time = 0 if independent_lane else decision_epoch
         strategist_payload = _mapping(window.get("strategist_selection"))
-        strategist_time = _stage_epoch(
+        strategist_time = 0 if independent_lane else _stage_epoch(
             strategist_payload,
             "generated_at",
             "confirmed_at",
             "updated_at",
             "timestamp",
         )
-        selected_time = _stage_epoch(
-            selection,
-            "selected_at",
-            "selected_candidate_time",
-            "timestamp",
+        selected_time = lane_signal_epoch if independent_lane else _stage_epoch(
+            selection, "selected_at", "selected_candidate_time", "timestamp"
         )
         scanner_delay = int(entry_epoch - scanner_time) if entry_epoch > 0 and scanner_time > 0 else None
         strategist_delay = int(entry_epoch - strategist_time) if entry_epoch > 0 and strategist_time > 0 else None
         selected_delay = int(entry_epoch - selected_time) if entry_epoch > 0 and selected_time > 0 else None
+        decision_delay = int(entry_epoch - decision_epoch) if entry_epoch > 0 and decision_epoch > 0 else None
         pre_move, pre_move_meta = _pre_entry_move_pct(
             symbol=symbol,
             decision_epoch=decision_epoch,
@@ -296,7 +301,7 @@ def build_entry_timing_attribution_report(
         cp15 = _checkpoint(forward, "+15m")
         cp30 = _checkpoint(forward, "+30m")
         cp60 = _checkpoint(forward, "+60m")
-        missing_stage_timestamps = [
+        missing_stage_timestamps = [] if independent_lane else [
             name
             for name, value in (
                 ("strategist_confirm_time", strategist_time),
@@ -312,7 +317,16 @@ def build_entry_timing_attribution_report(
             "scanner_top1_symbol": _candidate_symbol(selection.get("raw_scanner_top1")),
             "post_strategy_top1_symbol": _candidate_symbol(selection.get("scanner_top1")),
             "selected_symbol": str(selection.get("selected_symbol") or ""),
-            "selected_rank": selection.get("selected_rank") or _candidate_rank(selection.get("selected_candidate")),
+            "selected_rank": (
+                None
+                if independent_lane
+                else selection.get("selected_rank") or _candidate_rank(selection.get("selected_candidate"))
+            ),
+            "selection_authority": (
+                "deterministic_independent_lane" if independent_lane else "main_scanner_pipeline"
+            ),
+            "controlled_lane_id": str(controlled_lane.get("lane_id") or ""),
+            "decision_anchor_time": _iso(decision_epoch),
             "strategy_horizon": strategy_horizon or "unknown",
             "stage_timing_status": "COMPLETE" if not missing_stage_timestamps else "PARTIAL",
             "missing_stage_timestamps": missing_stage_timestamps,
@@ -324,7 +338,7 @@ def build_entry_timing_attribution_report(
             "scanner_to_entry_delay_sec": scanner_delay,
             "strategist_to_entry_delay_sec": strategist_delay,
             "selected_to_entry_delay_sec": selected_delay,
-            "decision_window_to_entry_delay_sec": scanner_delay,
+            "decision_window_to_entry_delay_sec": decision_delay,
             "pre_entry_move_pct": pre_move,
             "pre_entry_move_meta": pre_move_meta,
             "entry_return_pct": outcome.get("net_return_pct"),

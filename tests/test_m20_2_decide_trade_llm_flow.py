@@ -534,9 +534,9 @@ def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch):
     out = decide_trade(state)
 
     assert out["decision_trace"]["strategy"] == "ExitPolicyStrategist"
-    assert out["decision_packet"]["intent"]["action"] == "NOOP"
-    assert out["decision_packet"]["intent"]["reason"] == "position_hold"
-    assert out["decision_packet"]["intent"]["rationale"] == "exit_policy:hold"
+    assert out["decision_packet"]["intent"]["action"] == "SELL"
+    assert out["decision_packet"]["intent"]["qty"] == 2
+    assert out["decision_packet"]["intent"]["rationale"] == "exit_policy:max_hold"
 
 
 def test_m20_2_decide_trade_blocks_fast_sell_with_min_hold_guard(monkeypatch):
@@ -562,11 +562,12 @@ def test_m20_2_decide_trade_blocks_fast_sell_with_min_hold_guard(monkeypatch):
     intent = out["decision_packet"]["intent"]
     assert out["decision_trace"]["strategy"] == "ExitPolicyStrategist"
     assert intent["action"] == "NOOP"
-    assert intent["reason"] == "position_hold"
-    assert intent["rationale"] == "exit_policy:hold"
+    assert intent["reason"] == "sell_guard_min_hold"
+    assert "sell_guard_min_hold" in str(intent.get("rationale") or "")
     assert intent["signal_source"] == "ExitPolicyStrategist"
+    assert int(intent["position_age_sec"]) == 50
     assert intent["intent_id"] == out["run_id"]
-    assert out["decision_trace"].get("sell_timing_guard", {}).get("blocked") in {False, None}
+    assert out["decision_trace"]["sell_timing_guard"]["blocked"] is True
 
 
 def test_m20_2_decide_trade_hard_stop_bypasses_sell_timing_guard(monkeypatch):

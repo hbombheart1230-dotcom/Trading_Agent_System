@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
-SCHEMA_VERSION = "opening_rank1_probe_cost_edge.v2"
+SCHEMA_VERSION = "opening_rank1_probe_cost_edge.v3"
 FROZEN_EVIDENCE_DATE = "2026-08-14"
 FROZEN_EVIDENCE_SOURCE = (
     "docs/offline_alpha/opening_rank1_controlled_probe_2026-08-14.md"
@@ -37,6 +37,15 @@ FROZEN_SETUP_EVIDENCE: dict[str, dict[str, Any]] = {
         "avg_mock_net_return_30m": 0.04068151,
     },
 }
+FROZEN_LANE_EVIDENCE: dict[str, dict[str, Any]] = {
+    "CONFIRMED_RECURRENT_RANK": {
+        "independent_day_symbol_count": 3,
+        "source_live_net_return_30m": 0.054807,
+        "avg_mock_net_return_30m": 0.04673851,
+        "evidence_date": "2026-09-07",
+        "evidence_source": "reports/evaluation/alpha_research_board/2026-09-07/alpha_research_board.json",
+    },
+}
 
 
 def _text(value: Any) -> str:
@@ -53,17 +62,19 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 def evaluate_opening_probe_cost_edge(
     *,
     candidate_setup: str,
+    lane_condition: str = "",
     entry_cost_filter: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Resolve cost evidence for the bounded opening Rank-1 mock probe.
 
     The normal cost filter remains authoritative whenever it has actual evidence.
-    Frozen setup evidence is allowed only when that filter failed exclusively
+    Frozen setup or explicitly approved lane evidence is allowed only when that filter failed exclusively
     because its directional/gross edge estimate was unavailable.
     """
 
     cost = dict(entry_cost_filter or {})
     setup = _text(candidate_setup).upper()
+    condition = _text(lane_condition).upper()
     fail_reasons = [
         _text(item)
         for item in list(cost.get("fail_reasons") or [])
@@ -71,11 +82,16 @@ def evaluate_opening_probe_cost_edge(
     ]
     fail_reason_set = frozenset(fail_reasons)
     normal_passed = bool(cost.get("passed"))
-    evidence = dict(FROZEN_SETUP_EVIDENCE.get(setup) or {})
-    conservative_net_return = min(
-        _to_float(evidence.get("avg_mock_net_return_15m")),
-        _to_float(evidence.get("avg_mock_net_return_30m")),
-    ) if evidence else 0.0
+    lane_evidence = dict(FROZEN_LANE_EVIDENCE.get(condition) or {})
+    setup_evidence = dict(FROZEN_SETUP_EVIDENCE.get(setup) or {})
+    evidence = lane_evidence or setup_evidence
+    evidence_scope = "lane_condition" if lane_evidence else "candidate_setup"
+    horizon_returns = [
+        _to_float(value)
+        for key, value in evidence.items()
+        if key.startswith("avg_mock_net_return_") and value is not None
+    ]
+    conservative_net_return = min(horizon_returns) if horizon_returns else 0.0
     minimum_net_return = max(0.0, _to_float(cost.get("min_cost_adjusted_edge_pct")))
 
     missing_only = bool(
@@ -98,14 +114,14 @@ def evaluate_opening_probe_cost_edge(
         reason = "normal_cost_filter_has_non_missing_failure"
         source = "normal_entry_cost_filter"
     elif not fallback_available:
-        reason = "frozen_setup_evidence_unavailable"
-        source = "frozen_opening_rank1_setup_evidence"
+        reason = "frozen_cost_evidence_unavailable"
+        source = "frozen_opening_rank1_cost_evidence"
     elif conservative_net_return < minimum_net_return:
-        reason = "frozen_setup_edge_below_minimum"
-        source = "frozen_opening_rank1_setup_evidence"
+        reason = "frozen_cost_edge_below_minimum"
+        source = f"frozen_opening_rank1_{evidence_scope}_evidence"
     else:
-        reason = "frozen_setup_edge_substituted_for_missing_estimate"
-        source = "frozen_opening_rank1_setup_evidence"
+        reason = "frozen_cost_edge_substituted_for_missing_estimate"
+        source = f"frozen_opening_rank1_{evidence_scope}_evidence"
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -117,8 +133,10 @@ def evaluate_opening_probe_cost_edge(
         "missing_evidence_only": missing_only,
         "fallback_applied": fallback_passed,
         "candidate_setup": setup,
-        "frozen_evidence_date": FROZEN_EVIDENCE_DATE,
-        "frozen_evidence_source": FROZEN_EVIDENCE_SOURCE,
+        "lane_condition": condition,
+        "evidence_scope": evidence_scope if evidence else "none",
+        "frozen_evidence_date": _text(evidence.get("evidence_date")) or FROZEN_EVIDENCE_DATE,
+        "frozen_evidence_source": _text(evidence.get("evidence_source")) or FROZEN_EVIDENCE_SOURCE,
         "cost_basis": {
             "source_live_drag_ratio": FROZEN_LIVE_DRAG_RATIO,
             "target_mock_drag_ratio": FROZEN_MOCK_DRAG_RATIO,
@@ -129,13 +147,13 @@ def evaluate_opening_probe_cost_edge(
             evidence.get("independent_day_symbol_count") or 0
         ),
         "source_live_net_return_15m": (
-            _to_float(evidence.get("source_live_net_return_15m")) if evidence else None
+            _to_float(evidence["source_live_net_return_15m"]) if evidence.get("source_live_net_return_15m") is not None else None
         ),
         "source_live_net_return_30m": (
             _to_float(evidence.get("source_live_net_return_30m")) if evidence else None
         ),
         "avg_mock_net_return_15m": (
-            _to_float(evidence.get("avg_mock_net_return_15m")) if evidence else None
+            _to_float(evidence["avg_mock_net_return_15m"]) if evidence.get("avg_mock_net_return_15m") is not None else None
         ),
         "avg_mock_net_return_30m": (
             _to_float(evidence.get("avg_mock_net_return_30m")) if evidence else None
@@ -155,6 +173,7 @@ __all__ = [
     "FROZEN_LIVE_TO_MOCK_DELTA_RATIO",
     "FROZEN_MOCK_DRAG_RATIO",
     "FROZEN_SETUP_EVIDENCE",
+    "FROZEN_LANE_EVIDENCE",
     "MISSING_EVIDENCE_REASONS",
     "SCHEMA_VERSION",
     "evaluate_opening_probe_cost_edge",
