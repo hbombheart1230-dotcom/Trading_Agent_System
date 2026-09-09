@@ -118,6 +118,8 @@ def test_m29_3_monitor_exit_uses_entry_sizing_stop_before_wider_policy_stop():
                     "stop_loss_pct": 0.01,
                     "stop_loss_source": "entry.metrics.vwap.reclaim_tolerance",
                     "invalidation_price": 99.0,
+                    "raw_structure_stop_loss_pct": 0.006,
+                    "min_structure_stop_loss_pct": 0.01,
                     "source": "buy_execution_sizing",
                 }
             }
@@ -137,6 +139,9 @@ def test_m29_3_monitor_exit_uses_entry_sizing_stop_before_wider_policy_stop():
     assert out["intents"][0]["meta"]["exit_reason"] == "stop_loss"
     assert out["monitor"]["position_entry_risk_applied"] is True
     assert out["monitor"]["position_entry_stop_loss_pct"] == 0.01
+    assert out["monitor"]["position_entry_stop_loss_source"] == "entry.metrics.vwap.reclaim_tolerance"
+    assert out["monitor"]["position_entry_raw_structure_stop_loss_pct"] == 0.006
+    assert out["monitor"]["position_entry_min_structure_stop_loss_pct"] == 0.01
     assert out["monitor"]["exit_effective_stop_loss_pct"] == 0.01
 
 

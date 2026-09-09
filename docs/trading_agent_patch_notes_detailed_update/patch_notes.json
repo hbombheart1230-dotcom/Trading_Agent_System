@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 67,
+  "entry_count": 68,
   "entries": [
     {
       "date": "2026-09-08",
@@ -1730,6 +1730,35 @@
         "libs/reporting/evaluation/entry_timing_attribution.py",
         "tests/test_opening_rank1_controlled_probe.py",
         "tests/test_monitor_exit_guard.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-09",
+      "version": "Exit Threshold and Horizon Integrity",
+      "title": "Stop Provenance and Active Horizon Alignment",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "EXIT_INTEGRITY",
+        "HORIZON",
+        "REPORTING"
+      ],
+      "summary": "Monitor now exposes the complete entry-stop provenance, applies only current-stage horizon reviews, and aligns both hold limits to the active Commander horizon.",
+      "details": [
+        "Stage 3 and Stage 4 revisions require matching current run ID and Strategist LLM call kind, preventing cached review replay.",
+        "Stage 3 lineage records the exact Commander-evaluated response and detects response/application mismatches.",
+        "Active expected_hold_window.max_sec controls both max_hold_sec and time_stop_sec.",
+        "Monitor artifacts retain raw structural stop, minimum structure floor, stop source, and invalidation price.",
+        "Scanner ranking, entry eligibility, stop and take-profit percentages, and broker execution policy are unchanged."
+      ],
+      "impact": "Exit and horizon decisions can be reconstructed without stale Stage 3 reuse or contradictory hold-limit fields.",
+      "sources": [
+        "docs/daily_patch/2026-09-09_exit_threshold_and_horizon_integrity.md",
+        "libs/runtime/position_horizon_revision.py",
+        "libs/runtime/monitor_strategy_frame.py",
+        "libs/runtime/stage3_horizon_lineage.py",
+        "libs/runtime/monitor_exit/position_risk.py"
       ],
       "status": "current"
     }

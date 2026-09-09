@@ -8482,6 +8482,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["strategist_blocked"] = bool(strategist_llm_blocked)
     state["strategist_blocked_reason"] = str(strategist_llm_block_reason or "")
     state["strategist_llm"] = {
+        "run_id": str(state.get("run_id") or ""),
         "status": str(llm_meta.get("status") or "disabled"),
         "llm_status": str(llm_meta.get("status") or "disabled"),
         "model": str(llm_meta.get("model") or ""),

@@ -46,6 +46,7 @@ def test_stage3_revises_active_horizon_without_mutating_entry_horizon() -> None:
                 "reason": "trend and volume remain intact",
             }
         },
+        "strategist_llm": {"run_id": "run-1", "llm_call_kind": "stale_intraday_hold_review"},
     }
 
     out = apply_strategist_horizon_revision(state, now_epoch=1600)
@@ -71,6 +72,7 @@ def test_stage3_cannot_authorize_overnight_horizon() -> None:
                 "data_quality": "ok",
             }
         },
+        "strategist_llm": {"run_id": "run-2", "llm_call_kind": "stale_intraday_hold_review"},
     }
 
     out = apply_strategist_horizon_revision(state, now_epoch=2000)
@@ -98,6 +100,7 @@ def test_stage4_authorizes_only_explicit_high_quality_carry_symbol() -> None:
                 ],
             }
         },
+        "strategist_llm": {"run_id": "run-3", "llm_call_kind": "end_of_day_carry_review"},
     }
 
     out = apply_strategist_horizon_revision(state, now_epoch=3000)
@@ -131,6 +134,7 @@ def test_stage3_revision_is_idempotent_for_same_run() -> None:
                 "data_quality": "ok",
             }
         },
+        "strategist_llm": {"run_id": "same-run", "llm_call_kind": "stale_intraday_hold_review"},
     }
     apply_strategist_horizon_revision(state, now_epoch=1600)
     apply_strategist_horizon_revision(state, now_epoch=1700)
@@ -138,6 +142,37 @@ def test_stage3_revision_is_idempotent_for_same_run() -> None:
 
     assert len(horizon["revision_history"]) == 1
     assert horizon["next_review_epoch"] == 2500
+
+
+def test_cached_stage3_review_is_not_reapplied_without_current_stage3_call() -> None:
+    state = {
+        "run_id": "cached-frame-run",
+        "commander_decision": {
+            "strategist_refresh_context": {
+                "refresh_scope": "open_position_monitor_refresh",
+                "selected_symbol": "005930",
+            }
+        },
+        "persisted_state": {"position_strategy_context": {"005930": _context("intraday")}},
+        "strategist_output": {
+            "stale_intraday_hold_review": {
+                "hold_review_decision": "tighten_exit",
+                "horizon_action": "shorten",
+                "proposed_horizon": "scalp",
+                "revised_hold_window": {"min_sec": 120, "target_sec": 600, "max_sec": 1800},
+                "evidence_confidence": "high",
+                "data_quality": "ok",
+            }
+        },
+        "strategist_llm": {"run_id": "previous-run", "llm_call_kind": "stale_intraday_hold_review"},
+    }
+
+    apply_strategist_horizon_revision(state, now_epoch=1600)
+
+    horizon = state["persisted_state"]["position_strategy_context"]["005930"]["horizon_state"]
+    assert horizon["active_horizon"] == "intraday"
+    assert horizon["revision_history"] == []
+    assert "position_horizon_revision" not in state
 
 
 def test_monitor_overlay_uses_active_horizon_and_preserves_entry_horizon() -> None:

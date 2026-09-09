@@ -1319,3 +1319,15 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - No entry/exit threshold or strategy changes. See `docs/daily_patch/2026-09-08_opening_alpha_observation_integrity.md`.
 - Follow-up: align stale max-hold/min-hold assertions with the current safety contract and isolate default metrics output during pytest.
 - Final clean-room regression: 3,048 passed, 1 skipped, 0 failed; production-path manifest clean.
+
+# 2026-09-09 - Exit Threshold and Horizon Integrity
+
+- Prevent cached Stage 3/Stage 4 review payloads from being applied unless the
+  current run ID and Strategist call kind both match the review stage.
+- Synchronize active horizon `max_sec` with both Monitor `max_hold_sec` and
+  `time_stop_sec`.
+- Preserve raw structural stop, minimum stop floor, stop source and invalidation
+  price through final Monitor artifacts.
+- Keep Scanner ranking, entry eligibility, stop/take-profit percentages and
+  broker execution policy unchanged.
+- See `docs/daily_patch/2026-09-09_exit_threshold_and_horizon_integrity.md`.

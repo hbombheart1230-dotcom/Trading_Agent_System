@@ -143,6 +143,12 @@ def build_monitor_exit_payload(
         "position_entry_stop_loss_pct": decision.get("position_entry_stop_loss_pct"),
         "position_entry_stop_loss_source": str(decision.get("position_entry_stop_loss_source") or ""),
         "position_entry_invalidation_price": decision.get("position_entry_invalidation_price"),
+        "position_entry_raw_structure_stop_loss_pct": decision.get(
+            "position_entry_raw_structure_stop_loss_pct"
+        ),
+        "position_entry_min_structure_stop_loss_pct": decision.get(
+            "position_entry_min_structure_stop_loss_pct"
+        ),
         "effective_exit_policy": dict(effective_exit_policy_base),
         "hold_sec": hold_sec if hold_sec > 0 else None,
         "trailing_drawdown": decision.get("trailing_drawdown"),

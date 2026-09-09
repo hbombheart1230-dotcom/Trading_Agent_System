@@ -2601,6 +2601,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor"]["position_entry_stop_loss_pct"] = exit_info.get("position_entry_stop_loss_pct")
         state["monitor"]["position_entry_stop_loss_source"] = str(exit_info.get("position_entry_stop_loss_source") or "")
         state["monitor"]["position_entry_invalidation_price"] = exit_info.get("position_entry_invalidation_price")
+        state["monitor"]["position_entry_raw_structure_stop_loss_pct"] = exit_info.get(
+            "position_entry_raw_structure_stop_loss_pct"
+        )
+        state["monitor"]["position_entry_min_structure_stop_loss_pct"] = exit_info.get(
+            "position_entry_min_structure_stop_loss_pct"
+        )
     state["monitor_state_transition"] = {
         "previous_posture": previous_posture,
         "current_posture": current_posture,
@@ -3033,6 +3039,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "position_entry_stop_loss_pct": exit_info.get("position_entry_stop_loss_pct"),
         "position_entry_stop_loss_source": str(exit_info.get("position_entry_stop_loss_source") or ""),
         "position_entry_invalidation_price": exit_info.get("position_entry_invalidation_price"),
+        "position_entry_raw_structure_stop_loss_pct": exit_info.get("position_entry_raw_structure_stop_loss_pct"),
+        "position_entry_min_structure_stop_loss_pct": exit_info.get("position_entry_min_structure_stop_loss_pct"),
         "sell_submitted": bool(sell_submitted),
         "sell_skipped_reason": sell_skipped_reason,
         "final_reason": current_reason,
@@ -3134,6 +3142,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["position_entry_stop_loss_pct"] = exit_info.get("position_entry_stop_loss_pct")
         state["monitor_output"]["position_entry_stop_loss_source"] = str(exit_info.get("position_entry_stop_loss_source") or "")
         state["monitor_output"]["position_entry_invalidation_price"] = exit_info.get("position_entry_invalidation_price")
+        state["monitor_output"]["position_entry_raw_structure_stop_loss_pct"] = exit_info.get(
+            "position_entry_raw_structure_stop_loss_pct"
+        )
+        state["monitor_output"]["position_entry_min_structure_stop_loss_pct"] = exit_info.get(
+            "position_entry_min_structure_stop_loss_pct"
+        )
         state["monitor_output"]["received_policy"] = dict(entry_info.get("received_policy") or entry_received_policy or {})
         state["monitor_output"]["received_policy_source"] = str(entry_info.get("received_policy_source") or entry_policy_origin or "")
         state["monitor_output"]["policy_contract"] = dict(entry_info.get("policy_contract") or entry_policy_contract or {})

@@ -118,6 +118,11 @@ def _refresh_consistency(row: dict[str, Any]) -> None:
         issues.append("monitor_target_mismatch")
     if response.get("present") and not application.get("evaluated"):
         issues.append("response_not_evaluated_by_commander")
+    if application.get("evaluated"):
+        if str(response.get("horizon_action") or "") != str(application.get("horizon_action") or ""):
+            issues.append("response_application_action_mismatch")
+        if str(response.get("proposed_horizon") or "") != str(application.get("proposed_horizon") or ""):
+            issues.append("response_application_horizon_mismatch")
     decision = str(response.get("hold_review_decision") or "").strip().lower()
     action = str(response.get("horizon_action") or "").strip().lower()
     if decision == "exit_now" or action == "request_exit":
@@ -243,6 +248,7 @@ def record_stage3_response(state: dict[str, Any]) -> str:
         "next_check_minutes": review.get("next_check_minutes"),
         "received_at": _iso_timestamp(state),
         "response_ref": str(llm.get("stage_response_ref") or llm.get("response_ref") or ""),
+        "response_run_id": str(llm.get("run_id") or state.get("run_id") or ""),
     }
     return _write(state)
 
@@ -269,11 +275,25 @@ def record_stage3_application(
         str(prior.get("active_horizon") or "") != str(current.get("active_horizon") or "")
         or before_window != after_window
     )
+    prior_response = _dict(row.get("response"))
+    row["response"] = {
+        **prior_response,
+        "present": True,
+        "hold_review_decision": str(decision.get("hold_review_decision") or ""),
+        "horizon_action": str(decision.get("horizon_action") or ""),
+        "current_horizon": str(decision.get("current_horizon") or ""),
+        "proposed_horizon": str(decision.get("proposed_horizon") or ""),
+        "evidence_confidence": str(decision.get("evidence_confidence") or ""),
+        "data_quality": str(decision.get("data_quality") or ""),
+        "next_check_minutes": decision.get("next_check_minutes"),
+        "commander_evaluated_response": True,
+    }
     row["commander_application"] = {
         "evaluated": True,
         "symbol": normalized,
         "hold_review_decision": str(decision.get("hold_review_decision") or ""),
         "horizon_action": str(decision.get("horizon_action") or ""),
+        "proposed_horizon": str(decision.get("proposed_horizon") or ""),
         "approved": bool(last.get("commander_revision_approved")),
         "active_horizon_before": str(prior.get("active_horizon") or ""),
         "active_horizon_after": str(current.get("active_horizon") or ""),

@@ -80,7 +80,12 @@ def test_stage3_lineage_records_full_observability_chain(tmp_path) -> None:
             "next_check_minutes": 15,
         }
     }
-    state["strategist_llm"] = {"status": "ok", "stage_response_ref": "response.json"}
+    state["strategist_llm"] = {
+        "run_id": "stage3-lineage-run",
+        "status": "ok",
+        "llm_call_kind": "stale_intraday_hold_review",
+        "stage_response_ref": "response.json",
+    }
     record_stage3_response(state)
 
     apply_strategist_horizon_revision(state, now_epoch=2_000)
@@ -128,6 +133,7 @@ def test_stage3_lineage_surfaces_exit_advisory_without_forwarding(tmp_path) -> N
                 "data_quality": "ok",
             }
         },
+        "strategist_llm": {"run_id": "stage3-exit-advisory", "llm_call_kind": "stale_intraday_hold_review"},
     }
     record_stage3_invocation(state)
     record_stage3_response(state)
@@ -228,6 +234,11 @@ def test_integrated_commander_path_calls_stage3_and_monitor_consumes_revision(mo
                 "data_quality": "ok",
                 "next_check_minutes": 15,
             }
+        }
+        state["strategist_llm"] = {
+            "run_id": str(state.get("run_id") or ""),
+            "status": "ok",
+            "llm_call_kind": "stale_intraday_hold_review",
         }
         return state
 

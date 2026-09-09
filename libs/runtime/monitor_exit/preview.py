@@ -262,6 +262,12 @@ def preview_exit_decision_for_symbol(
     decision["position_entry_stop_loss_pct"] = exit_policy_map.get("position_entry_stop_loss_pct")
     decision["position_entry_stop_loss_source"] = str(exit_policy_map.get("position_entry_stop_loss_source") or "")
     decision["position_entry_invalidation_price"] = exit_policy_map.get("position_entry_invalidation_price")
+    decision["position_entry_raw_structure_stop_loss_pct"] = exit_policy_map.get(
+        "position_entry_raw_structure_stop_loss_pct"
+    )
+    decision["position_entry_min_structure_stop_loss_pct"] = exit_policy_map.get(
+        "position_entry_min_structure_stop_loss_pct"
+    )
     decision["etf_deviation_pct"] = exit_policy_map.get("etf_deviation_pct")
     decision["etf_deviation_source"] = str(exit_policy_map.get("etf_deviation_source") or "")
     decision["asset_class_detected"] = str(exit_policy_map.get("asset_class_detected") or "")
