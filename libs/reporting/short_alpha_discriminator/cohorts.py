@@ -32,6 +32,24 @@ def join_opening_to_feature_mart(
         asset = dict(observability.get("asset_observation", {}))
         scanner = dict(feature.get("scanner", {}))
         strategy = dict(feature.get("strategy", {}))
+        asset_class = str(asset.get("asset_class") or "UNKNOWN")
+        risk_band = str(scanner.get("risk_band") or "MISSING")
+        candidate_setup = str(scanner.get("candidate_setup") or "MISSING")
+        recurrent = dict(
+            dict(observability.get("conditional_lanes") or {}).get(
+                "CONFIRMED_RECURRENT_RANK"
+            )
+            or {}
+        )
+        lane_condition = (
+            "HIGH_COMMON_DIRECTIONAL"
+            if asset_class == "common_stock"
+            and risk_band == "HIGH"
+            and candidate_setup == "DIRECTIONAL_BREADTH"
+            else "CONFIRMED_RECURRENT_RANK"
+            if recurrent.get("eligible") is True
+            else "NOT_ELIGIBLE"
+        )
         joined.append(
             {
                 "episode": episode,
@@ -39,9 +57,10 @@ def join_opening_to_feature_mart(
                 "day": str(episode.get("day") or ""),
                 "symbol": str(episode.get("symbol") or ""),
                 "decision_id": decision_id,
-                "asset_class": str(asset.get("asset_class") or "UNKNOWN"),
-                "risk_band": str(scanner.get("risk_band") or "MISSING"),
-                "candidate_setup": str(scanner.get("candidate_setup") or "MISSING"),
+                "asset_class": asset_class,
+                "risk_band": risk_band,
+                "candidate_setup": candidate_setup,
+                "opening_alpha_lane_condition": lane_condition,
                 "entry_horizon": str(strategy.get("entry_horizon") or "MISSING"),
                 "tactic_id": str(strategy.get("tactic_id") or "MISSING"),
                 "sources": sorted(str(value) for value in scanner.get("sources") or []),

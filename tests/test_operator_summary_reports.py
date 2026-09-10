@@ -6,6 +6,7 @@ from pathlib import Path
 
 from libs.reporting.operator_visibility import _build_trading_health_status
 from libs.reporting.operator_period_summary import (
+    _extract_trade_decision_fields,
     _operator_label_fallback,
     _top_counter,
     generate_operator_daily_summary_artifact,
@@ -39,6 +40,31 @@ def test_operator_summary_sanitizes_mojibake_labels_without_touching_normal_kore
     assert rows[1] == {"name": "VWAP 위 눌림목 + 거래량 확인", "count": 1}
 
 
+def test_trade_decision_fields_prefer_active_commander_horizon_over_stale_exit_shadow(
+    tmp_path: Path,
+) -> None:
+    trade = tmp_path / "reports" / "trades" / "2026-09-10" / "0900" / "TRD_TEST"
+    _write_json(trade / "exit.json", {"post_exit_shadow": {"strategy_horizon": "intraday"}})
+    _write_json(
+        trade / "lifecycle_bundle.json",
+        {
+            "monitor_summary": {
+                "exit_vs_strategy_intent": {
+                    "strategy_horizon": "scalp",
+                    "commander_horizon_policy": {"strategy_horizon": "scalp"},
+                }
+            }
+        },
+    )
+
+    result = _extract_trade_decision_fields(
+        {"trade_root_path": str(trade), "trade_id": "TRD_TEST", "day": "2026-09-10"},
+        tmp_path / "reports",
+    )
+
+    assert result["strategy_horizon"] == "scalp"
+
+
 def test_trading_health_status_turns_red_on_weak_intraday_performance(tmp_path: Path) -> None:
     reports = tmp_path / "reports"
     _write_json(
@@ -56,6 +82,25 @@ def test_trading_health_status_turns_red_on_weak_intraday_performance(tmp_path: 
 
     assert status["trading_health_level"] == "RED"
     assert status["avg_return"] == -0.0107
+
+
+def test_trading_health_status_does_not_call_single_realized_loss_green(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    _write_json(
+        reports / "performance" / "2026-09-09" / "summary.json",
+        {
+            "total_trades": 1,
+            "return_sample_count": 1,
+            "win_rate": 0.0,
+            "avg_return": -0.017,
+            "profit_factor": 0.0,
+        },
+    )
+
+    status = _build_trading_health_status(reports, "2026-09-09")
+
+    assert status["trading_health_level"] == "YELLOW"
+    assert "watch" in status["reasoning"][0]
 
 
 def test_operator_weekly_and_monthly_summary_reports_use_operator_symbol_history(tmp_path: Path) -> None:

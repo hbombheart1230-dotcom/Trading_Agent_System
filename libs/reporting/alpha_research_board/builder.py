@@ -626,14 +626,25 @@ def write_alpha_research_board(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     latest_markdown_path.write_text(markdown, encoding="utf-8")
-    sensitivity = mapping((payload.get("sensitivity_reviews") or [{}])[0])
+    # Canonicalization intentionally keeps the board schema small. Diagnostic
+    # companions are rebuilt from their authoritative builders instead of
+    # attempting to read legacy-only keys from the canonical payload.
+    contract = mapping(payload.get("prospective_contract"))
+    sensitivity = build_risk_high_sensitivity(
+        reports_root=reports_root,
+        first_day=str(contract.get("first_eligible_day") or "0000-00-00"),
+        through_day=through_day,
+    )
     sensitivity_json_path.write_text(
         json.dumps(sensitivity, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     sensitivity_markdown_path.write_text(
         render_risk_high_sensitivity(sensitivity), encoding="utf-8"
     )
-    remaining = mapping(payload.get("remaining_candidate_reviews"))
+    remaining = build_remaining_candidate_reviews(
+        reports_root=reports_root,
+        through_day=through_day,
+    )
     remaining_json_path.write_text(
         json.dumps(remaining, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -650,7 +661,10 @@ def write_alpha_research_board(
     runtime_markdown_path.write_text(
         render_immediate_opening_runtime_validation(runtime_validation), encoding="utf-8"
     )
-    short_alpha = mapping(payload.get("short_alpha_discriminator"))
+    short_alpha = build_short_alpha_discriminator(
+        reports_root=reports_root,
+        through_day=through_day,
+    )
     short_alpha_json_path.write_text(
         json.dumps(short_alpha, ensure_ascii=False, indent=2), encoding="utf-8"
     )

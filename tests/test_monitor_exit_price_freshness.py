@@ -154,6 +154,50 @@ def test_stale_market_quote_without_live_fallback_is_rejected() -> None:
     assert evidence["stale_quote_rejected"] is True
 
 
+def test_stale_entry_bid_cannot_block_large_live_take_profit() -> None:
+    decision = preview_exit_decision_for_symbol(
+        state={
+            "tick_ts": 1_000,
+            "skill_results": {
+                "market.quote": {
+                    "024060": {
+                        "symbol": "024060",
+                        "cur": 13_120.0,
+                        "best_bid": 13_110.0,
+                        "_observed_epoch": 800,
+                    }
+                }
+            },
+        },
+        symbol="024060",
+        position={
+            "symbol": "024060",
+            "qty": 57,
+            "avg_price": 13_340.0,
+            "current_price": 15_710.0,
+            "hold_sec": 5_000,
+        },
+        selected={"symbol": "024060"},
+        exit_policy_base={
+            "hard_stop_pct": 0.03,
+            "stop_loss_pct": 0.03,
+            "take_profit_pct": 0.128,
+            "cost_aware_profit_floor_enabled": True,
+            "round_trip_cost_floor_pct": 0.0092,
+            "min_net_profit_buffer_pct": 0.003,
+            "cost_aware_profit_floor_pct": 0.0122,
+            "cost_aware_profit_floor_use_expected_exit": True,
+        },
+    )
+
+    assert decision["triggered"] is True
+    assert decision["reason"] == "take_profit"
+    assert decision["expected_exit_quote_rejected"] is True
+    assert decision["expected_exit_quote_rejected_reason"] == "stale_quote"
+    assert decision["expected_exit_price"] == 15_710.0
+    assert decision["expected_exit_price_source"] == "observed_price"
+
+
 def test_exit_observability_preserves_price_freshness_evidence() -> None:
     decision = {
         "price_freshness": {

@@ -194,6 +194,12 @@ def build_q9_day_validity(
             "forward_unavailable_candidate_count": unavailable_forward,
             "forward_invalid_candidate_count": invalid_forward,
             "forward_usable_coverage": round(forward_coverage, 4),
+            "forward_outcome_reason_counts": dict(
+                decision.get("forward_outcome_reason_counts") or {}
+            ),
+            "forward_outcome_status_signature_counts": dict(
+                decision.get("forward_outcome_status_signature_counts") or {}
+            ),
             "unified_comparison_exists": bool(comparison.get("exists")),
             "unified_comparison_evidence_status": str(comparison.get("evidence_status") or ""),
             "unified_comparison_forward_complete": bool(comparison.get("forward_windows_complete")),

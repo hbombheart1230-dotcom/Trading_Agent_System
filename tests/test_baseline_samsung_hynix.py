@@ -282,7 +282,7 @@ def _unified_payload(
         "B_STRATEGIST_RANKED": b_avg,
         "C_COMMANDER_FINAL": c_avg,
     }
-    for horizon in ("+5m", "+15m", "+30m", "EOD"):
+    for horizon in ("+5m", "+15m", "+30m", "+60m", "EOD"):
         horizons.append(
             {
                 "horizon": horizon,
@@ -340,6 +340,42 @@ def test_unified_comparison_reports_multi_agent_alpha() -> None:
     assert result["overall"]["best_performer"]["performer"] == "C_COMMANDER_FINAL"
     assert result["q9_forward_data_source"] == "state_plus_kiwoom_minute_recovery"
     assert result["q9_cohort_scope"] == "complete_pabc_decision_windows_only"
+
+
+def test_unified_comparison_does_not_require_q9_unsupported_extended_horizons() -> None:
+    payload = _unified_payload(
+        baseline_avg=0.2,
+        baseline_count=30,
+        p_avg=0.1,
+        b_avg=0.25,
+        c_avg=0.4,
+    )
+    payload["q9_comparison"]["roles"] = [
+        row
+        for row in payload["q9_comparison"]["roles"]
+        if row["horizon"] not in {"+120m", "+180m"}
+    ]
+    payload["summary"]["horizons"].extend(
+        {
+            "horizon": horizon,
+            "top1_net": {
+                "count": 10,
+                "win_rate": 0.5,
+                "average_return_pct": 0.1,
+                "profit_factor": 1.1,
+                "maximum_drawdown_pct": -1.0,
+            },
+        }
+        for horizon in ("+120m", "+180m")
+    )
+
+    result = build_unified_comparison(payload)
+    by_horizon = {row["horizon"]: row for row in result["horizons"]}
+
+    assert result["evidence_status"] == "COMPLETE"
+    assert result["forward_windows_complete"] is True
+    assert by_horizon["+120m"]["evidence_status"] == "BASELINE_ONLY"
+    assert by_horizon["+180m"]["evidence_status"] == "BASELINE_ONLY"
 
 
 def test_unified_comparison_attributes_strategist_degradation() -> None:

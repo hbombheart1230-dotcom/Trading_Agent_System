@@ -1331,3 +1331,46 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Keep Scanner ranking, entry eligibility, stop/take-profit percentages and
   broker execution policy unchanged.
 - See `docs/daily_patch/2026-09-09_exit_threshold_and_horizon_integrity.md`.
+
+# 2026-09-09 - Evaluation Observability and Opening Policy Matrix
+
+- A single realized loss is reported as `YELLOW`, not `GREEN`.
+- Q12 distinguishes an expected closed opening window from an active-window input delay.
+- Q10 displays unverified index captures separately without using them in calculations.
+- Q9 exposes forward failure status signatures while retaining the 95% coverage rule.
+- Opening Alpha is compared by asset family, risk, setup and horizon in a new
+  observation-only day-symbol matrix.
+- Controlled Opening Alpha decisions persist a stable relaxation-lane discriminator
+  cell ID without changing current eligibility.
+- Aligned three stale exit/cooldown tests with the current policy contract:
+  cost-aware max-hold reassessment and applied-policy cooldown authority.
+- Corrected patch-note metadata from 68 to 69 entries; historical entries were
+  not rewritten.
+- Clean full regression after stopping the live writer: `3053 passed, 1 skipped`.
+- This test alignment changes no runtime trading behavior.
+- See `docs/daily_patch/2026-09-09_evaluation_observability_and_opening_matrix.md`.
+
+# 2026-09-10 - Stale Expected Exit Quote Integrity
+
+- Prevent stale or materially conflicting best-bid data from blocking valid
+  cost-aware profit exits.
+- Preserve expected-exit quote age, divergence and rejection provenance in
+  Monitor artifacts.
+- Verified live recovery on `024060`: `SELL / take_profit`, 57 shares, broker
+  order `0083909`, followed by zero open positions.
+- Entry policy, Scanner ranking, cost thresholds and broker semantics are unchanged.
+- Focused regression: `68 passed`.
+- See `docs/daily_patch/2026-09-10_stale_expected_exit_quote_integrity.md`.
+
+# 2026-09-10 - Evaluation Closeout Integrity
+
+- Keep the broker-authoritative `024060` result and valid selection/entry evidence,
+  but exclude its incident-contaminated exit and horizon attribution.
+- Rebuild Alpha Research Board companion reports from authoritative builders.
+- Persist Q9 closeout minute recovery and reuse it for final day-validity metrics.
+- Treat `+120m/+180m` as Samsung/Hynix baseline-only rather than falsely making
+  the shared Q9 comparison incomplete.
+- Prefer the active Commander horizon in operator summaries and recognize the
+  post-exit recap as the inventory artifact.
+- Full regression: `3059 passed, 1 skipped`.
+- See `docs/daily_patch/2026-09-10_evaluation_closeout_integrity.md`.

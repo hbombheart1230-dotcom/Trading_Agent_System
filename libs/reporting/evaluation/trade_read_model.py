@@ -442,6 +442,10 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
     behavior_metric_excluded = exclusion_active and bool(
         exclusion_scopes & {"behavior_attribution", "promotion_metrics"}
     )
+    exit_metric_excluded = exclusion_active and bool(
+        exclusion_scopes
+        & {"exit_horizon_attribution", "exit_quality_promotion"}
+    )
     existing_broker_truth = bool(
         realized_exit
         and (
@@ -481,6 +485,10 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
         defects.append("confirmed_runtime_defect")
         watch_items.append(
             f"evaluation_exclusion:{evaluation_exclusion.get('reason_code') or 'confirmed_runtime_defect'}"
+        )
+    elif exit_metric_excluded:
+        watch_items.append(
+            f"exit_metric_exclusion:{evaluation_exclusion.get('reason_code') or 'runtime_incident'}"
         )
 
     metric_exclusion_only = bool(defects) and set(defects) <= {
@@ -746,6 +754,7 @@ def build_q9_trade_read_model(trade_dir: Path) -> dict[str, Any]:
                     **evaluation_exclusion,
                     "active": exclusion_active,
                     "behavior_metric_excluded": behavior_metric_excluded,
+                    "exit_metric_excluded": exit_metric_excluded,
                 }
                 if evaluation_exclusion
                 else {}

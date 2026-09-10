@@ -95,22 +95,7 @@ def _record(path: Path, *, required: bool) -> dict[str, Any]:
     }
 
 
-def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) -> dict[str, Any]:
-    path = Path(record.get("path") or "")
-    payload = read_json(path) if path.exists() else {}
-    windows = [row for row in payload.get("windows") or [] if isinstance(row, dict)]
-    scanner_windows = [row for row in windows if isinstance(row.get("scanner_control"), dict)]
-    synthetic_windows = [row for row in scanner_windows if _synthetic_identity(row)]
-    post_session_windows = [
-        row
-        for row in scanner_windows
-        if row not in synthetic_windows and not _regular_session_window(row)
-    ]
-    trusted_scanner_windows = [
-        row
-        for row in scanner_windows
-        if row not in synthetic_windows and row not in post_session_windows
-    ]
+def load_q9_pre_strategist_rows(reports_root: Path, day: str) -> list[dict[str, Any]]:
     shadow_root = Path(reports_root).parent / "data" / "logs" / "quant_shadow_candidates" / day
     shadow_payloads: list[dict[str, Any]] = []
     if shadow_root.exists():
@@ -137,7 +122,62 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
             ):
                 continue
             pre_rows.append(row)
-    observed_rows = attach_forward_outcomes(pre_rows) if pre_rows else []
+    return pre_rows
+
+
+def _load_forward_recovery_candles(
+    reports_root: Path, day: str
+) -> dict[str, list[dict[str, Any]]]:
+    payload = read_json(
+        Path(reports_root)
+        / "evaluation"
+        / "daily"
+        / day
+        / "q9_forward_recovery_candles.json"
+    )
+    by_symbol = payload.get("minute_rows_by_symbol")
+    return {
+        str(symbol): [dict(row) for row in rows if isinstance(row, dict)]
+        for symbol, rows in (by_symbol.items() if isinstance(by_symbol, dict) else [])
+        if isinstance(rows, list)
+    }
+
+
+def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) -> dict[str, Any]:
+    path = Path(record.get("path") or "")
+    payload = read_json(path) if path.exists() else {}
+    windows = [row for row in payload.get("windows") or [] if isinstance(row, dict)]
+    scanner_windows = [row for row in windows if isinstance(row.get("scanner_control"), dict)]
+    synthetic_windows = [row for row in scanner_windows if _synthetic_identity(row)]
+    post_session_windows = [
+        row
+        for row in scanner_windows
+        if row not in synthetic_windows and not _regular_session_window(row)
+    ]
+    trusted_scanner_windows = [
+        row
+        for row in scanner_windows
+        if row not in synthetic_windows and row not in post_session_windows
+    ]
+    shadow_root = Path(reports_root).parent / "data" / "logs" / "quant_shadow_candidates" / day
+    shadow_payloads: list[dict[str, Any]] = []
+    if shadow_root.exists():
+        for shadow_path in sorted(shadow_root.glob("*.json")):
+            if shadow_path.name == "latest.json":
+                continue
+            shadow = read_json(shadow_path)
+            if shadow:
+                shadow_payloads.append(shadow)
+    pre_rows = load_q9_pre_strategist_rows(reports_root, day)
+    recovery_candles = _load_forward_recovery_candles(reports_root, day)
+    observed_rows = (
+        attach_forward_outcomes(
+            pre_rows,
+            minute_rows_by_symbol=recovery_candles or None,
+        )
+        if pre_rows
+        else []
+    )
     forward_observed = sum(
         1
         for row in observed_rows
@@ -147,6 +187,7 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
     forward_unavailable = 0
     forward_invalid = 0
     forward_reason_counts: Counter[str] = Counter()
+    forward_status_signature_counts: Counter[str] = Counter()
     for row in observed_rows:
         outcome = row.get("shadow_forward_outcome")
         outcome = outcome if isinstance(outcome, dict) else {}
@@ -161,6 +202,8 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
             for checkpoint in checkpoints.values()
             if isinstance(checkpoint, dict)
         }
+        signature = "+".join(sorted(statuses)) or "NO_CHECKPOINT_STATUS"
+        forward_status_signature_counts[signature] += 1
         if reason in {"", "forward_window_pending"} and statuses <= {"", "pending"}:
             forward_pending += 1
         elif reason in {
@@ -290,6 +333,10 @@ def _q9_daily_diagnostics(reports_root: Path, day: str, record: dict[str, Any]) 
             "forward_unavailable_candidate_count": forward_unavailable,
             "forward_invalid_candidate_count": forward_invalid,
             "forward_outcome_reason_counts": dict(forward_reason_counts),
+            "forward_outcome_status_signature_counts": dict(
+                forward_status_signature_counts
+            ),
+            "forward_recovery_artifact_used": bool(recovery_candles),
         }
     )
     return record
@@ -321,7 +368,7 @@ def inventory_trade(trade_dir: Path) -> dict[str, Any]:
         ("commander_evidence", trade_dir / "evidence" / "commander_evidence.json", True),
         ("monitor_evidence", trade_dir / "evidence" / "monitor_evidence.json", True),
         ("ai_trade_summary", trade_dir / "reports" / "ai_trade_summary.json", False),
-        ("post_exit_shadow", trade_dir / "reports" / "post_exit_shadow.json", False),
+        ("post_exit_shadow", trade_dir / "reports" / "post_exit_shadow_recap.json", False),
     )
     artifacts = {name: _record(path, required=required) for name, path, required in paths}
     missing_required = [name for name, row in artifacts.items() if row["required"] and not row["exists"]]

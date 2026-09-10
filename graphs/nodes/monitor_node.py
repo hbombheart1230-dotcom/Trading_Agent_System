@@ -897,6 +897,7 @@ def _evaluate_monitor_entry_candidate(
         broker_mode=str(os.getenv("KIWOOM_MODE") or ""),
         prior_rank_observations=prior_rank_observations,
         recent_minute_rows=entry_rows,
+        strategy_horizon=str(strategy_frame.get("strategy_horizon") or ""),
     )
     if (
         bool(allow_opening_rank1_controlled_probe)
@@ -2161,6 +2162,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_expected_exit_price": exit_info.get("expected_exit_price"),
         "exit_expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
         "exit_expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
+        "exit_expected_exit_quote_rejected": bool(exit_info.get("expected_exit_quote_rejected")),
+        "exit_expected_exit_quote_rejected_reason": str(
+            exit_info.get("expected_exit_quote_rejected_reason") or ""
+        ),
+        "exit_expected_exit_quote_age_sec": exit_info.get("expected_exit_quote_age_sec"),
+        "exit_expected_exit_quote_price_divergence_pct": exit_info.get(
+            "expected_exit_quote_price_divergence_pct"
+        ),
         "exit_expected_exit_slippage_buffer_pct": exit_info.get("expected_exit_slippage_buffer_pct"),
         "exit_expected_exit_pnl_ratio": exit_info.get("expected_exit_pnl_ratio"),
         "exit_expected_exit_net_pnl_ratio": exit_info.get("expected_exit_net_pnl_ratio"),
@@ -2496,6 +2505,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "expected_exit_price": exit_info.get("expected_exit_price"),
         "expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
         "expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
+        "expected_exit_quote_rejected": bool(exit_info.get("expected_exit_quote_rejected")),
+        "expected_exit_quote_rejected_reason": str(
+            exit_info.get("expected_exit_quote_rejected_reason") or ""
+        ),
+        "expected_exit_quote_age_sec": exit_info.get("expected_exit_quote_age_sec"),
+        "expected_exit_quote_price_divergence_pct": exit_info.get(
+            "expected_exit_quote_price_divergence_pct"
+        ),
         "expected_exit_slippage_buffer_pct": exit_info.get("expected_exit_slippage_buffer_pct"),
         "expected_exit_pnl_ratio": exit_info.get("expected_exit_pnl_ratio"),
         "expected_exit_net_pnl_ratio": exit_info.get("expected_exit_net_pnl_ratio"),
@@ -3003,6 +3020,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "expected_exit_price": exit_info.get("expected_exit_price"),
         "expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
         "expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
+        "expected_exit_quote_rejected": bool(exit_info.get("expected_exit_quote_rejected")),
+        "expected_exit_quote_rejected_reason": str(
+            exit_info.get("expected_exit_quote_rejected_reason") or ""
+        ),
+        "expected_exit_quote_age_sec": exit_info.get("expected_exit_quote_age_sec"),
+        "expected_exit_quote_price_divergence_pct": exit_info.get(
+            "expected_exit_quote_price_divergence_pct"
+        ),
         "expected_exit_slippage_buffer_pct": exit_info.get("expected_exit_slippage_buffer_pct"),
         "expected_exit_pnl_ratio": exit_info.get("expected_exit_pnl_ratio"),
         "expected_exit_net_pnl_ratio": exit_info.get("expected_exit_net_pnl_ratio"),

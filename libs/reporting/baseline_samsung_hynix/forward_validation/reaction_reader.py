@@ -206,6 +206,7 @@ def _stock_reaction(
                 "integrity_failure": True,
                 "integrity_reason": override_point.get("reason"),
                 "collector_status": override_point.get("collector_status"),
+                "unverified_observation": override_point.get("unverified_observation"),
             }
         else:
             points[label] = {"status": "PENDING", "price": None, "volume": None}
@@ -343,6 +344,21 @@ def _collector_raw_row(
 
     observation = observation_for_slot(day, slot, root=root)
     availability = str(observation.get("availability") or "")
+    indices = observation.get("indices") if isinstance(observation.get("indices"), Mapping) else {}
+    index_row = indices.get(index_name) if isinstance(indices.get(index_name), Mapping) else None
+
+    def _unverified_observation() -> dict[str, Any] | None:
+        price = _number((index_row or {}).get("current"))
+        if price is None:
+            return None
+        return {
+            "price": price,
+            "source": str(observation.get("source") or "kiwoom.ka20009"),
+            "capture_status": availability,
+            "requested_at_kst": observation.get("requested_at_kst"),
+            "observed_at_kst": observation.get("actual_observed_at_kst"),
+            "calculation_usable": False,
+        }
 
     if availability in _COLLECTOR_ABSENT_STATES and observation.get('never_attempted') is True:
         return None  # genuinely never captured -- legacy fallback allowed
@@ -358,16 +374,15 @@ def _collector_raw_row(
             "reason": str(observation.get("error") or "collector_observation_not_calculation_usable"),
             "requested_at_kst": observation.get("requested_at_kst"),
             "actual_observed_at_kst": observation.get("actual_observed_at_kst"),
+            "unverified_observation": _unverified_observation(),
         }
 
-    indices = observation.get("indices") if isinstance(observation.get("indices"), Mapping) else {}
     try:
         observed = int(datetime.fromisoformat(str(observation.get('actual_observed_at_kst'))).timestamp())
     except (TypeError, ValueError):
         observed = 0
     if not _has_verification_evidence(indices, slot=slot, day=day, observed_epoch=observed):
         return {'integrity_failure': True, 'collector_status': availability, 'reason': 'verification_evidence_invalid'}
-    index_row = indices.get(index_name) if isinstance(indices.get(index_name), Mapping) else None
     price = _number((index_row or {}).get("current"))
     if price is None:
         # VERIFIED overall, but this specific index's component is not

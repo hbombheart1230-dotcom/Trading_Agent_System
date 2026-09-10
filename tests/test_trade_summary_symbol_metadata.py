@@ -65,6 +65,21 @@ def test_trade_summary_uses_symbol_name_fallback_when_payload_name_missing() -> 
     assert summary_input["trade"]["themes"] == ["통신장비"]
 
 
+def test_trade_summary_uses_heunggu_oil_symbol_name_fallback() -> None:
+    report = {
+        "trade_id": "TRD_TEST",
+        "symbol": "024060",
+        "status": "closed",
+        "shared_facts": {"symbol": "024060", "status": "closed"},
+    }
+
+    markdown = render_trade_summary_markdown_clean(report)
+    summary_input = build_trade_summary_input_clean(report)
+
+    assert "* 종목: 024060 (흥구석유)" in markdown
+    assert summary_input["trade"]["symbol_name"] == "흥구석유"
+
+
 def test_trade_summary_uses_symbol_metadata_fallback_when_report_has_no_symbol_specific_theme() -> None:
     report = {
         "trade_id": "TRD_TEST",

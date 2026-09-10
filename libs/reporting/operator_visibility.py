@@ -216,7 +216,7 @@ def _build_trading_health_status(reports_root: Path, day: str) -> Dict[str, Any]
         reasons.append(
             f"trade performance weak: sample={sample_count}, win_rate={win_rate:.2%}, avg_return={avg_return:.2%}"
         )
-    elif sample_count >= 2 and (win_rate < 0.40 or avg_return < 0.0):
+    elif avg_return < 0.0 or (sample_count >= 2 and win_rate < 0.40):
         level = "YELLOW"
         reasons.append(
             f"trade performance watch: sample={sample_count}, win_rate={win_rate:.2%}, avg_return={avg_return:.2%}"

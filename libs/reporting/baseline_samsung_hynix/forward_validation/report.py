@@ -56,6 +56,27 @@ def render_forward_validation_report(
             f"| {key} | {_value(row.get('opening_gap_pct'), '%')} | " + " | ".join(prices) +
             f" | {_value(row.get('day_high'))} | {_value(row.get('day_low'))} |"
         )
+    unverified = []
+    for key, row in (reactions.get("targets") or {}).items():
+        for label, point in (row.get("points") or {}).items():
+            info = (point or {}).get("unverified_observation") or {}
+            if info:
+                unverified.append((key, label, info))
+    if unverified:
+        lines += [
+            "",
+            "## Captured But Not Calculation-Usable",
+            "",
+            "These values are shown for operations only and are excluded from returns and scoring.",
+            "",
+            "| Target | Checkpoint | Captured value | Status | Observed at |",
+            "|---|---|---:|---|---|",
+        ]
+        for key, label, info in unverified:
+            lines.append(
+                f"| {key} | {label} | {_value(info.get('price'))} | "
+                f"{info.get('capture_status')} | {info.get('observed_at_kst') or '-'} |"
+            )
     lines += [
         "",
         "## Forward Quality By Checkpoint",

@@ -90,6 +90,11 @@ def test_high_common_directional_rank1_probe_is_applied_with_quarter_size() -> N
     assert result["opening_alpha_condition"]["condition"] == "HIGH_COMMON_DIRECTIONAL"
     assert result["probe_qty"] == 2
     assert result["qty_fraction_effective"] == 0.25
+    discriminator = result["opening_alpha_discriminator"]
+    assert discriminator["cell_id"] == (
+        "HIGH_COMMON_DIRECTIONAL|COMMON_STOCK|HIGH|DIRECTIONAL_BREADTH|MISSING"
+    )
+    assert discriminator["eligibility_effect"] == "NONE"
 
 
 def test_directional_breadth_can_override_only_listed_quant_volume_block() -> None:
@@ -475,6 +480,9 @@ def test_probe_ledger_allows_only_one_submission_per_day(tmp_path: Path) -> None
     assert second["reason"] == "daily_probe_limit_reached"
     assert len(rows) == 1
     assert rows[0]["run_id"] == "run-1"
+    assert rows[0]["opening_alpha_discriminator"]["cell_id"].startswith(
+        "HIGH_COMMON_DIRECTIONAL|COMMON_STOCK|HIGH|DIRECTIONAL_BREADTH"
+    )
 
 
 def test_probe_evaluation_records_rejection_reason_once_per_run_and_symbol(
@@ -505,6 +513,7 @@ def test_probe_evaluation_records_rejection_reason_once_per_run_and_symbol(
     assert len(rows) == 1
     assert rows[0]["applied"] is False
     assert rows[0]["reason"] == "wait_reason_not_overrideable"
+    assert rows[0]["opening_alpha_discriminator"]["eligibility_effect"] == "NONE"
 
 
 def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> None:

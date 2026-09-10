@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 68,
+  "entry_count": 71,
   "entries": [
     {
       "date": "2026-09-08",
@@ -1759,6 +1759,106 @@
         "libs/runtime/monitor_strategy_frame.py",
         "libs/runtime/stage3_horizon_lineage.py",
         "libs/runtime/monitor_exit/position_risk.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-09",
+      "version": "Evaluation Observability and Opening Matrix",
+      "title": "Truthful Evaluation Status and Opening Alpha Comparison",
+      "stage": "Evaluation Observability",
+      "types": [
+        "CURRENT",
+        "Q9",
+        "Q10",
+        "Q12",
+        "OPENING_ALPHA",
+        "REPORTING"
+      ],
+      "summary": "Evaluation reports now distinguish missing, stale, closed-window and unverified evidence while comparing Opening Alpha outcomes across fixed operational dimensions.",
+      "details": [
+        "A single realized losing sample produces YELLOW trading health rather than GREEN.",
+        "Q12 reports post-09:12 expiry as WINDOW_CLOSED while retaining INPUT_DELAY during the active candidate window.",
+        "Q10 keeps unverified index observations out of calculations and displays their value, status and timestamp separately.",
+        "Q9 validity includes forward reason and checkpoint-status signature counts without relaxing coverage requirements.",
+        "Opening Alpha uses one first episode per day-symbol and compares asset family, risk band, setup, horizon and five forward windows.",
+        "Controlled probe decisions persist a stable lane, asset, risk, setup and horizon discriminator cell through evaluation and submission ledgers.",
+        "The new comparison remains observation-only and cannot authorize a trading behavior change.",
+        "Three stale exit and cooldown tests were aligned with cost-aware max-hold reassessment and applied-policy cooldown authority.",
+        "Patch-note metadata was corrected from 68 to 69 entries without rewriting historical entries.",
+        "The clean full regression completed with 3053 passed, 1 skipped, and no runtime behavior change."
+      ],
+      "impact": "Operators can distinguish real collection defects from expected lifecycle states and inspect whether asset type, setup and horizon separate Opening Alpha outcomes without changing trading behavior.",
+      "sources": [
+        "docs/daily_patch/2026-09-09_evaluation_observability_and_opening_matrix.md",
+        "libs/reporting/short_alpha_discriminator/opening_policy_matrix.py",
+        "libs/reporting/baseline_btc_woori_tech/input_delivery.py",
+        "libs/reporting/baseline_samsung_hynix/forward_validation/report.py",
+        "libs/reporting/evaluation/day_validity.py",
+        "libs/reporting/operator_visibility.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-10",
+      "version": "Stale Expected Exit Quote Integrity",
+      "title": "Fresh Expected-Exit Price Enforcement",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "EXIT_INTEGRITY",
+        "COST_FLOOR",
+        "REPORTING"
+      ],
+      "summary": "Monitor no longer lets a stale or materially conflicting best bid suppress a valid cost-aware profit exit.",
+      "details": [
+        "Expected-exit quotes older than 90 seconds are excluded.",
+        "Best bids diverging from the effective current price by more than 1.5 percent are excluded as conflicting evidence.",
+        "Quote age, divergence, rejection state and reason are retained in Monitor observability.",
+        "Live verification sold all 57 shares of 024060 with take_profit and broker order 0083909.",
+        "The next cycle confirmed zero open positions and generated the completed trade report.",
+        "Focused Monitor exit regression completed with 68 passed."
+      ],
+      "impact": "Fresh execution truth can trigger valid profit exits without being overridden by an entry-time order-book snapshot.",
+      "sources": [
+        "docs/daily_patch/2026-09-10_stale_expected_exit_quote_integrity.md",
+        "libs/runtime/monitor_exit/market_enrichment.py",
+        "libs/runtime/exit_policy.py",
+        "libs/runtime/monitor_exit/observability.py",
+        "tests/test_monitor_exit_price_freshness.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-10",
+      "version": "Evaluation Closeout Integrity",
+      "title": "Scoped Incident Attribution and Complete Forward Recovery",
+      "stage": "Evaluation Observability",
+      "types": [
+        "CURRENT",
+        "Q9",
+        "HORIZON",
+        "REPORTING",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Preserve valid selection and broker outcome evidence while excluding an incident-contaminated exit, and make closeout forward and Alpha Board reports complete.",
+      "details": [
+        "Evaluation exclusions can now target exit and horizon metrics without discarding valid selection, entry, or broker realized PnL evidence.",
+        "The 2026-09-10 024060 trade retains the broker-authoritative +15.05% result while stale-quote-contaminated exit and horizon attribution are excluded.",
+        "Alpha Research Board companion reports are rebuilt from their authoritative builders after canonicalization instead of reading removed legacy keys.",
+        "Q9 closeout recovery persists recovered minute candles and reuses them for day validity; usable forward coverage reached 99.67%.",
+        "Unified Q9 versus Samsung/Hynix comparison treats +120m and +180m as baseline-only horizons and requires completion only on shared Q9 horizons.",
+        "Operator summaries prefer the active Commander horizon, post-exit inventory recognizes the recap artifact, and 024060 resolves to 흥구석유.",
+        "Full regression completed with 3059 passed and 1 skipped."
+      ],
+      "impact": "Today's evidence is reconstructable without overstating exit quality, and post-close Q9/Board status no longer reports false missing evidence.",
+      "sources": [
+        "docs/daily_patch/2026-09-10_evaluation_closeout_integrity.md",
+        "libs/reporting/evaluation/trade_read_model.py",
+        "libs/reporting/evaluation/trade_evaluator.py",
+        "libs/reporting/evaluation/artifact_inventory.py",
+        "libs/reporting/alpha_research_board/builder.py",
+        "libs/reporting/baseline_samsung_hynix/unified_comparison.py"
       ],
       "status": "current"
     }

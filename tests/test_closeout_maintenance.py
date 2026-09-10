@@ -37,7 +37,8 @@ def test_write_closeout_maintenance_refreshes_q9_artifacts_after_json_exists(
 ) -> None:
     calls: list[dict] = []
 
-    def fake_build_q9_evaluation(*, reports_root: Path, day: str):
+    def fake_build_q9_evaluation(*, reports_root: Path, day: str, recover_forward: bool = False):
+        assert recover_forward is True
         closeout_path = reports_root / "operator_summary" / "daily" / day / "closeout_maintenance.json"
         assert closeout_path.exists()
         calls.append({"reports_root": reports_root, "day": day})

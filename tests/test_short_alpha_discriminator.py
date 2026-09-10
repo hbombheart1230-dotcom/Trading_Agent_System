@@ -21,6 +21,9 @@ from libs.reporting.short_alpha_discriminator.opening_casebook import (
     build_opening_overshoot_casebook,
     classify_opening_case,
 )
+from libs.reporting.short_alpha_discriminator.opening_policy_matrix import (
+    build_opening_policy_matrix,
+)
 
 
 def _opening(
@@ -252,9 +255,32 @@ def test_pipeline_writes_independent_artifacts(tmp_path: Path) -> None:
     assert Path(result["scanner_diagnostics_json_path"]).exists()
     assert Path(result["opening_casebook_json_path"]).exists()
     assert Path(result["opening_casebook_markdown_path"]).exists()
+    assert Path(result["opening_policy_matrix_json_path"]).exists()
+    assert Path(result["opening_policy_matrix_markdown_path"]).exists()
     markdown = Path(result["summary_markdown_path"]).read_text(encoding="utf-8")
     assert "## Historical Sensitivity" in markdown
     assert "Strategist Stage-2 authority changed: **No**" in markdown
+
+
+def test_opening_policy_matrix_compares_asset_setup_and_horizon_without_behavior_change() -> None:
+    opening, features = _fixture_payloads()
+    features[-1]["scanner"]["candidate_setup"] = "LIQUIDITY_ONLY"
+    features[-1]["strategy"]["entry_horizon"] = "intraday"
+    joined, _ = join_opening_to_feature_mart(opening, features)
+
+    matrix = build_opening_policy_matrix(joined)
+    common = next(row for row in matrix["asset_class"] if row["asset_family"] == "COMMON_STOCK")
+    etf = next(row for row in matrix["asset_class"] if row["asset_family"] == "ETF")
+    etf_cell = next(row for row in matrix["combined"] if row["asset_family"] == "ETF")
+
+    assert matrix["independent_day_symbol_count"] == 3
+    assert common["day_symbol_count"] == 2
+    assert etf["day_symbol_count"] == 1
+    assert etf_cell["candidate_setup"] == "LIQUIDITY_ONLY"
+    assert etf_cell["entry_horizon"] == "intraday"
+    assert etf_cell["risk_band"] == "HIGH"
+    assert etf_cell["lane_condition"] == "NOT_ELIGIBLE"
+    assert matrix["behavior_change_authorized"] is False
 
 
 def test_opening_case_classification_is_deterministic_and_cost_aware() -> None:

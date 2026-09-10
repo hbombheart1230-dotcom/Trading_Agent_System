@@ -88,6 +88,15 @@ def build_monitor_exit_payload(
         "expected_exit_price": decision.get("expected_exit_price"),
         "expected_exit_price_source": str(decision.get("expected_exit_price_source") or ""),
         "expected_exit_price_fallback_used": bool(decision.get("expected_exit_price_fallback_used")),
+        "expected_exit_quote_rejected": bool(decision.get("expected_exit_quote_rejected")),
+        "expected_exit_quote_rejected_reason": str(
+            decision.get("expected_exit_quote_rejected_reason") or ""
+        ),
+        "expected_exit_quote_observed_epoch": decision.get("expected_exit_quote_observed_epoch"),
+        "expected_exit_quote_age_sec": decision.get("expected_exit_quote_age_sec"),
+        "expected_exit_quote_price_divergence_pct": decision.get(
+            "expected_exit_quote_price_divergence_pct"
+        ),
         "expected_exit_slippage_buffer_pct": decision.get("expected_exit_slippage_buffer_pct"),
         "expected_exit_pnl_ratio": decision.get("expected_exit_pnl_ratio"),
         "expected_exit_net_pnl_ratio": decision.get("expected_exit_net_pnl_ratio"),

@@ -1227,6 +1227,8 @@ def _extract_trade_decision_fields(row: Dict[str, Any], reports_root: Path) -> D
         "risk_tone": candidate_watch.get("risk_tone") or market_strategy.get("risk_tone"),
         "trade_aggressiveness": candidate_watch.get("trade_aggressiveness"),
         "strategy_horizon": _first_text(
+            _dig(lifecycle_bundle, "monitor_summary", "exit_vs_strategy_intent", "commander_horizon_policy", "strategy_horizon"),
+            _dig(lifecycle_bundle, "monitor_summary", "exit_vs_strategy_intent", "strategy_horizon"),
             _find_key_recursive(exit_payload, "strategy_horizon"),
             _dig(lifecycle_bundle, "trade_lifecycle", "exit", "monitor_context", "strategy_horizon"),
         ),

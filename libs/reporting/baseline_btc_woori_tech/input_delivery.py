@@ -42,8 +42,12 @@ def load_candidate_input(*, reports_root, day, now_epoch, legacy, capture_root=D
                 raise ValueError('input_schema_or_time_mismatch')
             payload = current
             if now_epoch - generated > 90:
-                payload['delivery_status'] = 'INPUT_DELAY'
-                payload['delivery_reason'] = 'q12_candidate_input_stale'
+                window_closed = now_epoch > epoch(day, '09:12')
+                payload['delivery_status'] = 'WINDOW_CLOSED' if window_closed else 'INPUT_DELAY'
+                payload['delivery_reason'] = (
+                    'q12_opening_candidate_window_closed'
+                    if window_closed else 'q12_candidate_input_stale'
+                )
                 payload.setdefault('features', {})['entry_methods'] = {}
             else:
                 payload['delivery_status'] = 'CURRENT'

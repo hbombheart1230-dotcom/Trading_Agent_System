@@ -15,6 +15,10 @@ from .opening_casebook import (
     build_opening_overshoot_casebook,
     render_opening_overshoot_casebook,
 )
+from .opening_policy_matrix import (
+    build_opening_policy_matrix,
+    render_opening_policy_matrix,
+)
 from .report import render_short_alpha_discriminator
 from .scanner_diagnostics import build_scanner_diagnostics
 from .strategist_roi import build_strategist_stage2_review
@@ -108,6 +112,7 @@ def build_short_alpha_discriminator(
         "profit_fade_review": build_profit_fade_review(primary_rows),
         "scanner_diagnostics": build_scanner_diagnostics(joined),
         "opening_overshoot_casebook": build_opening_overshoot_casebook(joined),
+        "opening_policy_matrix": build_opening_policy_matrix(joined),
         "strategist_stage2_review": build_strategist_stage2_review(
             [row for row in feature_mart.get("episodes") or [] if isinstance(row, Mapping)],
             agent_scorecard,
@@ -133,6 +138,8 @@ def write_short_alpha_discriminator(
         "scanner_diagnostics_json_path": output_dir / "scanner_diagnostics.json",
         "opening_casebook_json_path": output_dir / "opening_overshoot_casebook.json",
         "opening_casebook_markdown_path": output_dir / "opening_overshoot_casebook.md",
+        "opening_policy_matrix_json_path": output_dir / "opening_policy_matrix.json",
+        "opening_policy_matrix_markdown_path": output_dir / "opening_policy_matrix.md",
     }
     paths["summary_json_path"].write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -162,6 +169,14 @@ def write_short_alpha_discriminator(
     )
     paths["opening_casebook_markdown_path"].write_text(
         render_opening_overshoot_casebook(payload["opening_overshoot_casebook"]),
+        encoding="utf-8",
+    )
+    paths["opening_policy_matrix_json_path"].write_text(
+        json.dumps(payload["opening_policy_matrix"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    paths["opening_policy_matrix_markdown_path"].write_text(
+        render_opening_policy_matrix(payload["opening_policy_matrix"]),
         encoding="utf-8",
     )
     return {

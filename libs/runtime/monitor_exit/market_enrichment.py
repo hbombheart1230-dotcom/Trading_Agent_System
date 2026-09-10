@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict
 
 from libs.runtime.etf_deviation import extract_etf_deviation_signal
 from libs.runtime.monitor_exit.adapters.state_data import quote_for_symbol
 from libs.runtime.monitor_exit.numeric import to_float
+from libs.runtime.monitor_exit.price_resolution import quote_observed_epoch
 from libs.runtime.monitor_exit.vwap_state_adapter import (
     fresh_minute_vwap_distance_for_symbol,
     vwap_breakdown_confirmation_for_symbol,
@@ -23,6 +25,52 @@ def enrich_exit_policy_with_market_inputs(
     out = dict(exit_policy_map or {})
     quote = quote_for_symbol(state, symbol)
     if quote:
+        observed_epoch = quote_observed_epoch(quote)
+        now_epoch = 0
+        for key in ("tick_ts", "ts"):
+            try:
+                now_epoch = int(float(state.get(key)))
+            except Exception:
+                continue
+            if now_epoch > 0:
+                break
+        if now_epoch <= 0:
+            now_epoch = int(time.time())
+        quote_age_sec = (
+            max(0, int(now_epoch) - int(observed_epoch))
+            if observed_epoch is not None and observed_epoch > 0
+            else None
+        )
+        expected_bid = next(
+            (
+                to_float(quote.get(key))
+                for key in ("best_bid", "bid", "bid_price")
+                if quote.get(key) not in (None, "") and to_float(quote.get(key)) > 0.0
+            ),
+            0.0,
+        )
+        effective_price = to_float(price)
+        bid_divergence_pct = (
+            abs(float(expected_bid) / float(effective_price) - 1.0)
+            if expected_bid > 0.0 and effective_price > 0.0
+            else None
+        )
+        quote_stale = bool(quote_age_sec is not None and quote_age_sec > 90)
+        quote_price_conflict = bool(
+            bid_divergence_pct is not None and bid_divergence_pct > 0.015
+        )
+        expected_exit_quote_usable = bool(not quote_stale and not quote_price_conflict)
+        out["expected_exit_quote_observed_epoch"] = observed_epoch
+        out["expected_exit_quote_age_sec"] = quote_age_sec
+        out["expected_exit_quote_price_divergence_pct"] = bid_divergence_pct
+        out["expected_exit_quote_rejected"] = bool(not expected_exit_quote_usable)
+        out["expected_exit_quote_rejected_reason"] = (
+            "stale_quote"
+            if quote_stale
+            else "quote_effective_price_conflict"
+            if quote_price_conflict
+            else ""
+        )
         for source_key, policy_key in (
             ("best_bid", "expected_exit_best_bid"),
             ("bid", "expected_exit_best_bid"),
@@ -33,7 +81,11 @@ def enrich_exit_policy_with_market_inputs(
             ("spread_bps", "expected_exit_spread_bps"),
         ):
             value = quote.get(source_key)
-            if value not in (None, "") and to_float(value) > 0.0:
+            if (
+                expected_exit_quote_usable
+                and value not in (None, "")
+                and to_float(value) > 0.0
+            ):
                 out.setdefault(policy_key, value)
 
     deviation_signal = extract_etf_deviation_signal(

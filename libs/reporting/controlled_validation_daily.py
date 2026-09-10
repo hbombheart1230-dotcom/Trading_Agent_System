@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 
 LANE_LABELS = {
@@ -10,6 +12,24 @@ LANE_LABELS = {
     "Q10_SEMICONDUCTOR": "Q10 Semiconductor",
     "Q10_INDEX": "Q10 Index",
 }
+
+
+def _display_evaluation_status(
+    *, lane_id: str, day: str, status: str, reason: str
+) -> tuple[str, str]:
+    """Do not present expected post-window expiry as a delivery incident."""
+    if lane_id != "BTC_WOORI" or status != "INPUT_DELAY" or reason != "q12_candidate_input_stale":
+        return status, reason
+    try:
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        session_day = datetime.strptime(day, "%Y-%m-%d").date()
+    except ValueError:
+        return status, reason
+    if session_day < now.date() or (
+        session_day == now.date() and now.time() > time(9, 12)
+    ):
+        return "WINDOW_CLOSED", "q12_opening_candidate_window_closed"
+    return status, reason
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -91,12 +111,18 @@ def build_controlled_validation_daily(
         for row in lane_attempts:
             label = str(row.get("status") or "") or "UNKNOWN"
             attempt_status_counts[label] = attempt_status_counts.get(label, 0) + 1
+        evaluation_status, evaluation_reason = _display_evaluation_status(
+            lane_id=lane_id,
+            day=day,
+            status=str(latest.get("status") or "NOT_EVALUATED"),
+            reason=str(latest.get("reason") or ""),
+        )
         lane_rows.append(
             {
                 "lane_id": lane_id,
                 "label": LANE_LABELS[lane_id],
-                "evaluation_status": str(latest.get("status") or "NOT_EVALUATED"),
-                "reason": str(latest.get("reason") or ""),
+                "evaluation_status": evaluation_status,
+                "reason": evaluation_reason,
                 "observation_count": int(latest.get("observation_count") or 0),
                 "attempt_count": len(lane_attempts),
                 "attempt_status_counts": attempt_status_counts,

@@ -451,7 +451,11 @@ def write_closeout_maintenance_report(payload: Dict[str, Any], *, reports_root: 
     try:
         from libs.reporting.evaluation.pipeline import build_q9_evaluation
 
-        refreshed = build_q9_evaluation(reports_root=reports_root, day=day)
+        refreshed = build_q9_evaluation(
+            reports_root=reports_root,
+            day=day,
+            recover_forward=True,
+        )
         payload.setdefault("steps", {})["q9_evaluation_post_close_refresh"] = {
             "ok": True,
             "artifact_inventory_path": str(

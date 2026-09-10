@@ -488,11 +488,12 @@ def test_m20_2_decide_trade_post_exit_cooldown_blocks_reentry(monkeypatch):
     assert out["decision_packet"]["intent"]["reason"] == "post_exit_cooldown"
 
 
-def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch):
+def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch, tmp_path):
     monkeypatch.setenv("USE_EXIT_POLICY", "true")
     monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("BROKER_COST_PROFILE_PATH", str(tmp_path / "missing_broker_cost_profile.json"))
     monkeypatch.setattr(time, "time", lambda: 2000.0)
 
     class AlwaysBuyStrategist:
@@ -513,6 +514,7 @@ def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch):
 
     state = {
         "symbol": "005930",
+        "policy": {"exit_policy": {"cost_aware_profit_floor_enabled": False}},
         "market_snapshot": {"symbol": "005930", "price": 70000},
         "portfolio_snapshot": {
             "cash": 2_000_000,
@@ -539,15 +541,17 @@ def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch):
     assert out["decision_packet"]["intent"]["rationale"] == "exit_policy:max_hold"
 
 
-def test_m20_2_decide_trade_blocks_fast_sell_with_min_hold_guard(monkeypatch):
+def test_m20_2_decide_trade_blocks_fast_sell_with_min_hold_guard(monkeypatch, tmp_path):
     monkeypatch.setenv("USE_EXIT_POLICY", "true")
     monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "1")
     monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
+    monkeypatch.setenv("BROKER_COST_PROFILE_PATH", str(tmp_path / "missing_broker_cost_profile.json"))
     monkeypatch.setattr(time, "time", lambda: 2000.0)
 
     state = {
         "symbol": "005930",
+        "policy": {"exit_policy": {"cost_aware_profit_floor_enabled": False}},
         "market_snapshot": {"symbol": "005930", "price": 70000},
         "portfolio_snapshot": {
             "cash": 2_000_000,

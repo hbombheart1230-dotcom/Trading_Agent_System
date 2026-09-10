@@ -103,6 +103,22 @@ def test_stale_or_corrupt_input_never_authorizes(tmp_path):
     assert value['delivery_status']=='INPUT_DELAY'
 
 
+def test_expired_input_after_opening_window_is_reported_as_closed_not_delayed(tmp_path):
+    root = tmp_path / 'capture'
+    capture(root)
+    publish_input(day=DAY, reports_root=tmp_path, signals=signals(), candles=candles(), now_epoch=epoch(DAY, '09:10'))
+
+    value = load_candidate_input(
+        reports_root=tmp_path, day=DAY, now_epoch=epoch(DAY, '09:20'),
+        legacy={}, capture_root=root,
+    )
+
+    assert value['delivery_status'] == 'WINDOW_CLOSED'
+    assert value['delivery_reason'] == 'q12_opening_candidate_window_closed'
+    assert value['features']['entry_methods'] == {}
+    assert build_q12_candidate(value, now_epoch=epoch(DAY, '09:20')) is None
+
+
 def test_preserved_report_receives_btc_without_losing_local_data():
     old={'features':{'btc_0855':{'status':'MISSING'},'entry_methods':{'09:03':{'status':'OBSERVED'}}}}
     value=merge_fresh_btc_into_preserved_report(old,signals(),DAY)

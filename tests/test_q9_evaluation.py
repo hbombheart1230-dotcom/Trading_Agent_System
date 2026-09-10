@@ -633,6 +633,51 @@ def test_confirmed_runtime_defect_is_preserved_but_excluded_from_promotion_metri
     assert evaluation["integrity"]["promotion_metric_eligible"] is False
 
 
+def test_exit_incident_excludes_only_exit_and_horizon_metrics(tmp_path: Path) -> None:
+    trade = tmp_path / "reports" / "trades" / "2026-09-10" / "0900" / "TRD_20260910_024060_01"
+    _write(trade / "lifecycle_bundle.json", {
+        "day": "2026-09-10",
+        "trade_id": trade.name,
+        "symbol": "024060",
+        "lifecycle": {
+            "status": "closed",
+            "entry": {"ts": "2026-09-10T00:08:08+00:00", "price": 13340},
+            "exit": {
+                "ts": "2026-09-10T01:44:35+00:00",
+                "price": 15479,
+                "action": "SELL",
+                "execution_details": {
+                    "broker_realized_pnl_pct": 0.1505,
+                    "broker_day_authoritative": True,
+                },
+            },
+        },
+        "shared_facts": {"status": "closed"},
+    })
+    _write(trade / "entry.json", {"timestamp": "2026-09-10T00:08:08+00:00", "price": 13340})
+    _write(trade / "exit.json", {"timestamp": "2026-09-10T01:44:35+00:00", "price": 15479})
+    _write(trade / "evaluation_exclusion.json", {
+        "schema_version": "evaluation_exclusion.v1",
+        "trade_id": trade.name,
+        "active": True,
+        "reason_code": "stale_expected_exit_quote_runtime_incident",
+        "scopes": ["exit_horizon_attribution", "exit_quality_promotion"],
+    })
+    for name in ("scanner", "strategist", "commander", "monitor"):
+        _write(trade / "evidence" / f"{name}_evidence.json", {})
+
+    model = build_q9_trade_read_model(trade)
+    evaluation = evaluate_trade(model)
+
+    assert "confirmed_runtime_defect" not in model["integrity"]["defects"]
+    assert model["integrity"]["evaluation_exclusion"]["behavior_metric_excluded"] is False
+    assert model["integrity"]["evaluation_exclusion"]["exit_metric_excluded"] is True
+    assert evaluation["integrity"]["promotion_metric_eligible"] is True
+    assert evaluation["integrity"]["exit_metric_eligible"] is False
+    assert evaluation["exit_quality"]["status"] == "excluded_runtime_incident"
+    assert evaluation["horizon_alignment"]["status"] == "excluded_runtime_incident"
+
+
 def test_start_gate_accepts_legitimate_pending_forward_rows() -> None:
     gate = build_full_chain_start_gate(
         models=[],

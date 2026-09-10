@@ -13,9 +13,22 @@ import json
 from pathlib import Path
 
 from libs.reporting.controlled_validation_daily import (
+    _display_evaluation_status,
     build_controlled_validation_daily,
     render_controlled_validation_daily_lines,
 )
+
+
+def test_historical_q12_stale_tail_is_displayed_as_completed_window() -> None:
+    status, reason = _display_evaluation_status(
+        lane_id="BTC_WOORI",
+        day="2026-01-02",
+        status="INPUT_DELAY",
+        reason="q12_candidate_input_stale",
+    )
+
+    assert status == "WINDOW_CLOSED"
+    assert reason == "q12_opening_candidate_window_closed"
 
 
 def _write_json(path: Path, payload: dict) -> None:

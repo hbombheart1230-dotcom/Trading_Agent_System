@@ -165,8 +165,9 @@ def _load_candidates(
         else:
             reason = "q12_fixed_conditions_not_met"
         status = "INPUT_MISSING" if input_missing else "NO_CANDIDATE"
-        if not input_missing and q12_payload.get('delivery_status') == 'INPUT_DELAY':
-            status, reason = 'INPUT_DELAY', q12_payload.get('delivery_reason')
+        if not input_missing and q12_payload.get('delivery_status') in {'INPUT_DELAY', 'WINDOW_CLOSED'}:
+            status = str(q12_payload.get('delivery_status'))
+            reason = q12_payload.get('delivery_reason')
         elif not input_missing and float(q12_btc.get('return_24h_pct') or 0) >= 4 and not any(
             _mapping(_mapping(q12_features.get('entry_methods')).get(m)).get('status') == 'OBSERVED' for m in ('09:03', '09:05')
         ):

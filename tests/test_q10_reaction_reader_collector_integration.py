@@ -177,6 +177,10 @@ def test_t6_collector_close_unverified_plus_stale_legacy_stays_pending(tmp_path:
     assert result["points"]["CLOSE"]["status"] == "PENDING"
     assert result["points"]["CLOSE"]["price"] is None
     assert result["points"]["CLOSE"]["integrity_failure"] is True
+    info = result["points"]["CLOSE"]["unverified_observation"]
+    assert info["price"] == 3400.0
+    assert info["capture_status"] == "CLOSE_UNVERIFIED"
+    assert info["calculation_usable"] is False
 
 
 # --- item 2 T7: displayed checkpoint and calculated return always same authority --

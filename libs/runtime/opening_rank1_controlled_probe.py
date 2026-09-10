@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from libs.core.symbols import normalize_symbol
 from libs.runtime.opening_rank1_probe_cost_edge import evaluate_opening_probe_cost_edge
+from libs.runtime.opening_rank1_probe_discriminator import build_opening_probe_discriminator
 from libs.core.path_isolation import resolve_runtime_write_path
 
 
@@ -392,6 +393,7 @@ def evaluate_opening_rank1_controlled_probe(
     broker_mode: str,
     prior_rank_observations: list[Mapping[str, Any]] | None = None,
     recent_minute_rows: list[Mapping[str, Any]] | None = None,
+    strategy_horizon: str = "",
     enabled: Any = None,
     opening_end_minute: int = 20,
     qty_fraction: float = 0.25,
@@ -423,6 +425,13 @@ def evaluate_opening_rank1_controlled_probe(
         lane_condition=_text(alpha_condition.get("condition")),
         entry_cost_filter=cost,
     )
+    discriminator = build_opening_probe_discriminator(
+        lane_condition=alpha_condition.get("condition"),
+        asset_class=alpha_condition.get("asset_class"),
+        risk_band=alpha_condition.get("risk_band"),
+        candidate_setup=setup,
+        strategy_horizon=strategy_horizon,
+    )
 
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -440,6 +449,7 @@ def evaluate_opening_rank1_controlled_probe(
         "scanner_rank_source": rank_source,
         "candidate_setup": setup,
         "opening_alpha_condition": dict(alpha_condition),
+        "opening_alpha_discriminator": discriminator,
         "initial_signal_price": (
             _to_float(alpha_condition.get("initial_observed_price"))
             or _to_float(alpha_condition.get("current_price"))
@@ -670,6 +680,9 @@ def record_probe_evaluation(
         "scanner_rank_source": _text(decision.get("scanner_rank_source")),
         "candidate_setup": _text(decision.get("candidate_setup")),
         "opening_alpha_condition": dict(decision.get("opening_alpha_condition") or {}),
+        "opening_alpha_discriminator": dict(
+            decision.get("opening_alpha_discriminator") or {}
+        ),
         "selection_authority": dict(decision.get("selection_authority") or {}),
         "cost_edge_evidence": dict(decision.get("cost_edge_evidence") or {}),
         "reservation": dict(decision.get("reservation") or {}),
@@ -735,6 +748,9 @@ def record_probe_submission(
         "scanner_rank": _to_int(decision.get("scanner_rank")),
         "candidate_setup": _text(decision.get("candidate_setup")),
         "opening_alpha_condition": dict(decision.get("opening_alpha_condition") or {}),
+        "opening_alpha_discriminator": dict(
+            decision.get("opening_alpha_discriminator") or {}
+        ),
         "probe_qty": _to_int(decision.get("probe_qty")),
         "original_wait_reason": _text(decision.get("original_wait_reason")),
         "overridden_quant_blockers": list(decision.get("overridden_quant_blockers") or []),
