@@ -10,6 +10,7 @@ from libs.supervisor.intent_state_store import (
     SQLiteIntentStateStore,
 )
 from libs.supervisor.intent_store import IntentStore
+from libs.execution.intent_identity import physical_order_fingerprint
 
 
 def _seed_intent(store: IntentStore, *, intent_id: str) -> None:
@@ -69,9 +70,26 @@ def test_m24_3_cas_blocks_duplicate_execution_claim_between_services(tmp_path: P
 
     captured: dict[str, object] = {}
 
+    def _dup_execute_fn(it):  # type: ignore[no-untyped-def]
+        # Should never actually run: svc1's own claim below (performed
+        # before svc2 is invoked, mirroring a real execute_owned_order
+        # dispatch) already moves state to "executing", so svc2.approve()'s
+        # own early status check rejects this duplicate before ever calling
+        # its execute_fn.
+        return {"ok": True, "id": "dup"}
+
     def _exec_main(intent):  # type: ignore[no-untyped-def]
-        dup = svc2.approve(intent_id=iid, execution_enabled=True, execute_fn=lambda it: {"ok": True, "id": "dup"})
+        # Step5C Fix2: ApprovalService no longer performs its own separate
+        # approved->executing transition -- execute_fn's own chain (here,
+        # standing in for ToolFacade/ExecutorAgent -> runner ->
+        # execute_owned_order) is what claims execution. Claim first, exactly
+        # as the real chain would, before the nested duplicate attempt races.
+        fingerprint = physical_order_fingerprint({}, ApprovalService._execution_order(intent))
+        claim = state.claim_execution(iid, fingerprint=fingerprint, owner="owner-main")
+        assert claim["claimed"]
+        dup = svc2.approve(intent_id=iid, execution_enabled=True, execute_fn=_dup_execute_fn)
         captured["dup"] = dup
+        state.finish_execution(iid, owner="owner-main", execution={"broker_outcome": "ACCEPTED"})
         return {"ok": True, "id": "main"}
 
     out = svc1.approve(intent_id=iid, execution_enabled=True, execute_fn=_exec_main)

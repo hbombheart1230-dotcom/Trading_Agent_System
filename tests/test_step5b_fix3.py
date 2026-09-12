@@ -161,10 +161,25 @@ def test_high1_runner_unknown_outcome_quarantines_symbol_for_execute_from_packet
     )
     runner.executor = _UnknownExecutor()
 
+    # Step5C Fix5 (HIGH2): a caller-supplied intent_id no longer carries
+    # execution authority by itself -- claim_execution() requires it to
+    # already exist as a persisted, approved, AND ADMITTED OrderIntent
+    # (Fix4's "legacy_approved_state" auto-admission for any approved-but-
+    # unadmitted row was removed outright as Codex's own Fix4-audit HIGH2
+    # finding).
+    from libs.execution.intent_identity import physical_order_fingerprint
+    from libs.supervisor.intent_state_store import SQLiteIntentStateStore
+    _iid = "step5b-fix3-reverse-direction"
+    _store = SQLiteIntentStateStore()
+    _key = physical_order_fingerprint({}, {"action": "BUY", "symbol": "005930", "qty": 1,
+                                            "price": None, "order_type": "market"})
+    _store.admit_intent(_iid, fingerprint=_key, source="test_policy")
+
     result = runner.run(
         run_id="run-1",
         skill="order.place",
-        args={"side": "buy", "symbol": "005930", "qty": 1, "order_type": "market", "price": None},
+        args={"side": "buy", "symbol": "005930", "qty": 1, "order_type": "market", "price": None,
+              "intent_id": _iid},
     )
     assert result.action == "ready"  # the skill call itself completes; quarantine is a side effect
     assert uq.quarantine_lock_path("005930", str(qdir)).exists()

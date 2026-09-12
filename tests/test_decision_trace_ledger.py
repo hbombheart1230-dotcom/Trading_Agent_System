@@ -74,7 +74,8 @@ def test_decision_trace_ledger_collects_supervisor_and_executor(tmp_path, monkey
         "run_id": "trace-r2",
         "catalog_path": str(cat),
         "decision_packet": {
-            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "order_api_id": "ORDER_SUBMIT"},
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "order_type": "market", "price": None,
+                       "order_api_id": "ORDER_SUBMIT"},
             "risk": {"open_positions": 0},
             "exec_context": {},
         },

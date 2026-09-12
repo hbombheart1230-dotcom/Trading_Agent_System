@@ -205,7 +205,22 @@ def test_t2_runner_blocks_second_mutation_after_real_post_response_parse_excepti
     )
     runner.executor = real_ex
 
-    args = {"side": "buy", "symbol": "005930", "qty": 1, "order_type": "market", "price": None}
+    # Step5C Fix5 (HIGH2): a caller-supplied intent_id no longer carries
+    # execution authority by itself -- claim_execution() requires it to
+    # already exist as a persisted, approved, AND ADMITTED OrderIntent
+    # (Fix4's "legacy_approved_state" auto-admission for any approved-but-
+    # unadmitted row was removed outright as Codex's own Fix4-audit HIGH2
+    # finding).
+    from libs.execution.intent_identity import physical_order_fingerprint
+    from libs.supervisor.intent_state_store import SQLiteIntentStateStore
+    _iid = "step5b-fix4-t2"
+    _store = SQLiteIntentStateStore()
+    _key = physical_order_fingerprint({}, {"action": "BUY", "symbol": "005930", "qty": 1,
+                                            "price": None, "order_type": "market"})
+    _store.admit_intent(_iid, fingerprint=_key, source="test_policy")
+
+    args = {"side": "buy", "symbol": "005930", "qty": 1, "order_type": "market", "price": None,
+            "intent_id": _iid}
     result1 = runner.run(run_id="run-1", skill="order.place", args=args)
     assert result1.action == "ready"  # the skill call completes; UNKNOWN is a side effect, not a runner error
     assert len(http.calls) == 1

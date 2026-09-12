@@ -48,12 +48,23 @@ class ToolFacade:
         """
         rid = run_id or new_run_id()
         side = "buy" if str(intent.get("action","BUY")).upper() == "BUY" else "sell"
+        order_type = str(intent.get("order_type") or "market").strip().lower()
+        is_market = order_type in ("market", "mkt")
         args = {
             "side": side,
             "symbol": intent.get("symbol"),
             "qty": int(intent.get("qty") or 0),
-            "price": "" if intent.get("order_type") == "market" else intent.get("price") or "",
-            "trde_tp": "3" if intent.get("order_type") == "market" else "0",
+            "price": "" if is_market else intent.get("price") or "",
+            "trde_tp": "3" if is_market else "0",
+            "order_type": order_type,
+            # Step5C Fix2: not currently wired to any live caller (this
+            # class has no importers in this codebase today), but the
+            # canonical intent_id must still be forwarded on the same
+            # contract as libs/tools/tool_facade.py and
+            # libs/agent/executor/executor_agent.py -- the runner's
+            # ownership boundary refuses any mutation with no intent_id
+            # rather than inventing one.
+            "intent_id": str(intent.get("intent_id") or ""),
         }
         out = self.runner.run(run_id=rid, skill="order.place", args=args)
         return {"run_id": rid, "result": _dump(out)}

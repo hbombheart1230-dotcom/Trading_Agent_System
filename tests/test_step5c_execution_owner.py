@@ -8,8 +8,13 @@ import pytest
 
 from graphs.nodes.execute_from_packet import _normalize_execution, execute_from_packet
 from libs.execution.intent_execution_owner import execute_owned_order
-from libs.execution.intent_identity import bind_intent
-from libs.supervisor.intent_state_store import SQLiteIntentStateStore
+from libs.execution.intent_admission import admit_order_intent
+from libs.execution.intent_identity import bind_intent, compute_self_minted_intent_id
+from libs.supervisor.intent_state_store import (
+    INTENT_STATE_APPROVED,
+    INTENT_STATE_PENDING,
+    SQLiteIntentStateStore,
+)
 
 
 class Executor:
@@ -22,16 +27,40 @@ class Executor:
         return SimpleNamespace(payload={'meta': {'broker_outcome': self.outcome}, 'order_id': '123'})
 
 
-def order(iid='one', action='BUY'):
-    return {'intent_id': iid, 'action': action, 'symbol': '005930', 'qty': 1,
-            'price': 100, 'order_type': 'market'}
+def order(iid=None, action='BUY'):
+    o = {'action': action, 'symbol': '005930', 'qty': 1, 'price': 100, 'order_type': 'market'}
+    if action in ('CANCEL', 'MODIFY'):
+        o['orig_ord_no'] = '0099001'  # a CANCEL/MODIFY's physical identity requires one (Step5C Fix3)
+    if iid:
+        o['intent_id'] = iid
+    return o
 
 
-def submit(executor, iid='one', action='BUY', state=None):
+def _authorize(iid, *, root=None):
+    """Step5C Fix3 (HIGH2): claim_execution() no longer self-admits a
+    never-before-seen, externally-supplied (non-self-minted) intent_id --
+    tests that exercise an EXPLICIT intent_id (as an external caller would
+    supply one) must first persist it as a real, approved OrderIntent
+    through this authorized path, exactly as ApprovalService.approve()/
+    admit_pre_approved_intent do in production. Tests that don't care about
+    the specific id value should instead pass iid=None to `order`/`submit`
+    and let bind_intent's own deterministic scheme self-mint one -- that
+    path remains auto-admitted, since execute_owned_order is itself the
+    authorized creator for content it just hashed."""
+    store = SQLiteIntentStateStore(root) if root else SQLiteIntentStateStore()
+    store.ensure_intent(iid, initial_state=INTENT_STATE_PENDING)
+    store.transition(intent_id=iid, to_state=INTENT_STATE_APPROVED, expected_from_state=INTENT_STATE_PENDING)
+
+
+def submit(executor, iid=None, action='BUY', state=None, *, admit=True):
     candidate = order(iid, action)
-    return execute_owned_order(state=state or {'run_id': 'test'}, order=candidate,
+    execution_state = state or {'run_id': 'test'}
+    if admit:
+        admit_order_intent(state=execution_state, order=candidate, source='test_policy', child=action in ('CANCEL', 'MODIFY'))
+    return execute_owned_order(state=execution_state, order=candidate,
         request=None, executor=executor, normalize=lambda result: _normalize_execution(
-            allowed=True, execution_result=result, allow_result=None, order=candidate))
+            allowed=True, execution_result=result, allow_result=None, order=candidate),
+        child=action in ('CANCEL', 'MODIFY'))
 
 
 def test_normal_and_sequential_duplicate(monkeypatch):
@@ -42,19 +71,20 @@ def test_normal_and_sequential_duplicate(monkeypatch):
     assert first['broker_outcome'] == 'ACCEPTED'
     assert duplicate['broker_outcome'] == 'NOT_SENT'
     assert ex.calls == 1
+    iid = first['intent_id']
     store = SQLiteIntentStateStore(os.environ['INTENT_STATE_DB_PATH'])
-    assert store.get_state('one')['state'] == 'executed'
-    assert [row['to_state'] for row in store.list_journal('one')] == ['pending_approval', 'approved', 'executing', 'executed']
+    assert store.get_state(iid)['state'] == 'executed'
+    assert [row['to_state'] for row in store.list_journal(iid)] == ['pending_approval', 'approved', 'executing', 'executed']
 
 
 @pytest.mark.parametrize('outcome,expected', [('REJECTED', 'failed'), ('UNKNOWN', 'executing')])
 def test_failed_and_unknown_no_replay(monkeypatch, outcome, expected):
     monkeypatch.setenv('EXECUTION_MODE', 'mock')
     ex = Executor(outcome)
-    submit(ex)
+    first = submit(ex)
     assert submit(ex)['broker_outcome'] == 'NOT_SENT'
     assert ex.calls == 1
-    assert SQLiteIntentStateStore(os.environ['INTENT_STATE_DB_PATH']).get_state('one')['state'] == expected
+    assert SQLiteIntentStateStore(os.environ['INTENT_STATE_DB_PATH']).get_state(first['intent_id'])['state'] == expected
 
 
 def test_backend_unavailable_zero_broker(monkeypatch, tmp_path):
@@ -70,6 +100,8 @@ def test_backend_unavailable_zero_broker(monkeypatch, tmp_path):
 def test_different_ids_same_symbol_independent(monkeypatch):
     monkeypatch.setenv('EXECUTION_MODE', 'mock')
     ex = Executor()
+    _authorize('one')
+    _authorize('two')
     assert submit(ex, 'one')['ok']
     assert submit(ex, 'two')['ok']
     assert ex.calls == 2
@@ -79,8 +111,8 @@ def test_different_ids_same_symbol_independent(monkeypatch):
 def test_cancel_modify_same_identity_no_replay(monkeypatch, action):
     monkeypatch.setenv('EXECUTION_MODE', 'mock')
     ex = Executor()
-    assert submit(ex, 'child', action)['ok']
-    assert submit(ex, 'child', action)['broker_outcome'] == 'NOT_SENT'
+    assert submit(ex, None, action)['ok']
+    assert submit(ex, None, action)['broker_outcome'] == 'NOT_SENT'
     assert ex.calls == 1
 
 
@@ -130,7 +162,8 @@ def test_real_process_crash_leaves_execution_owned(tmp_path, monkeypatch):
     process.start()
     process.join(30)
     assert process.exitcode == 0
-    assert SQLiteIntentStateStore(db).get_state('one')['state'] == 'executing'
+    expected_iid = compute_self_minted_intent_id({'run_id': 'test'}, order())
+    assert SQLiteIntentStateStore(db).get_state(expected_iid)['state'] == 'executing'
     ex = Executor()
     assert submit(ex)['broker_outcome'] == 'NOT_SENT'
     assert ex.calls == 0
@@ -154,10 +187,10 @@ def test_executing_crash_state_and_existing_pending_are_not_reapproved():
     store = SQLiteIntentStateStore(os.environ['INTENT_STATE_DB_PATH'])
     store.ensure_intent('one')
     ex = Executor()
-    assert submit(ex)['broker_outcome'] == 'NOT_SENT'
+    assert submit(ex, 'one', admit=False)['broker_outcome'] == 'NOT_SENT'
     store.transition(intent_id='one', to_state='approved')
     store.transition(intent_id='one', to_state='executing', expected_from_state='approved')
-    assert submit(ex)['broker_outcome'] == 'NOT_SENT'
+    assert submit(ex, 'one', admit=False)['broker_outcome'] == 'NOT_SENT'
     assert ex.calls == 0
 
 
@@ -166,18 +199,24 @@ def test_identity_provenance_and_payload_collision(monkeypatch):
     state, intent, candidate = {'run_id': 'r1'}, {}, order('explicit')
     assert bind_intent(state, candidate, intent) == 'explicit'
     assert candidate['intent_id'] == intent['intent_id'] == state['intent_id']
-    submit(Executor(), 'explicit')
+    first = submit(Executor(), 'explicit')  # admits (qty=1) and executes to a terminal state
+    assert first['broker_outcome'] == 'ACCEPTED'
     candidate['qty'] = 2
     ex = Executor()
     result = execute_owned_order(state=state, order=candidate, request=None, executor=ex,
         normalize=lambda r: _normalize_execution(allowed=True, execution_result=r, allow_result=None, order=candidate))
-    assert result['reason'] == 'intent_identity_conflict'
+    # Step5C Fix5: the admitted payload's fingerprint (qty=1) is checked
+    # against the submitted one (qty=2) BEFORE the approval-state check --
+    # a changed payload under one intent_id is a PAYLOAD_MISMATCH, not
+    # permission to submit again.
+    assert result['reason'] == 'PAYLOAD_MISMATCH'
     assert ex.calls == 0
 
 
 def test_production_packet_path_duplicate_and_artifact_identity(tmp_path, monkeypatch):
     monkeypatch.setenv('EXECUTION_MODE', 'mock')
     monkeypatch.setenv('REPORTS_ROOT', str(tmp_path / 'reports'))
+    _authorize('packet')
     cat = tmp_path / 'catalog.jsonl'
     cat.write_text(json.dumps({'api_id': 'ORDER_SUBMIT', 'method': 'POST', 'path': '/orders',
                               'params': {}, '_flags': {'callable': True}}))
@@ -205,6 +244,7 @@ def test_step5b_real_transport_composition(monkeypatch):
     monkeypatch.setenv('KIWOOM_MODE', 'mock')
     monkeypatch.setenv('EXECUTION_ENABLED', 'true')
     monkeypatch.delenv('SYMBOL_ALLOWLIST', raising=False)
+    admit_order_intent(state={'run_id': 'transport'}, order=order('transport'), source='test_policy')
     http = HttpClient('https://example.test', retry_max=2, backoff_sec=0)
     calls = []
     def request(**kwargs):

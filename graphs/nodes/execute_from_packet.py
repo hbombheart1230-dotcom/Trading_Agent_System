@@ -838,6 +838,8 @@ def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor
             order=cancel_order, reason='upper_limit_buy_auto_cancel', strategy_policy_summary=None)
     try:
         cancel_req = _prepare_request(cancel_order, catalog)
+        from libs.execution.intent_admission import admit_order_intent
+        admit_order_intent(state=state, order=cancel_order, source="upper_limit_child_cancel", child=True)
         from libs.execution.intent_execution_owner import execute_owned_order
         cancel_payload = execute_owned_order(state=state, order=cancel_order, request=cancel_req,
             executor=executor, child=True, normalize=normalize_cancel)
@@ -965,6 +967,8 @@ def _attempt_unfilled_order_recovery(*, state: Dict[str, Any], catalog: Any, exe
             order=cancel_order, reason=str(cancel_order.get('rationale') or ''), strategy_policy_summary=None)
     try:
         cancel_req = _prepare_request(cancel_order, catalog)
+        from libs.execution.intent_admission import admit_order_intent
+        admit_order_intent(state=state, order=cancel_order, source="unfilled_recovery_child_cancel", child=True)
         from libs.execution.intent_execution_owner import execute_owned_order
         cancel_payload = execute_owned_order(state=state, order=cancel_order, request=cancel_req,
             executor=executor, child=True, normalize=normalize_cancel)
@@ -3551,6 +3555,8 @@ def execute_from_packet(state: dict) -> dict:
 
         # Prepare request and execute
         req = _prepare_request(order, catalog)
+        from libs.execution.intent_admission import admit_order_intent
+        admit_order_intent(state=state, order=order, source="execute_from_packet_policy")
         # From this point on, any exception raised out of executor.execute()
         # that is NOT the well-defined pre-submission marker
         # (ExecutionDisabledError, raised only by preflight/token-acquisition

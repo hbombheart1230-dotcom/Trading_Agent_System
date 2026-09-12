@@ -63,6 +63,8 @@ def execute_order(state: dict) -> dict:
     guard_order = {
         "action": str(state.get("intent") or "").strip().upper(),
         "symbol": normalize_symbol(req_body.get("stk_cd") or req_body.get("symbol")),
+        "trde_tp": req_body.get("trde_tp"),
+        "order_type": "market" if str(req_body.get("trde_tp") or "") == "3" else "limit",
     }
     quarantine_allowed, quarantine_reason, quarantine_details = _evaluate_unknown_quarantine_guard(state, guard_order)
     if not quarantine_allowed:
@@ -89,6 +91,8 @@ def execute_order(state: dict) -> dict:
     from libs.execution.intent_execution_owner import execute_owned_order
     guard_order.update({key: req_body.get(key) for key in ('orig_ord_no', 'cncl_qty', 'mdfy_qty', 'mdfy_uv')})
     guard_order.update(qty=req_body.get('ord_qty'), price=req_body.get('ord_uv'), intent_id=state.get('intent_id'))
+    from libs.execution.intent_admission import admit_order_intent
+    admit_order_intent(state=state, order=guard_order, source="legacy_execute_order_policy")
     state['execution'] = execute_owned_order(state=state, order=guard_order, request=prep.request,
                                             executor=executor, normalize=normalize_legacy)
     broker_outcome = state['execution']['broker_outcome']
