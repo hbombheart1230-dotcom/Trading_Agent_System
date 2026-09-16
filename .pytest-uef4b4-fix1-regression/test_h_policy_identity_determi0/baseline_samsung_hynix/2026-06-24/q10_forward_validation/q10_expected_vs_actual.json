@@ -1,0 +1,47 @@
+{
+  "rows": [
+    {
+      "target": "samsung",
+      "expected_state": "POSITIVE",
+      "expected_gap_pct": 0.8,
+      "opening_gap_pct": 5.0,
+      "reaction_state": "OVERREACTION",
+      "evaluation_bucket": "LEAD_MARKET_SIGNAL",
+      "excluded_from_pure_signal_comparison": false,
+      "extension_state": null
+    },
+    {
+      "target": "sk_hynix",
+      "expected_state": "NEUTRAL",
+      "expected_gap_pct": 0.0,
+      "opening_gap_pct": 1.010101,
+      "reaction_state": "DIVERGENCE",
+      "evaluation_bucket": "LEAD_MARKET_SIGNAL",
+      "excluded_from_pure_signal_comparison": false,
+      "extension_state": "UNKNOWN"
+    },
+    {
+      "target": "kospi",
+      "expected_state": "NEUTRAL",
+      "expected_gap_pct": 0.0,
+      "opening_gap_pct": 1.010101,
+      "reaction_state": "DIVERGENCE",
+      "evaluation_bucket": "LEAD_MARKET_SIGNAL",
+      "excluded_from_pure_signal_comparison": false,
+      "extension_state": null
+    },
+    {
+      "target": "kosdaq",
+      "expected_state": "NEUTRAL",
+      "expected_gap_pct": 0.0,
+      "opening_gap_pct": 1.010101,
+      "reaction_state": "DIVERGENCE",
+      "evaluation_bucket": "LEAD_MARKET_SIGNAL",
+      "excluded_from_pure_signal_comparison": false,
+      "extension_state": null
+    }
+  ],
+  "schema_version": "q10_korea_lead_market_forward_validation.v1",
+  "evaluation_program_id": "Q10_KOREA_LEAD_MARKET_FORWARD_VALIDATION",
+  "day": "2026-06-24"
+}

@@ -1,0 +1,1 @@
+{"schema_version": "totally_unknown_family.v1", "behavior_effect": "offline_analysis_only", "trading_calendar": ["2026-06-24"], "stage_rows": [], "events": [{"day": "2026-06-24", "symbol": "005930", "decision_id": "D1", "decision_time_kst": "2026-06-24T09:05:00+09:00"}], "universe_paths": {}}
