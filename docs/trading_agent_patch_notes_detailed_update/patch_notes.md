@@ -1374,3 +1374,25 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
   post-exit recap as the inventory artifact.
 - Full regression: `3059 passed, 1 skipped`.
 - See `docs/daily_patch/2026-09-10_evaluation_closeout_integrity.md`.
+
+# 2026-09-14 - Opening Alpha Initial Signal Price Integrity
+
+- Resolve the already available fresh Rank-1 quote before controlled Opening
+  Alpha probe evaluation when the Scanner candidate has no price.
+- Preserve that observed price and its source as the initial signal provenance
+  used by the pre-submit executable-price drift guard.
+- Enrich only the probe evaluation copy. Scanner ranking, selected candidate,
+  entry conditions, the two-percent drift threshold and broker semantics are
+  unchanged.
+- Focused regression: `4 passed`.
+
+# 2026-09-14 - Q10 Signed Executable Price Integrity
+
+- Normalize Kiwoom quote direction prefixes before Q10 order-notional checks.
+- A fresh best ask such as `-105820` is now treated as executable price
+  `105820`, preserving `market.quote.best_ask.live_refresh` provenance.
+- Q10 strategy, eligibility, score, order limits and broker semantics are
+  unchanged.
+- Regression: signed-price case passed; focused execution-price suite passed
+  `12 tests` (the session-level production-write detector separately observed
+  concurrent watchdog runtime writes).

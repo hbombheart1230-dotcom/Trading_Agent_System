@@ -97,6 +97,17 @@ def test_high_common_directional_rank1_probe_is_applied_with_quarter_size() -> N
     assert discriminator["eligibility_effect"] == "NONE"
 
 
+def test_first_rank1_signal_preserves_current_price_for_execution_guard() -> None:
+    candidate = _candidate()
+    candidate["price"] = 101.8
+
+    result = _evaluate(selected=candidate, prior_rank_observations=[])
+
+    assert result["applied"] is True
+    assert result["initial_signal_price"] == 101.8
+    assert result["cached_decision_price"] == 101.8
+
+
 def test_directional_breadth_can_override_only_listed_quant_volume_block() -> None:
     candidate = _candidate(fresh=False)
     result = _evaluate(
@@ -529,6 +540,8 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
     def _forced_probe(**kwargs) -> dict:
         assert kwargs["is_top_pick"] is True
         assert kwargs["selection_authority"]["aligned"] is True
+        assert kwargs["selected"]["price"] == 101.8
+        assert kwargs["selected"]["_monitor_price_source"] == "market.quote.price"
         return {
             "schema_version": "opening_rank1_controlled_probe.v3",
             "applied": True,
@@ -563,11 +576,11 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
         lambda *_args, **_kwargs: {"recorded": True, "reason": "recorded", "count": 1},
     )
     state = {
+        "tick_ts": _epoch(),
         "plan": {"thesis": "controlled probe integration"},
         "selected": {
             "symbol": "005930",
             "rank": 1,
-            "price": 101.8,
             "score": 0.9,
             "risk_score": 0.2,
             "confidence": 0.8,
@@ -581,6 +594,11 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
             }
         },
         "minute_ohlcv_by_symbol": {"005930": rows},
+        "market_quote": {
+            "symbol": "005930",
+            "price": 101.8,
+            "_observed_epoch": _epoch(),
+        },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
         "market_snapshot": {"symbol": "005930", "price": 101.8},
         "policy": {

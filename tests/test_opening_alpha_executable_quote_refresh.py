@@ -393,6 +393,45 @@ def test_order_limit_guard_reproduces_and_closes_todays_kodex200_incident(tmp_pa
             assert "live_refresh" in str(guard.get("price_source") or "")
 
 
+def test_order_limit_guard_accepts_signed_kiwoom_best_ask(tmp_path, monkeypatch):
+    """A negative Kiwoom direction prefix must not erase the quote price."""
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    monkeypatch.setenv("MAX_ORDER_NOTIONAL", "3000000")
+    monkeypatch.setenv("MAX_NOTIONAL", "")
+
+    symbol = "069500"
+    runner = _FakeSkillRunner(
+        quote_by_symbol={
+            symbol: {
+                "symbol": symbol,
+                "cur": -105812.0,
+                "best_ask": -105820.0,
+                "best_bid": -105805.0,
+            }
+        }
+    )
+    executor = _AcceptingExecutor()
+    state = _controlled_lane_state(
+        tmp_path,
+        symbol=symbol,
+        executor=executor,
+        skill_runner=runner,
+    )
+
+    order = state["decision_packet"]["intent"]
+    allowed, reason, guard = efp._evaluate_order_limit_guard(state, order)
+    assert allowed is True
+    assert reason == ""
+    assert guard["price"] == pytest.approx(105820.0)
+    assert guard["price_source"] == "market.quote.best_ask.live_refresh"
+
+    out = execute_from_packet(state)
+
+    assert out["execution"]["reason"] != "order_notional_price_missing"
+    assert executor.calls == 1
+    assert len(runner.calls) == 1
+
+
 def test_order_limit_guard_refresh_failure_still_blocks_no_fallback(tmp_path, monkeypatch):
     """If the live refresh itself fails (e.g. transient error), the guard
     must still fail closed -- never fall back to a stale/cached price."""

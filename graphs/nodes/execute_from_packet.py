@@ -1627,7 +1627,10 @@ def _symbol_matches_row(row: Dict[str, Any], symbol: str) -> bool:
 def _positive_price_from_row(row: Dict[str, Any], keys: Tuple[str, ...]) -> Tuple[float, str]:
     for key in keys:
         px = _coerce_float(row.get(key), 0.0)
-        if px > 0.0:
+        # Kiwoom quote fields may carry a +/- market-direction prefix even
+        # though the absolute value is the executable price. Keep price
+        # normalization consistent with _extract_upper_limit_quote_snapshot.
+        if abs(px) > 0.0:
             return float(abs(px)), str(key)
     return 0.0, ""
 
@@ -2773,6 +2776,14 @@ def execute_from_packet(state: dict) -> dict:
     portfolio_details: Dict[str, Any] = {}
     strategy_policy_summary: Dict[str, Any] = {}
     execution_price_guard: Dict[str, Any] = {}
+    # Execution Trace Completeness (observability-only, additive): captured
+    # once, wherever this function already computes them, so the terminal
+    # `state["execution"]` record can carry them regardless of which guard
+    # (if any) ends the run first. Never influences a guard/order decision --
+    # only read by `_finalize_execution_observability_fields` below.
+    executable_price: Optional[float] = None
+    executable_price_source: str = ""
+    order_limit_guard_details: Dict[str, Any] = {}
     # Core phase invariant (Phase 1 Step 5B Safety Fix): before the mutation
     # endpoint is ever contacted, NOT_SENT is a valid classification for any
     # exception. Once submission_dispatched flips True, NOT_SENT is no
@@ -2823,6 +2834,61 @@ def execute_from_packet(state: dict) -> dict:
             execution_obj["payload"] = payload_obj
         return execution_obj
 
+    def _finalize_execution_observability_fields(execution: Dict[str, Any]) -> Dict[str, Any]:
+        """Execution Trace Completeness (observability-only, additive -- NO
+        semantic/guard/order change): materializes the minimal set of values
+        needed to reconstruct one intent's executable-price / notional /
+        broker-attempt / terminal-outcome story from `intent_id` alone,
+        using ONLY values this function already computes or already
+        receives from an existing guard. `setdefault` only -- never
+        overwrites a value a specific guard already recorded. Never invents
+        a new reason/status taxonomy -- reuses `reason`/`broker_outcome`/
+        `submission_attempts`/`submission_phase`/`ok`, all pre-existing
+        authorities, under the field names this trace contract asks for.
+        """
+        broker_outcome = str(execution.get("broker_outcome") or "").strip().upper()
+        submission_phase = str(execution.get("submission_phase") or "").strip().lower()
+        try:
+            submission_attempts = int(execution.get("submission_attempts") or 0)
+        except (TypeError, ValueError):
+            submission_attempts = 0
+
+        # Broker Attempt Invariant: "never attempted" and "attempted but
+        # rejected/unknown" must never collapse into one signal. Derived
+        # purely from the existing Step5B submission_phase/submission_attempts
+        # authority (libs/execution/intent_execution_owner.py /
+        # _normalize_execution) -- no new dispatch-evidence rule invented.
+        broker_attempted = submission_attempts > 0 or submission_phase in {
+            "completed", "mutation_http_call", "dispatched",
+        }
+        execution.setdefault("broker_attempted", bool(broker_attempted))
+        # Alias of the existing submission_attempts authority under the name
+        # this trace contract asks for -- intentionally never a second,
+        # independently-tracked counter.
+        execution.setdefault("broker_attempt_count", submission_attempts)
+        # Alias of the existing ok/execution_ok authority (broker confirmed
+        # acceptance) -- distinct from broker_attempted (a dispatch was made
+        # at all, regardless of outcome).
+        execution.setdefault("order_sent", bool(execution.get("ok")))
+
+        resolved_executable_price = executable_price if (executable_price and executable_price > 0) else None
+        execution.setdefault("executable_price", resolved_executable_price)
+        execution.setdefault("executable_price_source", executable_price_source or "")
+
+        guard_notional = order_limit_guard_details.get("order_notional") if isinstance(order_limit_guard_details, dict) else None
+        guard_notional_price = order_limit_guard_details.get("price") if isinstance(order_limit_guard_details, dict) else None
+        execution.setdefault("order_notional", float(guard_notional) if guard_notional else None)
+        execution.setdefault("order_notional_price", float(guard_notional_price) if guard_notional_price else None)
+
+        # Terminal Reason Invariant: NOT_SENT/REJECTED/guard-blocked outcomes
+        # must never carry an empty reason. This never changes WHICH outcome
+        # was reached -- it only guarantees the existing reason/broker_outcome
+        # authority is actually populated in the persisted/returned record.
+        if (not execution.get("allowed", True) or broker_outcome in ("NOT_SENT", "REJECTED")) and not str(execution.get("reason") or "").strip():
+            execution["reason"] = f"unspecified_{broker_outcome.lower()}" if broker_outcome else "unspecified_execution_block"
+
+        return execution
+
     def _persist_execution_artifacts(*, supervisor_allowed: bool, supervisor_reason: str, supervisor_details: Dict[str, Any] | None = None) -> None:
         try:
             write_supervisor_artifact(
@@ -2841,6 +2907,7 @@ def execute_from_packet(state: dict) -> dict:
                 if execution_price_guard.get("applicable"):
                     execution_payload["opening_alpha_execution_price_guard"] = dict(execution_price_guard)
                 _ensure_execution_quote_snapshot(execution_payload)
+                _finalize_execution_observability_fields(execution_payload)
                 write_executor_artifact(state, execution=execution_payload, order=order)
         except Exception:
             pass
@@ -3134,6 +3201,7 @@ def execute_from_packet(state: dict) -> dict:
             return state
 
         limits_allowed, limits_reason, limits_details = _evaluate_order_limit_guard(state, order)
+        order_limit_guard_details = limits_details  # captured pass-or-fail for trace completeness (see top of function)
         if not limits_allowed:
             state["execution"] = _normalize_execution(
                 allowed=False,
@@ -3565,9 +3633,9 @@ def execute_from_packet(state: dict) -> dict:
         # outer except block below.
         from libs.execution.intent_execution_owner import execute_owned_order
         state["execution"] = execute_owned_order(state=state, order=order, request=req,
-            executor=executor, on_submit=_mark_submission_dispatched, normalize=lambda result: _normalize_execution(
+            executor=executor, on_submit=_mark_submission_dispatched, normalize=lambda result: _finalize_execution_observability_fields(_normalize_execution(
                 allowed=True, execution_result=result, allow_result=allow_result,
-                order=order, strategy_policy_summary=strategy_policy_summary))
+                order=order, strategy_policy_summary=strategy_policy_summary)))
         state["execution"]["portfolio_guard"] = portfolio_details
         if execution_price_guard.get("applicable"):
             state["execution"]["opening_alpha_execution_price_guard"] = dict(execution_price_guard)

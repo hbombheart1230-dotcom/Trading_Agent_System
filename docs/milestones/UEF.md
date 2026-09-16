@@ -1,0 +1,92 @@
+# UEF (Unified Evaluation Foundation)
+
+## Current State
+
+| Phase | Owns | Status |
+|---|---|---|
+| UEF-1 | Canonical identity and record contracts | FORMALLY FROZEN |
+| UEF-2A | Forward semantics profiles and policy | FORMALLY FROZEN |
+| UEF-2B | Generic forward engine | FORMALLY FROZEN |
+| UEF-3A | Canonical cost and metric contract | FORMALLY FROZEN |
+| UEF-3B | Canonical cost and metric engine | FORMALLY FROZEN |
+| UEF-3C | Canonical aggregation pipeline | FORMALLY FROZEN |
+| UEF-4A | Legacy family inventory and canonical mapping | FORMALLY FROZEN |
+
+## Current / Next
+
+**UEF-4B-1: Q10 Semiconductor Adapter — FORMALLY FROZEN** (independent Codex closure: APPROVE_UEF4B1, CRITICAL:0 HIGH:0 MEDIUM:0 LOW:0). Not to be modified again unless a reproducible correctness defect is discovered.
+
+**UEF-4B-2: Q12 — FORMALLY CLOSED** (independent Codex closure: APPROVE_UEF4B2, FORMAL CLOSURE=YES, CRITICAL:0 HIGH:0 MEDIUM:0 LOW:0). Q12 Calc1 (reuse of the frozen UEF-4B-1 `forward_measurement_adapter` semantic layer, no new Calc1 adapter, no UEF-4B-1 file modified) and Calc2 (`hypothesis_forward_adapter.py`, `NET_OR_COST_INCLUDED`, high/low legacy fallback verified against the real legacy function directly) are **APPROVED / FROZEN**. Not to be modified again unless a reproducible correctness defect is discovered.
+
+**Q12 Calc3 — PRIMARY / KNOWN / BLOCKED** (unchanged by this closure — never approved, never canonicalized). Real legacy `vnext/outcomes.py::forward` completeness is ROW-COUNT-only; the frozen UEF-2A/2B `CONTIGUOUS_INTERVAL` policy requires the actual observed timestamp set to equal the expected grid set exactly — a strictly stronger rule, with the divergence proven by a direct legacy-vs-frozen reproducer (`tests/test_uef4b2_q12_adapter.py::test_calc3_legacy_row_count_vs_frozen_completeness_contradiction_reproducer`). PRIMARY EVIDENCE=YES (never demoted to consumer/derived-view), CANONICAL/LOSSLESS MAPPING=UNKNOWN, UEF-4B IMPLEMENTATION=BLOCKED — see [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md) Section 6. The experimental `vnext_completeness_adapter.py` module remains a research/reproducer artifact only (`__all__ = []`, not exported, not part of any approved canonicalization path).
+
+**UEF-4B-3: Opening Shadow (1A/1B/1C) — FORMALLY FROZEN** (independent Codex closure, following FIX1/FIX2 below). Opening Shadow's own 3 checkpoint calculators are UEF-4A's approved, implementable Opening-family mapping — distinct from, and never to be conflated with, the Opening Rank-1 Controlled Probe or Controlled Mock Lane (execution-outcome evidence, explicitly out of UEF-4B scope) or the generic "Opening Alpha" attribution label (a reporting label spanning multiple components, never one canonical evaluator). Not to be modified again unless a reproducible correctness contradiction is discovered.
+
+**FIX1 (population + provenance boundary):** two independently-audited HIGH findings closed. (1) 1A's `trigger_day_integrity_status != VALID` rows now resolve to canonical `SampleMemberState.EXCLUDED`, never MISSING and never a 0-return, with full lineage preserved via a dedicated, non-canonical `OpeningShadow1AExclusion` record — matching real `build_latent_reactivation_forward`'s own `EXCLUDED_TRIGGER_DAY_INTEGRITY` behavior, which never attempts forward-price resolution for these rows either. (2) Opening Shadow ingestion became provenance-gated by persisted `schema_version`.
+
+**FIX2 (trusted artifact ingestion + closed public API):** independent audit found FIX1's gate was schema-only (a caller-supplied `Mapping` carrying the right literal was still accepted) and that the non-VALID-1A exclusion invariant did not hold at every public boundary (`build_1a_episode` remained directly callable on a non-VALID row). Both closed architecturally: the approved ingestion path is now `canonicalize_opening_shadow_1a_artifact` / `canonicalize_opening_shadow_1bc_artifact` — each reads a real JSON file off disk and verifies BOTH its real, repo-relative artifact-family path layout (the exact path each real writer uses: `.../opening_rank1_shadow/latent_watch/latent_reactivation_forward.json`, `.../offline_alpha/opening_rank1_longitudinal/opening_rank1_longitudinal.json`) AND its persisted `schema_version` before canonicalizing anything; a Controlled Probe (`opening_rank1_controlled_probe.v3`) or Controlled Mock Lane (`controlled_mock_lanes.v1`) artifact is rejected by real origin even when a forged `schema_version` string is attached. The former public row/case builders (`parse_1a_candidate`, `build_1a_episode`, `parse_1bc_case`, `build_1bc_episode`) are now internal-only (`_`-prefixed, removed from `__all__`), and the internal 1A episode builder additionally rejects a non-VALID candidate defensively regardless of caller.
+
+**1A is a genuinely DIFFERENT physical event population from 1B/1C** (verified directly against source, not inferred from naming): 1A (`opening_rank1_shadow.py`) reuses the frozen `forward_measurement_adapter` generic layer verbatim (GROSS_ONLY, same shape as Q9/Q10 Semiconductor/Q12 Calc1) over "fresh trigger" latent-reactivation events (`latent_forward.py::_observe`). **1B and 1C ARE the same physical episode** — both operate on the SAME "virtual buy" MONITOR_DECISION event (`delayed_outcomes.py::forward_30m_net`/`delayed_path`; `delayed_path` even directly consumes 1B's own `net_return_30m_pct` as an input) — merged into ONE canonical `EpisodeRecord` per (trading_date, symbol, decision_epoch) via the new `already_net_shadow_adapter.py` (`NET_OR_COST_INCLUDED`, net/MFE figures verified against the real legacy functions called directly, never recomputed). No evidence multiplication: 3 source fresh-triggers produce 3 canonical episodes (1A); one virtual-buy case produces one episode with 4 checkpoints, not three separate samples (1B/1C).
+
+**UEF-4B-4: Q10 Index (Calc F/G/H) — FORMALLY FROZEN** (independent Codex closure, following FIX1 below). Not to be modified again unless a reproducible correctness contradiction is discovered.
+
+**FIX1 (Calc H policy evaluation identity):** independent audit found all 5 `SHADOW_ENTRY_POLICIES` for one (day, target) collided onto the same `evaluation_subject_id`/`evaluation_record_id`, since `canonical_event_id`, `hypothesis_id`, `observation_type`, and `execution_mode` were all identical across policies. Closed by binding entry-policy into the existing, frozen `hypothesis_id` evaluation-identity dimension (`policy_hypothesis_id()`, e.g. `..._entry_0900`) — physical event identity (`canonical_event_id`) stays shared across all 5 policies for the same (day, symbol), exactly as before; only the evaluation/hypothesis layer now varies per policy. No new canonical field or id system.
+
+**F/G ambiguity RESOLVED** (UEF-4A Table D, previously MEDIUM/unresolved): F and G are ONE source family / ONE computational algorithm (`reaction_reader.py`'s `_stock_reaction`, which `_index_reaction` thinly wraps) reused across TWO DISJOINT physical populations by target kind — stock symbols (005930, 000660) for F, index symbols (KOSPI, KOSDAQ) for G — verified directly against `build_actual_reactions()`, which iterates the same 4-entry `TARGETS` tuple and branches only on `target["kind"]`. Each (day, symbol) is its own distinct physical event; 4 targets/day produce 4 distinct canonical episodes, never merged, never multiplied. G's only genuine difference is a richer, collector-governed 3-state missing taxonomy (ABSENT/INVALID/VERIFIED, mapped to OBSERVED/PARTIAL/MISSING) for its 3 checkpoints (09:30/10:00/CLOSE) — an adapter-local missing-semantics decision, not a physical-identity difference. Calc F reuses the frozen `forward_measurement_adapter` generic layer verbatim (GROSS_ONLY, candle-driven, oracle-verified against `_stock_reaction` directly); Calc G's 3 governed checkpoints are built SOURCE-PROVIDED (verbatim from the trusted artifact's own already-resolved `points[label]`, `calculate_gross_return()` called directly rather than reimplemented) because the frozen `build_q10_index_calc_g_profile()` declares 3 duplicate-labeled `HorizonSpec`s (one per evidence-verification variant) that `build_forward_measurement_episode()` would otherwise reject as a duplicate-label misconfiguration.
+
+**Calc H is a directional-shadow HYPOTHESIS over the SAME physical (day, symbol) observation F/G already canonicalize** (verified directly against `build_shadow_comparison`, which reads F/G's own `reactions["targets"]` dict directly, reusing its `points`/`path`/`CLOSE` verbatim) — same `canonical_event_id` as the matching F/G episode, distinct `hypothesis_id`. A NEUTRAL `expected_state` (`_direction()==0`) is the source's OWN population-exclusion rule (`q10_shadow_entry_comparison.json` never persists an outcome row for it at all) — mapped to canonical `SampleMemberState.EXCLUDED` with full lineage (`Q10IndexShadowExclusion`), mirroring Opening Shadow FIX1/FIX2's exact EXCLUDED pattern; return/excursion figures (`gross_eod_return_pct`/`net_eod_return_pct`/`mfe_pct`/`mae_pct`) are taken verbatim (irreducibly `SOURCE_PROVIDED`, `NET_OR_COST_INCLUDED`) since real `build_shadow_comparison` already resolves them, including direction adjustment and cost.
+
+**Trusted ingestion**: `canonicalize_q10_index_calc_f_artifact`/`_g_artifact`/`_h_artifact` each verify the real, repo-relative `baseline_samsung_hynix/<day>/q10_forward_validation/` directory family layout (day validated by ISO-date shape, never a hardcoded date) AND both real persisted discriminators (`schema_version` AND `evaluation_program_id`, imported directly from `forward_validation/contracts.py`, never retyped) before parsing anything. Calc H also derives its key-to-symbol authority from the same verified `q10_actual_market_reactions.json` artifact F/G consume, not from a caller-supplied mapping. Q10 Index's real controlled-lane execution symbols (069500/114800/229200/251340, `controlled_mock_lanes/contracts.py::Q10_INDEX_SYMBOLS`) are never the same symbols these adapters read (005930/000660/KOSPI/KOSDAQ) — evaluation and execution evidence are disjoint symbol universes in the real source itself.
+
+**UEF-4B-5: Q11 Opportunity Engine — SOURCE CONTRACT REPAIR IMPLEMENTED, AWAITING INDEPENDENT AUDIT.** Not formally frozen — a Claude self-PASS does not authorize freeze; only an independent Codex audit may mark it so.
+
+**Q11 is a self-contained research probe, not a counterfactual view over another family's event** (verified directly against source): `build_signal_timeline` generates its OWN candidate stream directly from real minute candles + real macro snapshots (`signal_id = f"OE_{day}_{symbol}_{epoch}"`, never a Scanner/Commander/Strategist decision id) — `opportunity_engine/contracts.py::PROHIBITED_RUNTIME_DEPENDENCIES` explicitly forbids the package from importing `graphs.nodes`, `libs.runtime.commander`, `libs.runtime.execution`, `libs.runtime.quant.shadow_candidates`, or even `libs.reporting.evaluation` itself — a real, deliberate architectural isolation. "Virtual" means the resulting position was never submitted to a broker (every real trade carries `order_execution_allowed: False` verbatim); "negative control" means Q11 encodes ONE fixed, always-on research rule (`strategy_id="probe_v0"`) evaluated against real market data as a baseline arm, never compared against the live strategy within this adapter (that comparison is an explicit downstream/Q100 concern). Each closed virtual position is its own sole physical event — 1 physical event = 1 canonical episode with 6 checkpoints (+5m/+15m/+30m/+60m/EOD, all `SIGNAL`-anchored, from `forward_returns`; EXIT, `ACTUAL_EXIT`-anchored, from the trade's own top-level fields) — never multiplied, never shared with another family.
+
+**FIX1 (source evidence contract repair):** independent audit rejected the original `CheckpointMetricKind.AGGREGATE_ONLY` usage for the 5 SIGNAL-anchored forward/EOD checkpoints — these ARE genuinely anchored to one real, actually-observed candle close (`simulator.py`'s own `_forward_returns`), so `AGGREGATE_ONLY` (declared for values *not* anchored to one observed price) was an invalid workaround for a real upstream gap: the legacy artifact computed every return/MFE/MAE from a specific candle close but never persisted that price. Repaired at the SOURCE, not the adapter: `libs/research/opportunity_engine/simulator.py`'s `_forward_returns()` now additionally persists `"observed_price": close` for every OBSERVED horizon (byte-for-byte additive — no return/MFE/MAE/observed_epoch selection, rounding, or fallback logic changed); `contracts.py::TRADES_SCHEMA` bumped `opportunity_engine_virtual_trades.v1` → `.v2` to mark the real schema-shape change (`TRADES_SCHEMA_LEGACY_V1` names the superseded literal). **Legacy v1 artifacts remain real, authentic PRIMARY EVIDENCE (real origin, real `PROGRAM_ID`) but are explicitly BLOCKED from direct lossless UEF-4B canonicalization** — the trusted-ingestion gate detects an authentic v1 artifact and rejects it with the specific reason (`observed_price` never persisted for a price-based checkpoint), never a generic schema-mismatch message; v1 is never rewritten, backfilled, or mutated (historical recovery is an explicit UEF-5 Historical Recompute concern). **v2 artifacts use `CheckpointMetricKind.PRICE_BASED`** with the real, verbatim `observed_price`, verified oracle-exact against the real `simulate_probe_v0` output and against a real end-to-end run of `build_opportunity_engine_artifacts` itself.
+
+**`virtual_probe_adapter.py`** (new family-local module, per UEF-4A's own recommendation — distinct from `forward_measurement_adapter`, which has no equivalent for Q11's EXIT checkpoint / already-net semantics): every return/excursion/timestamp/price figure is taken verbatim from the real, persisted `opportunity_engine_virtual_trades.json` v2 artifact (irreducibly `SOURCE_PROVIDED`, `NET_OR_COST_INCLUDED`) — `evaluate_forward()` is never called, mirroring the precedent Q10 Index Calc G/H already established. Trusted ingestion requires both the real, repo-relative `opportunity_engine_shadow/<day>/opportunity_engine_virtual_trades.json` path layout AND both real persisted discriminators (`schema_version`==`TRADES_SCHEMA` (v2), `evaluation_program_id`==`PROGRAM_ID`, imported directly from `opportunity_engine/contracts.py`), mirroring Q10 Index's dual-discriminator pattern. Every ingested trade must carry `order_execution_allowed: False` explicitly — missing or `True` is rejected outright, never assumed.
+
+UEF-4A classifies 39 sources: 20 primary-evidence sources and 19 derived or consumer sources. Five adapter families are approved for implementation (Q12 Calc3's `vnext_completeness_adapter` candidate is BLOCKED, not counted among them). The authoritative inventory and all mapping constraints remain in [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md).
+
+### UEF-4B Order
+
+1. Q10 Semiconductor - FORMALLY FROZEN
+2. Q12 Calc1 / Calc2 - APPROVED / FROZEN (Q12 Calc3 - PRIMARY / KNOWN / BLOCKED)
+3. Opening Shadow (1A/1B/1C) - FORMALLY FROZEN
+4. Q10 Index (Calc F/G/H) - FORMALLY FROZEN
+5. Q11 - SOURCE CONTRACT REPAIR IMPLEMENTED, AWAITING INDEPENDENT AUDIT (legacy v1 artifacts: PRIMARY / KNOWN / BLOCKED for direct lossless canonicalization; v2 artifacts: candidate lossless canonical source)
+6. Q9
+
+### Blocked / Out of Scope
+
+- Q12 Calc3 (`vnext_completeness_adapter` candidate) — legacy/frozen completeness contract contradiction (UEF-4B-2 FIX2)
+- Dual-cost source family
+- `rank1_feature_mart`
+- Controlled Mock Lane / Opening Rank-1 Controlled Probe
+
+These remain separate from the approved UEF-4B adapter sequence.
+
+## Roadmap
+
+| Phase | Owns | Status |
+|---|---|---|
+| UEF-4 Final Freeze | Adapter layer final freeze | PLANNED |
+| UEF-5 | Historical recompute and dual run | PLANNED |
+| UEF-6 | Dedup and evidence lineage | PLANNED |
+| UEF-7 | Alpha Board normalization | PLANNED |
+| UEF-8 | Fair comparison validation | PLANNED |
+| UEF-9 | Evaluation authority freeze | PLANNED |
+
+## Authority Documents
+
+- [Unified Evaluation Foundation](../research/unified_evaluation_foundation.md)
+- [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md)
+- [UEF freeze manifest](../research/uef_freeze_manifest.md)
+- [Evaluation roadmap](../en/12_roadmap.md)
+
+## Related
+
+- [[Strategy_Program_Integration|Strategy Program Integration]]
+- [[Reporter_Q100|Reporter Q100]]
+- [[Evidence_Memory|Evidence Memory]]
+- [[System_V2|System V2]]

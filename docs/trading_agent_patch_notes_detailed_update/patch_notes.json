@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 71,
+  "entry_count": 73,
   "entries": [
     {
       "date": "2026-09-08",
@@ -1859,6 +1859,57 @@
         "libs/reporting/evaluation/artifact_inventory.py",
         "libs/reporting/alpha_research_board/builder.py",
         "libs/reporting/baseline_samsung_hynix/unified_comparison.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-14",
+      "version": "Opening Alpha Initial Signal Price Integrity",
+      "title": "Preserve fresh Rank-1 quote before execution drift validation",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "OPENING_ALPHA",
+        "EXECUTION_INTEGRITY"
+      ],
+      "summary": "Use the already available fresh Rank-1 quote as Opening Alpha's initial signal price when the Scanner candidate has no price.",
+      "details": [
+        "Resolve the existing quote/minute observation before evaluating the controlled Opening Alpha probe.",
+        "Enrich only the probe evaluation copy; Scanner ranking, selected candidate and normal Monitor behavior remain unchanged.",
+        "Preserve the observed price and source through initial_signal_price into the pre-submit executable-price drift guard.",
+        "The existing two-percent drift threshold and broker no-call behavior remain unchanged.",
+        "Focused regression completed with 4 passed."
+      ],
+      "impact": "A valid first Rank-1 probe is no longer blocked solely because its Scanner candidate omitted price, while the final executable-price chase guard remains fail-closed.",
+      "sources": [
+        "graphs/nodes/monitor_node.py",
+        "libs/runtime/opening_rank1_observation_price.py",
+        "tests/test_opening_rank1_controlled_probe.py",
+        "tests/test_execute_from_packet.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-14",
+      "version": "Q10 Signed Executable Price Integrity",
+      "title": "Preserve signed Kiwoom best ask in order-notional validation",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "Q10",
+        "EXECUTION_INTEGRITY"
+      ],
+      "summary": "Normalize Kiwoom quote direction prefixes before Q10 order-notional validation so a fresh executable best ask is not mistaken for a missing price.",
+      "details": [
+        "Treat signed Kiwoom current, best-ask and best-bid values as absolute executable prices after validating that the numeric value is non-zero.",
+        "Preserve market.quote.best_ask.live_refresh as the selected price provenance.",
+        "Q10 strategy, candidate eligibility, score, order limits and broker semantics remain unchanged.",
+        "The dedicated signed-price regression passed and the focused execution-price suite completed 12 functional test passes; the production-write detector separately observed concurrent watchdog runtime writes."
+      ],
+      "impact": "A valid Q10 candidate with a fresh signed Kiwoom quote can reach normal notional validation instead of being incorrectly blocked as order_notional_price_missing.",
+      "sources": [
+        "graphs/nodes/execute_from_packet.py",
+        "tests/test_opening_alpha_executable_quote_refresh.py"
       ],
       "status": "current"
     }

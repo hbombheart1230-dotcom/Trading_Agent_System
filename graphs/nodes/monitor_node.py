@@ -878,8 +878,26 @@ def _evaluate_monitor_entry_candidate(
         state=state,
         selected=selected,
     )
+    observation_price = {"observed_price": None, "price_source": "unavailable"}
+    probe_selected = selected
+    if bool(allow_opening_rank1_controlled_probe) and 0 <= _probe_minutes <= 20:
+        from libs.runtime.opening_rank1_observation_price import resolve_observation_price
+
+        observation_price = resolve_observation_price(
+            selected=selected,
+            quote=quote_for_entry,
+            rows=entry_rows,
+            now_epoch=now_epoch_for_entry,
+        )
+        observed_price = _to_float(observation_price.get("observed_price"))
+        if observed_price > 0.0 and _to_float(selected.get("price")) <= 0.0:
+            probe_selected = dict(selected)
+            probe_selected["price"] = float(observed_price)
+            probe_selected["_monitor_price_source"] = str(
+                observation_price.get("price_source") or "opening_rank1_observation"
+            )
     opening_rank1_controlled_probe = evaluate_opening_rank1_controlled_probe(
-        selected=selected,
+        selected=probe_selected,
         entry_info=entry_info,
         original_wait_reason=original_wait_reason,
         base_entry_guard_blocked=base_entry_guard_blocked,
@@ -906,12 +924,6 @@ def _evaluate_monitor_entry_candidate(
         and bool(opening_probe_selection_authority.get("aligned"))
         and 0 <= _probe_minutes <= 20
     ):
-        from libs.runtime.opening_rank1_observation_price import resolve_observation_price
-
-        observation_price = resolve_observation_price(
-            selected=selected, quote=quote_for_entry, rows=entry_rows,
-            now_epoch=now_epoch_for_entry,
-        )
         opening_rank1_controlled_probe["rank_observation"] = record_rank1_observation(
             day=probe_day,
             symbol=symbol,
