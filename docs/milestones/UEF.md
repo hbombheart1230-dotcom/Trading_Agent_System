@@ -15,6 +15,7 @@
 | UEF-5.1 | Clean Evidence Registry (input-boundary gate for historical recompute) | FORMALLY FROZEN |
 | UEF-5.2 | Historical Recompute (market-data authority + canonical session projection) | FORMALLY FROZEN |
 | UEF-5.3 | Historical Dual Run (legacy vs. canonical comparison) | FORMALLY FROZEN |
+| UEF-6 | Dedup and evidence lineage (population dedup + direct lineage sidecar + historical validation) | FORMALLY FROZEN |
 
 ## Current / Next
 
@@ -88,6 +89,22 @@ One non-blocking debt item is recorded (`UEF5_3_DEBT_001`, live-ledger hashing t
 efficiency, not a correctness or freeze blocker). See
 [Historical Dual Run](../research/uef5_3_historical_dual_run.md).
 
+**UEF-6: Dedup & Evidence Lineage — FORMALLY FROZEN** (independent Codex final closure audit: CRITICAL 0,
+HIGH 0, MEDIUM 0, LOW 0; `CORE_VERDICT: APPROVE_UEF6`, `UEF6_COMPLETE: YES`, `UEF6_FORMAL_FREEZE: YES`).
+UEF-6A (population dedup detection, reusing the frozen UEF-1 identity model verbatim, no new duplicate-
+relation authority), UEF-6B (direct evidence-lineage sidecar over the frozen `aggregate_canonical_samples()`,
+called exactly once, never reconstructing membership heuristically), and UEF-6C (historical dedup + direct-
+lineage validation: Mode A frozen-output observation, Mode B instrumented replay over an isolated, byte-
+verified snapshot) are all **APPROVED / COMPLETE**. Checkpoint commits: UEF-6A `ab699bb`, UEF-6B `b1dbe5e`,
+UEF-6C `657ddaa`. Real Mode A run against `UEF5RUN_bc1e299667c2ca94b977` reproduces the audited baseline
+exactly (107 raw / 80 events / 107 subjects / 107 records / 0 duplicates / 6 multi-evaluation events / 75
+LEGITIMATE_MULTI_HYPOTHESIS pairs). Real Mode B for that same target run is `NOT_REPRODUCIBLE` (one
+discovered input artifact's current bytes no longer match its historically recorded sha256, and no
+authoritative exact-byte archive was found) — non-blocking for this freeze, since fail-closed behavior
+under an unrecoverable byte mismatch is the correct contract; no lineage was fabricated and no approximate
+replay was accepted. Final regression: UEF-6A 22 + UEF-6B 14 + UEF-6C 28 = 64 passed. See
+[UEF-6 Dedup & Evidence Lineage Freeze](../research/uef6_dedup_evidence_lineage_freeze.md).
+
 **UEF-4 CONSOLIDATED PROVISIONAL CLOSURE.** All six UEF-4B families have completed implementation/classification work. Five are formally frozen or formally closed (Q10 Semiconductor, Q12 Calc1/Calc2, Opening Shadow, Q10 Index) or provisionally closed pending ratification (Q11); Q9 and Q12 Calc3 are classified **PRIMARY / KNOWN / BLOCKED** — known, intentional closure outcomes, not unfinished hidden work. **UEF-4 IMPLEMENTATION/CLASSIFICATION: COMPLETE. UEF-4 FORMALLY FROZEN: NO. UEF-4 PROVISIONALLY COMPLETE: YES.** No family in this phase is formally frozen by self-assessment alone; final ratification (Q11, and any future Q9/Calc3 repair) is an independent Codex audit matter. The next planned phase is **UEF-5 Historical Recompute & Dual Run — NOT STARTED.**
 
 UEF-4A classifies 39 sources: 20 primary-evidence sources and 19 derived or consumer sources. Five adapter families are approved for implementation; Q9 and Q12 Calc3's candidate adapters are BLOCKED, not counted among them. The authoritative inventory and all mapping constraints remain in [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md).
@@ -120,8 +137,8 @@ These remain separate from the approved UEF-4B adapter sequence.
 | UEF-5.1 | Clean Evidence Registry | FORMALLY FROZEN |
 | UEF-5.2 | Historical Recompute | FORMALLY FROZEN |
 | UEF-5.3 | Historical dual run (legacy comparison) | FORMALLY FROZEN |
-| UEF-6 | Dedup and evidence lineage | NEXT |
-| UEF-7 | Alpha Board normalization | PLANNED |
+| UEF-6 | Dedup and evidence lineage | FORMALLY FROZEN |
+| UEF-7 | Alpha Board normalization | NEXT |
 | UEF-8 | Fair comparison validation | PLANNED |
 | UEF-9 | Evaluation authority freeze | PLANNED |
 
@@ -133,6 +150,7 @@ These remain separate from the approved UEF-4B adapter sequence.
 - [UEF-5.1 Clean Evidence Registry](../research/uef5_1_clean_evidence_registry.md)
 - [UEF-5.2 Historical Recompute](../research/uef5_2_historical_recompute.md)
 - [UEF-5.3 Historical Dual Run](../research/uef5_3_historical_dual_run.md)
+- [UEF-6 Dedup & Evidence Lineage Freeze](../research/uef6_dedup_evidence_lineage_freeze.md)
 - [ADR-0003: UEF-5.2 Market-Data Authority and Recompute Identity](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md)
 - [Evaluation roadmap](../en/12_roadmap.md)
 
