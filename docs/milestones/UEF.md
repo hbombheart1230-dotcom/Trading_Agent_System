@@ -14,6 +14,7 @@
 | UEF-4 | UEF-4B adapter/classification layer (Q9–Q12, Opening, Q10 Semi/Index) | PROVISIONALLY COMPLETE — see Current/Next |
 | UEF-5.1 | Clean Evidence Registry (input-boundary gate for historical recompute) | FORMALLY FROZEN |
 | UEF-5.2 | Historical Recompute (market-data authority + canonical session projection) | FORMALLY FROZEN |
+| UEF-5.3 | Historical Dual Run (legacy vs. canonical comparison) | FORMALLY FROZEN |
 
 ## Current / Next
 
@@ -71,6 +72,22 @@ lifecycle stage ordering; authority corruption NOT reproduced). See
 [Historical Recompute](../research/uef5_2_historical_recompute.md) and
 [ADR-0003](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md).
 
+**UEF-5.3: Historical Dual Run — FORMALLY FROZEN** (independent Codex final closure audit: CRITICAL 0,
+HIGH 0, MEDIUM 0, LOW 0; `CORE_VERDICT: APPROVE_CORE`, `UEF5_3_COMPLETE: YES`). Compares legacy (pre-UEF)
+evaluation outputs against UEF-5.2's canonical output for the same historical evidence and classifies
+every material difference through a bounded taxonomy — never converts an undefined legacy metric into a
+fake zero, never lets a non-comparable metric suppress a comparable one, and gates any numeric comparison
+on a positively-proven population identity (never count equality alone). Final audited real run
+`UEF53DUAL_5e22b07eb2a62894`: 4359 total comparison units, 0 unexplained divergences, 0 unaccounted, 0
+collisions. Real non-empty parity evidence is limited to Q11 EXIT (3 units, profit_factor and
+population counts matching; MDD parity explicitly NOT_ESTABLISHED, since legacy has no MDD figure at
+all); Q12 Calc1 numeric comparison is 0 today by correct, fail-closed design (legacy member identities
+unavailable — see the freeze record for the exact reactivation condition). Q10 Index and Q12 Calc2 remain
+`NON_COMPARABLE_CONFIRMED` / `NO_COMPARABLE_LEGACY_DAILY_AGGREGATE` (no new legacy aggregator invented).
+One non-blocking debt item is recorded (`UEF5_3_DEBT_001`, live-ledger hashing test/observability
+efficiency, not a correctness or freeze blocker). See
+[Historical Dual Run](../research/uef5_3_historical_dual_run.md).
+
 **UEF-4 CONSOLIDATED PROVISIONAL CLOSURE.** All six UEF-4B families have completed implementation/classification work. Five are formally frozen or formally closed (Q10 Semiconductor, Q12 Calc1/Calc2, Opening Shadow, Q10 Index) or provisionally closed pending ratification (Q11); Q9 and Q12 Calc3 are classified **PRIMARY / KNOWN / BLOCKED** — known, intentional closure outcomes, not unfinished hidden work. **UEF-4 IMPLEMENTATION/CLASSIFICATION: COMPLETE. UEF-4 FORMALLY FROZEN: NO. UEF-4 PROVISIONALLY COMPLETE: YES.** No family in this phase is formally frozen by self-assessment alone; final ratification (Q11, and any future Q9/Calc3 repair) is an independent Codex audit matter. The next planned phase is **UEF-5 Historical Recompute & Dual Run — NOT STARTED.**
 
 UEF-4A classifies 39 sources: 20 primary-evidence sources and 19 derived or consumer sources. Five adapter families are approved for implementation; Q9 and Q12 Calc3's candidate adapters are BLOCKED, not counted among them. The authoritative inventory and all mapping constraints remain in [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md).
@@ -102,8 +119,8 @@ These remain separate from the approved UEF-4B adapter sequence.
 | UEF-4 Final Freeze | Adapter layer final freeze | PLANNED |
 | UEF-5.1 | Clean Evidence Registry | FORMALLY FROZEN |
 | UEF-5.2 | Historical Recompute | FORMALLY FROZEN |
-| UEF-5.3 | Historical dual run (legacy comparison) | NEXT |
-| UEF-6 | Dedup and evidence lineage | PLANNED |
+| UEF-5.3 | Historical dual run (legacy comparison) | FORMALLY FROZEN |
+| UEF-6 | Dedup and evidence lineage | NEXT |
 | UEF-7 | Alpha Board normalization | PLANNED |
 | UEF-8 | Fair comparison validation | PLANNED |
 | UEF-9 | Evaluation authority freeze | PLANNED |
@@ -115,6 +132,7 @@ These remain separate from the approved UEF-4B adapter sequence.
 - [UEF freeze manifest](../research/uef_freeze_manifest.md)
 - [UEF-5.1 Clean Evidence Registry](../research/uef5_1_clean_evidence_registry.md)
 - [UEF-5.2 Historical Recompute](../research/uef5_2_historical_recompute.md)
+- [UEF-5.3 Historical Dual Run](../research/uef5_3_historical_dual_run.md)
 - [ADR-0003: UEF-5.2 Market-Data Authority and Recompute Identity](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md)
 - [Evaluation roadmap](../en/12_roadmap.md)
 

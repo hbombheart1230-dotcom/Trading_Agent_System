@@ -3,8 +3,8 @@
 ## Current State
 
 - Production runtime: separate from this documentation vault.
-- Current development milestone: UEF-5.3 Historical Dual Run (NEXT).
-- Latest formal evaluation freeze: [[UEF|UEF-5.2 - Historical Recompute]].
+- Current development milestone: UEF-6 Dedup & Evidence Lineage (NEXT).
+- Latest formal evaluation freeze: [[UEF|UEF-5.3 - Historical Dual Run]].
 
 ## Roadmap Sequence
 
@@ -13,8 +13,8 @@ PLANNED and are not yet architected in detail):
 
 1. UEF-5.1 Clean Evidence Registry — FORMALLY FROZEN
 2. UEF-5.2 Historical Recompute — FORMALLY FROZEN
-3. UEF-5.3 Historical Dual Run — NEXT
-4. UEF-6 Dedup & Evidence Lineage — PLANNED
+3. UEF-5.3 Historical Dual Run — FORMALLY FROZEN
+4. UEF-6 Dedup & Evidence Lineage — NEXT
 5. UEF-7 Alpha Board Normalization — PLANNED
 6. UEF-8 Fair Comparison Validation — PLANNED
 7. UEF-9 Evaluation Authority Freeze — PLANNED
@@ -51,7 +51,8 @@ PLANNED and are not yet architected in detail):
 - UEF-4B (Q9-Q12, Opening, Q10 Semi/Index adapters): PROVISIONALLY COMPLETE.
 - UEF-5.1, Clean Evidence Registry: FORMALLY FROZEN.
 - UEF-5.2, Historical Recompute: FORMALLY FROZEN (one non-blocking debt item, `UEF5_2_DEBT_001`).
-- UEF-5.3, Historical Dual Run: NEXT.
+- UEF-5.3, Historical Dual Run: FORMALLY FROZEN (one non-blocking debt item, `UEF5_3_DEBT_001`).
+- UEF-6, Dedup & Evidence Lineage: NEXT.
 - UEF-4A inventory detail: [Legacy family inventory](research/uef4_legacy_family_inventory.md).
 - Full UEF status: [[UEF]].
 

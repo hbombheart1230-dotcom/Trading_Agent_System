@@ -2,7 +2,8 @@
 
 Status: **FORMALLY FROZEN** (independent Codex closure audit: CRITICAL 0, HIGH 0, MEDIUM 1, LOW 0;
 `APPROVE_UEF5_2`, `FORMAL_FREEZE: YES`, `READY_FOR_UEF5_3: YES` pending this documentation gate).
-UEF-5.3 (historical dual run / legacy comparison) NOT STARTED. Not to be modified again unless a
+UEF-5.3 (historical dual run / legacy comparison) is now also **FORMALLY FROZEN** -- see
+[UEF-5.3 Historical Dual Run](uef5_3_historical_dual_run.md). Not to be modified again unless a
 reproducible correctness defect is discovered.
 
 See [ADR-0003](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md) (including
