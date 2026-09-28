@@ -12,6 +12,8 @@
 | UEF-3C | Canonical aggregation pipeline | FORMALLY FROZEN |
 | UEF-4A | Legacy family inventory and canonical mapping | FORMALLY FROZEN |
 | UEF-4 | UEF-4B adapter/classification layer (Q9–Q12, Opening, Q10 Semi/Index) | PROVISIONALLY COMPLETE — see Current/Next |
+| UEF-5.1 | Clean Evidence Registry (input-boundary gate for historical recompute) | FORMALLY FROZEN |
+| UEF-5.2 | Historical Recompute (market-data authority + canonical session projection) | FORMALLY FROZEN |
 
 ## Current / Next
 
@@ -49,6 +51,26 @@
 
 **UEF-4B-6: Q9 Horizon/Exit — PRIMARY / KNOWN / BLOCKED.** Not formally frozen, not an approved canonical path. Q9 is the ONE UEF-4B family genuinely anchored to the live strategy's own REAL, actually-executed exit (`EventOrigin.ACTUAL_EXIT`) — a real realized trade IS legitimate Q9 source lineage — but this module's entire input surface is the trusted `post_exit_shadow_recap.json` artifact's own `trades[]` list (`trade_id`/`symbol`/`post_exit_shadow` only); it never reads `ai_trade_report.json`/`lifecycle_bundle.json`/any execution-detail artifact directly, so broker mechanics (order submission, ACK, fill fragments, retries, reconciliation) are structurally unreachable, never merely asserted excluded. Real source verified directly: `strategy_horizon_feedback.py::update_post_exit_shadow_with_price_observations` computes `+5m/+15m/+30m/+60m/EOD` from a real 4-deep price alias chain (`filled_price`→`current_price`→`price`→`avg_price` for `exit_price`; `close`→`price`→`current_price`→`cur_price` per checkpoint), `ReturnUnit.FRACTION` (never `*100`), `GROSS_ONLY` (no net/cost field exists in source at all). **The session-close fallback the frozen profile declares (`MissingResolutionPolicy.USE_SESSION_CLOSE_FALLBACK`) is REAL, not aspirational**: `post_exit_shadow_recap.py::_fill_regular_close_bound_pending_checkpoints` substitutes the EOD checkpoint's own observed price/timestamp into any intraday checkpoint whose target falls after the regular 15:30 KST close — verified oracle-exact. **FIX1 (observation identity closure):** the canonical event is `ObservationType.EXIT_EVENT`, not `SHADOW_ENTRY` (no synthetic/simulated position exists in Q9's real evidence) and not `ACTUAL_TRADE` (the trusted artifact carries no entry_time/entry_price at all, and reading one from `ai_trade_report.json` would cross the broker-mechanics boundary above) — see `q9_horizon_exit_adapter.py::build_q9_episode` for the full source-grounded proof. **BLOCKED (not fabricated):** the real 4-deep `exit_price` alias chain resolves to a single number with NO persisted record of which alias fired, so `exit_price_authority` cannot be reconstructed losslessly — no existing `EntryAuthority` value represents this without inventing a specific, unverifiable claim (claiming `BROKER_FILL`/`MOCK_FILL` would assert a confirmed fill 2 of the 4 real branches never provide). **PRIMARY EVIDENCE=YES, KNOWN=YES, EXIT PRICE VALUE=LOSSLESS, EXIT PRICE AUTHORITY=NOT PERSISTED, DIRECT LOSSLESS UEF-4 MAPPING=NO, STATUS=PRIMARY/KNOWN/BLOCKED.** `q9_horizon_exit_adapter.py` is retained only as a research/reproducer candidate (`__all__ = []`, not exported, not part of any approved canonicalization path — matching the `vnext_completeness_adapter`/Q12-Calc3 precedent); a future, explicitly-authorized versioned source-contract change persisting which alias resolved `exit_price` is the identified repair candidate, not performed here.
 
+**UEF-5.1: Clean Evidence Registry — FORMALLY FROZEN** (independent Codex closure after FIX1: APPROVE,
+FORMAL FREEZE YES, READY_FOR_UEF5_2 YES; one non-blocking MEDIUM on the Incident C 75.47% vs 44.67%
+numeric discrepancy, intentionally left unresolved). Frozen at commit `b2efd84`. The mandatory input
+boundary for UEF-5 historical recompute: `CLEAN`/`QUARANTINED`/`FIELD_INVALID`/`REVIEW_REQUIRED`/`NO_RULE`,
+with `MATCHED CLEAN DOMAIN != CLEAN` (positive clean authority requires a matched candidate domain, a
+`PROVEN_CLEAN` verifier result, every declared check passed, and no negative rule match at file or record
+level). See [Clean Evidence Registry](../research/uef5_1_clean_evidence_registry.md).
+
+**UEF-5.2: Historical Recompute — FORMALLY FROZEN** (independent Codex closure audit after Implementation
+Correction 1: CRITICAL 0, HIGH 0, MEDIUM 1, LOW 0; `APPROVE_UEF5_2`, `FORMAL_FREEZE: YES`). Deterministic,
+offline recompute of UEF-5.1-CLEAN evidence through the frozen canonical layer and approved UEF-4
+adapters — no legacy comparison, no parity claim (that is UEF-5.3). Candle admission requires a verified,
+acquisition-issued `MarketDataReceipt` (never a caller-supplied trust flag); a separate, UEF-owned
+`SessionPolicy` projects admitted candles to the canonical 09:00–15:30 KST regular session before any
+frozen adapter call; the run identity binds a bounded, explicit semantic implementation manifest plus the
+effective run configuration. One non-blocking debt item is recorded (`UEF5_2_DEBT_001`, acquisition-
+lifecycle stage ordering; authority corruption NOT reproduced). See
+[Historical Recompute](../research/uef5_2_historical_recompute.md) and
+[ADR-0003](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md).
+
 **UEF-4 CONSOLIDATED PROVISIONAL CLOSURE.** All six UEF-4B families have completed implementation/classification work. Five are formally frozen or formally closed (Q10 Semiconductor, Q12 Calc1/Calc2, Opening Shadow, Q10 Index) or provisionally closed pending ratification (Q11); Q9 and Q12 Calc3 are classified **PRIMARY / KNOWN / BLOCKED** — known, intentional closure outcomes, not unfinished hidden work. **UEF-4 IMPLEMENTATION/CLASSIFICATION: COMPLETE. UEF-4 FORMALLY FROZEN: NO. UEF-4 PROVISIONALLY COMPLETE: YES.** No family in this phase is formally frozen by self-assessment alone; final ratification (Q11, and any future Q9/Calc3 repair) is an independent Codex audit matter. The next planned phase is **UEF-5 Historical Recompute & Dual Run — NOT STARTED.**
 
 UEF-4A classifies 39 sources: 20 primary-evidence sources and 19 derived or consumer sources. Five adapter families are approved for implementation; Q9 and Q12 Calc3's candidate adapters are BLOCKED, not counted among them. The authoritative inventory and all mapping constraints remain in [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md).
@@ -78,7 +100,9 @@ These remain separate from the approved UEF-4B adapter sequence.
 | Phase | Owns | Status |
 |---|---|---|
 | UEF-4 Final Freeze | Adapter layer final freeze | PLANNED |
-| UEF-5 | Historical recompute and dual run | PLANNED |
+| UEF-5.1 | Clean Evidence Registry | FORMALLY FROZEN |
+| UEF-5.2 | Historical Recompute | FORMALLY FROZEN |
+| UEF-5.3 | Historical dual run (legacy comparison) | NEXT |
 | UEF-6 | Dedup and evidence lineage | PLANNED |
 | UEF-7 | Alpha Board normalization | PLANNED |
 | UEF-8 | Fair comparison validation | PLANNED |
@@ -89,6 +113,9 @@ These remain separate from the approved UEF-4B adapter sequence.
 - [Unified Evaluation Foundation](../research/unified_evaluation_foundation.md)
 - [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md)
 - [UEF freeze manifest](../research/uef_freeze_manifest.md)
+- [UEF-5.1 Clean Evidence Registry](../research/uef5_1_clean_evidence_registry.md)
+- [UEF-5.2 Historical Recompute](../research/uef5_2_historical_recompute.md)
+- [ADR-0003: UEF-5.2 Market-Data Authority and Recompute Identity](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md)
 - [Evaluation roadmap](../en/12_roadmap.md)
 
 ## Related

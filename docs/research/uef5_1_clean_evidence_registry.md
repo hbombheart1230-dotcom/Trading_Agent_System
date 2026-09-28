@@ -1,9 +1,13 @@
 # UEF-5.1 — Clean Evidence Registry (incl. FIX1: positive clean authority)
 
-**Status:** UEF-5.1 FIX1 IMPLEMENTED — AWAITING CODEX RE-AUDIT. UEF-5 overall: IN PROGRESS.
-No formal freeze is declared. UEF-1..4 and the Research Portfolio Freeze are unchanged
-(freeze manifest 11/11 MATCH). Codex's first audit rejected UEF-5.1 (HIGH ×4); this document
-describes the design after FIX1. UEF-5.2 has not started; `READY_FOR_UEF5_2` is Codex's decision.
+**Status:** UEF-5.1 FORMALLY FROZEN (independent Codex audit: APPROVE, FORMAL FREEZE YES,
+READY_FOR_UEF5_2 YES; one non-blocking MEDIUM on the Incident C 75.47% vs 44.67% numeric
+discrepancy, intentionally left unresolved). Frozen at commit `b2efd84` ("feat: freeze UEF-5.1
+clean evidence registry"). UEF-1..4 and the Research Portfolio Freeze are unchanged (freeze
+manifest 11/11 MATCH). Codex's first audit had rejected the original submission (HIGH ×4); this
+document describes the design after FIX1, which closed all four. UEF-5.2 (Historical Recompute)
+built on this registry and is itself now FORMALLY FROZEN -- see
+[docs/research/uef5_2_historical_recompute.md](uef5_2_historical_recompute.md).
 
 ## Purpose
 

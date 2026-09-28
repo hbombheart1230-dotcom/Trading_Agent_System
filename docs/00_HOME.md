@@ -3,8 +3,30 @@
 ## Current State
 
 - Production runtime: separate from this documentation vault.
-- Current development milestone: [[UEF|UEF-4B-1 - Q10 Semiconductor Adapter]] (NEXT).
-- Latest formal evaluation freeze: [[UEF|UEF-4A - Legacy Family Inventory]].
+- Current development milestone: UEF-5.3 Historical Dual Run (NEXT).
+- Latest formal evaluation freeze: [[UEF|UEF-5.2 - Historical Recompute]].
+
+## Roadmap Sequence
+
+Forward-looking ordering of the major workstreams (status as currently tracked; later items remain
+PLANNED and are not yet architected in detail):
+
+1. UEF-5.1 Clean Evidence Registry — FORMALLY FROZEN
+2. UEF-5.2 Historical Recompute — FORMALLY FROZEN
+3. UEF-5.3 Historical Dual Run — NEXT
+4. UEF-6 Dedup & Evidence Lineage — PLANNED
+5. UEF-7 Alpha Board Normalization — PLANNED
+6. UEF-8 Fair Comparison Validation — PLANNED
+7. UEF-9 Evaluation Authority Freeze — PLANNED
+8. UEF COMPLETE (target)
+9. [[Strategy_Program_Integration|Strategy Program Integration]] — architecture classification decision, ongoing
+10. Safety Step5D / Step5E / Step6 — PLANNED (Step5C is FROZEN; see [[Safety]])
+11. [[Reporter_Q100|Q100 / Reporter v2]] — DESIGN STAGE
+12. [[Evidence_Memory|Evidence Memory + Obsidian]] — PLANNED
+13. Self-Improvement Loop — PLANNED (see [[System_V2|System V2]] dependencies)
+14. [[System_V2|System V2 Formal Freeze]] — PLANNED
+15. Paper Final Experiments — PLANNED
+16. Paper Writing — PLANNED
 
 ## Major Workstreams
 
@@ -26,8 +48,12 @@
 
 - UEF-1 through UEF-3C: FORMALLY FROZEN.
 - UEF-4A: FORMALLY FROZEN.
-- UEF-4B-1, Q10 Semiconductor Adapter: NEXT.
+- UEF-4B (Q9-Q12, Opening, Q10 Semi/Index adapters): PROVISIONALLY COMPLETE.
+- UEF-5.1, Clean Evidence Registry: FORMALLY FROZEN.
+- UEF-5.2, Historical Recompute: FORMALLY FROZEN (one non-blocking debt item, `UEF5_2_DEBT_001`).
+- UEF-5.3, Historical Dual Run: NEXT.
 - UEF-4A inventory detail: [Legacy family inventory](research/uef4_legacy_family_inventory.md).
+- Full UEF status: [[UEF]].
 
 ## Operations
 
@@ -36,6 +62,7 @@
 ## Architecture Decisions
 
 - [[ADR-0002_Q_Namespace_Freeze_and_Seven_Node_Lifecycle_Authority|ADR-0002: Q Namespace Freeze and Seven-Node Lifecycle Authority]]
+- [[ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity|ADR-0003: UEF-5.2 Market-Data Authority and Recompute Identity]]
 
 ## Documentation Indexes
 
