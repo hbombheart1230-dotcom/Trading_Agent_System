@@ -1,14 +1,17 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 73,
+  "entry_count": 82,
   "entries": [
     {
       "date": "2026-09-08",
       "version": "Opening Alpha Provenance Correction",
       "title": "Rank price and passed guard audit trail",
       "stage": "Trading Operations",
-      "types": ["DATA_INTEGRITY", "REPORTING"],
+      "types": [
+        "DATA_INTEGRITY",
+        "REPORTING"
+      ],
       "summary": "Preserve available Rank observation prices and successful executable-price checks; correct misleading trade summary text.",
       "details": [
         "Missing selected price falls back to already available recent quote or timestamped minute close; no API calls or historical fabrication.",
@@ -19,7 +22,9 @@
         "Clean-room full regression completed with 3048 passed, 1 skipped and no production-path manifest leak."
       ],
       "impact": "Operational evidence is distinguishable from unverified LLM interpretation.",
-      "sources": ["docs/daily_patch/2026-09-08_opening_alpha_observation_integrity.md"],
+      "sources": [
+        "docs/daily_patch/2026-09-08_opening_alpha_observation_integrity.md"
+      ],
       "status": "current"
     },
     {
@@ -27,11 +32,21 @@
       "version": "Q12-vNext-V2",
       "title": "Aligned US-session confirmation and timely Q12 inputs",
       "stage": "Forward Validation",
-      "types": ["REPORTING", "DATA_INTEGRITY"],
+      "types": [
+        "REPORTING",
+        "DATA_INTEGRITY"
+      ],
       "summary": "Separate matched US-session BTC return from weekend BTC movement; remove Q12 input dependence on report completion.",
-      "details": ["V1 evidence is preserved; V2 uses exchange-calendar session closes and explicit missing matched references.", "A lightweight opening input worker and direct 08:55 source read eliminate stale BTC MISSING caused by absent Woori candles.", "Weekday 08:45 Q12 preopen task starts the same day-scoped runner before capture; 09:00 reuses it.", "Candidate thresholds, scoring and broker execution are unchanged; data delivery timing is corrected."],
+      "details": [
+        "V1 evidence is preserved; V2 uses exchange-calendar session closes and explicit missing matched references.",
+        "A lightweight opening input worker and direct 08:55 source read eliminate stale BTC MISSING caused by absent Woori candles.",
+        "Weekday 08:45 Q12 preopen task starts the same day-scoped runner before capture; 09:00 reuses it.",
+        "Candidate thresholds, scoring and broker execution are unchanged; data delivery timing is corrected."
+      ],
       "impact": "Weekend interpretation correction is shadow-only; input delivery repair can restore previously delayed eligible candidates.",
-      "sources": ["docs/evaluation/q12_vnext_delivery_time_alignment.md"],
+      "sources": [
+        "docs/evaluation/q12_vnext_delivery_time_alignment.md"
+      ],
       "status": "current"
     },
     {
@@ -39,11 +54,19 @@
       "version": "Q12-vNext",
       "title": "Q12 crypto-equity forward confirmation",
       "stage": "Forward Validation",
-      "types": ["REPORTING"],
+      "types": [
+        "REPORTING"
+      ],
       "summary": "Independent versioned COIN/MSTR confirmation and A/B shadow observations reuse existing Q12 evidence.",
-      "details": ["Original Q12 candidate and execution contracts are unchanged.", "Missing US sessions and minute evidence remain UNKNOWN; no older-close substitution.", "Immutable observations and cost-adjusted forward outcomes retain restart provenance."],
+      "details": [
+        "Original Q12 candidate and execution contracts are unchanged.",
+        "Missing US sessions and minute evidence remain UNKNOWN; no older-close substitution.",
+        "Immutable observations and cost-adjusted forward outcomes retain restart provenance."
+      ],
       "impact": "Reporting only; no historical backtest or additional broker order path.",
-      "sources": ["docs/evaluation/q12_vnext_crypto_equity_confirmation.md"],
+      "sources": [
+        "docs/evaluation/q12_vnext_crypto_equity_confirmation.md"
+      ],
       "status": "current"
     },
     {
@@ -51,11 +74,19 @@
       "version": "Step5C",
       "title": "Durable order-intent execution ownership",
       "stage": "Execution Safety",
-      "types": ["EXECUTION_SAFETY"],
+      "types": [
+        "EXECUTION_SAFETY"
+      ],
       "summary": "Atomic SQLite ownership prevents replay of one order intent across concurrent calls and restarts.",
-      "details": ["Explicit intent identity is preserved; payload conflicts fail closed.", "CAS/backend failure submits no broker request; UNKNOWN/crash requires reconciliation.", "Existing guards, Supervisor policy and Step5B mutation safety are unchanged."],
+      "details": [
+        "Explicit intent identity is preserved; payload conflicts fail closed.",
+        "CAS/backend failure submits no broker request; UNKNOWN/crash requires reconciliation.",
+        "Existing guards, Supervisor policy and Step5B mutation safety are unchanged."
+      ],
       "impact": "Logical execution ownership is independent of broker transport safety.",
-      "sources": ["docs/development/step5c_execution_owner.md"],
+      "sources": [
+        "docs/development/step5c_execution_owner.md"
+      ],
       "status": "current"
     },
     {
@@ -63,11 +94,20 @@
       "version": "PRE-Step5C",
       "title": "Observation and execution truth cleanup",
       "stage": "Execution Safety",
-      "types": ["EXECUTION_SAFETY", "REPORTING"],
+      "types": [
+        "EXECUTION_SAFETY",
+        "REPORTING"
+      ],
       "summary": "Canonical rank, fail-honest broker outcomes and evidence-backed Q10 observation persistence.",
-      "details": ["Unverified index close is informational only.", "Permanent logical-attempt claims prevent crash replay; manifest writes are serialized.", "Actual operation and validation evidence are separate."],
+      "details": [
+        "Unverified index close is informational only.",
+        "Permanent logical-attempt claims prevent crash replay; manifest writes are serialized.",
+        "Actual operation and validation evidence are separate."
+      ],
       "impact": "No strategy threshold or Step5B mutation policy changes.",
-      "sources": ["docs/development/pre_step5c_owner_closeout.md"],
+      "sources": [
+        "docs/development/pre_step5c_owner_closeout.md"
+      ],
       "status": "current"
     },
     {
@@ -1910,6 +1950,218 @@
       "sources": [
         "graphs/nodes/execute_from_packet.py",
         "tests/test_opening_alpha_executable_quote_refresh.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-27",
+      "version": "UEF-5.1 Clean Evidence Registry",
+      "title": "Freeze the input-boundary gate for historical evaluation recompute",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF5",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Formally froze the Clean Evidence Registry that decides which historical evidence is admissible before any recompute happens.",
+      "details": [
+        "Establishes CLEAN/QUARANTINED/FIELD_INVALID/REVIEW_REQUIRED/NO_RULE evidence classification, with a positively-proven clean domain required before anything is treated as CLEAN.",
+        "Independently audited and approved after one correction round; a single non-blocking numeric discrepancy was intentionally left on record rather than silently resolved.",
+        "No Scanner ranking, Strategist behavior, Monitor rules, or broker execution changed."
+      ],
+      "impact": "Downstream historical recompute (UEF-5.2) now has a proven, auditable admissibility gate instead of an implicit assumption about which evidence is trustworthy.",
+      "sources": [
+        "docs/research/uef5_1_clean_evidence_registry.md",
+        "docs/daily_patch/2026-09-28_uef5_formal_freeze_and_patch_backfill.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-28",
+      "version": "UEF-5.2 Historical Recompute",
+      "title": "Freeze deterministic historical recompute over clean evidence",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF5",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Formally froze the deterministic, offline recompute of clean historical evidence through the canonical evaluation layer, with a verified market-data trust chain.",
+      "details": [
+        "Candle admission requires a verified, acquisition-issued data receipt rather than a caller-supplied trust flag.",
+        "A dedicated session policy projects admitted candles onto the canonical trading session before any evaluation runs.",
+        "Independently audited and approved after two correction rounds; one non-blocking debt item was intentionally left on record.",
+        "No legacy comparison and no parity claim -- that boundary belongs to UEF-5.3."
+      ],
+      "impact": "Historical evaluation numbers are now reproducible from a bound, verifiable input chain instead of ad hoc recomputation.",
+      "sources": [
+        "docs/research/uef5_2_historical_recompute.md",
+        "docs/decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md",
+        "docs/daily_patch/2026-09-28_uef5_formal_freeze_and_patch_backfill.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-28",
+      "version": "UEF-5.3 Historical Dual Run",
+      "title": "Freeze legacy-versus-canonical historical comparison",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF5",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Formally froze the comparison between legacy evaluation outputs and the new canonical historical recompute for the same evidence.",
+      "details": [
+        "Classifies every material difference through a bounded taxonomy instead of guessing; never treats an undefined legacy metric as a fake zero.",
+        "Gates any numeric comparison on a positively-proven shared population, never on count equality alone.",
+        "Independently audited and approved after five correction rounds; one non-blocking debt item was intentionally left on record.",
+        "Produces no strategy conclusion and no ranking -- comparison classification only."
+      ],
+      "impact": "The system can now state, with evidence, where legacy and canonical evaluation agree, disagree, or are not comparable -- instead of assuming parity.",
+      "sources": [
+        "docs/research/uef5_3_historical_dual_run.md",
+        "docs/daily_patch/2026-09-28_uef5_3_formal_freeze.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-28",
+      "version": "UEF-6 Dedup and Evidence Lineage",
+      "title": "Freeze duplicate-evidence detection and direct aggregation lineage",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF6",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Formally froze detection of accidentally duplicated evaluation rows and direct proof of which evidence entered which aggregate metric.",
+      "details": [
+        "Distinguishes raw rows, physical events, evaluation subjects and evaluation records, reusing the existing identity rules rather than inventing new ones.",
+        "A direct evidence-lineage sidecar proves aggregate membership only when it was actually witnessed at computation time; without that witness, lineage is reported as not available rather than guessed.",
+        "Historical validation against a real target run correctly reported a byte-level input mismatch as non-reproducible instead of silently accepting stale data.",
+        "Independently audited and approved after three correction rounds."
+      ],
+      "impact": "Aggregate metrics can now be checked for accidental double-counting and, where a direct witness exists, traced to the exact evidence rows they were built from.",
+      "sources": [
+        "docs/research/uef6_dedup_evidence_lineage_freeze.md",
+        "docs/daily_patch/2026-09-28_uef6_formal_freeze.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "UEF-7 Alpha Board Normalization",
+      "title": "Freeze the normalized comparison-ready view of the Alpha Research Board",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF7"
+      ],
+      "summary": "Formally froze a read-only, derived normalization of the Alpha Research Board that makes candidate rows and their source provenance directly comparable without changing the board itself.",
+      "details": [
+        "Preserves every candidate row exactly -- no merging, no reordering, no promotion decision.",
+        "Groups candidates that share the same source evidence, while explicitly stating that shared or different source evidence never proves the candidates share or don't share a population.",
+        "Independently audited and approved after three correction rounds, including a fix closing an adversarial input path that could otherwise smuggle an unrecognized field into the result's identity."
+      ],
+      "impact": "Downstream comparison tooling can now read one consistent, verified view of the Alpha Board instead of each consumer re-deriving its own interpretation.",
+      "sources": [
+        "docs/research/uef7_alpha_board_normalization_freeze.md",
+        "docs/daily_patch/2026-09-29_uef7_formal_freeze.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "UEF-8 Fair Comparison Validation",
+      "title": "Freeze pairwise comparison-validity checks over the normalized Alpha Board",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF8"
+      ],
+      "summary": "Formally froze a pairwise check of whether two candidates on the Alpha Board can be fairly compared at all -- never which one performs better.",
+      "details": [
+        "Every candidate pair is classified as comparable, conditionally comparable, or not comparable, based only on scope, evidence and provenance facts -- never on a metric's own performance value.",
+        "Independently audited and approved after two correction rounds: individually-proven evidence for two candidates does not by itself prove their populations can be compared, and pair identifiers were hardened against a hash-collision edge case.",
+        "Introduces no score, rank, winner or promotion recommendation of any kind."
+      ],
+      "impact": "The system can now say, with evidence, whether a comparison between two candidates is currently trustworthy -- instead of silently assuming every pair is comparable.",
+      "sources": [
+        "docs/research/uef8_fair_comparison_validation_freeze.md",
+        "docs/daily_patch/2026-09-29_uef8_formal_freeze.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "UEF-9 Formal Evaluation Authority -- UEF Complete",
+      "title": "Freeze the final evaluation authority binding; the Unified Evaluation Foundation is complete",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF9",
+        "AUTHORITY"
+      ],
+      "summary": "Formally froze the final authority layer that binds the candidate-level (UEF-7) and pairwise-comparison (UEF-8) evaluation results together and verifies they are internally consistent. With this freeze, the nine-stage Unified Evaluation Foundation (UEF-1 through UEF-9) is complete.",
+      "details": [
+        "Proves that a given comparison result genuinely belongs to a given candidate result, and that no candidate or comparison pair was silently added, dropped, or duplicated.",
+        "Reports one of two outcomes only -- the authority chain is valid, or it is rejected outright -- never a partial or confidence-scored result.",
+        "Records, as an explicit and intentional limitation (not a defect), that the current evaluation schema cannot yet prove two candidates share or differ in their underlying evidence population, so no pair can currently be marked fully comparable.",
+        "Introduces no ranking, promotion, or trading authority -- evaluation validity only."
+      ],
+      "impact": "The evaluation framework underneath the trading system's research process is now a single, internally-verified authority chain from raw candidate facts through to a final validity verdict.",
+      "sources": [
+        "docs/research/uef9_formal_evaluation_authority_freeze.md",
+        "docs/daily_patch/2026-09-29_uef9_uef_complete.md",
+        "docs/milestones/UEF.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "UEF P1.1 Real-Run Acceptance",
+      "title": "Validate the frozen evaluation chain against live repository data",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "OPERATIONS",
+        "VALIDATION"
+      ],
+      "summary": "Ran the frozen UEF-7 through UEF-9 evaluation chain against one real, current snapshot of the Alpha Research Board to confirm it operates correctly outside of tests, without touching trading runtime state.",
+      "details": [
+        "The chain accepted the real snapshot and returned a valid authority result end to end.",
+        "Replaying the exact same captured snapshot produced identical results, confirming the chain has no hidden randomness or timing dependence.",
+        "Deliberately corrupted copies of the intermediate results were all correctly rejected, confirming the authority checks are not bypassable.",
+        "Verified the evaluation run wrote only to its own report output location and never touched live trading state, logs, or broker data, even while the live trading system kept running and writing concurrently."
+      ],
+      "impact": "Confirms the frozen evaluation framework is not just theoretically correct but actually works against real, live repository data without interfering with trading operations.",
+      "sources": [
+        "docs/research/uef_p1_1_real_run_acceptance.md",
+        "docs/daily_patch/2026-09-29_uef_p1_1_real_run_acceptance.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "Patch Notes Backfill and Canonical Sync",
+      "title": "Backfill the Patch Notes UI through UEF-9 completion and P1.1, and add a drift guard",
+      "stage": "Development Governance",
+      "types": [
+        "DOCUMENTATION",
+        "WEB_UI"
+      ],
+      "summary": "The user-facing Patch Notes UI had silently stopped updating on 2026-09-14 because its structured data file was not updated alongside two weeks of frozen evaluation-framework work. Backfilled the missing entries and added a regression check so this cannot silently recur.",
+      "details": [
+        "Traced the Patch Notes UI to its actual data source (a structured JSON file plus its human-readable companion) and confirmed the API and UI code were both working correctly -- only the underlying data file had gone stale.",
+        "Added the missing UEF-5.1 through UEF-9 freeze milestones and the P1.1 real-run acceptance entry, in the order they actually happened, without altering any existing entry.",
+        "Added a regression test that fails if the technical patch-note archive (docs/daily_patch/) ever contains a newer dated entry than the Patch Notes UI's own data file, so a future stall is caught automatically instead of discovered by a user."
+      ],
+      "impact": "The Patch Notes UI now reflects the true, current state of the project, and a recurrence of the same silent staleness will be caught by an automated check.",
+      "sources": [
+        "docs/trading_agent_patch_notes_detailed_update/patch_notes.json",
+        "docs/trading_agent_patch_notes_detailed_update/README.md",
+        "tests/test_patch_notes_sync.py"
       ],
       "status": "current"
     }

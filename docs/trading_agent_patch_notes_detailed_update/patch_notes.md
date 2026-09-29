@@ -1396,3 +1396,79 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Regression: signed-price case passed; focused execution-price suite passed
   `12 tests` (the session-level production-write detector separately observed
   concurrent watchdog runtime writes).
+
+# 2026-09-27 - UEF-5.1 Clean Evidence Registry
+
+- Establishes CLEAN/QUARANTINED/FIELD_INVALID/REVIEW_REQUIRED/NO_RULE evidence classification, with a positively-proven clean domain required before anything is treated as CLEAN.
+- Independently audited and approved after one correction round; a single non-blocking numeric discrepancy was intentionally left on record rather than silently resolved.
+- No Scanner ranking, Strategist behavior, Monitor rules, or broker execution changed.
+- Downstream historical recompute (UEF-5.2) now has a proven, auditable admissibility gate instead of an implicit assumption about which evidence is trustworthy.
+- See `docs/daily_patch/2026-09-28_uef5_formal_freeze_and_patch_backfill.md`.
+
+# 2026-09-28 - UEF-5.2 Historical Recompute
+
+- Candle admission requires a verified, acquisition-issued data receipt rather than a caller-supplied trust flag.
+- A dedicated session policy projects admitted candles onto the canonical trading session before any evaluation runs.
+- Independently audited and approved after two correction rounds; one non-blocking debt item was intentionally left on record.
+- No legacy comparison and no parity claim -- that boundary belongs to UEF-5.3.
+- Historical evaluation numbers are now reproducible from a bound, verifiable input chain instead of ad hoc recomputation.
+- See `docs/daily_patch/2026-09-28_uef5_formal_freeze_and_patch_backfill.md`.
+
+# 2026-09-28 - UEF-5.3 Historical Dual Run
+
+- Classifies every material difference through a bounded taxonomy instead of guessing; never treats an undefined legacy metric as a fake zero.
+- Gates any numeric comparison on a positively-proven shared population, never on count equality alone.
+- Independently audited and approved after five correction rounds; one non-blocking debt item was intentionally left on record.
+- Produces no strategy conclusion and no ranking -- comparison classification only.
+- The system can now state, with evidence, where legacy and canonical evaluation agree, disagree, or are not comparable -- instead of assuming parity.
+- See `docs/daily_patch/2026-09-28_uef5_3_formal_freeze.md`.
+
+# 2026-09-28 - UEF-6 Dedup and Evidence Lineage
+
+- Distinguishes raw rows, physical events, evaluation subjects and evaluation records, reusing the existing identity rules rather than inventing new ones.
+- A direct evidence-lineage sidecar proves aggregate membership only when it was actually witnessed at computation time; without that witness, lineage is reported as not available rather than guessed.
+- Historical validation against a real target run correctly reported a byte-level input mismatch as non-reproducible instead of silently accepting stale data.
+- Independently audited and approved after three correction rounds.
+- Aggregate metrics can now be checked for accidental double-counting and, where a direct witness exists, traced to the exact evidence rows they were built from.
+- See `docs/daily_patch/2026-09-28_uef6_formal_freeze.md`.
+
+# 2026-09-29 - UEF-7 Alpha Board Normalization
+
+- Preserves every candidate row exactly -- no merging, no reordering, no promotion decision.
+- Groups candidates that share the same source evidence, while explicitly stating that shared or different source evidence never proves the candidates share or don't share a population.
+- Independently audited and approved after three correction rounds, including a fix closing an adversarial input path that could otherwise smuggle an unrecognized field into the result's identity.
+- Downstream comparison tooling can now read one consistent, verified view of the Alpha Board instead of each consumer re-deriving its own interpretation.
+- See `docs/daily_patch/2026-09-29_uef7_formal_freeze.md`.
+
+# 2026-09-29 - UEF-8 Fair Comparison Validation
+
+- Every candidate pair is classified as comparable, conditionally comparable, or not comparable, based only on scope, evidence and provenance facts -- never on a metric's own performance value.
+- Independently audited and approved after two correction rounds: individually-proven evidence for two candidates does not by itself prove their populations can be compared, and pair identifiers were hardened against a hash-collision edge case.
+- Introduces no score, rank, winner or promotion recommendation of any kind.
+- The system can now say, with evidence, whether a comparison between two candidates is currently trustworthy -- instead of silently assuming every pair is comparable.
+- See `docs/daily_patch/2026-09-29_uef8_formal_freeze.md`.
+
+# 2026-09-29 - UEF-9 Formal Evaluation Authority -- UEF Complete
+
+- Proves that a given comparison result genuinely belongs to a given candidate result, and that no candidate or comparison pair was silently added, dropped, or duplicated.
+- Reports one of two outcomes only -- the authority chain is valid, or it is rejected outright -- never a partial or confidence-scored result.
+- Records, as an explicit and intentional limitation (not a defect), that the current evaluation schema cannot yet prove two candidates share or differ in their underlying evidence population, so no pair can currently be marked fully comparable.
+- Introduces no ranking, promotion, or trading authority -- evaluation validity only.
+- The evaluation framework underneath the trading system's research process is now a single, internally-verified authority chain from raw candidate facts through to a final validity verdict.
+- See `docs/daily_patch/2026-09-29_uef9_uef_complete.md`.
+
+# 2026-09-29 - UEF P1.1 Real-Run Acceptance
+
+- The chain accepted the real snapshot and returned a valid authority result end to end.
+- Replaying the exact same captured snapshot produced identical results, confirming the chain has no hidden randomness or timing dependence.
+- Deliberately corrupted copies of the intermediate results were all correctly rejected, confirming the authority checks are not bypassable.
+- Verified the evaluation run wrote only to its own report output location and never touched live trading state, logs, or broker data, even while the live trading system kept running and writing concurrently.
+- Confirms the frozen evaluation framework is not just theoretically correct but actually works against real, live repository data without interfering with trading operations.
+- See `docs/daily_patch/2026-09-29_uef_p1_1_real_run_acceptance.md`.
+
+# 2026-09-29 - Patch Notes Backfill and Canonical Sync
+
+- Traced the Patch Notes UI to its actual data source (a structured JSON file plus its human-readable companion) and confirmed the API and UI code were both working correctly -- only the underlying data file had gone stale.
+- Added the missing UEF-5.1 through UEF-9 freeze milestones and the P1.1 real-run acceptance entry, in the order they actually happened, without altering any existing entry.
+- Added a regression test that fails if the technical patch-note archive (docs/daily_patch/) ever contains a newer dated entry than the Patch Notes UI's own data file, so a future stall is caught automatically instead of discovered by a user.
+- The Patch Notes UI now reflects the true, current state of the project, and a recurrence of the same silent staleness will be caught by an automated check.
