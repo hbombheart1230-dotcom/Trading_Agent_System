@@ -1562,3 +1562,12 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Verified with an expanded set of 25 automated tests covering this exact scenario and related edge cases, plus the full existing test suite with no new regressions.
 - This fix has not yet been independently re-verified in a live setting and the real scheduled closeout should not be triggered again until that review is complete.
 - See `docs/daily_patch/2026-09-30_closeout_strict_owner_lock_fix.md`.
+
+# 2026-09-30 - Closeout Strict Release-Identity Fail-Closed (Fix2)
+
+- A same-day follow-up to today's strict-ownership lock fix found one remaining unsafe case: if a process could not verify its own identity at the moment it tried to give back ownership, it was allowed to proceed anyway instead of being blocked. This is now blocked. Does not fix the still-unexplained 2026-09-28 hang or 2026-09-29 interruption.
+- Found one specific situation where giving back closeout ownership could still succeed without actually proving it was the rightful owner: if the process could not confirm its own identity at that exact moment, the check was written in a way that let it proceed by default instead of stopping it.
+- This is now fixed so that giving back ownership always requires positive, confirmed proof on every check -- if any part of that proof cannot be confirmed, ownership is not given back and the safeguard stays in place.
+- This only affects the moment ownership is released, not how ownership is claimed or transferred, which were already verified correct.
+- Verified with a new targeted automated test for this exact situation, plus the full existing test suite with no new regressions.
+- See `docs/daily_patch/2026-09-30_closeout_strict_release_identity_fix2.md`.
