@@ -395,7 +395,13 @@ def release_live_loop_lock(
         if not resolved_token or existing_pid != owner_pid or existing_token != resolved_token:
             return False, "non_owner_release_rejected"
         my_identity = _process_start_identity(owner_pid)
-        if my_identity and existing_identity and my_identity != existing_identity:
+        # Fail closed: release requires a POSITIVE, verified match of pid +
+        # process_start_identity + owner_token. If either identity value is
+        # missing/unverifiable (my_identity is None -- the OS facility
+        # could not be read right now -- or existing_identity is absent
+        # from the lock record), that is NOT proof of ownership and must
+        # never be treated as a pass-through allowing unlink.
+        if not my_identity or not existing_identity or my_identity != existing_identity:
             return False, "non_owner_release_rejected"
         lock_path.unlink()
         return True, "released"

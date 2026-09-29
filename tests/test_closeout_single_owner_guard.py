@@ -282,6 +282,33 @@ def test_t6_release_with_mismatched_process_identity_is_rejected(tmp_path):
     assert lock_path.exists()
 
 
+def test_t6b_release_with_unverifiable_own_identity_fails_closed(tmp_path, monkeypatch):
+    """CRITICAL hotfix regression: if the caller's OWN process identity
+    cannot be verified at release time (the OS facility returns None), the
+    old code's `if my_identity and existing_identity and ...` check was
+    falsy and silently fell through to unlink -- an unverified identity is
+    NOT proof of non-ownership, but it is also NOT proof of ownership, and
+    must never be treated as a free pass. Release must fail closed and
+    preserve the lock."""
+    import libs.runtime.live_loop_lock as lock_mod
+
+    lock_path = tmp_path / "closeout_maintenance.lock"
+    acquired, reason = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=1800, strict_owner_identity=True, owner_token="owner-A",
+    )
+    assert acquired is True
+    before = lock_path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(lock_mod, "_process_start_identity", lambda pid: None)
+
+    released, status = release_live_loop_lock(lock_path, strict_owner_identity=True, owner_token="owner-A")
+
+    assert released is False
+    assert status == "non_owner_release_rejected"
+    assert lock_path.exists()
+    assert lock_path.read_text(encoding="utf-8") == before
+
+
 # =============================================================================
 # T7 -- malformed lock -> fail closed, no silent unlink
 # =============================================================================
