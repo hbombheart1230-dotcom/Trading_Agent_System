@@ -1508,3 +1508,11 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Re-verified against this system's real current data: it still correctly declines to publish today's result, because some source data genuinely has not updated.
 - Frozen evaluation semantics were unchanged.
 - See `docs/daily_patch/2026-09-29_daily_uef_eod_wiring_fix2.md`.
+
+# 2026-09-29 - Pytest Artifact Hygiene (Permanent Fix)
+
+- An earlier same-day test-speed fix had an unintended side effect: it left a small leftover folder behind in the project after every test run.
+- Moved test temporary files to the operating system's own temp folder instead of inside the project.
+- A successful test run now deletes its own temporary folder immediately when it finishes; a failed or interrupted run keeps it briefly for troubleshooting but it is swept automatically on the next run, so nothing builds up.
+- Removed the leftover folders already found from before this fix, and added a permanent project rule plus an automated check so this cannot quietly return.
+- See `docs/daily_patch/2026-09-29_pytest_artifact_hygiene.md`.

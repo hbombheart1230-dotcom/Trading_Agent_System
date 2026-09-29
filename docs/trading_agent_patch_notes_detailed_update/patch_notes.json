@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 85,
+  "entry_count": 86,
   "entries": [
     {
       "date": "2026-09-08",
@@ -2241,6 +2241,28 @@
       "sources": [
         "docs/daily_patch/2026-09-29_daily_uef_eod_wiring_fix2.md",
         "docs/daily_patch/2026-09-29_daily_uef_eod_wiring.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "Pytest Artifact Hygiene (Permanent Fix)",
+      "title": "Test runs no longer leave leftover folders in the project",
+      "stage": "Trading Operations",
+      "types": [
+        "TEST_INFRASTRUCTURE"
+      ],
+      "summary": "An earlier same-day test-speed fix had an unintended side effect: it left a small leftover folder behind in the project after every test run. That is now fixed permanently -- test runs clean up after themselves automatically.",
+      "details": [
+        "Moved test temporary files to the operating system's own temp folder instead of inside the project.",
+        "A successful test run now deletes its own temporary folder immediately when it finishes.",
+        "A failed or interrupted test run still keeps its temporary folder around briefly for troubleshooting, but it is automatically cleaned up the next time tests run, so nothing builds up over time.",
+        "Removed the leftover folders already found from before this fix.",
+        "Added a permanent project rule and an automated check so this class of leftover cannot quietly return."
+      ],
+      "impact": "Running tests no longer clutters the project with leftover folders, and any future test run that fails or is interrupted is guaranteed to be cleaned up automatically rather than accumulating.",
+      "sources": [
+        "docs/daily_patch/2026-09-29_pytest_artifact_hygiene.md"
       ],
       "status": "current"
     }
