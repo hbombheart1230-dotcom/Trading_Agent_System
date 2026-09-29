@@ -1549,3 +1549,16 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Every ownership decision is now recorded in the same durable failure log added in the previous closeout diagnostics update.
 - Verified with 12 new automated tests covering simultaneous triggers, crash recovery, and later retries, plus the full existing test suite with no new regressions.
 - See `docs/daily_patch/2026-09-30_closeout_single_owner_guard.md`.
+
+# 2026-09-30 - Closeout Strict Owner-Identity Lock Fix (CRITICAL)
+
+- A critical correction to the same-day single-owner protection fix: the first version could have let a genuinely still-running closeout lose its own lock to a second trigger just because it took longer than a fixed time limit. This does not fix the still-unexplained 2026-09-28 hang or 2026-09-29 interruption.
+- An independent review found that the first version of today's single-owner protection had a real gap: it could treat a closeout that was simply taking a long time the same as one that had actually crashed, and let a second attempt take over while the first was still genuinely running.
+- Closeout ownership is now proven by verifying it is the exact same running process, using real operating-system process information, rather than by how much time has passed.
+- A running process can no longer lose ownership just because it has been running longer than expected.
+- Ownership can still be safely taken over the moment the previous process is confirmed to have actually stopped or been replaced.
+- If ownership can't be clearly verified one way or the other, the system now always errs on the side of caution and refuses to proceed, rather than guessing.
+- Giving back ownership now requires proving it is the exact same claim that was made originally, so one process can never accidentally cancel another's claim.
+- Verified with an expanded set of 25 automated tests covering this exact scenario and related edge cases, plus the full existing test suite with no new regressions.
+- This fix has not yet been independently re-verified in a live setting and the real scheduled closeout should not be triggered again until that review is complete.
+- See `docs/daily_patch/2026-09-30_closeout_strict_owner_lock_fix.md`.
