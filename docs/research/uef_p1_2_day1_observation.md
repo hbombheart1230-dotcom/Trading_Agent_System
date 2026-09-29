@@ -34,7 +34,11 @@ bindings, `authority_status=VALID`, zero production/runtime state writes (verifi
 
 See `docs/daily_patch/2026-09-29_daily_uef_eod_wiring.md` for the new
 `libs/reporting/evaluation/daily_uef_pipeline.py` orchestrator, its tests, and the scheduler wiring
-prepared (not yet registered).
+prepared (not yet registered). An independent audit subsequently found three real defects in that first
+implementation (single-capture authority, a competing canonical publisher inside closeout maintenance, and
+source-contract-unaware freshness with a publishable stale-bypass); see
+`docs/daily_patch/2026-09-29_daily_uef_eod_wiring_fix2.md` for the correction. The conclusions below
+reflect the corrected implementation.
 
 Running that orchestrator against this repository's real current state for `through_day=2026-09-29`
 correctly **FAILED (freshness_guard)**: `prospective_candidates`, `fresh_change`, `opening_cumulative`, and

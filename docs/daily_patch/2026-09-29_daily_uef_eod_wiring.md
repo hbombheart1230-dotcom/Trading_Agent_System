@@ -89,3 +89,24 @@ was backfilled for 2026-09-28: the missing evidence cannot be faithfully reconst
 - P1.3 Docker work is unaffected and continues separately.
 
 Detail: [P1.2 Day-1 observation](../research/uef_p1_2_day1_observation.md).
+
+## Correction (Fix2, same day, after independent audit)
+
+This first implementation had three real defects, found by an independent audit and corrected in
+[Fix2](2026-09-29_daily_uef_eod_wiring_fix2.md). Recorded here rather than silently edited away:
+
+- **This document's "Any failure at any stage leaves every existing file untouched" claim above was
+  incomplete.** It was true of this orchestrator's own failure paths, but it did not account for a
+  *second, independent* code path -- `libs/reporting/closeout_maintenance.py` -- that separately called
+  `write_alpha_research_board()` directly, bypassing UEF-9 entirely and advancing the canonical dated Board
+  and `latest.json`/`.md` on its own. Fix2 removed that call.
+- The freshness guard rebuilt the Alpha Board a second time inside `write_alpha_research_board()` at
+  publish time, so the exact object UEF-9 verified was not provably the exact object persisted if an
+  underlying source mutated between the two builds (a live, concurrently-writing host is this repository's
+  normal condition, not an edge case). Fix2 made the board a single in-memory capture, persisted directly.
+- The freshness guard treated every dated source uniformly; it had no explicit contract distinguishing a
+  source that is genuinely supposed to update daily from one that is not. Fix2 replaced it with an explicit,
+  evidence-based per-source contract table, and separated "diagnostic inspection" from "canonical
+  publication" so a stale-source bypass can never reach `latest.json`/`.md`.
+
+See Fix2's own document for full detail and the corrected invariant statement.

@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 84,
+  "entry_count": 85,
   "entries": [
     {
       "date": "2026-09-08",
@@ -2215,6 +2215,32 @@
       "sources": [
         "docs/daily_patch/2026-09-29_daily_uef_eod_wiring.md",
         "docs/daily_patch/2026-09-29_uef_p1_1_real_run_acceptance.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "Daily UEF Publication Boundary Hardened (Fix2)",
+      "title": "Daily evaluation publication boundary hardened: single-capture authority, freshness contracts, fail-closed publication",
+      "stage": "Evaluation Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "An independent review of the same-day daily-evaluation wiring fix found three real gaps before it went live. All three are now closed: only one place in the system may publish a daily evaluation result, that result can no longer drift from what was actually evaluated, and a diagnostic check of old data can never be mistaken for a real published result.",
+      "details": [
+        "Found and removed a second, independent code path that could publish a daily result on its own, without going through the evaluation chain at all.",
+        "Closed a gap where the data actually evaluated and the data actually published could theoretically differ if something changed in between -- publication now uses the exact same captured data throughout, never re-reading it.",
+        "Replaced a one-size-fits-all freshness rule with specific, evidence-based rules per data source, after directly investigating what each source is actually supposed to look like on a fresh day.",
+        "Made it structurally impossible for a diagnostic check run against old data to publish a real result, rather than relying on a flag being used correctly.",
+        "Hardened the final publish step so an interruption partway through can never leave a half-written or mixed-authority result in place.",
+        "Re-verified against this system's real current data: it still correctly declines to publish today's result, because some source data genuinely has not updated -- this remains the safety check working as intended.",
+        "Frozen evaluation semantics were unchanged throughout."
+      ],
+      "impact": "The daily evaluation result can now only ever come from one place, cannot silently mix stale and fresh data, and cannot be corrupted by an interrupted write -- closing gaps that a same-day independent review found before this went into real use.",
+      "sources": [
+        "docs/daily_patch/2026-09-29_daily_uef_eod_wiring_fix2.md",
+        "docs/daily_patch/2026-09-29_daily_uef_eod_wiring.md"
       ],
       "status": "current"
     }

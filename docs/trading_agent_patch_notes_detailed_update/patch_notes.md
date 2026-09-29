@@ -1496,3 +1496,15 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Attempted today's recovery run: it correctly declined to publish, because some of the underlying daily data genuinely has not updated since the prior trading day -- this is the new safety check working as intended, not a new problem.
 - Frozen evaluation semantics were unchanged.
 - See `docs/daily_patch/2026-09-29_daily_uef_eod_wiring.md`.
+
+# 2026-09-29 - Daily UEF Publication Boundary Hardened (Fix2)
+
+- An independent review of the same-day daily-evaluation wiring fix found three real gaps before it went live.
+- Found and removed a second, independent code path that could publish a daily result on its own, without going through the evaluation chain at all.
+- Closed a gap where the data actually evaluated and the data actually published could theoretically differ if something changed in between -- publication now uses the exact same captured data throughout.
+- Replaced a one-size-fits-all freshness rule with specific, evidence-based rules per data source.
+- Made it structurally impossible for a diagnostic check of old data to publish a real result.
+- Hardened the final publish step so an interruption partway through can never leave a half-written or mixed-authority result in place.
+- Re-verified against this system's real current data: it still correctly declines to publish today's result, because some source data genuinely has not updated.
+- Frozen evaluation semantics were unchanged.
+- See `docs/daily_patch/2026-09-29_daily_uef_eod_wiring_fix2.md`.
