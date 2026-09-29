@@ -16,6 +16,7 @@
 | UEF-5.2 | Historical Recompute (market-data authority + canonical session projection) | FORMALLY FROZEN |
 | UEF-5.3 | Historical Dual Run (legacy vs. canonical comparison) | FORMALLY FROZEN |
 | UEF-6 | Dedup and evidence lineage (population dedup + direct lineage sidecar + historical validation) | FORMALLY FROZEN |
+| UEF-7 | Alpha Board normalization (derived comparison-ready view over Alpha Research Board v2) | FORMALLY FROZEN |
 
 ## Current / Next
 
@@ -105,6 +106,24 @@ under an unrecoverable byte mismatch is the correct contract; no lineage was fab
 replay was accepted. Final regression: UEF-6A 22 + UEF-6B 14 + UEF-6C 28 = 64 passed. See
 [UEF-6 Dedup & Evidence Lineage Freeze](../research/uef6_dedup_evidence_lineage_freeze.md).
 
+**UEF-7: Alpha Board Normalization — FORMALLY FROZEN** (independent Codex final closure audit: CRITICAL 0,
+HIGH 0, MEDIUM 0, LOW 0; `CORE_VERDICT: APPROVE_UEF7`, `UEF7_COMPLETE: YES`, `UEF7_FORMAL_FREEZE: YES`).
+Produces one deterministic, comparison-ready normalized view over the frozen Alpha Research Board v2 —
+never adds a field to its frozen `ROW_COLUMNS`, never calls `canonicalize_board()`/`build_alpha_research_board()`
+differently, never mutates a candidate row/metric/decision/promotion state. Candidate row != independent
+evidence population, and same/different source provenance != proven same/independent population —
+`population_identity_status` stays `NOT_PROVABLE_FROM_ALPHA_BOARD_V2` for all 14 real candidates (no
+evidence-independence count ever invented). Full four-field `SourceReference` identity
+(`source_key`+`path`+`available`+`error`) is the one shared authority for source-overlap grouping and
+multiset-sensitive `source_bundle_id`; the frozen, imported `ROW_COLUMNS` (never the board's own
+published field) is the sole candidate-row trust root, closing an adversarial-input trust-chain gap found
+during bounded audit. No ranking/score/promotion/strategy change of any kind. Checkpoint commit `cc7fb4b`.
+Real board (`through_day=2026-09-25`): 14 candidate rows, 5 shared-source groups (`btc_woori_history`,
+`feature_candidates`, `opening_cumulative`, `prospective_candidates`, `short_alpha_discriminator`), 10
+rows with shared source, 0 proven population groups, 14 unresolved population candidates — all derived
+dynamically, none hardcoded. Final regression: UEF-7 38 + Alpha Board 36 + UEF-6A 22 + UEF-6B 14 + UEF-6C
+28 = 138 passed. See [UEF-7 Alpha Board Normalization Freeze](../research/uef7_alpha_board_normalization_freeze.md).
+
 **UEF-4 CONSOLIDATED PROVISIONAL CLOSURE.** All six UEF-4B families have completed implementation/classification work. Five are formally frozen or formally closed (Q10 Semiconductor, Q12 Calc1/Calc2, Opening Shadow, Q10 Index) or provisionally closed pending ratification (Q11); Q9 and Q12 Calc3 are classified **PRIMARY / KNOWN / BLOCKED** — known, intentional closure outcomes, not unfinished hidden work. **UEF-4 IMPLEMENTATION/CLASSIFICATION: COMPLETE. UEF-4 FORMALLY FROZEN: NO. UEF-4 PROVISIONALLY COMPLETE: YES.** No family in this phase is formally frozen by self-assessment alone; final ratification (Q11, and any future Q9/Calc3 repair) is an independent Codex audit matter. The next planned phase is **UEF-5 Historical Recompute & Dual Run — NOT STARTED.**
 
 UEF-4A classifies 39 sources: 20 primary-evidence sources and 19 derived or consumer sources. Five adapter families are approved for implementation; Q9 and Q12 Calc3's candidate adapters are BLOCKED, not counted among them. The authoritative inventory and all mapping constraints remain in [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md).
@@ -138,8 +157,8 @@ These remain separate from the approved UEF-4B adapter sequence.
 | UEF-5.2 | Historical Recompute | FORMALLY FROZEN |
 | UEF-5.3 | Historical dual run (legacy comparison) | FORMALLY FROZEN |
 | UEF-6 | Dedup and evidence lineage | FORMALLY FROZEN |
-| UEF-7 | Alpha Board normalization | NEXT |
-| UEF-8 | Fair comparison validation | PLANNED |
+| UEF-7 | Alpha Board normalization | FORMALLY FROZEN |
+| UEF-8 | Fair comparison validation | NEXT |
 | UEF-9 | Evaluation authority freeze | PLANNED |
 
 ## Authority Documents
@@ -151,6 +170,7 @@ These remain separate from the approved UEF-4B adapter sequence.
 - [UEF-5.2 Historical Recompute](../research/uef5_2_historical_recompute.md)
 - [UEF-5.3 Historical Dual Run](../research/uef5_3_historical_dual_run.md)
 - [UEF-6 Dedup & Evidence Lineage Freeze](../research/uef6_dedup_evidence_lineage_freeze.md)
+- [UEF-7 Alpha Board Normalization Freeze](../research/uef7_alpha_board_normalization_freeze.md)
 - [ADR-0003: UEF-5.2 Market-Data Authority and Recompute Identity](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md)
 - [Evaluation roadmap](../en/12_roadmap.md)
 

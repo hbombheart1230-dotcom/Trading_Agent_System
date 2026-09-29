@@ -3,8 +3,8 @@
 ## Current State
 
 - Production runtime: separate from this documentation vault.
-- Current development milestone: UEF-7 Alpha Board Normalization (NEXT).
-- Latest formal evaluation freeze: [[UEF|UEF-6 - Dedup & Evidence Lineage]].
+- Current development milestone: UEF-8 Fair Comparison Validation (NEXT).
+- Latest formal evaluation freeze: [[UEF|UEF-7 - Alpha Board Normalization]].
 
 ## Roadmap Sequence
 
@@ -15,8 +15,8 @@ PLANNED and are not yet architected in detail):
 2. UEF-5.2 Historical Recompute — FORMALLY FROZEN
 3. UEF-5.3 Historical Dual Run — FORMALLY FROZEN
 4. UEF-6 Dedup & Evidence Lineage — FORMALLY FROZEN
-5. UEF-7 Alpha Board Normalization — NEXT
-6. UEF-8 Fair Comparison Validation — PLANNED
+5. UEF-7 Alpha Board Normalization — FORMALLY FROZEN
+6. UEF-8 Fair Comparison Validation — NEXT
 7. UEF-9 Evaluation Authority Freeze — PLANNED
 8. UEF COMPLETE (target)
 9. [[Strategy_Program_Integration|Strategy Program Integration]] — architecture classification decision, ongoing
@@ -53,7 +53,8 @@ PLANNED and are not yet architected in detail):
 - UEF-5.2, Historical Recompute: FORMALLY FROZEN (one non-blocking debt item, `UEF5_2_DEBT_001`).
 - UEF-5.3, Historical Dual Run: FORMALLY FROZEN (one non-blocking debt item, `UEF5_3_DEBT_001`).
 - UEF-6, Dedup & Evidence Lineage: FORMALLY FROZEN. See [UEF-6 freeze record](research/uef6_dedup_evidence_lineage_freeze.md).
-- UEF-7, Alpha Board Normalization: NEXT.
+- UEF-7, Alpha Board Normalization: FORMALLY FROZEN. See [UEF-7 freeze record](research/uef7_alpha_board_normalization_freeze.md).
+- UEF-8, Fair Comparison Validation: NEXT.
 - UEF-4A inventory detail: [Legacy family inventory](research/uef4_legacy_family_inventory.md).
 - Full UEF status: [[UEF]].
 
