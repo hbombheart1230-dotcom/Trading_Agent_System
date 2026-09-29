@@ -1537,3 +1537,15 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Added durable, immediately-saved failure logging to both paths, without changing how either path behaves when it succeeds.
 - Verified the new logging can never itself cause a failure, and does not touch any trading or order-related code.
 - See `docs/daily_patch/2026-09-30_closeout_diagnostic_hardening.md`.
+
+# 2026-09-30 - Closeout Single-Owner Guard
+
+- Closeout execution now enforces single-owner protection across market-status and scheduled fallback triggers. This does not fix the still-unexplained 2026-09-28 hang or 2026-09-29 interruption -- it closes a confirmed, separate gap where both closeout triggers could run at the same time.
+- Confirmed the two paths that run end-of-day closeout maintenance -- the live tick-loop and the scheduled backup task -- had no coordination between them, so both could run at the same time and write to the same output files at once.
+- Added a single-owner guard so only one of them can actually run closeout at a time; if the other is already running, the second one safely steps aside instead of racing it.
+- Reused this system's existing, already-proven single-instance lock mechanism rather than building a new one.
+- A run that safely steps aside is not treated as a failure, and does not overwrite anything.
+- If a run is interrupted or crashes partway through, the guard does not stay locked forever -- a later attempt can still run normally.
+- Every ownership decision is now recorded in the same durable failure log added in the previous closeout diagnostics update.
+- Verified with 12 new automated tests covering simultaneous triggers, crash recovery, and later retries, plus the full existing test suite with no new regressions.
+- See `docs/daily_patch/2026-09-30_closeout_single_owner_guard.md`.
