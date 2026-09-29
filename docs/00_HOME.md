@@ -3,8 +3,8 @@
 ## Current State
 
 - Production runtime: separate from this documentation vault.
-- Current development milestone: UEF-9 Formal Evaluation Authority Freeze (NEXT).
-- Latest formal evaluation freeze: [[UEF|UEF-8 - Fair Comparison Validation]].
+- Current development milestone: [[Strategy_Program_Integration|Strategy Program Integration]] (NEXT). UEF (UEF-1..UEF-9) is now COMPLETE and frozen as the evaluation-authority foundation underneath it.
+- Latest formal evaluation freeze: [[UEF|UEF-9 - Formal Evaluation Authority]] (UEF COMPLETE).
 
 ## Roadmap Sequence
 
@@ -17,9 +17,9 @@ PLANNED and are not yet architected in detail):
 4. UEF-6 Dedup & Evidence Lineage — FORMALLY FROZEN
 5. UEF-7 Alpha Board Normalization — FORMALLY FROZEN
 6. UEF-8 Fair Comparison Validation — FORMALLY FROZEN
-7. UEF-9 Evaluation Authority Freeze — NEXT
-8. UEF COMPLETE (target)
-9. [[Strategy_Program_Integration|Strategy Program Integration]] — architecture classification decision, ongoing
+7. UEF-9 Evaluation Authority Freeze — FORMALLY FROZEN
+8. UEF COMPLETE — UEF-1 through UEF-9 all FORMALLY FROZEN
+9. [[Strategy_Program_Integration|Strategy Program Integration]] — NEXT (not "UEF-10"; UEF stays frozen underneath it)
 10. Safety Step5D / Step5E / Step6 — PLANNED (Step5C is FROZEN; see [[Safety]])
 11. [[Reporter_Q100|Q100 / Reporter v2]] — DESIGN STAGE
 12. [[Evidence_Memory|Evidence Memory + Obsidian]] — PLANNED
@@ -55,7 +55,8 @@ PLANNED and are not yet architected in detail):
 - UEF-6, Dedup & Evidence Lineage: FORMALLY FROZEN. See [UEF-6 freeze record](research/uef6_dedup_evidence_lineage_freeze.md).
 - UEF-7, Alpha Board Normalization: FORMALLY FROZEN. See [UEF-7 freeze record](research/uef7_alpha_board_normalization_freeze.md).
 - UEF-8, Fair Comparison Validation: FORMALLY FROZEN. See [UEF-8 freeze record](research/uef8_fair_comparison_validation_freeze.md).
-- UEF-9, Formal Evaluation Authority Freeze: NEXT.
+- UEF-9, Formal Evaluation Authority: FORMALLY FROZEN. See [UEF-9 freeze record](research/uef9_formal_evaluation_authority_freeze.md).
+- **UEF COMPLETE**: UEF-1 through UEF-9 are all FORMALLY FROZEN. Next: [[Strategy_Program_Integration|Strategy Program Integration]] (not started).
 - UEF-4A inventory detail: [Legacy family inventory](research/uef4_legacy_family_inventory.md).
 - Full UEF status: [[UEF]].
 

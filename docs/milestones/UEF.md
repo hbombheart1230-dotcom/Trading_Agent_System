@@ -18,6 +18,7 @@
 | UEF-6 | Dedup and evidence lineage (population dedup + direct lineage sidecar + historical validation) | FORMALLY FROZEN |
 | UEF-7 | Alpha Board normalization (derived comparison-ready view over Alpha Research Board v2) | FORMALLY FROZEN |
 | UEF-8 | Fair comparison validation (pairwise COMPARABLE/CONDITIONAL/NOT_COMPARABLE over UEF-7) | FORMALLY FROZEN |
+| UEF-9 | Formal evaluation authority (final UEF-7/UEF-8 binding + integrity verification) | FORMALLY FROZEN |
 
 ## Current / Next
 
@@ -146,6 +147,33 @@ pairs, 0 COMPARABLE / 7 CONDITIONAL / 84 NOT_COMPARABLE, 91 unique pair ids,
 `POPULATION_RELATION_NOT_PROVEN=91` — all derived dynamically, none hardcoded. Final regression: UEF-8 41
 + UEF-7 38 = 79 passed. See [UEF-8 Fair Comparison Validation Freeze](../research/uef8_fair_comparison_validation_freeze.md).
 
+**UEF-9: Formal Evaluation Authority — FORMALLY FROZEN** (independent final closure audit: CRITICAL 0,
+HIGH 0, MEDIUM 0, LOW 0; `CORE_VERDICT: APPROVE_UEF9`, `UEF9_COMPLETE: YES`, `UEF9_FORMAL_FREEZE: YES`,
+`UEF_COMPLETE: YES`). The FINAL UEF stage — binds the already-frozen UEF-7 candidate-level facts and UEF-8
+pairwise comparison-validity facts into one final, fail-closed authority contract, without evaluating
+strategies again, ranking candidates, recomputing metrics, or reopening raw evidence. Proves UEF-8's
+result genuinely belongs to the supplied UEF-7 result (run-id and normalized-rows-digest binding),
+conserves the exact candidate universe and the full `N*(N-1)/2` pair universe (unique semantic pairs and
+unique `comparison_pair_id`s), conserves `COMPARABLE+CONDITIONAL+NOT_COMPARABLE == pair_count`, and
+detects a current-schema capability contradiction (`COMPARABLE>0` while the frozen schema declares it
+unreachable) — any contradiction raises `UEF9AuthorityError` and fails closed; `authority_status` is
+exactly `VALID` or a raised error, never a partial-valid or confidence-scored state. Freezes the explicit
+authority limitation that individual UEF-7 population proof is not pairwise population relation proof, so
+`COMPARABLE_REACHABLE_WITH_CURRENT_UEF7_SCHEMA: NO` remains the frozen current-schema contract. UEF-8
+exposes no native semantic digest of its own comparison results, so UEF-9 computes its own local
+binding/integrity digest over the supplied UEF-8 object — explicitly never relabeled as a native UEF-8
+digest. No ranking/promotion/trading authority of any kind. Checkpoint commit `608ddff`. Real authority
+(`through_day=2026-09-25`): 14 candidates, 91 pairs, 0 COMPARABLE / 7 CONDITIONAL / 84 NOT_COMPARABLE,
+`authority_status=VALID` — all derived dynamically, none hardcoded. Final regression: UEF-9 20 + UEF-8 41
++ UEF-7 38 = 99 passed. See [UEF-9 Formal Evaluation Authority Freeze](../research/uef9_formal_evaluation_authority_freeze.md).
+
+════════════════════════════════════════════════════════════════════════
+**UEF COMPLETE.** UEF-1 through UEF-9 are all FORMALLY FROZEN. Final authority ownership: candidate
+evaluation facts (UEF-7), pairwise comparison-validity facts (UEF-8), final authority binding (UEF-9).
+**NEXT: Strategy Program Integration** — not "UEF-10"; UEF remains frozen as the evaluation-authority
+foundation underneath it. Not started by this closure.
+════════════════════════════════════════════════════════════════════════
+
 **UEF-4 CONSOLIDATED PROVISIONAL CLOSURE.** All six UEF-4B families have completed implementation/classification work. Five are formally frozen or formally closed (Q10 Semiconductor, Q12 Calc1/Calc2, Opening Shadow, Q10 Index) or provisionally closed pending ratification (Q11); Q9 and Q12 Calc3 are classified **PRIMARY / KNOWN / BLOCKED** — known, intentional closure outcomes, not unfinished hidden work. **UEF-4 IMPLEMENTATION/CLASSIFICATION: COMPLETE. UEF-4 FORMALLY FROZEN: NO. UEF-4 PROVISIONALLY COMPLETE: YES.** No family in this phase is formally frozen by self-assessment alone; final ratification (Q11, and any future Q9/Calc3 repair) is an independent Codex audit matter. The next planned phase is **UEF-5 Historical Recompute & Dual Run — NOT STARTED.**
 
 UEF-4A classifies 39 sources: 20 primary-evidence sources and 19 derived or consumer sources. Five adapter families are approved for implementation; Q9 and Q12 Calc3's candidate adapters are BLOCKED, not counted among them. The authoritative inventory and all mapping constraints remain in [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md).
@@ -181,7 +209,9 @@ These remain separate from the approved UEF-4B adapter sequence.
 | UEF-6 | Dedup and evidence lineage | FORMALLY FROZEN |
 | UEF-7 | Alpha Board normalization | FORMALLY FROZEN |
 | UEF-8 | Fair comparison validation | FORMALLY FROZEN |
-| UEF-9 | Formal evaluation authority freeze | NEXT |
+| UEF-9 | Formal evaluation authority freeze | FORMALLY FROZEN |
+| UEF COMPLETE | UEF-1..UEF-9 fully frozen evaluation-authority foundation | COMPLETE |
+| Strategy Program Integration | Operational research/strategy lifecycle consolidation (not UEF-10) | NEXT |
 
 ## Authority Documents
 
@@ -194,6 +224,7 @@ These remain separate from the approved UEF-4B adapter sequence.
 - [UEF-6 Dedup & Evidence Lineage Freeze](../research/uef6_dedup_evidence_lineage_freeze.md)
 - [UEF-7 Alpha Board Normalization Freeze](../research/uef7_alpha_board_normalization_freeze.md)
 - [UEF-8 Fair Comparison Validation Freeze](../research/uef8_fair_comparison_validation_freeze.md)
+- [UEF-9 Formal Evaluation Authority Freeze](../research/uef9_formal_evaluation_authority_freeze.md)
 - [ADR-0003: UEF-5.2 Market-Data Authority and Recompute Identity](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md)
 - [Evaluation roadmap](../en/12_roadmap.md)
 
