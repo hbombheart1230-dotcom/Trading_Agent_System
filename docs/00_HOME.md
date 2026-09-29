@@ -3,10 +3,20 @@
 ## Current State
 
 - Production runtime: separate from this documentation vault.
-- Current development milestone: [[Strategy_Program_Integration|Strategy Program Integration]] (NEXT). UEF (UEF-1..UEF-9) is now COMPLETE and frozen as the evaluation-authority foundation underneath it.
+- Current development milestone: P1.3 Docker (NEXT). UEF (UEF-1..UEF-9) is COMPLETE and frozen as the evaluation-authority foundation underneath it; [P1.1 real-run acceptance](research/uef_p1_1_real_run_acceptance.md) passed.
 - Latest formal evaluation freeze: [[UEF|UEF-9 - Formal Evaluation Authority]] (UEF COMPLETE).
 
-## Roadmap Sequence
+## Current Delivery Order
+
+1. P0 Clean Evidence Registry: COMPLETE.
+2. P1 UEF-5 through UEF-9: COMPLETE / FORMALLY FROZEN.
+3. P1.1 UEF Real-Run Acceptance: PASS.
+4. P1.2 UEF Cross-day Observation: NON-BLOCKING / OBSERVE.
+5. P1.3 Docker: NEXT.
+6. P1.5 Large-file refactor / modularization: PLANNED.
+7. P2 Strategy Program Integration; P3 Safety 5D/5E/6; P4 Q100/Reporter v2; P5 Evidence Memory/Obsidian; P6 Self-improvement; P7 System V2 Freeze; P8 paper final experiments: PLANNED.
+
+## Historical Roadmap Sequence
 
 Forward-looking ordering of the major workstreams (status as currently tracked; later items remain
 PLANNED and are not yet architected in detail):
@@ -56,7 +66,8 @@ PLANNED and are not yet architected in detail):
 - UEF-7, Alpha Board Normalization: FORMALLY FROZEN. See [UEF-7 freeze record](research/uef7_alpha_board_normalization_freeze.md).
 - UEF-8, Fair Comparison Validation: FORMALLY FROZEN. See [UEF-8 freeze record](research/uef8_fair_comparison_validation_freeze.md).
 - UEF-9, Formal Evaluation Authority: FORMALLY FROZEN. See [UEF-9 freeze record](research/uef9_formal_evaluation_authority_freeze.md).
-- **UEF COMPLETE**: UEF-1 through UEF-9 are all FORMALLY FROZEN. Next: [[Strategy_Program_Integration|Strategy Program Integration]] (not started).
+- **UEF COMPLETE (current state)**: UEF-1 through UEF-9 are all FORMALLY FROZEN. [P1.1 real-run acceptance](research/uef_p1_1_real_run_acceptance.md) is PASS; P1.2 cross-day observation is non-blocking. Current execution priority: **P1.3 Docker**. Strategy Program Integration remains P2 and is not started.
+- Historical closeout: UEF-1 through UEF-9 are all FORMALLY FROZEN. Strategy Program Integration was the next action at that freeze point; the current priority is documented above as P1.3 Docker.
 - UEF-4A inventory detail: [Legacy family inventory](research/uef4_legacy_family_inventory.md).
 - Full UEF status: [[UEF]].
 

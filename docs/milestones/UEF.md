@@ -172,6 +172,31 @@ digest. No ranking/promotion/trading authority of any kind. Checkpoint commit `6
 evaluation facts (UEF-7), pairwise comparison-validity facts (UEF-8), final authority binding (UEF-9).
 **NEXT: Strategy Program Integration** — not "UEF-10"; UEF remains frozen as the evaluation-authority
 foundation underneath it. Not started by this closure.
+
+## Post-Freeze Operations
+
+- **P1.1 Real-Run Acceptance: PASS.** The frozen UEF-7 to UEF-8 to UEF-9 chain was verified against one
+  current real Alpha Board capture. See [P1.1 real-run acceptance](../research/uef_p1_1_real_run_acceptance.md).
+- **P1.2 Cross-day Observation: NON-BLOCKING / OBSERVE.** Observe three or more trading days for a
+  continuing `authority_status=VALID`, no authority mismatch or artifact corruption, and deterministic
+  replay for identical captured input. This does not block implementation work.
+- **Current execution priority: P1.3 Docker.** Strategy Program Integration remains P2. This current
+  roadmap priority does not rewrite the historical next-action statements in frozen records.
+
+### Current Authority Summary
+
+```
+candidate evaluation authority       -> UEF-7
+pairwise comparison authority        -> UEF-8
+final evaluation binding             -> UEF-9
+
+ranking authority                    -> NONE
+promotion authority                  -> NONE
+trading authority                    -> NONE
+```
+
+`COMPARABLE_REACHABLE_WITH_CURRENT_UEF7_SCHEMA: NO` remains a frozen current-schema limitation because
+the UEF-7 schema has no pairwise population-relation authority. It is not a Docker blocker.
 ════════════════════════════════════════════════════════════════════════
 
 **UEF-4 CONSOLIDATED PROVISIONAL CLOSURE.** All six UEF-4B families have completed implementation/classification work. Five are formally frozen or formally closed (Q10 Semiconductor, Q12 Calc1/Calc2, Opening Shadow, Q10 Index) or provisionally closed pending ratification (Q11); Q9 and Q12 Calc3 are classified **PRIMARY / KNOWN / BLOCKED** — known, intentional closure outcomes, not unfinished hidden work. **UEF-4 IMPLEMENTATION/CLASSIFICATION: COMPLETE. UEF-4 FORMALLY FROZEN: NO. UEF-4 PROVISIONALLY COMPLETE: YES.** No family in this phase is formally frozen by self-assessment alone; final ratification (Q11, and any future Q9/Calc3 repair) is an independent Codex audit matter. The next planned phase is **UEF-5 Historical Recompute & Dual Run — NOT STARTED.**
@@ -211,7 +236,17 @@ These remain separate from the approved UEF-4B adapter sequence.
 | UEF-8 | Fair comparison validation | FORMALLY FROZEN |
 | UEF-9 | Formal evaluation authority freeze | FORMALLY FROZEN |
 | UEF COMPLETE | UEF-1..UEF-9 fully frozen evaluation-authority foundation | COMPLETE |
-| Strategy Program Integration | Operational research/strategy lifecycle consolidation (not UEF-10) | NEXT |
+| P1.1 | UEF real-run acceptance | PASS |
+| P1.2 | UEF cross-day observation | NON-BLOCKING / OBSERVE |
+| P1.3 | Docker | NEXT |
+| P1.5 | Large-file refactor / modularization | PLANNED |
+| P2 | Strategy Program Integration (not UEF-10) | PLANNED |
+| P3 | Safety Step5D / Step5E / Step6 | PLANNED |
+| P4 | Q100 / Reporter v2 | PLANNED |
+| P5 | Evidence Memory / Obsidian | PLANNED |
+| P6 | Self-improvement | PLANNED |
+| P7 | System V2 Freeze | PLANNED |
+| P8 | Paper final experiments | PLANNED |
 
 ## Authority Documents
 
@@ -225,6 +260,7 @@ These remain separate from the approved UEF-4B adapter sequence.
 - [UEF-7 Alpha Board Normalization Freeze](../research/uef7_alpha_board_normalization_freeze.md)
 - [UEF-8 Fair Comparison Validation Freeze](../research/uef8_fair_comparison_validation_freeze.md)
 - [UEF-9 Formal Evaluation Authority Freeze](../research/uef9_formal_evaluation_authority_freeze.md)
+- [P1.1 UEF real-run acceptance](../research/uef_p1_1_real_run_acceptance.md)
 - [ADR-0003: UEF-5.2 Market-Data Authority and Recompute Identity](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md)
 - [Evaluation roadmap](../en/12_roadmap.md)
 
