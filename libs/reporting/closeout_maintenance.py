@@ -15,6 +15,47 @@ from libs.reporting.post_exit_shadow_recap import generate_post_exit_shadow_reca
 from libs.reporting.q8_shadow_blocker_review import generate_q8_shadow_blocker_review
 
 
+def log_closeout_stage(*, run_id: str, day: str, stage: str, phase: str, detail: Dict[str, Any] | None = None) -> None:
+    """Durable, immediate-flush stage-boundary diagnostic record (2026-09-30
+    closeout diagnostic hardening). Uses the existing EventLogger (data/logs/
+    events.jsonl, fsync'd on every write) -- NOT a new logging surface.
+
+    Why this exists: investigating the 2026-09-29 upstream closeout gap
+    found that this repository's scheduled fallback closeout
+    (scripts/run_mock_exam_closeout.bat -> scripts/run_closeout_maintenance.py)
+    produced ZERO captured output on a ~10m37s silent hang on 2026-09-28
+    (reports/runtime/closeout_maintenance_2026-09-28_160000.log has only a
+    start line and an exit line, rc=1, nothing in between) -- because this
+    module's own step-level try/except blocks only ever record their
+    outcome into the in-memory `out["steps"][...]` dict, which is not
+    written to disk until the WHOLE function returns and the CLI's own
+    print statements run. A hang or external kill mid-function leaves
+    nothing durable behind to show which stage was in progress.
+
+    Scope note: called only at the stages most relevant to the 2026-09-29
+    investigation (account_snapshot -- the step most likely to block on a
+    real broker/network call -- and the three steps behind the four daily
+    UEF freshness sources: opening_rank1_prospective_shadow,
+    rank1_fixed_candidate_shadow, rank1_fresh_change_activation_shadow),
+    not all 17 steps in this function -- a deliberately bounded,
+    diagnostic-only addition, not a full instrumentation framework. Never
+    raises: a diagnostic-logging failure must never break closeout
+    maintenance itself.
+    """
+    try:
+        from libs.core.event_logger import EventLogger, resolve_event_log_path
+
+        EventLogger(resolve_event_log_path()).log(
+            run_id=run_id or "closeout-unknown-run",
+            stage="closeout_maintenance",
+            event=f"stage_{phase}",
+            level="info",
+            payload={"target_day": day, "closeout_stage": stage, **(detail or {})},
+        )
+    except Exception:  # noqa: BLE001 - diagnostics must never break closeout maintenance
+        pass
+
+
 def _path_exists(path: Any) -> bool:
     text = str(path or "").strip()
     return bool(text) and Path(text).exists()
@@ -70,16 +111,20 @@ def run_closeout_maintenance(
     state_path: Path | None = None,
     trigger: str = "closeout_maintenance",
     collect_account_snapshot: bool = True,
+    run_id: str = "",
 ) -> Dict[str, Any]:
     normalized_day = str(day or "").strip()[:10]
+    resolved_run_id = str(run_id or "").strip() or f"closeout-{normalized_day}-{trigger}"
     out: Dict[str, Any] = {
         "schema_version": "closeout_maintenance.v1",
         "day": normalized_day,
         "trigger": str(trigger or "closeout_maintenance"),
         "steps": {},
     }
+    log_closeout_stage(run_id=resolved_run_id, day=normalized_day, stage="run_closeout_maintenance", phase="start")
 
     if collect_account_snapshot:
+        log_closeout_stage(run_id=resolved_run_id, day=normalized_day, stage="account_snapshot", phase="start")
         try:
             snapshot = save_kiwoom_account_snapshot(day=normalized_day, trigger=str(trigger or "closeout_maintenance"))
             out["steps"]["account_snapshot"] = {
@@ -271,6 +316,7 @@ def run_closeout_maintenance(
             "error": str(exc),
         }
 
+    log_closeout_stage(run_id=resolved_run_id, day=normalized_day, stage="opening_rank1_prospective_shadow", phase="start")
     try:
         opening_rank1 = _build_opening_rank1_closeout_with_offline_fallback(
             day=normalized_day,
@@ -300,6 +346,10 @@ def run_closeout_maintenance(
             "error": str(exc),
         }
 
+    log_closeout_stage(
+        run_id=resolved_run_id, day=normalized_day,
+        stage="rank1_fixed_candidate_shadow+rank1_fresh_change_activation_shadow", phase="start",
+    )
     try:
         from libs.research.rank1_feature_mart.pipeline import run as run_rank1_feature_mart
         from libs.research.rank1_feature_mart.prospective import build_prospective_shadow
@@ -416,6 +466,16 @@ def run_closeout_maintenance(
         for name, step in out["steps"].items()
         if isinstance(step, dict)
     }
+    log_closeout_stage(
+        run_id=resolved_run_id, day=normalized_day, stage="run_closeout_maintenance", phase="end",
+        detail={
+            "ok": bool(out["ok"]),
+            "step_results": {
+                name: bool(step.get("ok")) if isinstance(step, dict) else None
+                for name, step in out["steps"].items()
+            },
+        },
+    )
     return out
 
 

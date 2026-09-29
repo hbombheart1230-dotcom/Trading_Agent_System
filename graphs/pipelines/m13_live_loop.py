@@ -57,6 +57,35 @@ def _clear_per_run_transient_state(state: Dict[str, Any]) -> None:
         state.pop(key, None)
 
 
+def _log_market_status_closeout_tick_exception(exc: BaseException, *, state: Dict[str, Any]) -> None:
+    """Durable, final-backstop diagnostic record for a market-status-closeout
+    exception caught at the tick-loop level (2026-09-30 closeout diagnostic
+    hardening). Writes via the existing EventLogger (data/logs/events.jsonl,
+    fsync'd on every write) -- additive only; never removes or replaces the
+    existing state["market_status_closeout_error"] containment. Never
+    itself raises."""
+    try:
+        import traceback
+
+        from libs.core.event_logger import EventLogger, new_run_id, resolve_event_log_path
+
+        run_id = str(state.get("run_id") or "").strip() or new_run_id()
+        EventLogger(resolve_event_log_path()).log(
+            run_id=run_id,
+            stage="market_status_closeout",
+            event="tick_exception",
+            level="error",
+            payload={
+                "function": "run_m13_once",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc)[:2000],
+                "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[:8000],
+            },
+        )
+    except Exception:  # noqa: BLE001 - diagnostics must never break the tick loop
+        pass
+
+
 def _resolve_report_day(state: Dict[str, Any]) -> str:
     market_status = (
         state.get("kiwoom_market_status")
@@ -153,7 +182,22 @@ def run_m13_once(
 
         state = market_status_fn(state)
     except Exception as exc:
+        # 2026-09-30 closeout diagnostic hardening: state["market_status_
+        # closeout_error"] below is kept unchanged (existing containment,
+        # never removed) but is NOT durable -- save_state() (called at the
+        # end of this same function) only ever persists
+        # state["persisted_state"], a different top-level key, so this
+        # field is silently discarded the moment this tick ends. Confirmed
+        # directly as the reason data/state.json's own
+        # processed_market_status_action_keys showed no recorded action
+        # since 2026-09-23 despite valid events continuing to arrive: any
+        # exception here left zero durable trace. This is the final
+        # backstop for anything not already logged closer to its source by
+        # libs.runtime.market_status_closeout's own exception handling
+        # (e.g. a failure in load_market_status() itself, before any
+        # specific event/action is even identified).
         state["market_status_closeout_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        _log_market_status_closeout_tick_exception(exc, state=state)
     # Each tick should produce a fresh runtime/decision/report trace.
     # Keep durable config + persisted_state, but drop cycle-scoped artifacts.
     _clear_per_run_transient_state(state)
