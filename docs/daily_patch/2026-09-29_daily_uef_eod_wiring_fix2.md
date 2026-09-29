@@ -93,3 +93,16 @@ refined per-source contract. No board manufactured; `latest.json`/`.md` unchange
 - P1.2 Day-1 = PARTIAL (unchanged from before Fix2 -- this was a publication-safety correction, not a
   resolution of the upstream data gap).
 - P1.3 Docker work is unaffected and continues separately.
+
+## Correction (bounded re-audit, same day)
+
+A further, deliberately bounded Codex re-audit of this Fix2 found the single-capture and closeout-bypass
+fixes above genuinely correct, but identified real remaining gaps this document did not previously claim to
+close: **a second, legacy canonical-write path** (`scripts/run_alpha_research_board.py` still called
+`write_alpha_research_board()` directly), **unknown-source permissiveness** (any source key with no
+registered contract was silently treated as optional), and, most importantly, **no real bundle-completion
+authority** -- a directory containing `alpha_research_board.json` plus UEF-7/8/9 output directories was
+already indistinguishable from a genuinely complete, verified daily result; nothing bound them together or
+proved none of them had been tampered with or partially written. See
+[Fix3 (Daily UEF Canonical Authority Closure)](2026-09-29_daily_uef_authority_closure.md) for the fix:
+generation/manifest/pointer authority replacing plain file writes as the definition of "canonical".

@@ -1516,3 +1516,14 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - A successful test run now deletes its own temporary folder immediately when it finishes; a failed or interrupted run keeps it briefly for troubleshooting but it is swept automatically on the next run, so nothing builds up.
 - Removed the leftover folders already found from before this fix, and added a permanent project rule plus an automated check so this cannot quietly return.
 - See `docs/daily_patch/2026-09-29_pytest_artifact_hygiene.md`.
+
+# 2026-09-29 - Daily UEF Canonical Publication Authority Closure
+
+- Found and closed a second, older path that could still publish a daily result on its own.
+- Every piece of data allowed into a daily result must now be on an explicit, reviewed list; anything unreviewed is refused rather than silently allowed through.
+- A daily result is now only considered genuine once a small, tamper-evident completion record formally binds every piece of it together and every piece has been verified to be unaltered.
+- A day that already has a valid result is never put at risk by a later attempt that fails partway through.
+- The single machine-readable pointer to the current result is the only thing anything should trust as authoritative; the human-readable summary is a convenience copy and its own failure never affects the real result.
+- Re-verified against this system's real current data: today's result is still correctly unavailable, because some source data genuinely has not updated.
+- Frozen evaluation semantics were unchanged throughout.
+- See `docs/daily_patch/2026-09-29_daily_uef_authority_closure.md`.
