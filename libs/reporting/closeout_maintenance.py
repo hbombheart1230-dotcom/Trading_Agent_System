@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict
 
@@ -493,27 +495,41 @@ def run_closeout_maintenance(
 # Reuses this repository's EXISTING PID-based lock primitive
 # (libs/runtime/live_loop_lock.py -- already used, tested, and proven for
 # the m13 live loop's own single-instance guard) rather than inventing a
-# second, unrelated locking mechanism. That primitive already provides
-# everything this guard needs for free: a live owner's lock is respected
-# (lock_active -- reject), a DEAD owner's lock is detected via a real
-# Windows/POSIX process-existence check and reclaimed automatically
-# (avoids a permanent lock after a crash), and a lock held past
-# _CLOSEOUT_LOCK_STALE_SEC is also reclaimed even if its PID happens to
-# still exist (a hard ceiling against a hung-forever owner). The lock file
-# is released in a `finally` block, so both a normal completion and any
-# exception free it -- a later, separate, explicit invocation is never
-# permanently blocked by an earlier failed attempt.
+# second, unrelated locking mechanism. The lock file is released in a
+# `finally` block, so both a normal completion and any exception free it --
+# a later, separate, explicit invocation is never permanently blocked by
+# an earlier failed attempt.
+#
+# CRITICAL CORRECTION (2026-09-30, same day): the first version of this
+# guard reused the primitive's plain (non-strict) mode, whose age-based
+# reclaim (a lock held past _DEFAULT_CLOSEOUT_LOCK_STALE_SEC is reclaimed
+# even if its PID is still alive) meant a genuinely still-running closeout
+# could lose its own lock to a second trigger purely because it ran longer
+# than the staleness window -- a real runtime safety defect, given a real
+# closeout run has already been observed to take ~10m37s. This now calls
+# acquire/release with strict_owner_identity=True: a live, identity-
+# confirmed owner (pid + real OS process-creation timestamp, not a
+# self-recorded approximation) can NEVER be reclaimed on age alone. A lock
+# is only ever reclaimed when its owner is conclusively dead (pid gone) or
+# conclusively a different process (pid reused, creation identity
+# differs); anything unverifiable fails closed (rejects) rather than
+# guessing. See libs/runtime/live_loop_lock.py's own module docstring for
+# the full acquire/release decision table. This strict mode is opt-in on
+# the shared primitive -- the m13 live loop's own (unrelated) use of this
+# same module is completely untouched.
 _DEFAULT_CLOSEOUT_LOCK_PATH = Path("data/state/closeout_maintenance.lock")
-# The one confirmed real closeout duration on record that exceeded the
-# normal few-seconds-to-low-minutes range was the 2026-09-28 anomaly
-# (~10m37s, itself still unexplained -- see the 2026-09-30 closeout
-# diagnostic hardening patch note). 30 minutes gives a wide safety margin
-# above that observed worst case before a held lock is ever treated as
-# stale, while still guaranteeing recovery from a genuinely hung/crashed
-# owner rather than a permanent lock. This is the lock's own staleness
-# window, not a retry/timeout policy for the underlying closeout defects
-# themselves -- no automatic retry is performed anywhere in this guard.
+# Diagnostic/dead-owner-cleanup metadata ONLY under strict mode -- age
+# never authorizes reclaiming a live, identity-confirmed owner's lock (see
+# above). Kept as a constant so a long-running-but-genuinely-alive owner
+# can still be flagged in observability (log_closeout_stage payload
+# long_running_valid_owner=True) without ever being acted on.
 _DEFAULT_CLOSEOUT_LOCK_STALE_SEC = 1800
+
+_CLOSEOUT_SKIP_REASON_BY_ACQUIRE_REASON = {
+    "lock_active": "ALREADY_RUNNING_VALID_OWNER",
+    "LOCK_METADATA_INVALID": "LOCK_METADATA_INVALID",
+    "IDENTITY_UNVERIFIABLE": "IDENTITY_UNVERIFIABLE",
+}
 
 
 def run_closeout_maintenance_with_lock(
@@ -534,27 +550,46 @@ def run_closeout_maintenance_with_lock(
     This is the function BOTH trigger paths must call (never
     run_closeout_maintenance() directly) -- see the module-level comment
     above for why. run_closeout_maintenance() itself is completely
-    unmodified; this only adds an ownership acquire/release boundary
-    around the exact same call, so its own extensively-exercised internal
-    step logic carries zero additional risk from this change.
+    unmodified; this only adds a strict-identity ownership acquire/release
+    boundary around the exact same call, so its own extensively-exercised
+    internal step logic carries zero additional risk from this change.
 
-    If ownership cannot be acquired (another owner is genuinely still
-    active), returns a safe, clearly-marked ALREADY_RUNNING result
-    WITHOUT ever calling run_closeout_maintenance() -- so a concurrent
-    trigger can never execute twice, and never leaves a partial/competing
-    write behind.
+    Uses strict_owner_identity=True: a live, identity-confirmed owner can
+    never lose the lock on age alone (see the module-level comment above
+    for why plain/age-based reclaim was unsafe for closeout specifically).
+    If ownership cannot be acquired -- another owner is genuinely still
+    active, the existing lock's metadata cannot be verified, or this
+    process's own identity cannot be verified -- returns a safe, clearly-
+    marked skipped result WITHOUT ever calling run_closeout_maintenance().
     """
     normalized_day = str(day or "").strip()[:10]
     resolved_run_id = str(run_id or "").strip() or f"closeout-{normalized_day}-{trigger}"
     resolved_lock_path = Path(lock_path) if lock_path is not None else _DEFAULT_CLOSEOUT_LOCK_PATH
     resolved_stale_sec = int(lock_stale_sec) if lock_stale_sec is not None else _DEFAULT_CLOSEOUT_LOCK_STALE_SEC
 
-    acquired, reason = acquire_live_loop_lock(resolved_lock_path, lock_stale_sec=resolved_stale_sec)
+    owner_token = uuid.uuid4().hex
+    requesting_pid = os.getpid()
+
+    acquired, reason = acquire_live_loop_lock(
+        resolved_lock_path,
+        lock_stale_sec=resolved_stale_sec,
+        strict_owner_identity=True,
+        owner_token=owner_token,
+        trigger=trigger,
+        target_day=normalized_day,
+    )
     if not acquired:
-        skip_reason = "ALREADY_RUNNING" if reason == "lock_active" else f"OWNERSHIP_NOT_ACQUIRED:{reason}"
+        skip_reason = _CLOSEOUT_SKIP_REASON_BY_ACQUIRE_REASON.get(reason, f"OWNERSHIP_NOT_ACQUIRED:{reason}")
         active_owner_pid = None
+        lock_age_sec = None
+        long_running_valid_owner = False
         try:
-            active_owner_pid = json.loads(resolved_lock_path.read_text(encoding="utf-8")).get("pid")
+            existing = json.loads(resolved_lock_path.read_text(encoding="utf-8"))
+            active_owner_pid = existing.get("pid")
+            acquired_at = int(existing.get("acquired_at") or 0)
+            if acquired_at > 0:
+                lock_age_sec = max(0, int(time.time()) - acquired_at)
+                long_running_valid_owner = reason == "lock_active" and lock_age_sec > resolved_stale_sec
         except Exception:
             pass
         log_closeout_stage(
@@ -564,8 +599,10 @@ def run_closeout_maintenance_with_lock(
                 "reason": reason,
                 "skip_reason": skip_reason,
                 "lock_path": str(resolved_lock_path),
-                "requesting_pid": os.getpid(),
+                "requesting_pid": requesting_pid,
                 "active_owner_pid": active_owner_pid,
+                "lock_age_sec": lock_age_sec,
+                "long_running_valid_owner": long_running_valid_owner,
             },
         )
         return {
@@ -578,10 +615,15 @@ def run_closeout_maintenance_with_lock(
             "steps": {},
         }
 
-    owner_pid = os.getpid()
     log_closeout_stage(
         run_id=resolved_run_id, day=normalized_day, stage="closeout_ownership", phase="acquire",
-        detail={"trigger": trigger, "lock_path": str(resolved_lock_path), "owner_pid": owner_pid},
+        detail={
+            "trigger": trigger,
+            "lock_path": str(resolved_lock_path),
+            "owner_pid": requesting_pid,
+            "owner_token": owner_token[:12],
+            "acquire_reason": reason,
+        },
     )
     try:
         return run_closeout_maintenance(
@@ -595,10 +637,21 @@ def run_closeout_maintenance_with_lock(
             run_id=resolved_run_id,
         )
     finally:
-        release_live_loop_lock(resolved_lock_path)
+        released, release_status = release_live_loop_lock(
+            resolved_lock_path,
+            strict_owner_identity=True,
+            owner_token=owner_token,
+        )
         log_closeout_stage(
             run_id=resolved_run_id, day=normalized_day, stage="closeout_ownership", phase="release",
-            detail={"trigger": trigger, "lock_path": str(resolved_lock_path), "owner_pid": owner_pid},
+            detail={
+                "trigger": trigger,
+                "lock_path": str(resolved_lock_path),
+                "owner_pid": requesting_pid,
+                "owner_token": owner_token[:12],
+                "released": released,
+                "release_status": release_status,
+            },
         )
 
 

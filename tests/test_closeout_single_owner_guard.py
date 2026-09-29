@@ -1,4 +1,5 @@
-"""Regression coverage for the 2026-09-30 closeout single-owner guard.
+"""Regression coverage for the 2026-09-30 closeout single-owner guard, and
+its same-day critical correction (strict owner-identity lock).
 
 Bounded safety fix (independent of the still-unknown 09/28 hang and 09/29
 abnormal-termination causes, neither of which is claimed fixed here): the
@@ -12,9 +13,20 @@ reusing this repository's existing PID-based lock primitive
 (libs/runtime/live_loop_lock.py, already proven for the m13 live loop's
 own single-instance guard) -- not a new locking framework.
 
+CRITICAL CORRECTION covered here: the first version of this guard used the
+primitive's plain (age-based) reclaim, which could steal the lock from a
+genuinely still-running closeout purely because it exceeded the staleness
+window -- a real runtime safety defect, given a real closeout run has
+already taken ~10m37s. The guard now uses strict_owner_identity=True: a
+live, identity-confirmed owner (pid + real OS process-creation timestamp)
+can NEVER lose the lock on age alone. `test_t2_*` below is the direct
+regression test for this fix; it replaces the OLD test that proved the bug
+(a stale-but-live-pid lock being reclaimed), per explicit instruction not
+to leave that unsafe expectation in place.
+
 All synchronization here is deterministic (pre-acquiring the lock with an
-explicit current_pid, or pre-writing a lock file by hand) -- no sleep-based
-timing tests, per explicit instruction.
+explicit owner_token, or hand-writing lock file metadata) -- no sleep-based
+or thread-based timing tests, per explicit instruction.
 """
 
 from __future__ import annotations
@@ -22,12 +34,17 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from libs.reporting.closeout_maintenance import run_closeout_maintenance_with_lock
-from libs.runtime.live_loop_lock import acquire_live_loop_lock
+from libs.runtime.live_loop_lock import (
+    _process_start_identity,
+    acquire_live_loop_lock,
+    release_live_loop_lock,
+)
 
 
 def _read_events(log_path: Path) -> list[dict]:
@@ -48,20 +65,30 @@ def _phase(event: dict) -> str:
     return str(event.get("event") or "").removeprefix("stage_")
 
 
-# --- Concurrent triggers: exactly one enters closeout -----------------------
+def _write_strict_lock(lock_path: Path, **fields) -> None:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(json.dumps(fields, ensure_ascii=False), encoding="utf-8")
 
 
-def test_second_concurrent_trigger_is_rejected_as_already_running(tmp_path, monkeypatch):
+def _stub_ok(**kwargs):
+    return {"schema_version": "closeout_maintenance.v1", "day": kwargs["day"], "ok": True, "steps": {}}
+
+
+# =============================================================================
+# T1 -- live owner younger than threshold -> reject second
+# =============================================================================
+
+
+def test_t1_live_owner_younger_than_threshold_rejects_second(tmp_path, monkeypatch):
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
     lock_path = tmp_path / "closeout_maintenance.lock"
 
-    # Deterministically simulate a genuinely concurrent owner (a different
-    # pid) already holding the lock -- no threading/sleep required.
-    other_pid = os.getpid() + 1
-    acquired, reason = acquire_live_loop_lock(lock_path, lock_stale_sec=1800, current_pid=other_pid)
+    acquired, reason = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=1800, strict_owner_identity=True, owner_token="owner-A",
+    )
     assert acquired is True
-    assert reason == ""
+    assert reason == "ACQUIRED"
 
     calls = {"n": 0}
 
@@ -72,12 +99,12 @@ def test_second_concurrent_trigger_is_rejected_as_already_running(tmp_path, monk
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _boom_if_called)
 
     result = run_closeout_maintenance_with_lock(
-        day="2026-09-30", trigger="kiwoom_market_status_4", run_id="tick-2026-09-30", lock_path=lock_path,
+        day="2026-09-30", trigger="kiwoom_market_status_4", lock_path=lock_path, lock_stale_sec=1800,
     )
 
     assert calls["n"] == 0
     assert result["skipped"] is True
-    assert result["skip_reason"] == "ALREADY_RUNNING"
+    assert result["skip_reason"] == "ALREADY_RUNNING_VALID_OWNER"
     assert result["ok"] is False
     assert result["steps"] == {}
 
@@ -85,25 +112,380 @@ def test_second_concurrent_trigger_is_rejected_as_already_running(tmp_path, monk
     reject_events = [e for e in events if _phase(e) == "reject"]
     assert len(reject_events) == 1
     assert reject_events[0]["payload"]["trigger"] == "kiwoom_market_status_4"
-    assert reject_events[0]["payload"]["skip_reason"] == "ALREADY_RUNNING"
-    assert reject_events[0]["payload"]["active_owner_pid"] == other_pid
+    assert reject_events[0]["payload"]["reason"] == "lock_active"
+    assert reject_events[0]["payload"]["active_owner_pid"] == os.getpid()
+    assert reject_events[0]["payload"]["long_running_valid_owner"] is False
 
 
-def test_no_execution_side_effect_when_ownership_rejected(tmp_path, monkeypatch):
-    """No broker/order/execution side effect anywhere in the rejected path."""
+# =============================================================================
+# T2 -- CRITICAL: live owner OLDER than the staleness threshold must still
+# reject a second attempt. This is the direct regression test for the
+# same-day fix; the lock must never be stolen from a genuinely alive,
+# identity-confirmed owner merely because it has been running a long time.
+# =============================================================================
+
+
+def test_t2_live_owner_older_than_threshold_still_rejects_second(tmp_path, monkeypatch):
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
     lock_path = tmp_path / "closeout_maintenance.lock"
-    acquire_live_loop_lock(lock_path, lock_stale_sec=1800, current_pid=os.getpid() + 1)
 
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path)
+    small_stale_sec = 5
+    acquired, reason = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=small_stale_sec, strict_owner_identity=True, owner_token="owner-A",
+    )
+    assert acquired is True
+    assert reason == "ACQUIRED"
+
+    # Backdate the lock well past the (tiny) staleness threshold -- under
+    # the OLD, buggy behavior this alone would have been enough to let a
+    # second attempt steal the lock.
+    obj = json.loads(lock_path.read_text(encoding="utf-8"))
+    obj["acquired_at"] = int(time.time()) - 3600
+    lock_path.write_text(json.dumps(obj), encoding="utf-8")
+
+    calls = {"n": 0}
+
+    def _boom_if_called(**_kwargs):
+        calls["n"] += 1
+        raise AssertionError("a long-running but genuinely live owner must never lose its lock on age alone")
+
+    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _boom_if_called)
+
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", trigger="run_closeout_maintenance_fallback", lock_path=lock_path,
+        lock_stale_sec=small_stale_sec,
+    )
+
+    assert calls["n"] == 0
     assert result["skipped"] is True
-    # A rejected run never even imports the underlying closeout function's
-    # module-level dependencies beyond what this module already imports at
-    # load time -- confirmed structurally by the import-scan test below.
+    assert result["skip_reason"] == "ALREADY_RUNNING_VALID_OWNER"
+
+    # The original lock file is untouched -- ownership was never disturbed.
+    still = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert still["owner_token"] == "owner-A"
+
+    events = _ownership_events(log_path)
+    reject_events = [e for e in events if _phase(e) == "reject"]
+    assert len(reject_events) == 1
+    # Age is surfaced as diagnostic metadata only -- it does not change the
+    # outcome (still rejected above).
+    assert reject_events[0]["payload"]["long_running_valid_owner"] is True
+    assert reject_events[0]["payload"]["lock_age_sec"] >= 3600
 
 
-# --- Normal completion releases the lock -------------------------------------
+# =============================================================================
+# T3 -- dead owner -> reclaim
+# =============================================================================
+
+
+def test_t3_dead_owner_lock_is_reclaimed(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+
+    dead_pid = 999999  # essentially guaranteed not to correspond to a live process
+    _write_strict_lock(
+        lock_path, pid=dead_pid, process_start_identity="win:123", owner_token="dead-owner-token",
+        acquired_at=0,
+    )
+
+    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
+
+    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+
+    assert result["ok"] is True
+    assert not result.get("skipped")
+
+    events = _ownership_events(log_path)
+    acquire_events = [e for e in events if _phase(e) == "acquire"]
+    assert len(acquire_events) == 1
+    assert acquire_events[0]["payload"]["acquire_reason"] == "DEAD_OWNER_RECLAIMED"
+
+
+# =============================================================================
+# T4 -- PID alive but process_start_identity differs (PID reuse) -> reclaim
+# =============================================================================
+
+
+def test_t4_pid_reused_different_process_identity_is_reclaimed(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+
+    # pid is genuinely alive (this test process itself) but the recorded
+    # identity does not match its real creation identity -- simulating
+    # "the process that originally held this pid is gone; the pid was
+    # reused by a different process".
+    _write_strict_lock(
+        lock_path, pid=os.getpid(), process_start_identity="definitely-not-the-real-identity",
+        owner_token="stale-owner-token", acquired_at=int(time.time()),
+    )
+
+    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
+
+    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+
+    assert result["ok"] is True
+    assert not result.get("skipped")
+
+    events = _ownership_events(log_path)
+    acquire_events = [e for e in events if _phase(e) == "acquire"]
+    assert len(acquire_events) == 1
+    assert acquire_events[0]["payload"]["acquire_reason"] == "PID_REUSE_RECLAIMED"
+
+
+# =============================================================================
+# T5 -- wrong owner_token on release -> rejected, lock untouched
+# =============================================================================
+
+
+def test_t5_release_with_wrong_owner_token_is_rejected(tmp_path):
+    lock_path = tmp_path / "closeout_maintenance.lock"
+    acquired, reason = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=1800, strict_owner_identity=True, owner_token="owner-A",
+    )
+    assert acquired is True
+
+    released, status = release_live_loop_lock(lock_path, strict_owner_identity=True, owner_token="owner-B")
+
+    assert released is False
+    assert status == "non_owner_release_rejected"
+    assert lock_path.exists()
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["owner_token"] == "owner-A"
+
+
+# =============================================================================
+# T6 -- wrong process identity on release -> rejected, even with matching
+# pid and owner_token (the lock file changed between acquire and release)
+# =============================================================================
+
+
+def test_t6_release_with_mismatched_process_identity_is_rejected(tmp_path):
+    lock_path = tmp_path / "closeout_maintenance.lock"
+    acquired, reason = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=1800, strict_owner_identity=True, owner_token="owner-A",
+    )
+    assert acquired is True
+
+    # Tamper with the lock file's recorded identity only (pid + token
+    # unchanged) -- release must still refuse, since it cannot prove this
+    # is the same lock generation it acquired.
+    obj = json.loads(lock_path.read_text(encoding="utf-8"))
+    obj["process_start_identity"] = "tampered-identity"
+    lock_path.write_text(json.dumps(obj), encoding="utf-8")
+
+    released, status = release_live_loop_lock(lock_path, strict_owner_identity=True, owner_token="owner-A")
+
+    assert released is False
+    assert status == "non_owner_release_rejected"
+    assert lock_path.exists()
+
+
+# =============================================================================
+# T7 -- malformed lock -> fail closed, no silent unlink
+# =============================================================================
+
+
+def test_t7a_malformed_json_fails_closed(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("{not valid json", encoding="utf-8")
+
+    calls = {"n": 0}
+
+    def _boom_if_called(**_kwargs):
+        calls["n"] += 1
+        raise AssertionError("must not run closeout on malformed lock metadata")
+
+    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _boom_if_called)
+
+    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+
+    assert calls["n"] == 0
+    assert result["skipped"] is True
+    assert result["skip_reason"] == "LOCK_METADATA_INVALID"
+    # No silent unlink -- the malformed file is left exactly as it was.
+    assert lock_path.read_text(encoding="utf-8") == "{not valid json"
+
+
+def test_t7b_missing_required_fields_fails_closed(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+    # Well-formed JSON, but missing owner_token and process_start_identity
+    # (e.g. a lock written by the OLD non-strict schema).
+    _write_strict_lock(lock_path, pid=os.getpid(), started_epoch=int(time.time()))
+
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        "libs.reporting.closeout_maintenance.run_closeout_maintenance",
+        lambda **_k: calls.__setitem__("n", calls["n"] + 1),
+    )
+
+    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+
+    assert calls["n"] == 0
+    assert result["skipped"] is True
+    assert result["skip_reason"] == "LOCK_METADATA_INVALID"
+    assert lock_path.exists()
+
+
+# =============================================================================
+# T8 -- process identity unverifiable -> fail closed (never treated as dead)
+# =============================================================================
+
+
+def test_t8a_existing_owner_identity_unverifiable_fails_closed(tmp_path, monkeypatch):
+    import libs.runtime.live_loop_lock as lock_mod
+
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+
+    fake_existing_pid = 424242
+    _write_strict_lock(
+        lock_path, pid=fake_existing_pid, process_start_identity="some-identity",
+        owner_token="owner-X", acquired_at=int(time.time()),
+    )
+
+    real_pid_exists = lock_mod.pid_exists
+    real_identity_fn = lock_mod._process_start_identity
+
+    monkeypatch.setattr(
+        lock_mod, "pid_exists",
+        lambda pid: True if pid == fake_existing_pid else real_pid_exists(pid),
+    )
+    monkeypatch.setattr(
+        lock_mod, "_process_start_identity",
+        lambda pid: None if pid == fake_existing_pid else real_identity_fn(pid),
+    )
+
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        "libs.reporting.closeout_maintenance.run_closeout_maintenance",
+        lambda **_k: calls.__setitem__("n", calls["n"] + 1),
+    )
+
+    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+
+    assert calls["n"] == 0
+    assert result["skipped"] is True
+    assert result["skip_reason"] == "IDENTITY_UNVERIFIABLE"
+    # Fail closed: the lock is left exactly as it was, never reclaimed on a guess.
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == fake_existing_pid
+
+
+def test_t8b_own_identity_unverifiable_fails_closed(tmp_path, monkeypatch):
+    import libs.runtime.live_loop_lock as lock_mod
+
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"  # no lock exists yet
+
+    monkeypatch.setattr(lock_mod, "_process_start_identity", lambda pid: None)
+
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        "libs.reporting.closeout_maintenance.run_closeout_maintenance",
+        lambda **_k: calls.__setitem__("n", calls["n"] + 1),
+    )
+
+    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+
+    assert calls["n"] == 0
+    assert result["skipped"] is True
+    assert result["skip_reason"] == "IDENTITY_UNVERIFIABLE"
+    assert not lock_path.exists()
+
+
+# =============================================================================
+# T9 -- concurrent atomic acquire -> exactly one owner (deterministic guard
+# contention, no threads/sleep)
+# =============================================================================
+
+
+def test_t9a_fresh_acquire_is_atomic_second_immediate_attempt_rejected(tmp_path):
+    lock_path = tmp_path / "closeout_maintenance.lock"
+
+    acquired_1, reason_1 = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=1800, strict_owner_identity=True, owner_token="owner-A",
+    )
+    acquired_2, reason_2 = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=1800, strict_owner_identity=True, owner_token="owner-B",
+    )
+
+    assert acquired_1 is True
+    assert reason_1 == "ACQUIRED"
+    assert acquired_2 is False
+    assert reason_2 == "lock_active"
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["owner_token"] == "owner-A"
+
+
+def test_t9b_concurrent_reclaim_is_guarded_against_double_reclaim(tmp_path, monkeypatch):
+    """The dead/PID-reuse reclaim path writes through a short-lived,
+    exclusively-created guard file precisely so two processes racing to
+    reclaim the same dead owner's lock cannot both succeed. Simulate the
+    contended case deterministically by pre-holding that guard file
+    ourselves."""
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+
+    dead_pid = 999999
+    _write_strict_lock(
+        lock_path, pid=dead_pid, process_start_identity="win:1", owner_token="dead-owner",
+        acquired_at=0,
+    )
+    guard_path = lock_path.with_name(lock_path.name + ".reclaim-guard")
+    guard_path.write_text("held-by-a-concurrent-reclaim-attempt", encoding="utf-8")
+
+    try:
+        calls = {"n": 0}
+        monkeypatch.setattr(
+            "libs.reporting.closeout_maintenance.run_closeout_maintenance",
+            lambda **_k: calls.__setitem__("n", calls["n"] + 1),
+        )
+
+        result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+
+        assert calls["n"] == 0
+        assert result["skipped"] is True
+        assert result["skip_reason"] == "ALREADY_RUNNING_VALID_OWNER"
+        # The dead-owner lock is untouched -- no double reclaim occurred.
+        assert json.loads(lock_path.read_text(encoding="utf-8"))["owner_token"] == "dead-owner"
+    finally:
+        guard_path.unlink(missing_ok=True)
+
+
+# =============================================================================
+# T10 -- exception path: a valid owner still releases its own lock
+# =============================================================================
+
+
+def test_t10_exception_during_closeout_still_releases_lock(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+
+    def _boom(**_kwargs):
+        raise RuntimeError("simulated closeout maintenance failure")
+
+    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _boom)
+
+    with pytest.raises(RuntimeError, match="simulated closeout maintenance failure"):
+        run_closeout_maintenance_with_lock(day="2026-09-30", trigger="kiwoom_market_status_4", lock_path=lock_path)
+
+    assert not lock_path.exists()
+
+    events = _ownership_events(log_path)
+    phases = [_phase(e) for e in events]
+    assert phases == ["acquire", "release"]
+    release_events = [e for e in events if _phase(e) == "release"]
+    assert release_events[0]["payload"]["released"] is True
+    assert release_events[0]["payload"]["release_status"] == "released"
 
 
 def test_normal_completion_releases_lock(tmp_path, monkeypatch):
@@ -111,12 +493,7 @@ def test_normal_completion_releases_lock(tmp_path, monkeypatch):
     monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
     lock_path = tmp_path / "closeout_maintenance.lock"
 
-    def _fake_run_closeout_maintenance(**kwargs):
-        return {"schema_version": "closeout_maintenance.v1", "day": kwargs["day"], "ok": True, "steps": {}}
-
-    monkeypatch.setattr(
-        "libs.reporting.closeout_maintenance.run_closeout_maintenance", _fake_run_closeout_maintenance
-    )
+    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
 
     result = run_closeout_maintenance_with_lock(day="2026-09-30", trigger="kiwoom_market_status_4", lock_path=lock_path)
 
@@ -136,33 +513,12 @@ def test_normal_completion_releases_lock(tmp_path, monkeypatch):
     assert events[1]["payload"]["owner_pid"] == os.getpid()
 
 
-# --- Exception during the guarded call still releases the lock --------------
+# =============================================================================
+# T11 -- later retry after owner death/release -> succeeds
+# =============================================================================
 
 
-def test_exception_during_closeout_still_releases_lock(tmp_path, monkeypatch):
-    log_path = tmp_path / "events.jsonl"
-    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
-    lock_path = tmp_path / "closeout_maintenance.lock"
-
-    def _boom(**_kwargs):
-        raise RuntimeError("simulated closeout maintenance failure")
-
-    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _boom)
-
-    with pytest.raises(RuntimeError, match="simulated closeout maintenance failure"):
-        run_closeout_maintenance_with_lock(day="2026-09-30", trigger="kiwoom_market_status_4", lock_path=lock_path)
-
-    assert not lock_path.exists()
-
-    events = _ownership_events(log_path)
-    phases = [_phase(e) for e in events]
-    assert phases == ["acquire", "release"]
-
-
-# --- Later explicit retry after an earlier failure is permitted -------------
-
-
-def test_later_explicit_retry_after_failure_is_permitted(tmp_path, monkeypatch):
+def test_t11_later_explicit_retry_after_failure_is_permitted(tmp_path, monkeypatch):
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
     lock_path = tmp_path / "closeout_maintenance.lock"
@@ -174,10 +530,7 @@ def test_later_explicit_retry_after_failure_is_permitted(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         run_closeout_maintenance_with_lock(day="2026-09-30", trigger="manual_retry_1", lock_path=lock_path)
 
-    def _succeed(**kwargs):
-        return {"schema_version": "closeout_maintenance.v1", "day": kwargs["day"], "ok": True, "steps": {}}
-
-    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _succeed)
+    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
     result = run_closeout_maintenance_with_lock(day="2026-09-30", trigger="manual_retry_2", lock_path=lock_path)
 
     assert result["ok"] is True
@@ -185,63 +538,134 @@ def test_later_explicit_retry_after_failure_is_permitted(tmp_path, monkeypatch):
     assert not lock_path.exists()
 
 
-# --- Dead/stale owner is recoverable -----------------------------------------
-
-
-def test_dead_owner_lock_is_reclaimed(tmp_path, monkeypatch):
+def test_t11b_retry_permitted_after_dead_owner_without_release(tmp_path, monkeypatch):
+    """No release ever happened (simulating a hard crash, not a handled
+    exception) -- a later invocation must still succeed once the dead pid
+    is detected, with no manual cleanup and no permanent lock."""
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
     lock_path = tmp_path / "closeout_maintenance.lock"
 
-    # A pid essentially guaranteed not to correspond to a live process.
-    dead_pid = 999999
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.write_text(
-        json.dumps({"pid": dead_pid, "started_epoch": 0, "started_ts": "1970-01-01T00:00:00+00:00"}),
-        encoding="utf-8",
+    _write_strict_lock(
+        lock_path, pid=999999, process_start_identity="win:1", owner_token="crashed-owner",
+        acquired_at=0,
     )
 
-    def _fake_run_closeout_maintenance(**kwargs):
-        return {"schema_version": "closeout_maintenance.v1", "day": kwargs["day"], "ok": True, "steps": {}}
-
-    monkeypatch.setattr(
-        "libs.reporting.closeout_maintenance.run_closeout_maintenance", _fake_run_closeout_maintenance
-    )
-
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path)
-
-    assert result["ok"] is True
-    assert not result.get("skipped")
-
-
-def test_stale_owner_lock_past_staleness_window_is_reclaimed(tmp_path, monkeypatch):
-    log_path = tmp_path / "events.jsonl"
-    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
-    lock_path = tmp_path / "closeout_maintenance.lock"
-
-    # A live pid (this test process itself) but started far in the past --
-    # exercises the staleness-window reclaim path even though the pid is
-    # technically still alive.
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.write_text(
-        json.dumps({"pid": os.getpid(), "started_epoch": 0, "started_ts": "1970-01-01T00:00:00+00:00"}),
-        encoding="utf-8",
-    )
-
-    def _fake_run_closeout_maintenance(**kwargs):
-        return {"schema_version": "closeout_maintenance.v1", "day": kwargs["day"], "ok": True, "steps": {}}
-
-    monkeypatch.setattr(
-        "libs.reporting.closeout_maintenance.run_closeout_maintenance", _fake_run_closeout_maintenance
-    )
-
+    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
     result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
 
     assert result["ok"] is True
     assert not result.get("skipped")
 
 
-# --- Callers skip report writing on ownership rejection (race avoidance) ----
+# =============================================================================
+# T12 -- closeout integration uses strict semantics end-to-end (both
+# trigger paths), not just at the run_closeout_maintenance_with_lock unit
+# =============================================================================
+
+
+def test_t12a_market_status_trigger_respects_long_running_live_owner(tmp_path, monkeypatch):
+    """End-to-end proof that the tick-loop trigger path is wired to strict
+    semantics: a long-running (backdated) but genuinely alive owner must
+    still block it -- not just at the wrapper-function level."""
+    import libs.runtime.market_status_closeout as mod
+
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+
+    monkeypatch.setattr(
+        mod, "load_market_status",
+        lambda: {
+            "current": {},
+            "events": [
+                {"event_id": "evt-t12a", "received_at": "2026-09-30T06:30:00+00:00", "code": "4"}
+            ],
+        },
+    )
+
+    acquired, _ = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=5, strict_owner_identity=True, owner_token="owner-A",
+    )
+    assert acquired is True
+    obj = json.loads(lock_path.read_text(encoding="utf-8"))
+    obj["acquired_at"] = int(time.time()) - 3600
+    lock_path.write_text(json.dumps(obj), encoding="utf-8")
+
+    from libs.reporting import closeout_maintenance as closeout_mod
+
+    monkeypatch.setattr(closeout_mod, "_DEFAULT_CLOSEOUT_LOCK_PATH", lock_path)
+    monkeypatch.setattr(closeout_mod, "_DEFAULT_CLOSEOUT_LOCK_STALE_SEC", 5)
+
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        "libs.reporting.closeout_maintenance.run_closeout_maintenance",
+        lambda **_k: calls.__setitem__("n", calls["n"] + 1),
+    )
+
+    state = {"persisted_state": {}}
+    out_state = mod.apply_market_status_closeout_events(state)
+
+    assert calls["n"] == 0
+    still = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert still["owner_token"] == "owner-A"
+    assert "evt-t12a" in out_state["persisted_state"]["processed_market_status_event_ids"]
+
+
+def test_t12b_fallback_cli_respects_long_running_live_owner(tmp_path, monkeypatch):
+    """Same end-to-end proof for the scheduled-fallback CLI path."""
+    import scripts.run_closeout_maintenance as cli_mod
+    from libs.reporting import closeout_maintenance as closeout_mod
+
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    monkeypatch.setattr(sys, "argv", ["run_closeout_maintenance.py", "--day", "2026-09-30"])
+    lock_path = tmp_path / "closeout_maintenance.lock"
+
+    acquired, _ = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=5, strict_owner_identity=True, owner_token="owner-A",
+    )
+    assert acquired is True
+    obj = json.loads(lock_path.read_text(encoding="utf-8"))
+    obj["acquired_at"] = int(time.time()) - 3600
+    lock_path.write_text(json.dumps(obj), encoding="utf-8")
+
+    monkeypatch.setattr(closeout_mod, "_DEFAULT_CLOSEOUT_LOCK_PATH", lock_path)
+    monkeypatch.setattr(closeout_mod, "_DEFAULT_CLOSEOUT_LOCK_STALE_SEC", 5)
+
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        "libs.reporting.closeout_maintenance.run_closeout_maintenance",
+        lambda **_k: calls.__setitem__("n", calls["n"] + 1),
+    )
+
+    exit_code = cli_mod.main()
+
+    assert calls["n"] == 0
+    assert exit_code == 0  # a safe skip, not a failure
+    still = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert still["owner_token"] == "owner-A"
+
+
+# =============================================================================
+# No broker/order/execution side effect anywhere in the rejected path
+# =============================================================================
+
+
+def test_no_execution_side_effect_when_ownership_rejected(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+    acquire_live_loop_lock(lock_path, lock_stale_sec=1800, strict_owner_identity=True, owner_token="owner-A")
+
+    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path)
+    assert result["skipped"] is True
+
+
+# =============================================================================
+# Callers skip report writing on ownership rejection (race avoidance) --
+# preserved from the original single-owner-guard pass.
+# =============================================================================
 
 
 def test_market_status_trigger_skips_report_write_when_ownership_rejected(tmp_path, monkeypatch):
@@ -266,7 +690,7 @@ def test_market_status_trigger_skips_report_write_when_ownership_rejected(tmp_pa
     def _fake_with_lock(**kwargs):
         return {
             "schema_version": "closeout_maintenance.v1", "day": kwargs["day"], "ok": False,
-            "skipped": True, "skip_reason": "ALREADY_RUNNING", "steps": {},
+            "skipped": True, "skip_reason": "ALREADY_RUNNING_VALID_OWNER", "steps": {},
         }
 
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance_with_lock", _fake_with_lock)
@@ -290,9 +714,8 @@ def test_market_status_trigger_skips_report_write_when_ownership_rejected(tmp_pa
 
 def test_fallback_cli_skips_report_write_when_ownership_rejected(tmp_path, monkeypatch):
     """Same race-avoidance rule applies to the scheduled-fallback CLI: a
-    skipped (ALREADY_RUNNING) run must not write a report, and must exit
-    cleanly (0), since this is an expected outcome of the guard, not a
-    failure."""
+    skipped run must not write a report, and must exit cleanly (0), since
+    this is an expected outcome of the guard, not a failure."""
     import scripts.run_closeout_maintenance as mod
 
     log_path = tmp_path / "events.jsonl"
@@ -302,7 +725,7 @@ def test_fallback_cli_skips_report_write_when_ownership_rejected(tmp_path, monke
     def _fake_with_lock(**kwargs):
         return {
             "schema_version": "closeout_maintenance.v1", "day": kwargs["day"], "ok": False,
-            "skipped": True, "skip_reason": "ALREADY_RUNNING", "steps": {},
+            "skipped": True, "skip_reason": "ALREADY_RUNNING_VALID_OWNER", "steps": {},
         }
 
     monkeypatch.setattr(mod, "run_closeout_maintenance_with_lock", _fake_with_lock)
@@ -319,7 +742,25 @@ def test_fallback_cli_skips_report_write_when_ownership_rejected(tmp_path, monke
     assert report_calls["n"] == 0
 
 
-# --- No broker/order/execution side effect -----------------------------------
+# =============================================================================
+# process_start_identity helper itself
+# =============================================================================
+
+
+def test_process_start_identity_is_stable_for_the_same_live_process():
+    a = _process_start_identity(os.getpid())
+    b = _process_start_identity(os.getpid())
+    assert a is not None
+    assert a == b
+
+
+def test_process_start_identity_returns_none_for_a_dead_pid():
+    assert _process_start_identity(999999) is None
+
+
+# =============================================================================
+# No broker/order/execution side effect (import-scan)
+# =============================================================================
 
 
 def test_single_owner_guard_never_imports_execution_or_broker_modules():
@@ -338,3 +779,22 @@ def test_single_owner_guard_never_imports_execution_or_broker_modules():
             imported.append(node.module)
     for name in imported:
         assert not name.startswith(forbidden), f"run_closeout_maintenance_with_lock must never import {name!r}"
+
+
+def test_strict_lock_primitive_never_imports_execution_or_broker_modules():
+    import ast
+    import inspect
+
+    import libs.runtime.live_loop_lock as lock_mod
+
+    forbidden = ("libs.execution", "libs.read.kiwoom_order", "libs.runtime.live_loop_runner")
+    for fn_name in ("acquire_live_loop_lock", "release_live_loop_lock", "_process_start_identity"):
+        tree = ast.parse(inspect.getsource(getattr(lock_mod, fn_name)))
+        imported: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.append(node.module)
+        for name in imported:
+            assert not name.startswith(forbidden), f"{fn_name} must never import {name!r}"
