@@ -1,0 +1,21 @@
+# VALIDATION-ONLY override -- NOT part of the real deployment.
+#
+# Redirects compose.trading.real.yaml's volumes from the canonical shared
+# host data/reports paths to an isolated, throwaway mirror
+# (real-dry-run-mirror/), so this phase's own dry-start/cutover/rollback/
+# failure-case validation never touches the actual host's data/state.json,
+# runtime_ownership.db, intent_state.db, or lock file.
+#
+# Usage: docker compose -f compose.trading.real.yaml -f compose.trading.real.dryrun-override.yaml <cmd>
+# Never used for a real deployment; not referenced by cutover-to-docker.ps1
+# or rollback-to-host.ps1.
+
+services:
+  trading-runtime:
+    volumes:
+      - type: bind
+        source: ./real-dry-run-mirror/data
+        target: /app/data
+      - type: bind
+        source: ./real-dry-run-mirror/reports
+        target: /app/reports

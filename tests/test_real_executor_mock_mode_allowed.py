@@ -1,5 +1,6 @@
 import pytest
 
+from libs.execution.executors.base import ExecutionDisabledError
 from libs.execution.executors.real_executor import RealExecutor
 from libs.catalog.api_request_builder import PreparedRequest
 from libs.core.settings import Settings
@@ -27,8 +28,32 @@ class _DummyHttp:
         return "https://mockapi.kiwoom.com" + path, _DummyResp(200, "{\"ok\":true}")
 
 
-def test_real_executor_allows_mock_mode_without_execution_enabled(monkeypatch: pytest.MonkeyPatch):
+def test_real_executor_blocks_paper_mode_without_execution_enabled(monkeypatch: pytest.MonkeyPatch):
+    # Paper Trading Execution Finalization (2026-09-17): EXECUTION_ENABLED
+    # is a global physical-dispatch switch, independent of KIWOOM_MODE.
+    # KIWOOM_MODE=mock (Paper Trading -- a real HTTP call to Kiwoom's own
+    # sandbox) must NOT bypass it -- this test replaces
+    # test_real_executor_allows_mock_mode_without_execution_enabled, which
+    # asserted the opposite (a live-reproduced bypass, fixed here).
     monkeypatch.delenv("EXECUTION_ENABLED", raising=False)
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+
+    s = Settings.from_env(env_path="__missing__.env")
+    http = _DummyHttp()
+    ex = RealExecutor(settings=s, http=http)  # type: ignore[arg-type]
+
+    req = PreparedRequest(api_id="X", method="POST", path="/orders", headers={}, query={}, body={"b": 2})
+    with pytest.raises(ExecutionDisabledError):
+        ex.execute(req, auth_token="dummy")
+    assert not http.calls
+
+
+def test_real_executor_allows_paper_mode_with_execution_enabled(monkeypatch: pytest.MonkeyPatch):
+    # Paper Trading (EXECUTION_MODE=real, KIWOOM_MODE=mock) with
+    # EXECUTION_ENABLED=true dispatches without needing ALLOW_REAL_EXECUTION
+    # -- that flag is live-account-only.
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
+    monkeypatch.delenv("ALLOW_REAL_EXECUTION", raising=False)
     monkeypatch.setenv("KIWOOM_MODE", "mock")
 
     s = Settings.from_env(env_path="__missing__.env")
@@ -43,7 +68,7 @@ def test_real_executor_allows_mock_mode_without_execution_enabled(monkeypatch: p
 
 
 def test_real_executor_sends_empty_json_object_for_post(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("EXECUTION_ENABLED", raising=False)
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     monkeypatch.setenv("KIWOOM_MODE", "mock")
 
     http = _DummyHttp()

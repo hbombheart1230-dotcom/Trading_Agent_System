@@ -186,10 +186,14 @@ def _commander_route_from_payload(payload: Dict[str, Any], *, artifact_path: str
     }
 
 
-def _event_route_rows(day_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def _event_route_rows(day_rows: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    # OOM RCA follow-up (2026-09-23): folds directly off the iterator in
+    # file/stream order instead of pre-sorting a materialized day_rows list
+    # -- see _build_run_contexts's own comment in operator_visibility.py
+    # for why file order is already chronological order in this system,
+    # and why per-run same-stage-repeat re-ordering isn't a real concern.
     by_run: Dict[str, Dict[str, Any]] = {}
-    sorted_rows = sorted(day_rows, key=lambda row: int(row.get("_epoch") or 0))
-    for row in sorted_rows:
+    for row in day_rows:
         run_id = str(row.get("run_id") or "").strip()
         if not run_id:
             continue
@@ -231,7 +235,7 @@ def build_commander_route_summary(
     *,
     reports_root: Path,
     day: str,
-    day_rows: Optional[List[Dict[str, Any]]] = None,
+    day_rows: Optional[Iterable[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     canonical_dir = reports_root / "canonical" / day
     canonical_by_run: Dict[str, Dict[str, Any]] = {}

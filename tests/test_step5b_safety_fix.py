@@ -274,13 +274,20 @@ def test_real_executor_end_to_end_500_with_success_code_is_unknown():
 # --- 1. Core phase invariant ---------------------------------------------------
 
 def test_preflight_failure_before_submission_is_still_not_sent(tmp_path, monkeypatch):
+    # Paper Trading Execution Finalization (2026-09-17): ExecutionDisabledError
+    # is a deterministic, expected policy rejection -- execute_from_packet no
+    # longer re-raises it (that used to propagate uncaught through
+    # commander_runtime.py and crash the live loop the first time a real-mode
+    # BUY/SELL was approved while disabled). It returns state cleanly, with
+    # broker_outcome/allowed/reason populated exactly as before.
     monkeypatch.setenv("EXECUTION_MODE", "real")
     monkeypatch.setenv("KIWOOM_MODE", "real")
     monkeypatch.setenv("EXECUTION_ENABLED", "false")
     state = _base_state(tmp_path, executor=RealExecutor(http=_RecordingHttp()))
-    with pytest.raises(ExecutionDisabledError):
-        execute_from_packet(state)
-    assert state["execution"]["broker_outcome"] == "NOT_SENT"
+    out = execute_from_packet(state)
+    assert out["execution"]["broker_outcome"] == "NOT_SENT"
+    assert out["execution"]["allowed"] is False
+    assert "EXECUTION_DISABLED" in out["execution"]["reason"]
 
 
 def test_non_execution_disabled_exception_after_dispatch_is_unknown_not_not_sent(monkeypatch, tmp_path):
@@ -293,11 +300,15 @@ def test_non_execution_disabled_exception_after_dispatch_is_unknown_not_not_sent
 
 
 def test_execution_disabled_error_from_executor_is_not_sent(monkeypatch, tmp_path):
+    # See test_preflight_failure_before_submission_is_still_not_sent's own
+    # comment: ExecutionDisabledError from ANY injected executor (not just
+    # RealExecutor's own preflight_check) is handled the same way -- clean
+    # return, never a re-raise.
     monkeypatch.setenv("EXECUTION_MODE", "mock")
     state = _base_state(tmp_path, executor=_RaisingExecutor(ExecutionDisabledError("[EXECUTION_DISABLED] no")))
-    with pytest.raises(ExecutionDisabledError):
-        execute_from_packet(state)
-    assert state["execution"]["broker_outcome"] == "NOT_SENT"
+    out = execute_from_packet(state)
+    assert out["execution"]["broker_outcome"] == "NOT_SENT"
+    assert out["execution"]["allowed"] is False
 
 
 # --- 5. Quarantine durability: writer failure never permits next-tick mutation -

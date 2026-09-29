@@ -11,6 +11,7 @@ from .operator_visibility import (
     generate_operator_daily_summary,
     generate_run_card_report,
 )
+from .event_log_reader import iter_jsonl_events
 from .reporter_ai_review import build_ai_reporter_review
 from .trade_explain import generate_trade_explain_report, official_trade_explain_report_dir
 from libs.core.symbols import normalize_symbol
@@ -1752,11 +1753,23 @@ def generate_reporter_analysis_report(
     target_day = str(day or _latest_day(event_log_path) or date.today().isoformat())
     reporter_run_id = f"reporter-{target_day}"
 
-    rows = []
-    for row in _iter_jsonl(event_log_path):
+    # OOM RCA follow-up (2026-09-23): this used to scan _iter_jsonl's
+    # unbounded read of the ENTIRE events.jsonl history on every call --
+    # this function is reachable from the standard live intraday trade
+    # report path (live_execution_bundle_runner.py, cache-miss trigger),
+    # not just the once-daily EOD cascade, so the unbounded scan could fire
+    # repeatedly through the trading day as the log kept growing. Reuses
+    # the same day-scoped, disk-cached reader already used elsewhere in
+    # the reporting stack (libs/reporting/event_log_reader.py) -- day_rows
+    # itself is still a materialized list here (this function's ~10
+    # downstream _build_*(day_rows) helpers all need independent list
+    # access, unlike operator_visibility.py's decision_story/run_card,
+    # which were rewritten to stream), so this fixes the unbounded-total-
+    # history growth, not day-size scaling.
+    day_rows = []
+    for row in iter_jsonl_events(event_log_path, day=target_day):
         ts = row.get("ts") or (row.get("payload") or {}).get("ts")
-        rows.append({**row, "_day": _utc_day(ts)})
-    day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
+        day_rows.append({**row, "_day": _utc_day(ts)})
     try:
         record_raw_input(
             run_id=reporter_run_id,

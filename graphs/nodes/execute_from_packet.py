@@ -1936,6 +1936,216 @@ def _evaluate_execution_closeout_buy_guard(state: Dict[str, Any], order: Dict[st
     return True, "", details
 
 
+def _evaluate_execution_readiness_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    """P1 (execution readiness authority, 2026-09-17): the outermost,
+    system-level gate -- "is this runtime healthy enough to place a NEW
+    physical order AT ALL" -- evaluated before every other, more specific
+    guard in this chain (open-order-per-symbol, symbol allowlist, notional
+    limits, Supervisor, ...).
+
+    Scoped to NEW physical orders only (BUY/SELL) -- CANCEL/MODIFY of an
+    already-placed order are deliberately NOT gated here. Per the task's
+    own framing ("어떤 신규 물리 주문도 허용되지 않도록") this authority is
+    about preventing NEW exposure while restart/ownership/reconciliation
+    state is unverified; blocking a CANCEL during that same window would
+    be actively counter-safety (it removes exposure / lets an operator
+    escape a stuck order), so it stays reachable through this gate exactly
+    as it always has.
+
+    Consumes ONLY `state["execution_readiness"]`, built unconditionally
+    every tick by graphs/nodes/build_execution_readiness.py (wired into
+    the canonical tick flow immediately after the open-order snapshot,
+    before strategist/scanner/monitor/decision/execution ever run) --
+    this guard recomputes nothing itself; it is a pure consumer, exactly
+    like the open-order guard's own relationship to its snapshot.
+
+    Scoped to real mode only, mirroring `_evaluate_portfolio_snapshot_guard`'s
+    own established precedent in this same file: MockExecutor never
+    dispatches anywhere, so this authority (whose entire purpose is
+    protecting real broker/account state across restarts) has nothing to
+    protect in mock mode, and gating mock unconditionally would block the
+    large existing body of mock-mode tests/validation lanes that construct
+    `state` directly without ever running the full tick flow -- exactly
+    the blast-radius mistake this session's own audit already caught once
+    for the open-order guard.
+    """
+    action = str(order.get("action") or "").strip().upper()
+    if action not in ("BUY", "SELL"):
+        return True, "", {"enabled": False, "action": action}
+
+    if _resolve_execution_mode() != "real":
+        return True, "", {"enabled": False, "action": action, "reason": "execution_mode_not_real"}
+
+    if not _is_trueish(os.getenv("EXECUTION_READINESS_GATE_ENABLED", "true")):
+        return True, "", {"enabled": False, "action": action, "skip_reason": "guard_disabled"}
+
+    readiness = state.get("execution_readiness")
+    if not isinstance(readiness, dict):
+        return False, "execution_readiness_missing", {"enabled": True, "action": action}
+
+    if not bool(readiness.get("ready")):
+        return False, "execution_not_ready", {
+            "enabled": True, "action": action,
+            "reasons": list(readiness.get("reasons") or []),
+            "runtime_instance_id": readiness.get("runtime_instance_id"),
+            "ownership_generation": readiness.get("ownership_generation"),
+            "recovery_required": readiness.get("recovery_required"),
+            "orphan_claim_count": readiness.get("orphan_claim_count"),
+        }
+
+    return True, "", {"enabled": True, "action": action}
+
+
+def _evaluate_open_order_reconciliation_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    """P0-A (real-readiness hardening, 2026-09-17): fail-closed pending/open-order
+    reconciliation gate for the entry (BUY) path.
+
+    Restart-safety gap this closes: BUY dispatched -> broker accepts it as a
+    pending/open order -> runtime crash/restart before a position exists ->
+    a fresh tick's entry intent for the SAME symbol has nothing to stop it,
+    because the existing position-reconciliation gate
+    (_apply_portfolio_preflight_guard, graphs/commander_runtime.py) only sees
+    FILLED positions, never an order that is still open/unfilled at the
+    broker. This guard closes that gap on the one side (BUY/entry) that
+    lacked it -- the SELL/exit side already has an equivalent guard
+    (`sell_guard_open_order_pending`, graphs/nodes/monitor_node.py).
+
+    DETERMINISTIC, not opportunistic (2026-09-17 redesign): the previous
+    version of this guard only consumed `state["skill_results"]["account.
+    orders"]` if some OTHER node happened to have hydrated it this tick, and
+    passed silently when it was absent -- "insufficient for real-readiness"
+    per its own follow-up-note. This version consumes
+    `state["open_order_snapshot"]`, populated UNCONDITIONALLY every tick by
+    `graphs/nodes/build_open_order_snapshot.py`, wired directly into the
+    canonical tick flow at `libs/runtime/commander/session_context.py::
+    build_integrated_chain_session_context` (immediately after portfolio
+    snapshot, before strategist/scanner/monitor/decision/execution ever
+    run). That node uses the KiwoomOrderFillReader/KiwoomBrokerTruthClient
+    reader-class pattern (get_executor(), independent of
+    state["skill_runner"]) rather than the generic skill-runner/
+    hydrate_skill_results_node path -- this is deliberately NOT the same
+    mechanism whose forced use here previously broke ~29 tests (those tests
+    configure deliberately narrow fake skill_runners that error on an
+    unplanned account.orders call through that SHARED path; the reader
+    class resolves its own executor and never touches state["skill_runner"]
+    at all, so it cannot collide with those tests). This guard itself makes
+    no broker/skill call of its own -- it only ever reads the snapshot the
+    tick flow already produced.
+
+    Granularity decision (symbol + side, not exact qty/price/order-id
+    match): deliberately mirrors the existing sell-side guard's own
+    granularity rather than Step5C's exact physical_order_fingerprint
+    match. A physical-order-fingerprint-exact guard already exists
+    downstream (libs/execution/intent_identity.py::physical_order_fingerprint
+    + libs/supervisor/intent_state_store.py::claim_physical_order) and
+    correctly blocks a byte-identical retry; it does NOT block a second,
+    slightly different BUY into a symbol that already has an open order
+    (different qty/price still means excess/duplicate directional exposure
+    to the same symbol, which is exactly the restart-safety risk being
+    closed here). No new trading-strategy semantics are introduced -- this
+    is a system-level execution-safety guard, evaluated after guard-chain
+    entry, before Supervisor.allow()/dispatch, exactly like the other
+    BUY-path guards in this function.
+
+    Fail-closed principle: KNOWN EMPTY (snapshot present, reader_ok, fresh,
+    zero pending same-symbol-BUY rows) -> proceed. KNOWN PENDING same-
+    symbol/side -> block. Anything else -- snapshot missing (node never ran
+    this tick, e.g. a test that bypasses the real tick flow), reader error,
+    stale snapshot (older than this tick's own admission point should ever
+    see), or a malformed rows payload -- is UNKNOWN and blocks. "Broker
+    state could not be confirmed this tick" is never treated as "safe to
+    proceed."
+    """
+    action = str(order.get("action") or "").strip().upper()
+    if action != "BUY":
+        return True, "", {"enabled": False, "action": action}
+
+    if not _is_trueish(os.getenv("OPEN_ORDER_RECONCILIATION_GUARD_ENABLED", "true")):
+        return True, "", {"enabled": False, "action": action, "skip_reason": "guard_disabled"}
+
+    from libs.core.symbols import normalize_symbol
+
+    symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd"))
+    if not symbol:
+        # No canonical symbol to reconcile against -- the existing
+        # symbol_format_guard (evaluated next in the chain) is the correct
+        # place to reject a malformed/missing symbol; this guard has
+        # nothing of its own to check and must not manufacture a block.
+        return True, "", {"enabled": True, "action": action, "skip_reason": "no_symbol"}
+
+    try:
+        from graphs.nodes.skill_contracts import account_order_is_pending, account_order_side
+    except Exception as exc:
+        return False, "open_order_reconciliation_unavailable", {
+            "enabled": True, "action": action, "symbol": symbol,
+            "error": f"{type(exc).__name__}: contract_import_failed",
+        }
+
+    snapshot = state.get("open_order_snapshot")
+    if not isinstance(snapshot, dict):
+        return False, "open_order_snapshot_missing", {
+            "enabled": True, "action": action, "symbol": symbol,
+        }
+
+    health = snapshot.get("_health")
+    health = health if isinstance(health, dict) else {}
+    if not _is_trueish(health.get("reader_ok", True)):
+        return False, "open_order_snapshot_reader_error", {
+            "enabled": True, "action": action, "symbol": symbol,
+            "reader_error": str(health.get("reader_error") or ""),
+            "source": str(health.get("source") or ""),
+        }
+
+    fetched_epoch = _coerce_int(health.get("fetched_epoch"), -1)
+    max_age = _coerce_int(os.getenv("OPEN_ORDER_SNAPSHOT_MAX_AGE_SECONDS"), 120)
+    if fetched_epoch < 0:
+        return False, "open_order_snapshot_missing_timestamp", {
+            "enabled": True, "action": action, "symbol": symbol,
+        }
+    age = int(time.time()) - fetched_epoch
+    if age > max_age:
+        return False, "open_order_snapshot_stale", {
+            "enabled": True, "action": action, "symbol": symbol,
+            "age_seconds": age, "max_age_seconds": max_age,
+        }
+
+    rows = snapshot.get("rows")
+    if not isinstance(rows, list):
+        return False, "open_order_snapshot_malformed", {
+            "enabled": True, "action": action, "symbol": symbol,
+        }
+
+    pending_same_symbol_buy: list = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not account_order_is_pending(row):
+            continue
+        row_symbol = normalize_symbol(row.get("symbol") or row.get("stk_cd") or row.get("code"))
+        if row_symbol != symbol:
+            continue
+        row_side = account_order_side(row)
+        if row_side and row_side != "BUY":
+            continue
+        pending_same_symbol_buy.append({
+            "ord_no": row.get("ord_no"),
+            "symbol": row_symbol,
+            "side": row_side or "UNKNOWN",
+        })
+
+    if pending_same_symbol_buy:
+        return False, "pending_open_order_exists_for_symbol", {
+            "enabled": True, "action": action, "symbol": symbol,
+            "pending_orders": pending_same_symbol_buy[:5],
+            "pending_count": len(pending_same_symbol_buy),
+        }
+
+    return True, "", {
+        "enabled": True, "action": action, "symbol": symbol,
+        "checked_rows": len(rows), "age_seconds": age,
+    }
+
+
 def _extract_portfolio_snapshot_health(state: Dict[str, Any]) -> Dict[str, Any]:
     snap = state.get("portfolio_snapshot")
     if isinstance(snap, dict):
@@ -2972,6 +3182,34 @@ def execute_from_packet(state: dict) -> dict:
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
+        readiness_allowed, readiness_reason, readiness_details = _evaluate_execution_readiness_guard(state, order)
+        if not readiness_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=readiness_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["execution_readiness_guard"] = readiness_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="execution_readiness_guard_block",
+                payload={"allowed": False, "reason": readiness_reason, **readiness_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=readiness_reason,
+                supervisor_details=readiness_details,
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
         closeout_buy_allowed, closeout_buy_reason, closeout_buy_details = _evaluate_execution_closeout_buy_guard(state, order)
         if not closeout_buy_allowed:
             state["execution"] = _normalize_execution(
@@ -3000,6 +3238,34 @@ def execute_from_packet(state: dict) -> dict:
                 supervisor_allowed=False,
                 supervisor_reason=closeout_buy_reason,
                 supervisor_details=closeout_buy_details,
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        open_order_allowed, open_order_reason, open_order_details = _evaluate_open_order_reconciliation_guard(state, order)
+        if not open_order_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=open_order_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["open_order_reconciliation_guard"] = open_order_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="open_order_reconciliation_guard_block",
+                payload={"allowed": False, "reason": open_order_reason, **open_order_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=open_order_reason,
+                supervisor_details=open_order_details,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -3786,5 +4052,35 @@ def execute_from_packet(state: dict) -> dict:
             supervisor_reason=str(e),
             supervisor_details={},
         )
+        if isinstance(e, _ExecutionDisabledError):
+            # Paper Trading Execution Finalization (2026-09-17): execution
+            # being disabled (or any other RealExecutor.preflight_check
+            # denial -- allowlist/ALLOW_REAL_EXECUTION/missing credentials,
+            # all raised as this same exception type) is a DETERMINISTIC,
+            # EXPECTED policy rejection, not an incident -- Step5B's own
+            # NOT_SENT classification above already proves nothing was ever
+            # sent. state["execution"] is fully populated (allowed=False,
+            # broker_outcome=NOT_SENT, reason=str(e)) -- the correct,
+            # existing ExecutionResult/BrokerOutcome contract, no new
+            # semantics invented. Returning cleanly here (never raising) is
+            # what keeps the live loop running tick after tick while
+            # EXECUTION_ENABLED=false -- previously this re-raised
+            # unconditionally, propagating uncaught through
+            # commander_runtime.py and libs/runtime/live_loop_runner.py's
+            # tick loop (no `except` around run_once_fn) and crashing the
+            # whole process the FIRST time a real-mode BUY/SELL was ever
+            # approved while disabled (live-reproduced in the Real Docker
+            # Deployment audit). Genuinely unexpected exceptions (DB
+            # corruption, internal invariant violations, any type other
+            # than this one) are NOT touched by this branch and continue to
+            # `raise` below, unchanged -- fail-loud semantics for real
+            # failures are deliberately preserved, not weakened.
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="execution_disabled_blocked",
+                payload={"reason": str(e), "broker_outcome": broker_outcome},
+            )
+            return state
         logger.log(run_id=run_id, stage="execute_from_packet", event="error", payload={"error": str(e)})
         raise

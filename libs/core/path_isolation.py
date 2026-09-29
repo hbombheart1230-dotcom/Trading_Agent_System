@@ -101,7 +101,28 @@ def _pytest_isolated_write_root() -> Path:
 # "explicit non-canonical test path" that must pass through unchanged;
 # without this exception, resolve_runtime_write_path would redirect every
 # test's own tmp_path-based path a second time and break it.
+#
+# conftest.py::pytest_configure rewrites --basetemp to ".pytest-work-<pid>"
+# (unique per pytest process, to fix a concurrent-pytest collision on the
+# single fixed ".pytest-work" -- see its own docstring), so the first path
+# segment a live tmp_path now produces is that PID-suffixed name, not the
+# bare literal below. An exact-string membership check against these
+# literals therefore silently stopped matching real tmp_path values,
+# reintroducing the exact double-redirect this exception exists to
+# prevent (caught directly: the dedicated regression test
+# tests/test_p0_pytest_isolation_fix2.py::
+# test_resolve_runtime_write_path_passes_through_tmp_path started failing
+# the moment the basetemp rename shipped). _is_pytest_owned_subdir below
+# matches the bare name OR name-<anything>, so the exception keeps holding
+# regardless of what suffix a given pytest invocation's basetemp carries.
 _PYTEST_OWNED_REPO_SUBDIRS = (".pytest-work", ".pytest_cache", "__pycache__")
+
+
+def _is_pytest_owned_subdir(first_path_part: str) -> bool:
+    return any(
+        first_path_part == name or first_path_part.startswith(f"{name}-")
+        for name in _PYTEST_OWNED_REPO_SUBDIRS
+    )
 
 
 def _escaped_fallback_path(original: str | os.PathLike[str]) -> Path:
@@ -173,7 +194,7 @@ def resolve_runtime_write_path(path: str | os.PathLike[str]) -> Path:
             # Genuinely outside the repository (e.g. a real OS-temp-dir
             # tmp_path some test built directly) -- leave untouched.
             return candidate
-        if rel.parts and rel.parts[0] in _PYTEST_OWNED_REPO_SUBDIRS:
+        if rel.parts and _is_pytest_owned_subdir(rel.parts[0]):
             return candidate
         target = isolated_root / rel
     else:

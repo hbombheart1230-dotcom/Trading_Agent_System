@@ -28,13 +28,32 @@ def build_integrated_chain_session_context(
     state: Dict[str, Any],
     *,
     build_portfolio_snapshot_fn: StateFn,
+    build_open_order_snapshot_fn: StateFn,
+    build_execution_readiness_fn: StateFn,
     build_risk_context_fn: StateFn,
     apply_portfolio_preflight_guard_fn: Callable[..., Tuple[bool, Dict[str, Any]]],
     build_commander_decision_fn: Callable[..., Dict[str, Any]],
 ) -> Tuple[Dict[str, Any], bool]:
     state = build_portfolio_snapshot_fn(state)
+    # P0-A (real-readiness hardening): unconditional, every-tick, same
+    # point as position reconciliation -- deliberately BEFORE the
+    # portfolio preflight guard's own possible early-return, so the
+    # open-order evidence is always this tick's own, never a stale
+    # carry-over from a tick that short-circuited earlier.
+    state = build_open_order_snapshot_fn(state)
+    # P1 (execution readiness authority): consumes this SAME tick's
+    # portfolio/open-order evidence plus runtime ownership state -- must
+    # run after both, still unconditionally and still before the
+    # preflight guard's own possible early-return, so
+    # state["execution_readiness"] always reflects this tick, never a
+    # stale carry-over from an earlier short-circuited tick.
+    state = build_execution_readiness_fn(state)
     snaps = state.get("snapshots") if isinstance(state.get("snapshots"), dict) else {}
-    state["snapshots"] = {**dict(snaps or {}), "portfolio": state.get("portfolio_snapshot")}
+    state["snapshots"] = {
+        **dict(snaps or {}),
+        "portfolio": state.get("portfolio_snapshot"),
+        "open_orders": state.get("open_order_snapshot"),
+    }
     should_continue, state = apply_portfolio_preflight_guard_fn(state, phase="session")
     if not should_continue:
         return state, False

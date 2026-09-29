@@ -1472,3 +1472,16 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Added the missing UEF-5.1 through UEF-9 freeze milestones and the P1.1 real-run acceptance entry, in the order they actually happened, without altering any existing entry.
 - Added a regression test that fails if the technical patch-note archive (docs/daily_patch/) ever contains a newer dated entry than the Patch Notes UI's own data file, so a future stall is caught automatically instead of discovered by a user.
 - The Patch Notes UI now reflects the true, current state of the project, and a recurrence of the same silent staleness will be caught by an automated check.
+
+# 2026-09-29 - P1.3 Pytest Harness Speedup and Shutdown-Flag Safety Fix
+
+- Split the test-session production-write safety scan into a fast default (a few seconds) and an unweakened full audit mode, cutting the fixed cost every test run paid regardless of which tests actually ran.
+- Fixed a concurrent-test-run collision where two test processes running at the same time could fail each other's file cleanup.
+- Classified the small number of tests that genuinely spawn a real separate process, so the normal test loop can skip them without losing their coverage.
+- Fixed a real bug found while isolating a stalled test: a background trading loop silently ignored a caller's shutdown signal object whenever it wasn't the exact internal class, which could make the loop never stop; it now either accepts a compatible signal object or fails immediately and visibly instead of silently substituting one that never fires.
+- Fixed a second bug the same investigation introduced and then closed within this change: an earlier fix to the test-collision issue above briefly broke test path isolation for explicitly-supplied paths, which in turn made a manual crash-reconciliation audit trail appear to go unwritten; both are now confirmed correct.
+- Taught the fast safety scan to recognize a small number of files this machine's own live trading process legitimately keeps writing to, so those no longer register as false test failures -- the full audit mode still checks them.
+- Corrected a stale executor-exception test fixture that omitted a required BUY price and fresh empty open-order snapshot and therefore never reached its fake executor; it now asserts one executor call and propagation of the deliberate `RuntimeError`, without changing production execution behavior.
+- The full P1.3 safety-related test set (20 files) now runs together in 45.58 seconds (220 passed, 0 failed, 9 tests deliberately run separately as a heavy subset) with no false failures, down from a run that previously exceeded 25 minutes. The separate heavy subset also passes cleanly (9 passed, 0 failed).
+- Explicit status: implemented = yes, targeted test validation = pass, heavy test validation = pass, Docker operational acceptance = pending, full-session soak = pending, P1.3 overall = not yet closed. This entry covers test-harness correctness and speed only, not the separate P1.3 Docker operational acceptance milestone.
+- See `docs/daily_patch/2026-09-29_p1_3_pytest_harness_and_shutdown_safety_fixes.md`.

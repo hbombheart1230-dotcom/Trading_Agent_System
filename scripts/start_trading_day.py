@@ -311,6 +311,29 @@ def _start_live() -> dict[str, Any]:
     }
 
 
+def _tail_lines(path: Path, n: int, *, chunk_size: int = 65536) -> list[str]:
+    """Reads the last `n` lines of a (potentially large, append-only) file
+    without loading the whole file into memory -- seeks backward from the
+    end in fixed-size chunks until enough newlines are found. OOM RCA
+    follow-up (2026-09-23): this replaces a `read_text().splitlines()[-N:]`
+    call that loaded the entire events.jsonl just to keep its tail."""
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        file_size = handle.tell()
+        block = b""
+        newline_count = 0
+        pos = file_size
+        while pos > 0 and newline_count <= n:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            handle.seek(pos)
+            block = handle.read(read_size) + block
+            newline_count = block.count(b"\n")
+        text = block.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    return lines[-n:] if n > 0 else lines
+
+
 def _event_health(day: str, *, lookback_min: int = 10) -> dict[str, Any]:
     path = ROOT / "data" / "logs" / "events.jsonl"
     now = datetime.now(KST)
@@ -324,7 +347,7 @@ def _event_health(day: str, *, lookback_min: int = 10) -> dict[str, Any]:
     if not path.exists():
         return {"available": False, "reason": "events_log_missing", "counts": counts}
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-3000:]
+        lines = _tail_lines(path, 3000)
     except Exception as exc:
         return {"available": False, "reason": f"events_log_read_failed:{type(exc).__name__}", "counts": counts}
     for line in lines:

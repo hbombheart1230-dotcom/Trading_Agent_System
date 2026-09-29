@@ -3,6 +3,7 @@ python-dotenv>=1.0.1
 requests>=2.31.0
 pydantic>=2.7.0
 tenacity>=8.2.3
+websockets>=16.0
 
 # Utilities
 rich>=13.7.1

@@ -277,3 +277,95 @@ def test_t4_repeated_closeout_recovery_calls_issue_no_further_live_capture(tmp_p
     for _ in range(3):
         mod._q10_closeout_recovery(day, _capture=_counting_capture, _now_fn=lambda: datetime(2026, 8, 27, 15, 36, tzinfo=mod.KST))
     assert len(calls) == 1
+
+
+# --- OOM RCA follow-up (2026-09-23): _event_health() used to
+# read_text().splitlines()[-3000:] the whole events.jsonl just to get its
+# tail. Fixed to seek from the end instead. -----------------------------
+
+def test_tail_lines_returns_exact_last_n_lines_smaller_than_one_chunk(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text("\n".join(f"line{i}" for i in range(50)) + "\n", encoding="utf-8")
+    assert mod._tail_lines(path, 10) == [f"line{i}" for i in range(40, 50)]
+
+
+def test_tail_lines_handles_file_shorter_than_requested_n(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text("\n".join(f"line{i}" for i in range(5)) + "\n", encoding="utf-8")
+    assert mod._tail_lines(path, 100) == [f"line{i}" for i in range(5)]
+
+
+def test_tail_lines_spans_multiple_chunks_correctly(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    # each line ~20 bytes; force a tiny chunk_size so a 3000-line tail must
+    # cross many chunk boundaries, exercising the backward-seek loop
+    path.write_text("\n".join(f"line-{i:06d}-pad" for i in range(5000)) + "\n", encoding="utf-8")
+    result = mod._tail_lines(path, 3000, chunk_size=256)
+    assert result == [f"line-{i:06d}-pad" for i in range(2000, 5000)]
+
+
+def test_tail_lines_does_not_read_whole_file(tmp_path: Path, monkeypatch) -> None:
+    """Pins the actual bug: a naive read_text() would open the file and
+    read every byte. This asserts the file handle's read() calls only ever
+    request bounded chunk_size amounts, never the full file size."""
+    path = tmp_path / "events.jsonl"
+    path.write_text("\n".join(f"line{i}" for i in range(10000)) + "\n", encoding="utf-8")
+    file_size = path.stat().st_size
+
+    requested_sizes: list[int] = []
+    real_open = Path.open
+
+    class _TrackingFile:
+        def __init__(self, real_handle):
+            self._h = real_handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self._h.close()
+
+        def seek(self, *a):
+            return self._h.seek(*a)
+
+        def tell(self):
+            return self._h.tell()
+
+        def read(self, size=-1):
+            requested_sizes.append(size)
+            return self._h.read(size)
+
+    def _tracking_open(self, mode="r", *a, **kw):
+        if self == path and mode == "rb":
+            return _TrackingFile(real_open(self, mode, *a, **kw))
+        return real_open(self, mode, *a, **kw)
+
+    monkeypatch.setattr(Path, "open", _tracking_open)
+    mod._tail_lines(path, 50, chunk_size=1024)
+
+    assert all(size <= 1024 for size in requested_sizes), requested_sizes
+    assert sum(requested_sizes) < file_size
+
+
+def test_event_health_uses_tail_lines_not_full_read(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(mod, "ROOT", tmp_path)
+    events_path = tmp_path / "data" / "logs" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    row = {"ts_kst": "2026-08-27T09:31:00+09:00", "stage": "scanner", "event": "candidate_evaluated"}
+    events_path.write_text(
+        "\n".join(json.dumps({**row, "day_marker": "2026-08-27"}) for _ in range(10)) + "\n",
+        encoding="utf-8",
+    )
+
+    called_with: dict = {}
+    real_tail_lines = mod._tail_lines
+
+    def _spy(path, n, **kw):
+        called_with["n"] = n
+        return real_tail_lines(path, n, **kw)
+
+    monkeypatch.setattr(mod, "_tail_lines", _spy)
+    result = mod._event_health("2026-08-27", lookback_min=10)
+
+    assert called_with.get("n") == 3000
+    assert result["available"] is not False or result.get("reason") != "events_log_read_failed"

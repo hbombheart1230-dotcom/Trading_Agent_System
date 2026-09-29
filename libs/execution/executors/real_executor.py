@@ -96,20 +96,42 @@ class RealExecutor:
         return code in {"3", "8005", "805004"} and ("token" in text or "인증" in text or "8005" in text)
 
     def preflight_check(self, req: Optional[PreparedRequest] = None) -> Dict[str, Any]:
-        """M24-5: explicit preflight check with stable denial reason codes.
+        """M24-5 / Paper Trading Execution Finalization (2026-09-17): explicit
+        preflight check with stable denial reason codes.
 
         This is a pure guard evaluation step. It performs no token issuance and no HTTP calls.
+
+        Canonical terminology (fixed going forward):
+          Mock Execution  -- EXECUTION_MODE=mock -> MockExecutor is selected
+                              instead of this class entirely; not reachable here.
+          Paper Trading   -- EXECUTION_MODE=real, KIWOOM_MODE=mock -> this
+                              class dispatches to Kiwoom's own sandbox server.
+          Live Trading    -- EXECUTION_MODE=real, KIWOOM_MODE=real -> this
+                              class dispatches to a real Kiwoom account.
+
+        EXECUTION_ENABLED is a GLOBAL physical-dispatch switch, independent of
+        KIWOOM_MODE -- checked FIRST, unconditionally. A prior version of this
+        method only enforced it when KIWOOM_MODE == "real", which meant Paper
+        Trading (KIWOOM_MODE=mock, a real HTTP call to Kiwoom's own sandbox)
+        could dispatch with EXECUTION_ENABLED=false or even unset -- a real,
+        live-reproduced bypass (see deploy/trading's own Real Docker
+        Deployment audit). EXECUTION_ENABLED=false now blocks unconditionally,
+        in both Paper and Live.
+
+        ALLOW_REAL_EXECUTION is a LIVE-ACCOUNT-ONLY additional switch, checked
+        only when KIWOOM_MODE == "real" -- Paper Trading (KIWOOM_MODE=mock)
+        needs only EXECUTION_ENABLED=true, never this second flag, since it
+        never touches a real account regardless.
         """
-        mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower()
         enabled = self._env_flag_true("EXECUTION_ENABLED", "false")
+        if not enabled:
+            return self._deny(
+                "EXECUTION_DISABLED",
+                "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls.",
+            )
 
+        mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower()
         if mode == "real":
-            if not enabled:
-                return self._deny(
-                    "EXECUTION_DISABLED",
-                    "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls.",
-                )
-
             allow_real = self._env_flag_true("ALLOW_REAL_EXECUTION", "false")
             if not allow_real:
                 return self._deny(
@@ -137,15 +159,9 @@ class RealExecutor:
                     "INVALID_BASE_URL",
                     "Real mode requires https base URL.",
                 )
-        else:
-            # Keep compatibility:
-            # - mock mode can run with EXECUTION_ENABLED=false
-            # - unknown/non-mock mode behaves like real for execution_enabled guard
-            if mode != "mock" and not enabled:
-                return self._deny(
-                    "EXECUTION_DISABLED",
-                    "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls.",
-                )
+        # mode == "mock" (Paper Trading): EXECUTION_ENABLED=true already
+        # confirmed above; ALLOW_REAL_EXECUTION is deliberately NOT required
+        # here -- it is a live-account-only guard.
 
         if req is not None:
             allow = self._parse_symbol_allowlist(os.getenv("SYMBOL_ALLOWLIST"))

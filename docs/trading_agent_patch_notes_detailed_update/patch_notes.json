@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 82,
+  "entry_count": 83,
   "entries": [
     {
       "date": "2026-09-08",
@@ -2162,6 +2162,33 @@
         "docs/trading_agent_patch_notes_detailed_update/patch_notes.json",
         "docs/trading_agent_patch_notes_detailed_update/README.md",
         "tests/test_patch_notes_sync.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "P1.3 Pytest Harness Speedup and Shutdown-Flag Safety Fix",
+      "title": "Faster P1.3 safety test loop, plus a real shutdown-signal bug fix",
+      "stage": "Trading Operations",
+      "types": [
+        "TEST_INFRASTRUCTURE",
+        "RELIABILITY"
+      ],
+      "summary": "Cut the fixed cost of the test-session production-write safety scan from minutes to seconds without weakening it, and fixed a background trading loop bug where a caller-supplied shutdown signal could be silently ignored. P1.3 itself remains open pending Docker operational acceptance and a full-session soak.",
+      "details": [
+        "The production-write safety scan run at the start and end of every test session now has a fast default mode (a few seconds) plus an unweakened full audit mode for deliberate pre-freeze checks, instead of always paying the full-tree-scan cost.",
+        "Fixed a concurrent-test-run collision where two test processes running at the same time could fail each other's temporary file cleanup on this machine.",
+        "Classified the 9 tests that genuinely spawn a real separate process so the normal test loop can skip them without losing their coverage; verified no other test was mislabeled this way.",
+        "Fixed a real bug found while isolating a stalled test: a background trading loop's run_live_loop silently ignored a caller-supplied shutdown flag whenever it was not the exact internal class, substituting one that could never be triggered and letting the loop run indefinitely. It now accepts any compatible shutdown flag or fails loudly instead of silently substituting one.",
+        "A fix made earlier in this same change (for the concurrent-test-run collision) briefly broke explicit test path isolation, which made a manual crash-reconciliation audit trail appear to go unwritten in one test; both issues are now confirmed correct and covered by existing tests.",
+        "Taught the fast safety scan to recognize three files this machine's own live trading process legitimately keeps writing to, so concurrent live trading no longer registers as a false test failure -- the full audit mode still checks them.",
+        "Corrected a stale executor-exception test fixture that omitted a required BUY price and fresh empty open-order snapshot and therefore never reached its fake executor; it now asserts one executor call and propagation of the deliberate RuntimeError, without changing production execution behavior.",
+        "The 20-file P1.3 safety-related test set now runs together in 45.58 seconds (220 passed, 0 failed, 9 tests deliberately skipped as a separately-run heavy subset) with zero false failures and zero unexpected new files or folders created, down from a run that previously exceeded 25 minutes. The separate heavy subset (9 tests that spawn a real subprocess) also passes cleanly, 0 failed.",
+        "Explicit acceptance status for this change: implemented = yes, targeted test validation = pass, heavy test validation = pass, Docker operational acceptance = pending, full-session soak = pending, P1.3 overall = not yet closed. This entry covers test-harness correctness and speed only, not the separate P1.3 Docker operational acceptance milestone."
+      ],
+      "impact": "The P1.3 safety test loop is now fast enough to run routinely during development, and a real bug that could have left a live trading process unable to shut down cleanly on signal is fixed.",
+      "sources": [
+        "docs/daily_patch/2026-09-29_p1_3_pytest_harness_and_shutdown_safety_fixes.md"
       ],
       "status": "current"
     }

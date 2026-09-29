@@ -170,6 +170,7 @@ def test_fix1_explicit_env_override_still_wins_for_every_consumer(monkeypatch, t
     assert approval.state_store.path == owner_store().path == override.resolve()
 
 
+@pytest.mark.heavy
 def test_fix1_cwd_independent_default_path(tmp_path):
     """The production (non-pytest) default must be an absolute,
     repo-root-anchored path -- not a bare relative literal that would
@@ -261,6 +262,7 @@ def _cross_process_manual_worker(db_path, catalog_path, barrier_, queue_):
     queue_.put(("manual", ex.calls, result.action))
 
 
+@pytest.mark.heavy
 def test_fix1_real_multiprocess_cross_path(tmp_path):
     """Two real OS processes racing the SAME intent_id on the canonical
     DB -- one taking the automated-path shape (execute_owned_order

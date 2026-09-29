@@ -16,6 +16,41 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def test_generate_reporter_analysis_report_with_day_does_not_full_scan(tmp_path: Path, monkeypatch) -> None:
+    """OOM RCA follow-up (2026-09-23): generate_reporter_analysis_report is
+    reachable from the standard live intraday trade-report path (not just
+    the once-daily EOD cascade), and used to unconditionally read the
+    ENTIRE events.jsonl history via the module-local _iter_jsonl on every
+    call. Fixed to use the day-scoped, disk-cached iter_jsonl_events when a
+    day is known. Pins that the unbounded module-local _iter_jsonl is
+    never invoked once target_day is resolved."""
+    day = "2026-04-08"
+    events = tmp_path / "events.jsonl"
+    reports_root = tmp_path / "reports"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T01:00:00+00:00",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {"decision_packet": {"intent": {"action": "BUY", "symbol": "005930", "qty": 1, "reason": "entry"}}},
+            },
+        ],
+    )
+
+    def _fail_if_called(*_args, **_kwargs):
+        raise AssertionError("unbounded full-file _iter_jsonl scan must not run once target_day is known")
+
+    monkeypatch.setattr(reporter_analysis_module, "_iter_jsonl", _fail_if_called)
+
+    _md, _js, out = reporter_analysis_module.generate_reporter_analysis_report(
+        events, reports_root / "reporter_analysis", day=day, reports_root=reports_root,
+    )
+    assert out.get("day") == day
+
+
 def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, capsys) -> None:
     day = "2026-03-10"
     events = tmp_path / "events.jsonl"

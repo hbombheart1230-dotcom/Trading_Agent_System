@@ -210,6 +210,7 @@ def test_high1_t3_state_reads_executing_with_no_prior_claim_from_this_call_still
     assert ex.calls == 0
 
 
+@pytest.mark.heavy
 def test_high1_t4_real_multiprocess_same_intent_total_calls_le_1(tmp_path):
     context = multiprocessing.get_context("spawn")
     db = str(tmp_path / "concurrent.db")
@@ -404,6 +405,7 @@ def _physical_worker_b(db, event_claimed, queue):
     queue.put(("B", ex.calls, result["broker_outcome"]))
 
 
+@pytest.mark.heavy
 def test_high3_t8b_real_multiprocess_different_intents_same_physical_order(tmp_path):
     context = multiprocessing.get_context("spawn")
     db = str(tmp_path / "physical_concurrent.db")
@@ -517,6 +519,7 @@ def test_child_cancel_ownership_and_no_physical_collision_with_original_buy(monk
 # --- item 14/15: relative INTENT_STATE_DB_PATH is repo-root anchored ----
 
 
+@pytest.mark.heavy
 def test_relative_env_override_is_repo_root_anchored_not_cwd(tmp_path):
     repo_root = Path(__file__).resolve().parents[1]
     script = (

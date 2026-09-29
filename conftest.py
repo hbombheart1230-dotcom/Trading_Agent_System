@@ -40,6 +40,106 @@ if not os.environ.get(SESSION_ROOT_ENV):
     )
 
 
+# --- Concurrent-pytest basetemp collision fix (P1.3 pytest performance
+# cleanup) -----------------------------------------------------------------
+#
+# pytest.ini pins a fixed, repo-relative `--basetemp=.pytest-work` (kept
+# repo-relative deliberately, for easy inspection/cleanup, unlike
+# SESSION_ROOT_ENV above which is already PID+uuid-unique under the system
+# temp dir). pytest's own tmp_path/tmp_path_factory fixtures derive each
+# test's own temp directory name from *only* the test's own name under that
+# fixed basetemp (e.g. `.pytest-work/test_foo0/`) -- two pytest PROCESSES
+# running concurrently against overlapping test selections therefore race
+# to create/clean the identical directory, which on Windows produces a hard
+# PermissionError (the file is still open in the other process) rather than
+# a silent overwrite. Confirmed directly: running two overlapping pytest
+# invocations concurrently reproduced exactly this failure (299 spurious
+# errors, all `[WinError 32] ... used by another process`) even though
+# every individual test passes cleanly run alone.
+#
+# Fix: make basetemp unique per pytest PROCESS (not per test), same PID-
+# suffix pattern as SESSION_ROOT_ENV above, while keeping it repo-relative.
+# Runs in pytest_configure -- before TempPathFactory.getbasetemp() is ever
+# called lazily by the first tmp_path/tmp_path_factory fixture use, so this
+# safely overrides whatever pytest.ini's own --basetemp already parsed.
+# Best-effort cleanup of OTHER .pytest-work-<pid>/ directories left behind
+# by a process that no longer exists keeps these from accumulating forever;
+# a directory whose owning PID is still alive (another concurrent pytest
+# run) is never touched.
+def pytest_configure(config) -> None:  # noqa: D401 - pytest hook
+    for name in ("fast", "p1_3", "heavy", "docker", "benchmark"):
+        config.addinivalue_line(
+            "markers",
+            {
+                "fast": "fast: pure in-process logic, no subprocess/multiprocessing, expected to run in well under a second.",
+                "p1_3": "p1_3: part of the named P1.3 Docker/runtime-safety targeted regression file list.",
+                "heavy": "heavy: spawns a real OS subprocess or multiprocessing.Process (interpreter cold-start cost) -- excluded from fast dev-iteration runs via `-m \"not heavy\"`, still included in a full/CI run.",
+                "docker": "docker: exercises Docker-specific behavior (compose config shape, healthcheck script, image build) rather than pure Python runtime logic.",
+                "benchmark": "benchmark: measures real wall-clock/memory characteristics (not just pass/fail) -- inherently slower and only meaningful run in isolation, not as part of a fast loop.",
+            }[name],
+        )
+
+    try:
+        base_option = str(config.getoption("basetemp") or "").strip()
+    except (ValueError, KeyError):
+        base_option = ""
+    if not base_option:
+        return
+    base_path = Path(base_option)
+    if not base_path.is_absolute():
+        base_path = ROOT / base_path
+    parent, prefix = base_path.parent, base_path.name
+
+    if parent.is_dir():
+        for entry in parent.iterdir():
+            if not entry.is_dir() or not entry.name.startswith(f"{prefix}-"):
+                continue
+            stale_pid_str = entry.name[len(prefix) + 1:]
+            try:
+                stale_pid = int(stale_pid_str)
+            except ValueError:
+                continue
+            if _owning_pid_still_alive(stale_pid):
+                continue
+            try:
+                import shutil
+
+                shutil.rmtree(entry, ignore_errors=True)
+            except OSError:
+                pass
+
+    config.option.basetemp = str(parent / f"{prefix}-{os.getpid()}")
+
+
+def _owning_pid_still_alive(pid: int) -> bool:
+    """No new dependency (psutil is not installed in this venv) -- uses
+    os.kill(pid, 0) directly. POSIX: raises ProcessLookupError (ESRCH) for
+    a genuinely dead pid, no exception for a live one -- the standard
+    pattern. Windows (verified directly in this environment, Python 3.14):
+    os.kill(own_pid, 0) raises NOTHING for a live pid, but a dead/invalid
+    pid raises a PLAIN OSError with winerror==87 ("the parameter is
+    incorrect"), never ProcessLookupError -- catching only
+    ProcessLookupError here would silently never detect a dead PID on
+    Windows and this cleanup would never run. Any OTHER OSError (e.g.
+    PermissionError for a live pid this user cannot signal) is treated as
+    "alive/uncertain" -- the conservative answer, since this function's
+    only use is deciding whether it is safe to delete a directory, and a
+    false "alive" only costs a skipped cleanup, never a wrongly-deleted
+    live process's own temp directory."""
+
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 87:
+            return False
+        return True
+
+
 # --- Production-path write prevention (Phase 1 P0: pytest isolation) --------
 #
 # libs/runtime/canonical_artifacts.py::_reports_root() and the guard-path
@@ -98,6 +198,58 @@ def _isolate_unknown_quarantine_guard(monkeypatch, tmp_path):
     monkeypatch.setenv('INTENT_STATE_DB_PATH', str(tmp_path / 'intent_state.db'))
 
 
+@pytest.fixture(autouse=True)
+def _disable_open_order_reconciliation_guard_by_default(monkeypatch):
+    """P0-A (real-readiness hardening, 2026-09-17): the deterministic
+    open-order reconciliation guard (graphs/nodes/execute_from_packet.py::
+    _evaluate_open_order_reconciliation_guard) fails CLOSED whenever
+    state["open_order_snapshot"] was never populated -- correct for the
+    real tick flow, where graphs/nodes/build_open_order_snapshot.py now
+    runs unconditionally before execute_from_packet every tick, but wrong
+    for the hundreds of existing tests across this repo that construct
+    `state` directly and call execute_from_packet() without ever running
+    the full tick flow -- they are not exercising this guard, and without
+    this fixture they would all be blocked by it before ever reaching the
+    guard/logic they actually test (confirmed: 35+34 such failures across
+    13 files when this guard was first made deterministic).
+
+    Global + autouse, same precedent as `_isolate_unknown_quarantine_guard`
+    above, for the same reason: no test file should have to remember to
+    opt out of a guard it isn't testing. The guard's own dedicated,
+    opted-BACK-IN coverage lives in tests/test_p0a_open_order_reconciliation_guard.py
+    and tests/test_p0_crash_matrix.py, each of which re-enables it via its
+    own local autouse fixture (conftest.py fixtures of the same scope run
+    before same-scope fixtures defined in the test module itself, so that
+    local re-enable reliably wins).
+    """
+    monkeypatch.setenv("OPEN_ORDER_RECONCILIATION_GUARD_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
+def _disable_execution_readiness_gate_by_default(monkeypatch):
+    """P1 (execution readiness authority, 2026-09-17): the deterministic
+    execution-readiness gate (graphs/nodes/execute_from_packet.py::
+    _evaluate_execution_readiness_guard) fails CLOSED, in real mode, on any
+    BUY/SELL whenever `state["execution_readiness"]["ready"]` isn't True --
+    correct for the real tick flow, where graphs/nodes/build_execution_
+    readiness.py now runs unconditionally before execute_from_packet every
+    tick, but wrong for the many existing EXECUTION_MODE=real tests across
+    this repo that construct `state` directly and call execute_from_packet()
+    without ever running the full tick flow (no runtime_ownership, no
+    portfolio_snapshot/open_order_snapshot health, no execution_readiness
+    key at all) -- they are not exercising this new gate, and without this
+    fixture they would all be blocked by it before ever reaching the
+    guard/logic they actually test. Same precedent, same reasoning, as
+    `_disable_open_order_reconciliation_guard_by_default` above (whose own
+    introduction caused an identical, already-fixed regression the first
+    time this session made an execution guard deterministic). This gate's
+    own dedicated, opted-BACK-IN coverage lives in
+    tests/test_p1_execution_readiness.py and
+    tests/test_p1_e2e_execution_readiness_integrated_chain.py.
+    """
+    monkeypatch.setenv("EXECUTION_READINESS_GATE_ENABLED", "false")
+
+
 # --- Production-path write detector (Phase 1 P0: manifest-based) ------------
 #
 # The prior detector only compared file *counts* under reports/ and data/ at
@@ -145,10 +297,39 @@ def _is_root_level_watch_target(name: str) -> bool:
     return lower.endswith(_ROOT_LEVEL_WATCH_EXTENSIONS) or lower.endswith(_ROOT_LEVEL_WATCH_SUFFIXES)
 
 
-def _build_manifest() -> Dict[str, Tuple[int, int]]:
-    """Map relative_path -> (size, mtime_ns) for every watched file."""
-    manifest: Dict[str, Tuple[int, int]] = {}
+def _scan_one_dir(path: str) -> Tuple[list, list]:
+    """One directory's own (subdirs, [(abs_path, size, mtime_ns), ...]) --
+    the unit of work handed to the thread pool below. Never raises: any
+    per-entry or per-directory OSError (permission, mid-scan delete/rename
+    race with the repo's own concurrent live writer) is swallowed exactly
+    as the original sequential walk already did, so detection semantics
+    are unchanged -- only the walk is now concurrent."""
 
+    subdirs: list = []
+    files: list = []
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        subdirs.append(entry.path)
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                    files.append((entry.path, st.st_size, st.st_mtime_ns))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return subdirs, files
+
+
+def _root_level_manifest() -> Dict[str, Tuple[int, int]]:
+    """The small, cheap, always-run root-level scan (Phase 1 P0 Fix 2) --
+    shared by both the fast and full manifest builders below."""
+
+    manifest: Dict[str, Tuple[int, int]] = {}
     try:
         for entry in os.scandir(ROOT):
             try:
@@ -165,33 +346,218 @@ def _build_manifest() -> Dict[str, Tuple[int, int]]:
                 continue
     except OSError:
         pass
+    return manifest
 
+
+def _build_manifest_full() -> Dict[str, Tuple[int, int]]:
+    """Map relative_path -> (size, mtime_ns) for every watched file --
+    exhaustive, every file, every directory, no depth limit. This is the
+    HEAVY / opt-in audit tier (see _build_manifest's own docstring for why
+    it is no longer the default).
+
+    Perf (P1.3 pytest performance cleanup): the real reports/ + data/ trees
+    are ~470-580k files under this concurrently-live-written repo -- a
+    single-threaded os.scandir/stat walk of that tree measured ~115s on
+    this machine. Concurrency is a real speedup with zero coverage change
+    (same exact (path, size, mtime_ns) tuples as a sequential walk, just
+    gathered concurrently): os.scandir/Path.stat release the GIL during
+    the actual syscall, and this workload is latency-bound (many small
+    syscalls), so a thread pool measured ~15-37s here (varies with
+    concurrent host I/O contention) instead of ~115s. A directory-mtime-
+    based skip was deliberately NOT used instead: an in-place content
+    overwrite of an existing file does not reliably bump its parent
+    directory's own mtime, which would have silently reintroduced exactly
+    the "same-count swap escapes detection" gap this manifest-diff design
+    was originally built to close -- that gap is acceptable ONLY in the
+    fast/default tier below, which discloses it explicitly, never here.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    manifest = _root_level_manifest()
+
+    frontier = [str(ROOT / root_name) for root_name in _PRODUCTION_WATCH_ROOTS if (ROOT / root_name).exists()]
+    if frontier:
+        with ThreadPoolExecutor(max_workers=64) as pool:
+            while frontier:
+                next_frontier: list = []
+                for subdirs, files in pool.map(_scan_one_dir, frontier):
+                    next_frontier.extend(subdirs)
+                    for abs_path, size, mtime_ns in files:
+                        rel = str(Path(abs_path).relative_to(ROOT)).replace("\\", "/")
+                        if _is_excluded(rel):
+                            continue
+                        manifest[rel] = (size, mtime_ns)
+                frontier = next_frontier
+    return manifest
+
+
+# --- Fast/default production-write tier (P1.3 pytest performance cleanup) --
+#
+# Measured root cause: a FULL recursive walk of reports/+data/ costs ~76s
+# on this machine even with ZERO stat() calls (is_dir()/is_file() from the
+# scandir cache alone) -- 161k directories / 578k files, so the cost is the
+# sheer number of os.scandir() calls itself (Windows directory-enumeration
+# syscall latency at this scale), not the per-file stat. Any full-depth walk
+# is therefore expensive regardless of what is collected per entry, and
+# _build_manifest_full() above pays that cost twice per session (~230s
+# total, unpatched) purely to protect an ever-growing, mostly-irrelevant
+# production dataset that pytest's own isolation (libs/core/path_isolation.py)
+# is already supposed to keep every test away from.
+#
+# Fast tier instead:
+#   1. FULLY scan the small, high-value STATE subtrees (data/state/,
+#      data/evidence_ledger/, data/strategy_memory/ -- 69+109+46 = 224
+#      files total, measured) with full per-file size+mtime fidelity, same
+#      as the heavy tier -- this is where a test-caused in-place overwrite
+#      of an existing singleton state file (state.json-style) would land,
+#      and it is cheap enough to never need sampling.
+#   2. A BOUNDED-DEPTH (3 levels below reports/ and data/ themselves)
+#      presence+mtime scan of the full trees -- measured ~2.4s for ~92k
+#      entries. This catches any NEW top-level/day-level/run-level
+#      directory or file appearing (the actual, repeatedly-observed real
+#      write signature in this repo: `CREATED reports/canonical/<day>/
+#      <run_id>/*.json`) without ever descending into the ~86k+ leaf
+#      directories one level further, which is where the cost explodes
+#      back toward the full scan.
+# Disclosed, deliberate gap versus the heavy tier: an in-place content
+# overwrite of an existing file sitting DEEPER than 3 levels below
+# reports/or data/ (e.g. a file inside an already-existing run_id
+# directory) is not detected by the fast tier. Run the heavy tier
+# (PRODUCTION_WRITE_AUDIT_MODE=full) for an exhaustive audit -- e.g. before
+# creating the P1.3 acceptance commit.
+_FAST_TIER_FULL_SCAN_SUBTREES = ("data/state", "data/evidence_ledger", "data/strategy_memory")
+_FAST_TIER_WATCH_DEPTH = 3
+
+# Known external/host-owned churn -- FAST TIER ONLY (P1.3 pytest performance
+# cleanup). Unlike _PRODUCTION_WATCH_EXCLUDE_PREFIXES above (shared by both
+# tiers, kept empty), these apply only inside _build_manifest_fast(). The
+# full/heavy audit tier (_build_manifest_full, PRODUCTION_WRITE_AUDIT_MODE=
+# full) deliberately gets NEITHER exception -- it still sees every byte
+# under data/+reports/, unweakened, for the controlled pre-freeze audit.
+#
+# data/logs/events.jsonl: this repo's live trading host appends to it
+# continuously regardless of whether any test is running -- confirmed
+# directly: caught mid-append (size growing between the before/after
+# snapshot) during a single-file pytest run that performed zero writes of
+# its own.
+#
+# data/logs/controlled_mock_lanes/<day>/: written by the REAL (non-test)
+# libs/runtime/commander/execution.py as part of this host's own live
+# commander loop -- confirmed directly: lane_evaluations.json's mtime
+# landed inside a combined P1.3 targeted run's own window, but no test in
+# that run touches libs/runtime/controlled_mock_lanes or commander/
+# execution.py's real dispatch path (only mocked/monkeypatched call sites
+# do). Day-partitioned, so this is a prefix, not one exact path.
+#
+# data/state/kiwoom_market_status_listener.json: confirmed directly --
+# content shows status="registered" against a real
+# wss://mockapi.kiwoom.com websocket URL, updated_at within ~30s of the
+# check, immediately after (not during -- this file heartbeats every ~5s
+# regardless) a combined P1.3 targeted run finished. Under pytest, any
+# in-test KiwoomMarketStatusListener writes this SAME literal path through
+# resolve_runtime_write_path(), which redirects it into the isolated root
+# (see libs/runtime/kiwoom_market_status.py's own fail-closed pytest
+# backstop, status="blocked_external_network_pytest" -- never "registered"
+# under pytest) -- so a "registered" status on the real path can only come
+# from this host's own live listener process, not a test.
+_FAST_TIER_KNOWN_EXTERNAL_HOST_PATHS = frozenset({
+    "data/logs/events.jsonl",
+    "data/state/kiwoom_market_status_listener.json",
+})
+_FAST_TIER_KNOWN_EXTERNAL_HOST_PREFIXES = ("data/logs/controlled_mock_lanes/",)
+
+
+def _is_excluded_fast_tier(rel_path: str) -> bool:
+    if rel_path in _FAST_TIER_KNOWN_EXTERNAL_HOST_PATHS:
+        return True
+    for prefix in _FAST_TIER_KNOWN_EXTERNAL_HOST_PREFIXES:
+        if rel_path.startswith(prefix) or rel_path == prefix.rstrip("/"):
+            return True
+    return _is_excluded(rel_path)
+
+
+def _scan_subtree_full(base: Path, manifest: Dict[str, Tuple[int, int]]) -> None:
+    if not base.exists():
+        return
+    for dirpath, _dirnames, filenames in os.walk(base):
+        for name in filenames:
+            full = Path(dirpath) / name
+            try:
+                st = full.stat()
+            except OSError:
+                continue
+            rel = str(full.relative_to(ROOT)).replace("\\", "/")
+            if _is_excluded_fast_tier(rel):
+                continue
+            manifest[rel] = (st.st_size, st.st_mtime_ns)
+
+
+def _build_manifest_fast() -> Dict[str, Tuple[int, int]]:
+    """The default tier -- see the module comment above for the design and
+    its disclosed coverage boundary versus _build_manifest_full()."""
+
+    manifest = _root_level_manifest()
+
+    for sub in _FAST_TIER_FULL_SCAN_SUBTREES:
+        _scan_subtree_full(ROOT / sub, manifest)
+
+    already_covered_prefixes = tuple(_FAST_TIER_FULL_SCAN_SUBTREES)
     for root_name in _PRODUCTION_WATCH_ROOTS:
         base = ROOT / root_name
         if not base.exists():
             continue
-        stack = [base]
-        while stack:
-            current = stack.pop()
+        frontier = [(base, 0)]
+        while frontier:
+            current, depth = frontier.pop()
             try:
                 entries = list(os.scandir(current))
             except OSError:
                 continue
             for entry in entries:
                 try:
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(entry.path)
-                        continue
-                    if not entry.is_file(follow_symlinks=False):
-                        continue
                     rel = str(Path(entry.path).relative_to(ROOT)).replace("\\", "/")
-                    if _is_excluded(rel):
+                    if _is_excluded_fast_tier(rel) or rel.startswith(already_covered_prefixes):
                         continue
+                    is_dir = entry.is_dir(follow_symlinks=False)
                     st = entry.stat(follow_symlinks=False)
-                    manifest[rel] = (st.st_size, st.st_mtime_ns)
+                    if is_dir:
+                        # Sentinel size (-1): a directory entry itself, not
+                        # a file -- still meaningful in the before/after
+                        # diff (a NEW directory appearing, or an existing
+                        # one's own mtime changing because a child was
+                        # added/removed within it, both fire "modified").
+                        manifest[rel] = (-1, st.st_mtime_ns)
+                        # Only queue this dir for its OWN os.scandir() call
+                        # (which happens unconditionally when popped, at
+                        # the top of the outer while-loop) if doing so
+                        # still stays within the depth budget -- queuing at
+                        # depth==_FAST_TIER_WATCH_DEPTH would scandir a
+                        # depth-4 listing, one level past the intended
+                        # bound (measured: this off-by-one turned the
+                        # "bounded" scan into a near-full-tree walk, 531k
+                        # entries / 65s instead of the intended ~92k / ~2.4s).
+                        if depth + 1 < _FAST_TIER_WATCH_DEPTH:
+                            frontier.append((entry.path, depth + 1))
+                    else:
+                        manifest[rel] = (st.st_size, st.st_mtime_ns)
                 except OSError:
                     continue
     return manifest
+
+
+def _production_write_audit_mode() -> str:
+    raw = (os.getenv("PRODUCTION_WRITE_AUDIT_MODE") or "fast").strip().lower()
+    return raw if raw in ("fast", "full") else "fast"
+
+
+def _build_manifest() -> Dict[str, Tuple[int, int]]:
+    """Map relative_path -> (size, mtime_ns) for every watched file, in
+    whichever tier PRODUCTION_WRITE_AUDIT_MODE selects (default: fast).
+    See _build_manifest_fast/_build_manifest_full's own docstrings."""
+
+    if _production_write_audit_mode() == "full":
+        return _build_manifest_full()
+    return _build_manifest_fast()
 
 
 def _content_hash(rel_path: str) -> str:
@@ -244,7 +610,7 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: D401 - pytest hook
 
     sys.stderr.write(
         "\n" + "=" * 78 + "\n"
-        "PRODUCTION PATH WRITE DETECTED DURING TEST SESSION\n"
+        f"PRODUCTION PATH WRITE DETECTED DURING TEST SESSION (audit_mode={_production_write_audit_mode()})\n"
         + "\n".join(lines) + "\n"
         "One or more tests wrote under reports/, data/, or a watched\n"
         "root-level runtime artifact despite the\n"

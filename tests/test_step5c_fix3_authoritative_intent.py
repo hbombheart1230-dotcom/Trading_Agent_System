@@ -290,6 +290,7 @@ def _t12_worker_b(db, event_claimed, queue, order_fields):
     queue.put(("B", ex.calls, result["broker_outcome"], _pof({}, candidate)))
 
 
+@pytest.mark.heavy
 def test_t12_real_multiprocess_normalization_alias_attack_total_calls_le_1(tmp_path):
     """Codex's exact reproduction, closed: process A submits qty=10 (int)
     with no price; process B submits qty="10" (str) with a stray market
@@ -554,6 +555,7 @@ def _orphan_crash_worker(db):
             allowed=True, execution_result=r, allow_result=None, order=candidate))
 
 
+@pytest.mark.heavy
 def test_orphan_from_real_process_crash_is_retained_and_observable(tmp_path):
     """The inverse of the safe-release case: a REAL OS process hard-exits
     between claim_physical_order succeeding and finish_execution ever

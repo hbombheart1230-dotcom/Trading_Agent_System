@@ -5655,6 +5655,8 @@ def _run_integrated_chain_impl(
     """Run a visible end-to-end chain inside canonical runtime."""
     nodes = load_integrated_chain_nodes()
     build_portfolio_snapshot = nodes.build_portfolio_snapshot
+    build_open_order_snapshot = nodes.build_open_order_snapshot
+    build_execution_readiness = nodes.build_execution_readiness
     build_risk_context = nodes.build_risk_context
     strategist_node = nodes.strategist_node
     scanner_node = nodes.scanner_node
@@ -5679,6 +5681,8 @@ def _run_integrated_chain_impl(
     state, should_continue = build_integrated_chain_session_context(
         state,
         build_portfolio_snapshot_fn=build_portfolio_snapshot,
+        build_open_order_snapshot_fn=build_open_order_snapshot,
+        build_execution_readiness_fn=build_execution_readiness,
         build_risk_context_fn=build_risk_context,
         apply_portfolio_preflight_guard_fn=_apply_portfolio_preflight_guard,
         build_commander_decision_fn=_build_commander_decision,

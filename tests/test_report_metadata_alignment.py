@@ -111,6 +111,46 @@ def test_report_metadata_alignment_smoke(tmp_path: Path) -> None:
     assert trade_json.exists()
 
 
+def test_decision_story_and_run_card_reports_use_day_scoped_reader_not_full_file_scan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """OOM RCA 2026-09-23: generate_decision_story_report/generate_run_card_report
+    used to unconditionally materialize the entire events.jsonl into a Python
+    list before filtering by day, regardless of the day argument -- unbounded
+    by total log history rather than by the requested day's size. Fixed to
+    reuse the same day-scoped iter_jsonl_events(..., day=day) path already
+    used by build_operator_daily_summary_payload. This test pins that a
+    day-scoped call never falls back to the full-file scanner.
+    """
+    import libs.reporting.operator_visibility as operator_visibility
+
+    day = "2026-04-08"
+    reports_root = tmp_path / "reports"
+    events_path = tmp_path / "events.jsonl"
+    _write_jsonl(
+        events_path,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T01:00:00+00:00",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {"decision_packet": {"intent": {"action": "BUY", "symbol": "005930", "qty": 1, "reason": "entry"}}},
+            },
+        ],
+    )
+
+    def _fail_if_called(*_args, **_kwargs):
+        raise AssertionError("full-file _iter_jsonl scan must not run when day is provided")
+
+    monkeypatch.setattr(operator_visibility, "_iter_jsonl", _fail_if_called)
+
+    # Must not raise: both functions must route through the bounded,
+    # day-scoped iter_jsonl_events reader when day is given.
+    generate_decision_story_report(events_path, reports_root / "decision_story", day=day, trade_only=False)
+    generate_run_card_report(events_path, reports_root / "run_cards", day=day, trade_only=False)
+
+
 def test_commander_route_summary_ignores_unrelated_shadow_run_ids(tmp_path: Path) -> None:
     day = "2026-04-08"
     reports_root = tmp_path / "reports"
