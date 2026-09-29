@@ -80,7 +80,14 @@ def test_write_closeout_maintenance_refreshes_q9_artifacts_after_json_exists(
     board = payload["steps"]["alpha_research_board_final"]
     assert board["ok"] is True
     assert board["explanation_authority"] == "alpha_research_board_only"
-    assert Path(board["report_json_path"]).exists()
-    assert Path(board["report_md_path"]).exists()
-    assert Path(board["latest_json_path"]).exists()
+    assert board["canonical_authority"] == "libs.reporting.evaluation.daily_uef_pipeline (not closeout)"
+    assert Path(board["snapshot_json_path"]).exists()
+    assert Path(board["snapshot_md_path"]).exists()
+    assert "closeout_alpha_board_snapshot" in str(Path(board["snapshot_json_path"]))
+    # P1.2 Fix2: closeout must never write the canonical dated Board or
+    # latest.json/.md itself -- only libs.reporting.evaluation.
+    # daily_uef_pipeline may, and only after UEF-9 returns VALID.
+    canonical_dir = reports_root / "evaluation" / "alpha_research_board" / "2026-07-13"
+    assert not canonical_dir.exists()
+    assert not (reports_root / "evaluation" / "alpha_research_board" / "latest.json").exists()
     assert list(payload["steps"])[-1] == "alpha_research_board_final"

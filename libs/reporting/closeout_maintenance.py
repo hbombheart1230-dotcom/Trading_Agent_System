@@ -501,27 +501,35 @@ def write_closeout_maintenance_report(payload: Dict[str, Any], *, reports_root: 
         payload["ok"] = all(bool(step.get("ok")) for step in payload.get("steps", {}).values() if isinstance(step, dict))
         _write(payload)
     try:
-        from libs.reporting.alpha_research_board import write_alpha_research_board
+        # P1.2 Fix2 (2026-09-29): this used to call write_alpha_research_board()
+        # directly, which persists the CANONICAL dated Board and unconditionally
+        # advances reports/evaluation/alpha_research_board/latest.json/.md --
+        # with no UEF-7/8/9 involvement at all. That made closeout a second,
+        # competing canonical publisher, bypassing the fail-closed
+        # UEF-9-gated publication libs.reporting.evaluation.daily_uef_pipeline
+        # now owns exclusively. Closeout still gets its own same-day board
+        # snapshot for this report -- via build_alpha_research_board() (read
+        # -only, no persistence at all) -- but writes it to an explicitly
+        # non-canonical location, never the canonical dated/latest paths.
+        from libs.reporting.alpha_research_board import build_alpha_research_board
+        from libs.reporting.alpha_research_board.report import render_alpha_research_board
 
-        board = write_alpha_research_board(
-            reports_root=Path(reports_root),
-            through_day=day,
-            output_dir=(
-                Path(reports_root)
-                / "evaluation"
-                / "alpha_research_board"
-                / day
-            ),
-        )
+        board = build_alpha_research_board(reports_root=Path(reports_root), through_day=day)
+        snapshot_dir = Path(reports_root) / "evaluation" / "closeout_alpha_board_snapshot" / day
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_json_path = snapshot_dir / "alpha_research_board_snapshot.json"
+        snapshot_md_path = snapshot_dir / "alpha_research_board_snapshot.md"
+        snapshot_json_path.write_text(json.dumps(board, ensure_ascii=False, indent=2), encoding="utf-8")
+        snapshot_md_path.write_text(render_alpha_research_board(board), encoding="utf-8")
+        integrity_status = str((board.get("integrity") or {}).get("status") or "")
         payload.setdefault("steps", {})["alpha_research_board_final"] = {
-            "ok": str(board.get("integrity_status") or "").startswith("PASS"),
-            "integrity_status": board.get("integrity_status"),
+            "ok": integrity_status.startswith("PASS"),
+            "integrity_status": integrity_status,
             "candidate_count": board.get("candidate_count"),
-            "report_json_path": board.get("json_path"),
-            "report_md_path": board.get("markdown_path"),
-            "latest_json_path": board.get("latest_json_path"),
-            "latest_md_path": board.get("latest_markdown_path"),
+            "snapshot_json_path": str(snapshot_json_path),
+            "snapshot_md_path": str(snapshot_md_path),
             "explanation_authority": "alpha_research_board_only",
+            "canonical_authority": "libs.reporting.evaluation.daily_uef_pipeline (not closeout)",
         }
     except Exception as exc:
         payload.setdefault("steps", {})["alpha_research_board_final"] = {
