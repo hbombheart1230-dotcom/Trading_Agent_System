@@ -1485,3 +1485,14 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - The full P1.3 safety-related test set (20 files) now runs together in 45.58 seconds (220 passed, 0 failed, 9 tests deliberately run separately as a heavy subset) with no false failures, down from a run that previously exceeded 25 minutes. The separate heavy subset also passes cleanly (9 passed, 0 failed).
 - Explicit status: implemented = yes, targeted test validation = pass, heavy test validation = pass, Docker operational acceptance = pending, full-session soak = pending, P1.3 overall = not yet closed. This entry covers test-harness correctness and speed only, not the separate P1.3 Docker operational acceptance milestone.
 - See `docs/daily_patch/2026-09-29_p1_3_pytest_harness_and_shutdown_safety_fixes.md`.
+
+# 2026-09-29 - Daily Alpha Board / UEF EOD Automation Gap Closed
+
+- Discovered during routine cross-day observation: the daily evaluation summary had not actually updated in several days, even though nothing was reporting an error.
+- Traced the cause to a missing automatic daily trigger -- the evaluation chain existed and worked correctly whenever it was run, but nothing was running it on a schedule.
+- Built one single, reusable daily evaluation entry point that any current or future scheduler can call, so the evaluation logic itself is never duplicated across scheduling systems.
+- Added an explicit safety check that refuses to publish a daily result if the underlying data is not actually dated for that day, even if a top-level label would otherwise have said so -- so a stale result can no longer be mistaken for a fresh one.
+- A daily result is only published once the full chain has completed successfully; a failure at any point leaves the previous, still-valid result in place rather than showing a misleading update.
+- Attempted today's recovery run: it correctly declined to publish, because some of the underlying daily data genuinely has not updated since the prior trading day -- this is the new safety check working as intended, not a new problem.
+- Frozen evaluation semantics were unchanged.
+- See `docs/daily_patch/2026-09-29_daily_uef_eod_wiring.md`.

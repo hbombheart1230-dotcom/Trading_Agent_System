@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 83,
+  "entry_count": 84,
   "entries": [
     {
       "date": "2026-09-08",
@@ -2189,6 +2189,32 @@
       "impact": "The P1.3 safety test loop is now fast enough to run routinely during development, and a real bug that could have left a live trading process unable to shut down cleanly on signal is fixed.",
       "sources": [
         "docs/daily_patch/2026-09-29_p1_3_pytest_harness_and_shutdown_safety_fixes.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "Daily Alpha Board / UEF EOD Automation Gap Closed",
+      "title": "Daily evaluation pipeline now wired end to end, with a stale-data safety check",
+      "stage": "Evaluation Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Found and closed a gap where the daily Alpha Board and evaluation chain had no automatic daily run and no safeguard against silently reusing old data under a fresh-looking date label. Frozen evaluation semantics were unchanged.",
+      "details": [
+        "Discovered during routine cross-day observation: the daily evaluation summary had not actually updated in several days, even though nothing was reporting an error.",
+        "Traced the cause to a missing automatic daily trigger -- the evaluation chain existed and worked correctly whenever it was run, but nothing was running it on a schedule.",
+        "Built one single, reusable daily evaluation entry point that any current or future scheduler can call, so the evaluation logic itself is never duplicated across scheduling systems.",
+        "Added an explicit safety check that refuses to publish a daily result if the underlying data is not actually dated for that day, even if a top-level label would otherwise have said so -- so a stale result can no longer be mistaken for a fresh one.",
+        "A daily result is only published once the full chain -- Alpha Board, then each of the three evaluation stages -- has completed successfully; a failure at any point leaves the previous, still-valid result in place rather than showing a misleading update.",
+        "Verified the fix is safe to run repeatedly and touches no trading, broker, or runtime state -- evaluation and reporting only.",
+        "Attempted today's recovery run: it correctly declined to publish, because some of the underlying daily data genuinely has not updated since the prior trading day -- this is the new safety check working as intended, not a new problem."
+      ],
+      "impact": "The evaluation framework now runs on a reliable daily cadence going forward (once scheduled), and can no longer silently present old evidence as if it were current.",
+      "sources": [
+        "docs/daily_patch/2026-09-29_daily_uef_eod_wiring.md",
+        "docs/daily_patch/2026-09-29_uef_p1_1_real_run_acceptance.md"
       ],
       "status": "current"
     }
