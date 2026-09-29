@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>P1.2 daily post-market UEF evaluation (Alpha Board -> UEF-7 -> UEF-8 -> UEF-9). Evaluation/reporting only -- never wraps or gates trading execution, so it deliberately does not go through the launch_with_preflight trading-role wrapper. Minimal logic here: invoke the common orchestration entry point and let it (not this XML) own every Alpha Board / UEF-7/8/9 decision.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <!-- 16:00 KST: after the KRX regular session close (15:30 KST) plus a
+         buffer for same-day report/candidate artifacts to finish writing.
+         through-day is intentionally omitted from Arguments below --
+         scripts/run_daily_uef_evaluation.py defaults it to the host's own
+         current date, exactly matching what running this trigger daily
+         needs, without duplicating date logic in the scheduler. -->
+    <CalendarTrigger>
+      <StartBoundary>2026-01-01T16:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Trading_Agent_System\venv\Scripts\python.exe</Command>
+      <Arguments>scripts/run_daily_uef_evaluation.py</Arguments>
+      <WorkingDirectory>C:\Trading_Agent_System</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
