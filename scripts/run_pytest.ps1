@@ -9,7 +9,7 @@ if (-not (Test-Path $pythonExe)) {
 
 foreach ($arg in $args) {
     if ($arg -eq "--basetemp" -or $arg -like "--basetemp=*") {
-        throw "Do not pass --basetemp. This repo standardizes pytest temp output in .pytest-work via pytest.ini."
+        throw "Do not pass --basetemp. conftest.py::pytest_configure owns it exclusively, pointing pytest's temp output at an OS-temp, per-process directory so it never accumulates inside this repo."
     }
 }
 

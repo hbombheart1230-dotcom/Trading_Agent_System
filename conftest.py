@@ -40,32 +40,51 @@ if not os.environ.get(SESSION_ROOT_ENV):
     )
 
 
-# --- Concurrent-pytest basetemp collision fix (P1.3 pytest performance
-# cleanup) -----------------------------------------------------------------
+# --- Pytest basetemp: OS-temp, session-isolated, never repo-local ----------
+# (P1.3 pytest performance cleanup, then pytest-artifact-hygiene follow-up)
 #
-# pytest.ini pins a fixed, repo-relative `--basetemp=.pytest-work` (kept
-# repo-relative deliberately, for easy inspection/cleanup, unlike
-# SESSION_ROOT_ENV above which is already PID+uuid-unique under the system
-# temp dir). pytest's own tmp_path/tmp_path_factory fixtures derive each
-# test's own temp directory name from *only* the test's own name under that
-# fixed basetemp (e.g. `.pytest-work/test_foo0/`) -- two pytest PROCESSES
-# running concurrently against overlapping test selections therefore race
-# to create/clean the identical directory, which on Windows produces a hard
-# PermissionError (the file is still open in the other process) rather than
-# a silent overwrite. Confirmed directly: running two overlapping pytest
-# invocations concurrently reproduced exactly this failure (299 spurious
-# errors, all `[WinError 32] ... used by another process`) even though
-# every individual test passes cleanly run alone.
+# History: this repo used to pin a fixed, REPO-RELATIVE `--basetemp=
+# .pytest-work` (pytest.ini). pytest's own tmp_path/tmp_path_factory
+# fixtures derive each test's own temp directory name from *only* the
+# test's own name under that fixed basetemp (e.g. `.pytest-work/
+# test_foo0/`) -- two pytest PROCESSES running concurrently against
+# overlapping test selections therefore raced to create/clean the
+# identical directory, a hard PermissionError on Windows (confirmed
+# directly: 299 spurious `[WinError 32] ... used by another process`
+# errors from two overlapping invocations, no single test failing alone).
+# The first fix made basetemp unique per PROCESS (`.pytest-work-<pid>`,
+# still repo-relative) -- which fixed the collision but introduced a new
+# problem: pytest never deletes its own basetemp directory at session end,
+# so every invocation left a `.pytest-work-<pid>/` directory behind
+# permanently inside the repository (confirmed directly: two such
+# directories, `.pytest-work-11432` and `.pytest-work-1700`, found still
+# present from earlier sessions this same day). A pre-existing, never-
+# wired-in cleanup tool (scripts/cleanup_pytest_artifacts.py/.ps1/.cmd)
+# existed for exactly this, but nothing ever called it automatically.
 #
-# Fix: make basetemp unique per pytest PROCESS (not per test), same PID-
-# suffix pattern as SESSION_ROOT_ENV above, while keeping it repo-relative.
-# Runs in pytest_configure -- before TempPathFactory.getbasetemp() is ever
-# called lazily by the first tmp_path/tmp_path_factory fixture use, so this
-# safely overrides whatever pytest.ini's own --basetemp already parsed.
-# Best-effort cleanup of OTHER .pytest-work-<pid>/ directories left behind
-# by a process that no longer exists keeps these from accumulating forever;
-# a directory whose owning PID is still alive (another concurrent pytest
-# run) is never touched.
+# Current fix: basetemp is now unique per PROCESS *and* lives entirely
+# under the OS temp directory (`%TEMP%/Trading_Agent_System/pytest/
+# <prefix>-<pid>/`), matching SESSION_ROOT_ENV's own placement above --
+# never inside the repository at all, so "leaks" here can no longer grow
+# the repository regardless of how a session ends (clean exit, Ctrl+C,
+# crash, machine restart). Whatever pytest.ini's own `--basetemp` option
+# says (if anything) is intentionally ignored; this is the sole owner of
+# where pytest's temp roots live. Runs in pytest_configure -- before
+# TempPathFactory.getbasetemp() is ever called lazily by the first
+# tmp_path/tmp_path_factory fixture use.
+#
+# Retention stays bounded without an explicit count/age policy: a
+# SUCCESSFUL session cleans up its own basetemp directory immediately (see
+# pytest_sessionfinish below) -- nothing to retain. A session that fails,
+# crashes, or is interrupted leaves its basetemp in place for forensic
+# inspection, but the NEXT pytest invocation's own stale-directory sweep
+# here removes it once its owning PID is confirmed dead -- so at most one
+# leftover directory per PID that has not yet been reused survives between
+# runs, never an unbounded accumulation.
+_PYTEST_BASETEMP_ROOT = Path(tempfile.gettempdir()) / "Trading_Agent_System" / "pytest"
+_PYTEST_BASETEMP_PREFIX = "basetemp"
+
+
 def pytest_configure(config) -> None:  # noqa: D401 - pytest hook
     for name in ("fast", "p1_3", "heavy", "docker", "benchmark"):
         config.addinivalue_line(
@@ -79,16 +98,14 @@ def pytest_configure(config) -> None:  # noqa: D401 - pytest hook
             }[name],
         )
 
-    try:
-        base_option = str(config.getoption("basetemp") or "").strip()
-    except (ValueError, KeyError):
-        base_option = ""
-    if not base_option:
-        return
-    base_path = Path(base_option)
-    if not base_path.is_absolute():
-        base_path = ROOT / base_path
-    parent, prefix = base_path.parent, base_path.name
+    parent = _PYTEST_BASETEMP_ROOT
+    prefix = _PYTEST_BASETEMP_PREFIX
+    # pytest's own TempPathFactory.getbasetemp() later does a plain
+    # basetemp.mkdir(...) with no parents=True, assuming its parent
+    # already exists (true for the old repo-relative ROOT parent, not
+    # necessarily true the first time this OS-temp path is ever used on a
+    # given machine) -- create the parent chain ourselves first.
+    parent.mkdir(parents=True, exist_ok=True)
 
     if parent.is_dir():
         for entry in parent.iterdir():
@@ -109,6 +126,36 @@ def pytest_configure(config) -> None:  # noqa: D401 - pytest hook
                 pass
 
     config.option.basetemp = str(parent / f"{prefix}-{os.getpid()}")
+
+
+def _cleanup_own_basetemp_if_clean(config, *, clean: bool) -> None:
+    """Clean up THIS session's own basetemp directory once it finishes
+    cleanly (no test failures, no production-path write violation) --
+    successful runs leave nothing behind at all, not even in the OS temp
+    dir. A failing/dirty session's basetemp is kept for inspection; see
+    this module's own basetemp-retention note above for why that is still
+    bounded, not unlimited (the next session's own stale-PID sweep in
+    pytest_configure removes it once this process has exited)."""
+    if not clean:
+        return
+    try:
+        basetemp = str(config.getoption("basetemp") or "")
+    except (ValueError, KeyError):
+        return
+    if not basetemp:
+        return
+    path = Path(basetemp)
+    if not path.is_dir():
+        return
+    try:
+        parent = path.resolve().parent
+    except OSError:
+        parent = path.parent
+    if parent != _PYTEST_BASETEMP_ROOT:
+        return  # safety: only ever remove a directory we know we created
+    import shutil
+
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _owning_pid_still_alive(pid: int) -> bool:
@@ -589,8 +636,12 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: D401 - pytest hook
     modified = sorted(
         rel for rel in (set(after) & set(before)) if after[rel] != before[rel]
     )
+    production_write_detected = bool(created or deleted or modified)
 
-    if not created and not deleted and not modified:
+    if not production_write_detected:
+        _cleanup_own_basetemp_if_clean(
+            session.config, clean=(getattr(session, "testsfailed", 0) == 0)
+        )
         return
 
     lines = []

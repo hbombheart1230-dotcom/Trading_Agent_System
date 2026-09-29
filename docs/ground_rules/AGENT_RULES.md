@@ -92,3 +92,13 @@ If a proposed change violates any item below, **STOP** and redesign.
 - Run tests locally before “done”.
 - Never print secrets; never commit `.env`.
 - If you must touch frozen areas (Execution/Guards/Contracts), explain why and add regression tests.
+
+## 6) Test Artifact Hygiene
+
+- Pytest/test temporary artifacts must use pytest `tmp_path`/`tmp_path_factory` or OS-level session-isolated
+  temporary storage (see `conftest.py`'s own basetemp handling for the canonical pattern in this repo).
+- Do not create persistent repo-local `.pytest-*` or test scratch directories.
+- Successful temporary artifacts must be cleaned automatically. Failure evidence must use bounded retention
+  (kept only until the next session confirms the owning process has exited — never indefinitely).
+- Never solve test-artifact accumulation merely by adding broad `.gitignore` rules; the primary fix is not
+  generating the artifact inside the repository in the first place.

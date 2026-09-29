@@ -93,28 +93,29 @@ def _pytest_isolated_write_root() -> Path:
     )
 
 
-# This repository's pytest.ini sets --basetemp=.pytest-work (a path
-# relative to the repo root), so every pytest tmp_path/tmp_path_factory
-# fixture in this project resolves *inside* the repository rather than
-# under the OS temp dir -- unlike a default pytest setup. A path already
-# under one of these pytest-owned subdirectories is exactly the kind of
-# "explicit non-canonical test path" that must pass through unchanged;
-# without this exception, resolve_runtime_write_path would redirect every
-# test's own tmp_path-based path a second time and break it.
+# History: this repository's pytest.ini used to set --basetemp=.pytest-work
+# (repo-relative), so pytest tmp_path/tmp_path_factory fixtures resolved
+# *inside* the repository. A path already under one of these pytest-owned
+# subdirectories was exactly the kind of "explicit non-canonical test path"
+# that must pass through unchanged; without this exception,
+# resolve_runtime_write_path would have redirected every test's own
+# tmp_path-based path a second time and broken it (caught directly by the
+# dedicated regression test tests/test_p0_pytest_isolation_fix2.py::
+# test_resolve_runtime_write_path_passes_through_tmp_path when an earlier
+# basetemp-uniqueness fix briefly broke the exact-string match below).
 #
-# conftest.py::pytest_configure rewrites --basetemp to ".pytest-work-<pid>"
-# (unique per pytest process, to fix a concurrent-pytest collision on the
-# single fixed ".pytest-work" -- see its own docstring), so the first path
-# segment a live tmp_path now produces is that PID-suffixed name, not the
-# bare literal below. An exact-string membership check against these
-# literals therefore silently stopped matching real tmp_path values,
-# reintroducing the exact double-redirect this exception exists to
-# prevent (caught directly: the dedicated regression test
-# tests/test_p0_pytest_isolation_fix2.py::
-# test_resolve_runtime_write_path_passes_through_tmp_path started failing
-# the moment the basetemp rename shipped). _is_pytest_owned_subdir below
-# matches the bare name OR name-<anything>, so the exception keeps holding
-# regardless of what suffix a given pytest invocation's basetemp carries.
+# Current state (pytest-artifact-hygiene follow-up): conftest.py::
+# pytest_configure now points basetemp at an OS-temp, per-process directory
+# (never repo-local), specifically to stop pytest temp output from
+# accumulating inside the repository. A live tmp_path therefore now
+# resolves *outside* the repo, and is instead handled by
+# resolve_runtime_write_path's own "genuinely outside the repository"
+# branch further down (Path.relative_to(repo_root) raising ValueError) --
+# this exception is dormant for that case now, but is kept, unmodified,
+# for .pytest_cache/__pycache__ and as a defensive fallback should any
+# caller ever again resolve a path under a literal repo-relative
+# .pytest-work-style directory. _is_pytest_owned_subdir below matches the
+# bare name OR name-<anything>.
 _PYTEST_OWNED_REPO_SUBDIRS = (".pytest-work", ".pytest_cache", "__pycache__")
 
 

@@ -14,7 +14,8 @@ def main(argv: list[str]) -> int:
     for arg in argv:
         if arg == "--basetemp" or arg.startswith("--basetemp="):
             raise SystemExit(
-                "Do not pass --basetemp. This repo standardizes pytest temp output in .pytest-work via pytest.ini."
+                "Do not pass --basetemp. conftest.py::pytest_configure owns it exclusively, pointing "
+                "pytest's temp output at an OS-temp, per-process directory so it never accumulates inside this repo."
             )
 
     cmd = [str(python_exe), "-m", "pytest", *argv]
