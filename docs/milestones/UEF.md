@@ -17,6 +17,7 @@
 | UEF-5.3 | Historical Dual Run (legacy vs. canonical comparison) | FORMALLY FROZEN |
 | UEF-6 | Dedup and evidence lineage (population dedup + direct lineage sidecar + historical validation) | FORMALLY FROZEN |
 | UEF-7 | Alpha Board normalization (derived comparison-ready view over Alpha Research Board v2) | FORMALLY FROZEN |
+| UEF-8 | Fair comparison validation (pairwise COMPARABLE/CONDITIONAL/NOT_COMPARABLE over UEF-7) | FORMALLY FROZEN |
 
 ## Current / Next
 
@@ -124,6 +125,27 @@ rows with shared source, 0 proven population groups, 14 unresolved population ca
 dynamically, none hardcoded. Final regression: UEF-7 38 + Alpha Board 36 + UEF-6A 22 + UEF-6B 14 + UEF-6C
 28 = 138 passed. See [UEF-7 Alpha Board Normalization Freeze](../research/uef7_alpha_board_normalization_freeze.md).
 
+**UEF-8: Fair Comparison Validation — FORMALLY FROZEN** (independent final closure audit: CRITICAL 0, HIGH
+0, MEDIUM 0, LOW 0; `CORE_VERDICT: APPROVE_UEF8`, `UEF8_COMPLETE: YES`, `UEF8_FORMAL_FREEZE: YES`).
+Determines, for every unordered pair of frozen UEF-7 normalized candidate rows, whether the pair is
+`COMPARABLE`, `CONDITIONAL`, or `NOT_COMPARABLE` — never which candidate is better. Core invariant:
+individual UEF-7 `population_identity_status` proof on both sides of a pair never establishes the pair's
+own population RELATION — the frozen `uef7.alpha_board_normalization.v1` schema exposes no pairwise
+population-relation field at all, so `POPULATION_RELATION_NOT_PROVEN` is unconditional and
+`COMPARABLE_REACHABLE_WITH_CURRENT_UEF7_SCHEMA: NO` is a schema-contract property, not merely today's data
+— `COMPARABLE` remains reserved for a future explicitly frozen upstream authority extension, never
+invented by UEF-8 itself. `comparison_pair_id` is a SHA-256 digest over the canonical ordered candidate
+pair (never delimiter concatenation, which could collide across adversarial candidate-id shapes), with a
+fail-closed collision guard requiring pair_count == unique pair ids == unique canonical pair tuples. Hard
+scope blockers (different question/horizon/cohort/no shared outcome metric) force `NOT_COMPARABLE`;
+metric-availability mismatch, unresolved sample accounting, unproven population relation, and shared
+source provenance keep an otherwise-aligned pair `CONDITIONAL` — shared/different source provenance is
+descriptive only, never population authority in either direction. No ranking/score/promotion/strategy
+change of any kind. Checkpoint commit `b91d926`. Real board (`through_day=2026-09-25`): 14 candidates, 91
+pairs, 0 COMPARABLE / 7 CONDITIONAL / 84 NOT_COMPARABLE, 91 unique pair ids,
+`POPULATION_RELATION_NOT_PROVEN=91` — all derived dynamically, none hardcoded. Final regression: UEF-8 41
++ UEF-7 38 = 79 passed. See [UEF-8 Fair Comparison Validation Freeze](../research/uef8_fair_comparison_validation_freeze.md).
+
 **UEF-4 CONSOLIDATED PROVISIONAL CLOSURE.** All six UEF-4B families have completed implementation/classification work. Five are formally frozen or formally closed (Q10 Semiconductor, Q12 Calc1/Calc2, Opening Shadow, Q10 Index) or provisionally closed pending ratification (Q11); Q9 and Q12 Calc3 are classified **PRIMARY / KNOWN / BLOCKED** — known, intentional closure outcomes, not unfinished hidden work. **UEF-4 IMPLEMENTATION/CLASSIFICATION: COMPLETE. UEF-4 FORMALLY FROZEN: NO. UEF-4 PROVISIONALLY COMPLETE: YES.** No family in this phase is formally frozen by self-assessment alone; final ratification (Q11, and any future Q9/Calc3 repair) is an independent Codex audit matter. The next planned phase is **UEF-5 Historical Recompute & Dual Run — NOT STARTED.**
 
 UEF-4A classifies 39 sources: 20 primary-evidence sources and 19 derived or consumer sources. Five adapter families are approved for implementation; Q9 and Q12 Calc3's candidate adapters are BLOCKED, not counted among them. The authoritative inventory and all mapping constraints remain in [UEF-4A legacy family inventory](../research/uef4_legacy_family_inventory.md).
@@ -158,8 +180,8 @@ These remain separate from the approved UEF-4B adapter sequence.
 | UEF-5.3 | Historical dual run (legacy comparison) | FORMALLY FROZEN |
 | UEF-6 | Dedup and evidence lineage | FORMALLY FROZEN |
 | UEF-7 | Alpha Board normalization | FORMALLY FROZEN |
-| UEF-8 | Fair comparison validation | NEXT |
-| UEF-9 | Evaluation authority freeze | PLANNED |
+| UEF-8 | Fair comparison validation | FORMALLY FROZEN |
+| UEF-9 | Formal evaluation authority freeze | NEXT |
 
 ## Authority Documents
 
@@ -171,6 +193,7 @@ These remain separate from the approved UEF-4B adapter sequence.
 - [UEF-5.3 Historical Dual Run](../research/uef5_3_historical_dual_run.md)
 - [UEF-6 Dedup & Evidence Lineage Freeze](../research/uef6_dedup_evidence_lineage_freeze.md)
 - [UEF-7 Alpha Board Normalization Freeze](../research/uef7_alpha_board_normalization_freeze.md)
+- [UEF-8 Fair Comparison Validation Freeze](../research/uef8_fair_comparison_validation_freeze.md)
 - [ADR-0003: UEF-5.2 Market-Data Authority and Recompute Identity](../decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md)
 - [Evaluation roadmap](../en/12_roadmap.md)
 
