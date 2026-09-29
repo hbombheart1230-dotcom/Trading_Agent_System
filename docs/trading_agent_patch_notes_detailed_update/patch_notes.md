@@ -1527,3 +1527,13 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Re-verified against this system's real current data: today's result is still correctly unavailable, because some source data genuinely has not updated.
 - Frozen evaluation semantics were unchanged throughout.
 - See `docs/daily_patch/2026-09-29_daily_uef_authority_closure.md`.
+
+# 2026-09-30 - Closeout Failure Diagnostics Hardened
+
+- This does not fix the closeout data-freshness gap found on 2026-09-29 -- it makes the two paths that generate this data diagnosable, since both were previously failing without leaving any usable trace. A behavioral fix is expected in a separate follow-up.
+- Traced why a live background process that should refresh daily evaluation data had not recorded a successful action in several days: it was catching real failures internally but writing the error to a location that never actually gets saved to disk.
+- Traced two separate failures in the scheduled backup path for the same daily refresh: one run hung silently for about ten minutes before failing with no output at all, and a different run the next day was cut off almost immediately by an external interruption -- confirmed not a wider system problem.
+- Found that two specific pieces of daily data were not failing due to a bug, but because the source market history they depend on was genuinely missing for that day.
+- Added durable, immediately-saved failure logging to both paths, without changing how either path behaves when it succeeds.
+- Verified the new logging can never itself cause a failure, and does not touch any trading or order-related code.
+- See `docs/daily_patch/2026-09-30_closeout_diagnostic_hardening.md`.

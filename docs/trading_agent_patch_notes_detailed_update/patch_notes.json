@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 87,
+  "entry_count": 88,
   "entries": [
     {
       "date": "2026-09-08",
@@ -2290,6 +2290,30 @@
       "sources": [
         "docs/daily_patch/2026-09-29_daily_uef_authority_closure.md",
         "docs/daily_patch/2026-09-29_daily_uef_eod_wiring_fix2.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "Closeout Failure Diagnostics Hardened",
+      "title": "Closeout failure diagnostics hardened to expose tick-loop and scheduled-fallback root causes",
+      "stage": "Trading Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "This does not fix the closeout data-freshness gap found on 2026-09-29 -- it makes the two paths that generate this data diagnosable, since both were previously failing without leaving any usable trace. A behavioral fix is expected in a separate follow-up.",
+      "details": [
+        "Traced why a live background process that should refresh daily evaluation data had not recorded a successful action in several days: it was catching real failures internally but writing the error to a location that never actually gets saved to disk, so the failure was invisible after the fact.",
+        "Traced two separate failures in the scheduled backup path for the same daily refresh: one run hung silently for about ten minutes before failing with no output at all, and a different run on the next day was cut off almost immediately by an external interruption. Confirmed this was not a wider system problem -- four other unrelated scheduled tasks ran normally on the same day.",
+        "Found that two specific pieces of daily data were not failing due to a bug, but because the source market history they depend on was genuinely missing for that day -- a real upstream data gap, not a code defect.",
+        "Traced the exact production chain for a fourth piece of daily data that had not been identified before.",
+        "Added durable, immediately-saved failure logging to both paths, so the next time either one fails, there will be a clear record of exactly what was happening at the time -- without changing how either path behaves when it succeeds.",
+        "Verified the new logging can never itself cause a failure, and does not touch any trading or order-related code."
+      ],
+      "impact": "The next occurrence of either failure will leave a clear, durable record instead of vanishing silently, which is what actually blocked diagnosing this the first time.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_closeout_diagnostic_hardening.md"
       ],
       "status": "current"
     }
