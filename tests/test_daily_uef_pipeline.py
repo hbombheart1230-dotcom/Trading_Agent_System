@@ -1,19 +1,23 @@
 """Regression coverage for the P1.2 daily UEF EOD orchestrator
-(libs/reporting/evaluation/daily_uef_pipeline.py), Fix2.
+(libs/reporting/evaluation/daily_uef_pipeline.py) -- authority-closure
+revision (Codex bounded re-audit, 2026-09-29).
 
-Covers the Codex independent-audit findings and their required test
-additions (T1-T10 in the Fix2 task spec): single-capture authority under
-concurrent source mutation, the closeout canonical-publication bypass being
-removed, per-source freshness contracts (including a legitimate same-day
-zero-event state and a source whose own contract is not daily-dated),
-diagnostic mode never being able to publish canonical output, atomic
-publication surviving a mid-write failure, idempotency, and no trading
-side effects anywhere in the call graph.
+Covers, in order: the retained Fix2 findings (single-capture mutation,
+closeout canonical bypass, per-source freshness including a legitimate
+same-day zero-event state, feature_candidates PRESENT_ONLY, diagnostic
+mode never publishing, UEF-9 failure, idempotency), and the new authority-
+closure findings (legacy CLI bypass removed, unknown-source fail-closed,
+registered-optional-source-absent allowed, partial-bundle non-authority,
+same-day replacement failure safety, a complete generation's manifest/
+pointers/hashes, tampered-artifact detection, latest.md failure isolation
+from machine authority, and no trading/broker/runtime side effects).
 """
 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,8 +25,12 @@ import pytest
 from libs.reporting.alpha_research_board import build_alpha_research_board
 from libs.reporting.evaluation.daily_uef_pipeline import (
     evaluate_source_freshness_contracts,
+    resolve_canonical_alpha_board,
     run_daily_uef_evaluation,
+    verify_generation_manifest,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -31,9 +39,6 @@ def _write(path: Path, payload: dict) -> None:
 
 
 _FEATURE_CANDIDATES_PAYLOAD = {
-    # Confirmed shape of the real file: no through_day/day field, a fixed
-    # one-time selection_period instead (see daily_uef_pipeline.py's own
-    # contract-table docstring) -- deliberately NOT stamped with a day.
     "schema_version": "rank1_candidate_selection.v1",
     "behavior_effect": "NONE_OFFLINE_RESEARCH_ONLY",
     "selection_period": {"validation_start": "2026-08-01", "selection_end_day": "2026-08-11"},
@@ -81,14 +86,13 @@ _PROSPECTIVE_CANDIDATES_PAYLOAD = {
 
 
 def _required_sources(tmp_path: Path, *, target_day: str, daily_sources_day: str | None) -> Path:
-    """The smallest reports/ tree satisfying every _SOURCE_FRESHNESS_CONTRACTS
-    entry: feature_candidates (never day-stamped, by design) plus the four
-    daily-advancing sources stamped with `daily_sources_day` (None omits the
-    through_day field entirely, i.e. simulates a source that legitimately
-    carries no date -- used only where a test needs that; the four required
-    daily sources are normally always given an explicit day by their real
-    producer). Also gives build_alpha_research_board two real candidates so
-    UEF-8 has a non-empty pair to compare.
+    """The smallest reports/ tree satisfying every REQUIRED
+    _SOURCE_FRESHNESS_CONTRACTS entry: feature_candidates (never day-
+    stamped, by design) and large_cap_daily (via a real daily-review
+    artifact) as PRESENT_ONLY, plus the four UPDATED_THROUGH_TARGET_DAY
+    sources stamped with `daily_sources_day` (None omits through_day
+    entirely). Also gives build_alpha_research_board two real candidates
+    so UEF-8 has a non-empty pair to compare.
     """
     root = tmp_path / "reports"
     _write(root / "evaluation/feature_mart/opening_rank1/candidate_selection.json", _FEATURE_CANDIDATES_PAYLOAD)
@@ -103,10 +107,11 @@ def _required_sources(tmp_path: Path, *, target_day: str, daily_sources_day: str
         root / "evaluation/feature_mart/opening_rank1/prospective/rank1_candidate_shadow_cumulative.json",
         _stamped(_PROSPECTIVE_CANDIDATES_PAYLOAD),
     )
-    _write(
-        root / "evaluation/feature_mart/opening_rank1/prospective/frozen_candidate_contract.json",
-        {"schema_version": "fixture", "first_eligible_day": "2026-08-12"},
-    )
+    # prospective_contract is deliberately NOT written here -- it is
+    # registered OPTIONAL/PRESENT_ONLY, and build_alpha_research_board
+    # itself tolerates its absence (defaults first_eligible_day), so
+    # leaving it out doubles as evidence for that contract (see
+    # test_registered_optional_source_absent_does_not_block).
     _write(
         root / "evaluation/feature_mart/opening_rank1/fresh_change_activation/fresh_change_activation_cumulative.json",
         _stamped({"schema_version": "fixture"}),
@@ -119,10 +124,28 @@ def _required_sources(tmp_path: Path, *, target_day: str, daily_sources_day: str
         root / "evaluation/opening_rank1_shadow/latent_watch/latent_reactivation_forward.json",
         _stamped({"schema_version": "fixture"}),
     )
+    # large_cap_daily is REQUIRED + PRESENT_ONLY, driven by
+    # build_large_cap_daily_review's own source_count (= number of matching
+    # dated files found, from collect_large_cap_daily_rows), not a stamped
+    # date field here -- give it a real, minimal daily artifact at the
+    # exact path/filename that function globs for
+    # (evaluation/baseline_samsung_hynix/<day>/
+    # baseline_samsung_hynix_forward_returns.json) so `available` is True
+    # regardless of `daily_sources_day` (its own through_day field is a
+    # vacuous echo per this module's own contract-table docstring).
+    _write(
+        root / "evaluation/baseline_samsung_hynix" / target_day / "baseline_samsung_hynix_forward_returns.json",
+        {
+            "schema_version": "fixture",
+            "summary": {"horizons": {"+180m": {"top1_gross": {"average_return_pct": 0.5, "count": 1}}}},
+        },
+    )
     return root
 
 
-# --- T3: source-specific freshness (four required daily sources) -----------
+# ============================================================================
+# Retained Fix2 coverage (updated for the generation/manifest/pointer model)
+# ============================================================================
 
 
 def test_stale_required_source_rejected(tmp_path: Path) -> None:
@@ -138,9 +161,6 @@ def test_stale_required_source_rejected(tmp_path: Path) -> None:
 
 def test_same_day_zero_event_state_is_accepted_as_fresh(tmp_path: Path) -> None:
     root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
-    # Overwrite two of the four with an explicit, legitimate zero-event
-    # shape -- freshness must be judged purely by the date stamp, not by
-    # whether any rows/episodes are present.
     _write(
         root / "evaluation/opening_rank1_shadow/opening_rank1_shadow_cumulative.json",
         {"schema_version": "fixture", "through_day": "2026-09-29", "summary": {"status": "NO_OPENING_RANK1"}},
@@ -157,14 +177,9 @@ def test_same_day_zero_event_state_is_accepted_as_fresh(tmp_path: Path) -> None:
     assert result.freshness_findings == []
 
 
-# --- T5 / feature_candidates freshness (PRESENT_ONLY, never date-compared) -
-
-
 def test_feature_candidates_never_rejected_for_its_own_fixed_old_selection_window(tmp_path: Path) -> None:
     root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
     board = build_alpha_research_board(reports_root=root, through_day="2026-09-29")
-    # feature_candidates carries no through_day at all (fixed 2026-08-01..
-    # 2026-08-11 selection_period instead) -- must never appear as "stale".
     assert board["sources"]["feature_candidates"]["through_day"] is None
     findings = evaluate_source_freshness_contracts(board, "2026-09-29")
     assert findings == []
@@ -185,9 +200,6 @@ def test_feature_candidates_missing_is_still_rejected_required_present(tmp_path:
     assert any("feature_candidates" in f and "MISSING_ARTIFACT" in f for f in result.freshness_findings)
 
 
-# --- T1: single-capture authority under source mutation after capture ------
-
-
 def test_persisted_board_matches_captured_board_not_a_later_mutation(tmp_path: Path, monkeypatch) -> None:
     root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
 
@@ -198,9 +210,6 @@ def test_persisted_board_matches_captured_board_not_a_later_mutation(tmp_path: P
         call_count["n"] += 1
         board = _orig_build(reports_root=reports_root, through_day=through_day)
         if call_count["n"] == 1:
-            # Simulate a source mutating on disk AFTER the orchestrator's
-            # own single capture -- a second (hypothetical) rebuild must
-            # never be allowed to observe this.
             _write(
                 root / "evaluation/opening_rank1_shadow/opening_rank1_shadow_cumulative.json",
                 {"schema_version": "fixture", "through_day": "2026-09-30", "summary": {"MUTATED": True}},
@@ -215,22 +224,12 @@ def test_persisted_board_matches_captured_board_not_a_later_mutation(tmp_path: P
 
     assert result.ok is True
     assert result.published is True
-    # Exactly one build call for the whole run -- if persistence rebuilt
-    # internally, this would be 2+ and the persisted file would reflect the
-    # mutated (MUTATED=True) source instead of the originally captured one.
     assert call_count["n"] == 1
 
-    persisted = json.loads(
-        (root / "evaluation" / "alpha_research_board" / "2026-09-29" / "alpha_research_board.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    persisted = json.loads(Path(result.manifest_path).parent.joinpath("alpha_research_board.json").read_text(encoding="utf-8"))
     assert persisted["through_day"] == "2026-09-29"
     opening_source = persisted["sources"].get("opening_cumulative") or {}
     assert opening_source.get("through_day") != "2026-09-30"
-
-
-# --- T2: closeout can no longer publish canonical authority -----------------
 
 
 def test_closeout_maintenance_cannot_advance_canonical_board_or_latest(tmp_path: Path, monkeypatch) -> None:
@@ -264,58 +263,20 @@ def test_closeout_maintenance_cannot_advance_canonical_board_or_latest(tmp_path:
     assert not (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29").exists()
     assert not (reports_root / "evaluation" / "alpha_research_board" / "latest.json").exists()
     assert not (reports_root / "evaluation" / "alpha_research_board" / "latest.md").exists()
-    # Closeout's own diagnostic snapshot IS still produced, just non-canonically.
     assert (reports_root / "evaluation" / "closeout_alpha_board_snapshot" / "2026-09-29" / "alpha_research_board_snapshot.json").exists()
 
 
-# --- T6: diagnostic mode can never publish canonical output -----------------
-
-
 def test_diagnostic_mode_never_writes_canonical_files_even_on_success(tmp_path: Path) -> None:
-    # Stale sources -- would be rejected in canonical mode.
     root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-25")
 
     result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29", canonical=False)
 
     assert result.canonical is False
-    assert result.ok is True  # the chain itself succeeds -- freshness is not enforced in diagnostic mode
+    assert result.ok is True
     assert result.published is False
     assert not (root / "evaluation" / "alpha_research_board" / "2026-09-29").exists()
     assert not (root / "evaluation" / "alpha_research_board" / "latest.json").exists()
     assert result.output_dirs == {}
-
-
-# --- C (retained from Fix1): successful canonical chain ---------------------
-
-
-def test_successful_chain_persists_and_advances_latest(tmp_path: Path) -> None:
-    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
-
-    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
-
-    assert result.ok is True
-    assert result.published is True
-    assert result.stage_failed is None
-    assert result.board_candidate_count and result.board_candidate_count >= 2
-    assert result.uef7_run_id and result.uef8_run_id and result.uef9_run_id
-    assert result.authority_status == "VALID"
-    n = result.board_candidate_count
-    assert result.uef8_pair_count == n * (n - 1) // 2
-
-    board_dir = reports_root / "evaluation" / "alpha_research_board" / "2026-09-29"
-    assert (board_dir / "alpha_research_board.json").exists()
-    latest = json.loads((reports_root / "evaluation" / "alpha_research_board" / "latest.json").read_text(encoding="utf-8"))
-    assert latest["through_day"] == "2026-09-29"
-
-    uef9_payload = json.loads(
-        (Path(result.output_dirs["uef9"]) / "formal_evaluation_authority.json").read_text(encoding="utf-8")
-    )
-    assert uef9_payload["authority_status"] == "VALID"
-    assert uef9_payload["source_uef7_run_id"] == result.uef7_run_id
-    assert uef9_payload["source_uef8_run_id"] == result.uef8_run_id
-
-
-# --- T8 (retained): UEF-9 failure -> no canonical advancement ---------------
 
 
 def test_uef9_failure_does_not_advance_latest(tmp_path: Path, monkeypatch) -> None:
@@ -337,38 +298,24 @@ def test_uef9_failure_does_not_advance_latest(tmp_path: Path, monkeypatch) -> No
     assert not (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29").exists()
 
 
-# --- T7: publication failure leaves previous latest authoritative ----------
-
-
-def test_publication_failure_leaves_previous_latest_unchanged(tmp_path: Path, monkeypatch) -> None:
+def test_rerun_against_unchanged_input_is_idempotent(tmp_path: Path) -> None:
     reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
 
-    # Establish a prior, genuinely-published latest (a different day).
-    root2 = tmp_path  # reuse same repo_root; run once for an earlier day first.
-    _required_sources(tmp_path, target_day="2026-09-28", daily_sources_day="2026-09-28")
-    # _required_sources overwrote the shared fixture files with 09-28-dated
-    # content for this call; run once to publish 2026-09-28 as "previous".
-    first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-28")
-    assert first.ok is True and first.published is True
-    previous_latest = (reports_root / "evaluation" / "alpha_research_board" / "latest.json").read_text(encoding="utf-8")
+    first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    second = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
 
-    # Now re-stamp sources fresh for 09-29 and simulate a failure during
-    # the final publish step.
-    _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+    assert first.ok is True and second.ok is True
+    assert first.uef7_run_id == second.uef7_run_id
+    assert first.uef8_run_id == second.uef8_run_id
+    assert first.uef9_run_id == second.uef9_run_id
+    assert first.authority_id == second.authority_id
+    assert first.to_dict() == second.to_dict()
 
-    def _boom(board, *, output_dir):
-        raise OSError("simulated disk failure during canonical publish")
-
-    monkeypatch.setattr(
-        "libs.reporting.evaluation.daily_uef_pipeline.persist_canonical_alpha_board", _boom
-    )
-
-    with pytest.raises(OSError):
-        run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
-
-    # previous canonical latest (2026-09-28) must remain exactly as it was.
-    assert (reports_root / "evaluation" / "alpha_research_board" / "latest.json").read_text(encoding="utf-8") == previous_latest
-    assert not (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29").exists()
+    board_json_1 = Path(first.manifest_path).parent.joinpath("alpha_research_board.json").read_text(encoding="utf-8")
+    third = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    board_json_2 = Path(third.manifest_path).parent.joinpath("alpha_research_board.json").read_text(encoding="utf-8")
+    assert board_json_1 == board_json_2
+    assert third.uef9_run_id == first.uef9_run_id
 
 
 def test_atomic_write_never_leaves_partial_file_on_failure(tmp_path: Path) -> None:
@@ -382,8 +329,6 @@ def test_atomic_write_never_leaves_partial_file_on_failure(tmp_path: Path) -> No
 
     import libs.reporting.evaluation.daily_uef_pipeline as mod
 
-    # Directly exercise the failure branch: os.fdopen wrapped write raises,
-    # the temp file must be cleaned up and the real target never created.
     orig_fdopen = mod.os.fdopen
 
     def _boom_fdopen(fd, *a, **k):
@@ -402,40 +347,12 @@ def test_atomic_write_never_leaves_partial_file_on_failure(tmp_path: Path) -> No
     assert list(target.parent.glob("*.tmp")) == []
 
 
-# --- T9 (retained): idempotency ---------------------------------------------
-
-
-def test_rerun_against_unchanged_input_is_idempotent(tmp_path: Path) -> None:
-    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
-
-    first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
-    second = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
-
-    assert first.ok is True and second.ok is True
-    assert first.uef7_run_id == second.uef7_run_id
-    assert first.uef8_run_id == second.uef8_run_id
-    assert first.uef9_run_id == second.uef9_run_id
-    assert first.to_dict() == second.to_dict()
-
-    board_json_1 = (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29" / "alpha_research_board.json").read_text(encoding="utf-8")
-    third = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
-    board_json_2 = (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29" / "alpha_research_board.json").read_text(encoding="utf-8")
-    assert board_json_1 == board_json_2
-    assert third.uef9_run_id == first.uef9_run_id
-
-
-# --- A/B (retained from Fix1): missing sources fail closed ------------------
-
-
 def test_missing_sources_fail_closed(tmp_path: Path) -> None:
     result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
     assert result.ok is False
     assert result.stage_failed == "freshness_guard"
     assert result.freshness_findings
     assert not (tmp_path / "reports" / "evaluation" / "alpha_research_board" / "latest.json").exists()
-
-
-# --- T10: no trading/execution side effects ---------------------------------
 
 
 def test_pipeline_never_imports_execution_or_runtime_modules() -> None:
@@ -469,3 +386,254 @@ def test_no_state_files_written_outside_reports_evaluation(tmp_path: Path) -> No
 
     after = sorted(p.relative_to(tmp_path) for p in data_dir.rglob("*") if p.is_file())
     assert before == after == []
+
+
+# ============================================================================
+# Authority-closure coverage (Codex bounded re-audit findings)
+# ============================================================================
+
+
+# --- A: legacy CLI cannot canonical-publish ---------------------------------
+
+
+def test_legacy_cli_cannot_write_canonical_board_or_latest(tmp_path: Path) -> None:
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "run_alpha_research_board.py"),
+         "--through-day", "2026-09-29", "--reports-root", str(reports_root)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29").exists()
+    assert not (reports_root / "evaluation" / "alpha_research_board" / "latest.json").exists()
+
+
+def test_legacy_cli_rejects_output_dir_equal_to_canonical_path(tmp_path: Path) -> None:
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+    canonical = reports_root / "evaluation" / "alpha_research_board" / "2026-09-29"
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "run_alpha_research_board.py"),
+         "--through-day", "2026-09-29", "--reports-root", str(reports_root), "--output-dir", str(canonical)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode != 0
+    assert not canonical.exists()
+
+
+def test_daily_uef_pipeline_is_the_sole_canonical_writer_by_source_search() -> None:
+    """Repository-wide check: the generation/current/latest writer
+    functions are only ever called from within this module itself (and its
+    own tests) -- no other module directly writes a generation, current.json,
+    or the global latest.json."""
+    import subprocess as sp
+
+    out = sp.run(
+        ["git", "grep", "-l", "-E", "write_generation\\(|advance_current_pointer\\(|advance_latest_pointer\\(",
+         "--", "*.py"],
+        cwd=str(ROOT), capture_output=True, text=True,
+    )
+    matched_files = {
+        line.strip() for line in out.stdout.splitlines() if line.strip()
+    }
+    allowed = {
+        "libs/reporting/evaluation/daily_uef_pipeline.py",
+        "tests/test_daily_uef_pipeline.py",
+    }
+    unexpected = {f for f in matched_files if f.replace("\\", "/") not in allowed}
+    assert unexpected == set(), f"unexpected canonical-writer callers found: {unexpected}"
+
+
+# --- B / I: unknown source -> fail closed -----------------------------------
+
+
+def test_unknown_board_source_rejects_canonical_run(tmp_path: Path) -> None:
+    board = {
+        "through_day": "2026-09-29",
+        "candidate_count": 0,
+        "sources": {
+            "prospective_candidates": {"available": True, "through_day": "2026-09-29"},
+            "fresh_change": {"available": True, "through_day": "2026-09-29"},
+            "opening_cumulative": {"available": True, "through_day": "2026-09-29"},
+            "latent_reactivation": {"available": True, "through_day": "2026-09-29"},
+            "feature_candidates": {"available": True, "through_day": None},
+            "large_cap_daily": {"available": True, "through_day": "2026-09-29"},
+            "a_brand_new_source_nobody_reviewed_yet": {"available": True, "through_day": "2026-09-29"},
+        },
+    }
+    findings = evaluate_source_freshness_contracts(board, "2026-09-29")
+    assert any("a_brand_new_source_nobody_reviewed_yet" in f and "UNKNOWN_SOURCE" in f for f in findings)
+
+
+# --- C: registered optional source absent -> allowed ------------------------
+
+
+def test_registered_optional_source_absent_does_not_block(tmp_path: Path) -> None:
+    root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+    # prospective_contract and btc_woori_history are registered OPTIONAL,
+    # PRESENT_ONLY -- neither file was ever written by _required_sources.
+    board = build_alpha_research_board(reports_root=root, through_day="2026-09-29")
+    assert board["sources"]["prospective_contract"]["available"] is False
+    assert board["sources"].get("btc_woori_history", {}).get("available", False) is False
+    findings = evaluate_source_freshness_contracts(board, "2026-09-29")
+    assert findings == []
+
+    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    assert result.ok is True
+    assert result.published is True
+
+
+# --- D: partial bundle -> not authoritative ---------------------------------
+
+
+def test_partial_bundle_before_complete_manifest_is_not_authoritative(tmp_path: Path, monkeypatch) -> None:
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+
+    import libs.reporting.evaluation.daily_uef_pipeline as mod
+
+    orig_write_generation = mod.write_generation
+
+    def _boom_after_board_write(board, **kwargs):
+        # Let the board file itself get written (simulating a crash between
+        # the board write and the COMPLETE.json write), then fail.
+        day_dir = kwargs["day_dir"]
+        generation_dir = day_dir / "generations" / kwargs["authority_id"]
+        generation_dir.mkdir(parents=True, exist_ok=True)
+        (generation_dir / "alpha_research_board.json").write_text(json.dumps(board), encoding="utf-8")
+        raise OSError("simulated crash before COMPLETE.json")
+
+    monkeypatch.setattr(mod, "write_generation", _boom_after_board_write)
+
+    with pytest.raises(OSError):
+        run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+
+    assert not (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29" / "current.json").exists()
+    assert not (reports_root / "evaluation" / "alpha_research_board" / "latest.json").exists()
+    # The partial generation dir may physically exist, but nothing points at it.
+    ok, board, manifest, reason = resolve_canonical_alpha_board(tmp_path, day="2026-09-29")
+    assert ok is False
+
+
+# --- E: same-day replacement failure leaves the prior generation current ---
+
+
+def test_same_day_replacement_failure_leaves_prior_generation_current(tmp_path: Path, monkeypatch) -> None:
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+
+    first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    assert first.ok is True and first.published is True
+    current_before = (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29" / "current.json").read_text(encoding="utf-8")
+    latest_before = (reports_root / "evaluation" / "alpha_research_board" / "latest.json").read_text(encoding="utf-8")
+
+    # Mutate a required source so a rerun computes a genuinely different
+    # (but still internally valid) board/authority_id, then fail the
+    # second generation's advance_current_pointer step.
+    _write(
+        reports_root / "evaluation/opening_rank1_shadow/opening_rank1_shadow_cumulative.json",
+        {"schema_version": "fixture", "through_day": "2026-09-29", "summary": {"status": "CHANGED_BUT_STILL_FRESH"}},
+    )
+
+    import libs.reporting.evaluation.daily_uef_pipeline as mod
+
+    def _boom(*_a, **_k):
+        raise OSError("simulated failure advancing current.json for generation B")
+
+    monkeypatch.setattr(mod, "advance_current_pointer", _boom)
+
+    with pytest.raises(OSError):
+        run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+
+    current_after = (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29" / "current.json").read_text(encoding="utf-8")
+    latest_after = (reports_root / "evaluation" / "alpha_research_board" / "latest.json").read_text(encoding="utf-8")
+    assert current_after == current_before
+    assert latest_after == latest_before
+
+    ok, board, manifest, reason = resolve_canonical_alpha_board(tmp_path)
+    assert ok is True
+    assert manifest["authority_id"] == first.authority_id
+
+
+# --- F: a complete generation's manifest/pointers/hashes are all correct ---
+
+
+def test_complete_generation_manifest_current_and_latest_all_validate(tmp_path: Path) -> None:
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+
+    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    assert result.ok is True and result.published is True
+
+    manifest_path = Path(result.manifest_path)
+    ok, reason, manifest = verify_generation_manifest(manifest_path)
+    assert ok is True, reason
+    assert manifest["authority_id"] == result.authority_id
+    assert manifest["uef7_run_id"] == result.uef7_run_id
+    assert manifest["uef8_run_id"] == result.uef8_run_id
+    assert manifest["uef9_run_id"] == result.uef9_run_id
+    assert manifest["uef9_authority_status"] == "VALID"
+    assert manifest["status"] == "COMPLETE"
+
+    current = json.loads((reports_root / "evaluation" / "alpha_research_board" / "2026-09-29" / "current.json").read_text(encoding="utf-8"))
+    assert current["authority_id"] == result.authority_id
+    latest = json.loads((reports_root / "evaluation" / "alpha_research_board" / "latest.json").read_text(encoding="utf-8"))
+    assert latest["authority_id"] == result.authority_id
+    assert latest["day"] == "2026-09-29"
+
+    ok2, board, manifest2, reason2 = resolve_canonical_alpha_board(tmp_path)
+    assert ok2 is True
+    assert board["through_day"] == "2026-09-29"
+
+    # legacy-compat view exists and matches, explicitly non-authoritative
+    legacy = json.loads((reports_root / "evaluation" / "alpha_research_board" / "2026-09-29" / "alpha_research_board.json").read_text(encoding="utf-8"))
+    assert legacy == board
+
+
+# --- G: tampered completed artifact -> manifest validation FAIL ------------
+
+
+def test_tampered_artifact_fails_manifest_verification(tmp_path: Path) -> None:
+    _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    assert result.ok is True
+
+    board_path = Path(result.manifest_path).parent / "alpha_research_board.json"
+    original = board_path.read_text(encoding="utf-8")
+    board_path.write_text(original + " ", encoding="utf-8")  # tamper: single byte appended
+
+    ok, reason, manifest = verify_generation_manifest(Path(result.manifest_path))
+    assert ok is False
+    assert "digest_mismatch" in reason
+
+    ok2, board, manifest2, reason2 = resolve_canonical_alpha_board(tmp_path)
+    assert ok2 is False
+
+
+# --- H: latest.md failure never invalidates machine authority --------------
+
+
+def test_latest_md_failure_does_not_invalidate_latest_json(tmp_path: Path, monkeypatch) -> None:
+    _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+
+    import libs.reporting.evaluation.daily_uef_pipeline as mod
+
+    orig_render = mod.render_alpha_research_board
+    call_count = {"n": 0}
+
+    def _fail_on_second_call(board):
+        call_count["n"] += 1
+        if call_count["n"] >= 2:
+            # First call is write_generation()'s own generation .md;
+            # only the SECOND call (write_latest_presentation(), the
+            # presentation-only step) is made to fail here.
+            raise RuntimeError("boom")
+        return orig_render(board)
+
+    monkeypatch.setattr(mod, "render_alpha_research_board", _fail_on_second_call)
+
+    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+
+    assert result.ok is True
+    assert result.published is True
+    assert result.latest_presentation_path is None  # presentation failed
+    assert result.latest_pointer_path is not None  # machine authority unaffected
+
+    ok, board, manifest, reason = resolve_canonical_alpha_board(tmp_path)
+    assert ok is True, reason

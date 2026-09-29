@@ -1,50 +1,80 @@
 """Scheduler-agnostic daily UEF EOD evaluation orchestrator (P1.2 gap fix).
 
-Fix2 (Codex independent audit, 2026-09-29) corrected three defects in the
-first implementation and hardened one atomicity gap; see
-docs/daily_patch/2026-09-29_daily_uef_eod_wiring_fix2.md for the full audit
-trail. Summary of what changed and why:
+Authority-closure revision (Codex bounded re-audit, 2026-09-29) -- see
+docs/daily_patch/2026-09-29_daily_uef_authority_closure.md for the full
+audit trail. This revision formally establishes:
 
-H1 (single-capture authority): the first implementation called
-build_alpha_research_board() twice -- once to feed UEF-7/8/9, once more
-inside write_alpha_research_board() to persist -- so if an underlying
-source mutated between the two calls (a live host writing concurrently is
-exactly this repository's normal operating condition), the persisted
-canonical Board could silently differ from the Board UEF-9 actually
-verified. Fixed: build_alpha_research_board() is called EXACTLY ONCE per
-run; persist_canonical_alpha_board()/advance_latest_pointer() below write
-that exact in-memory object, never rebuilding.
+  CANONICAL PUBLISHER IMPLEMENTATION = this module, exclusively. No other
+    code path anywhere in this repository may write reports/evaluation/
+    alpha_research_board/<day>/generations/, <day>/current.json, or the
+    global latest.json.
+  CANONICAL DAILY AUTHORITY = the single captured Alpha Board + the exact
+    UEF-7 result + the exact UEF-8 result + the exact UEF-9 result +
+    a COMPLETE authority manifest binding all four by digest. A directory
+    full of JSON files with no verified COMPLETE manifest is NOT authority.
+  MACHINE LATEST AUTHORITY = the global latest.json pointer, exclusively.
+  latest.md = a derived, presentation-only view. It is never consulted by
+    any authoritative reader, and its own write failure never invalidates
+    machine authority (see write_latest_presentation()'s own docstring).
 
-H2 (competing canonical publisher): libs/reporting/closeout_maintenance.py
-independently called write_alpha_research_board() -- which persists the
-canonical dated Board and advances latest.json/.md unconditionally -- with
-no UEF-9 involvement at all. Fixed by removing that call (see the closeout
-module's own history); this module is now the ONLY code path anywhere in
-this repository permitted to advance
-reports/evaluation/alpha_research_board/<day>/ or latest.json/.md.
+Findings closed in this revision (Codex bounded re-audit found these
+remaining after Fix2's H1/H2/H3/M1):
 
-H3 (freshness contracts): the first implementation's freshness guard
-required every dated source's own through_day to equal the target day,
-with no distinction between sources whose contract is genuinely daily and
-sources that are not. It also allowed --allow-stale-sources to bypass the
-guard and still reach canonical publication. Fixed: _SOURCE_FRESHNESS_
-CONTRACTS below encodes explicit, evidence-based per-source rules (see its
-own docstring), and `canonical=False` (diagnostic mode) can never write
-any canonical file, regardless of outcome -- publication and the freshness
-bypass are now structurally exclusive.
+  Legacy CLI bypass: scripts/run_alpha_research_board.py used to call
+    write_alpha_research_board() directly -- a second, independent
+    canonical-write path with no UEF-9 involvement. Fixed: that CLI now
+    only ever calls build_alpha_research_board() (read-only) and prints a
+    diagnostic snapshot; it cannot write any canonical file. Verified by
+    repository-wide search: this module is the sole caller of
+    write_generation()/advance_current_pointer()/advance_latest_pointer().
 
-M1 (atomicity): file writes previously used plain path.write_text(), which
-can leave a half-written file on interruption. persist_canonical_alpha_
-board() and advance_latest_pointer() now write to a temp file in the same
-directory, fsync it, and os.replace() it into place -- atomic on both
-POSIX and NTFS for a same-volume rename.
+  Unknown-source permissiveness: the freshness guard used to treat any
+    source key with no registered contract as automatically
+    optional/tolerated. Fixed: every source key build_alpha_research_board
+    can ever produce (9, enumerated below, confirmed directly against its
+    source code) now has an explicit contract; a source key appearing in
+    board["sources"] that is NOT in _SOURCE_FRESHNESS_CONTRACTS rejects the
+    canonical run outright, rather than silently passing through.
 
-This module remains the ONE scheduler-agnostic orchestration entry point
-(via scripts/run_daily_uef_evaluation.py) -- never duplicate Alpha Board /
-UEF semantics in a scheduler file. It reimplements no Alpha Board or
-UEF-7/8/9 semantics; it only sequences the existing, frozen library
-functions and owns the missing fail-closed gating and atomic persistence
-around them.
+  Bundle completion authority: a partial set of JSON/MD files used to be
+    indistinguishable from a genuinely complete, verified daily result.
+    Fixed: see the COMPLETE manifest / generation / pointer design below.
+
+Generation layout (per target day):
+
+  reports/evaluation/alpha_research_board/<day>/
+    generations/
+      <authority_id>/                  authority_id = the UEF-9 run_id for
+        alpha_research_board.json      this exact chain (deterministic,
+        alpha_research_board.md        content-derived -- never a
+        COMPLETE.json                  timestamp/uuid; see uef9's own
+                                        run_identity module) -- written LAST
+                                        within the generation, only after
+                                        every referenced artifact exists and
+                                        every digest has been computed.
+    current.json                       atomic pointer to the day's
+                                        completed generation; a failed
+                                        rerun for the same day never
+                                        touches this if it does not reach a
+                                        new COMPLETE manifest.
+    alpha_research_board.json          legacy-compatibility VIEW, copied
+    alpha_research_board.md            from the current generation after
+                                        verification -- explicitly NOT
+                                        authoritative (see item 11 of the
+                                        closure task); human/report
+                                        navigation convenience only.
+  reports/evaluation/alpha_research_board/
+    latest.json                        MACHINE AUTHORITY -- global pointer
+                                        to the most recent day+generation
+                                        that reached a verified COMPLETE
+                                        manifest.
+    latest.md                          presentation only, see module intro.
+
+A generation directory that never got a COMPLETE.json (a crash/failure
+mid-write) has zero effect on authority: current.json/latest.json are only
+ever updated after write_generation() returns a verified manifest, so an
+incomplete generation directory sitting on disk is simply inert, never
+read by anything as a source of truth.
 
 Evaluation/reporting only: nothing in this call graph imports
 libs.execution.*, libs.runtime.live_loop_runner, or any Kiwoom transport
@@ -53,9 +83,11 @@ module. No broker/runtime/execution state is ever touched.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -72,8 +104,12 @@ from libs.reporting.evaluation.uef9.authority import verify_formal_evaluation_au
 from libs.reporting.evaluation.uef9.reporter import write_formal_evaluation_authority
 from libs.reporting.evaluation.uef9.run_identity import uef9_implementation_digest
 
+MANIFEST_SCHEMA_VERSION = "daily_authority_manifest.v1"
+CURRENT_POINTER_SCHEMA_VERSION = "alpha_research_board_current_pointer.v1"
+LATEST_POINTER_SCHEMA_VERSION = "alpha_research_board_latest_pointer.v1"
 
-# --- Source freshness contracts (H3) ----------------------------------------
+
+# --- Source freshness contracts -------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -85,18 +121,28 @@ class SourceFreshnessContract:
     #   zero-event day (VALID_NO_EPISODES / NO_OPENING_RANK1 / zero
     #   redetections is still a fresh, dated file -- freshness is judged by
     #   the date stamp, never by row/event count).
-    # "PRESENT_ONLY": the source must exist and be readable, but its own
-    #   date (if any) is never compared to the target day, because its
-    #   contract is not a daily one (see feature_candidates below).
+    # "PRESENT_ONLY": the source must exist and be readable (if required)
+    #   but its own date (if any) is never compared to the target day,
+    #   because its contract is not a daily one.
     mode: str
 
 
-# Evidence for every entry here was gathered directly against this
-# repository's real source files, not assumed. Deliberately NOT generalized
-# to every key in SOURCE_PATHS (libs/reporting/alpha_research_board/
-# contracts.py) -- a source with no contract entry here is treated as
-# optional/best-effort, exactly matching build_alpha_research_board's own
-# PASS_WITH_MISSING_SOURCES tolerance, and is never used to reject a run.
+# Every entry's classification was verified directly against this
+# repository's real source files and against build_alpha_research_board's
+# and canonicalize_board's own source code (libs/reporting/
+# alpha_research_board/builder.py and canonical.py) -- this is the
+# COMPLETE set of 11 source keys that build_alpha_research_board's final
+# (canonicalized) output can ever populate in board["sources"]: the 7 keys
+# of SOURCE_PATHS in contracts.py; btc_woori_hypothesis and large_cap_daily
+# (added by builder.py itself); and strategist_stage2_effectiveness and
+# short_alpha_discriminator (added later, inside canonicalize_board --
+# easy to miss on a first read of builder.py alone, confirmed only by
+# actually running build_alpha_research_board() and inspecting its real
+# output). A source key appearing in a real board that is NOT listed here
+# is therefore a genuinely NEW/unreviewed source, and evaluate_source_
+# freshness_contracts() rejects it outright rather than silently
+# tolerating it -- adding a new source to build_alpha_research_board or
+# canonicalize_board requires adding its contract here in the same change.
 _SOURCE_FRESHNESS_CONTRACTS: Tuple[SourceFreshnessContract, ...] = (
     # Confirmed directly (P1.2 Day-1): these four are written by the daily
     # closeout pipeline and their own captured payload carried an explicit
@@ -106,37 +152,98 @@ _SOURCE_FRESHNESS_CONTRACTS: Tuple[SourceFreshnessContract, ...] = (
     SourceFreshnessContract("fresh_change", required=True, mode="UPDATED_THROUGH_TARGET_DAY"),
     SourceFreshnessContract("opening_cumulative", required=True, mode="UPDATED_THROUGH_TARGET_DAY"),
     SourceFreshnessContract("latent_reactivation", required=True, mode="UPDATED_THROUGH_TARGET_DAY"),
-    # Confirmed directly (Fix2): reports/evaluation/feature_mart/
-    # opening_rank1/candidate_selection.json carries no through_day/day
-    # field at all. Its own payload instead carries
-    # selection_period={validation_start, selection_end_day} -- a FIXED,
-    # one-time offline backtest window (schema_version=
-    # rank1_candidate_selection.v1, behavior_effect=
-    # NONE_OFFLINE_RESEARCH_ONLY) -- this is a frozen feature-eligibility
-    # artifact by design, not something that advances daily. Treating its
-    # age as "staleness" would be inventing a freshness rule its own
-    # contract does not have. It is still required to be PRESENT (it feeds
-    # the core candidate pool), just never date-compared.
+    # Confirmed directly: candidate_selection.json carries no through_day/
+    # day field at all. Its own payload instead carries selection_period=
+    # {validation_start, selection_end_day} -- a FIXED, one-time offline
+    # backtest window (schema_version=rank1_candidate_selection.v1,
+    # behavior_effect=NONE_OFFLINE_RESEARCH_ONLY) -- a frozen
+    # feature-eligibility artifact by design, not something that advances
+    # daily. Required to be PRESENT (it feeds the core candidate pool),
+    # never date-compared.
     SourceFreshnessContract("feature_candidates", required=True, mode="PRESENT_ONLY"),
+    # Confirmed directly: frozen_candidate_contract.json (schema_version=
+    # rank1_prospective_shadow.v1) carries frozen_at/first_eligible_day/
+    # fixed_validation_days -- a frozen configuration contract, no
+    # through_day/day field. build_alpha_research_board itself tolerates
+    # its absence (defaults first_eligible_day to "0000-00-00"), so
+    # optional here too.
+    SourceFreshnessContract("prospective_contract", required=False, mode="PRESENT_ONLY"),
+    # Confirmed directly: q12_v1_v2_historical_review.json (schema_version=
+    # q12_v1_v2_historical_review.v1) carries source_days (a fixed
+    # historical range) and no through_day/day field -- a one-time
+    # historical review artifact, not a daily one. _btc_woori() degrades
+    # gracefully (empty placeholder candidate row) when absent.
+    SourceFreshnessContract("btc_woori_history", required=False, mode="PRESENT_ONLY"),
+    # Confirmed directly: q12_btc_woori_hypothesis_cumulative.json DOES
+    # carry a genuine through_day (observed fresh on the day captured).
+    # build_alpha_research_board only loads it conditionally (only if the
+    # file exists at all -- no MISSING_ARTIFACT is ever recorded for it),
+    # so it is optional by the board's own design; when present, its date
+    # is still meaningful and checked.
+    SourceFreshnessContract("btc_woori_hypothesis", required=False, mode="UPDATED_THROUGH_TARGET_DAY"),
+    # Confirmed directly (builder.py::_large_cap_candidate): its own
+    # "through_day" field is hardcoded to the CALLER'S through_day argument
+    # (the same vacuous-echo pattern as the board's own top-level field),
+    # never independently derived -- so date-comparing it would check
+    # nothing real. Its "available" flag, by contrast, is
+    # bool(review.get("source_count")) -- a genuine same-day-artifact-
+    # count signal. Required (unconditionally invoked by
+    # build_alpha_research_board, feeds a core candidate), PRESENT_ONLY
+    # (available already encodes real freshness; a redundant date compare
+    # would be checking an untrustworthy field).
+    SourceFreshnessContract("large_cap_daily", required=True, mode="PRESENT_ONLY"),
+    # Confirmed directly (canonical.py::_stage2_candidate /
+    # _latest_stage2_source): this deliberately prefers the LATEST
+    # available cumulative rollup file at or before through_day, falling
+    # back to a per-day file only if no rollup exists -- a rolling
+    # look-back window by design, not "must equal today". Its own
+    # through_day (via the standard load_json loader) can legitimately be
+    # an earlier date than the target day. Optional (build_alpha_research_
+    # board tolerates its absence) and never date-compared.
+    SourceFreshnessContract("strategist_stage2_effectiveness", required=False, mode="PRESENT_ONLY"),
+    # Confirmed directly (canonical.py::canonicalize_board): this entry is
+    # a hardcoded sources.setdefault(..., {"available": True, "error":
+    # None}) with no through_day field at all, and "available" here does
+    # NOT reflect whether the underlying short_alpha_discriminator.json
+    # file genuinely exists -- it is unconditionally True regardless. This
+    # is an existing quirk of Alpha Board v2's own (frozen) canonicalize_
+    # board, not something this closure may fix (out of scope -- Alpha
+    # Board evaluation semantics are explicitly frozen). Optional,
+    # PRESENT_ONLY: a REQUIRED+availability check here would be a permanent
+    # no-op given the hardcoded flag, so marking it optional is the honest
+    # reflection of what this source can actually tell the freshness guard.
+    SourceFreshnessContract("short_alpha_discriminator", required=False, mode="PRESENT_ONLY"),
 )
+_KNOWN_SOURCE_KEYS = frozenset(c.source_key for c in _SOURCE_FRESHNESS_CONTRACTS)
 
 
 def evaluate_source_freshness_contracts(board: Dict[str, Any], through_day: str) -> List[str]:
-    """Return blocking findings for `board` against _SOURCE_FRESHNESS_CONTRACTS;
-    empty means clear to proceed. See each contract's own mode docstring
-    above for what "clear" means per source.
+    """Return blocking findings for `board`; empty means clear to proceed.
+
+    Two independent kinds of finding:
+      1. UNKNOWN source: a key in board["sources"] with no registered
+         contract. Fails closed -- see this module's own docstring for why
+         "no contract" must never be silently treated as "optional".
+      2. A registered contract violated: required-and-missing, or dated-
+         and-stale (see SourceFreshnessContract.mode).
     """
     findings: List[str] = []
     sources = board.get("sources") or {}
+
+    for name in sources:
+        if name not in _KNOWN_SOURCE_KEYS:
+            findings.append(f"{name}: UNKNOWN_SOURCE (no registered freshness contract -- fail closed)")
+
     for contract in _SOURCE_FRESHNESS_CONTRACTS:
         info = sources.get(contract.source_key)
         available = isinstance(info, dict) and bool(info.get("available")) and not info.get("error")
         if not available:
-            error = info.get("error") if isinstance(info, dict) else None
-            detail = f" ({error})" if error else ""
-            findings.append(
-                f"{contract.source_key}: MISSING_ARTIFACT{detail} (required, mode={contract.mode})"
-            )
+            if contract.required:
+                error = info.get("error") if isinstance(info, dict) else None
+                detail = f" ({error})" if error else ""
+                findings.append(
+                    f"{contract.source_key}: MISSING_ARTIFACT{detail} (required, mode={contract.mode})"
+                )
             continue
         if contract.mode == "UPDATED_THROUGH_TARGET_DAY":
             source_day = info.get("through_day")
@@ -148,18 +255,30 @@ def evaluate_source_freshness_contracts(board: Dict[str, Any], through_day: str)
     return findings
 
 
-# --- Atomic, single-capture canonical persistence (H1 + M1) -----------------
+# --- Atomic writes -----------------------------------------------------------
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
     """Write `content` to `path` atomically: temp file in the same
     directory, fsync, then os.replace() -- atomic on both POSIX and NTFS
     for a same-volume rename, so a crash/interruption mid-write can never
-    leave a half-written canonical file in place."""
+    leave a half-written file in place.
+
+    `newline=""` is required, not cosmetic: without it, Python's text-mode
+    write translates every "\\n" in `content` to "\\r\\n" on Windows, so the
+    bytes actually written to disk would differ from `content.encode(
+    "utf-8")` -- silently breaking every sha256 digest this module computes
+    over "the same content" (write_generation()/verify_generation_manifest()
+    hash the file's bytes, not the in-memory string, specifically so a
+    digest check proves nothing was altered after writing; confirmed
+    directly: omitting newline="" made every freshly-written generation
+    fail its own immediate self-verification with board_digest_mismatch on
+    this platform).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
@@ -172,45 +291,207 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
-def persist_canonical_alpha_board(board: Dict[str, Any], *, output_dir: Path) -> Dict[str, str]:
-    """Persist the EXACT already-built `board` object to the dated
-    `output_dir` -- never rebuilds it. The only function permitted to write
-    reports/evaluation/alpha_research_board/<day>/alpha_research_board.*.
+def _sha256_text(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-    Deliberately writes only the identity-critical board file itself
-    (json + markdown), not the supplementary sensitivity/remaining-review/
-    runtime-validation/short-alpha diagnostic companions -- those are
-    separate derived reports, not part of "the Board UEF-7 evaluated", and
-    including them here would reintroduce a second, independently-rebuilt
-    surface with its own single-capture question. Callers that want those
-    diagnostics for a given day can still call their own builders directly
-    against a non-canonical output location.
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+# --- Generation write + completion manifest (single-capture, atomic) -------
+
+
+def write_generation(
+    board: Dict[str, Any],
+    *,
+    day_dir: Path,
+    authority_id: str,
+    uef7_run_id: str,
+    uef7_output_path: Path,
+    uef8_run_id: str,
+    uef8_output_path: Path,
+    uef9_run_id: str,
+    uef9_output_path: Path,
+    uef9_authority_status: str,
+) -> Path:
+    """Write ONE generation for a day: the exact captured `board` plus a
+    COMPLETE manifest binding it to the exact UEF-7/8/9 outputs already
+    written to their own canonical paths. Never rebuilds the board. The
+    manifest is written LAST, after every other file in the generation
+    already exists and every digest has been computed from the actual
+    bytes on disk -- so a crash/interruption before this point leaves an
+    incomplete generation directory with no COMPLETE.json, which
+    current.json/latest.json never point at and nothing treats as
+    authoritative. Returns the manifest's own path.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    json_content = json.dumps(board, ensure_ascii=False, indent=2)
-    markdown_content = render_alpha_research_board(board)
-    json_path = output_dir / "alpha_research_board.json"
-    markdown_path = output_dir / "alpha_research_board.md"
-    _atomic_write_text(json_path, json_content)
-    _atomic_write_text(markdown_path, markdown_content)
-    return {"json_path": str(json_path), "markdown_path": str(markdown_path)}
+    generation_dir = day_dir / "generations" / authority_id
+    generation_dir.mkdir(parents=True, exist_ok=True)
+
+    board_json_content = json.dumps(board, ensure_ascii=False, indent=2)
+    board_markdown_content = render_alpha_research_board(board)
+    board_json_path = generation_dir / "alpha_research_board.json"
+    board_markdown_path = generation_dir / "alpha_research_board.md"
+    _atomic_write_text(board_json_path, board_json_content)
+    _atomic_write_text(board_markdown_path, board_markdown_content)
+
+    manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "status": "COMPLETE",
+        "target_day": board.get("through_day"),
+        "authority_id": authority_id,
+        "board_digest": _sha256_text(board_json_content),
+        "board_path": str(board_json_path),
+        "uef7_run_id": uef7_run_id,
+        "uef7_digest": _sha256_file(uef7_output_path),
+        "uef7_path": str(uef7_output_path),
+        "uef8_run_id": uef8_run_id,
+        "uef8_digest": _sha256_file(uef8_output_path),
+        "uef8_path": str(uef8_output_path),
+        "uef9_run_id": uef9_run_id,
+        "uef9_digest": _sha256_file(uef9_output_path),
+        "uef9_path": str(uef9_output_path),
+        "uef9_authority_status": uef9_authority_status,
+        "generated_at": time.time(),  # informational only -- never part of authority_id or any digest
+    }
+    manifest_path = generation_dir / "COMPLETE.json"
+    _atomic_write_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+    return manifest_path
 
 
-def advance_latest_pointer(board: Dict[str, Any], *, latest_dir: Path) -> Dict[str, str]:
-    """Advance latest.json/.md to the EXACT `board` already persisted by
-    persist_canonical_alpha_board(). Callers must only invoke this AFTER
-    the dated bundle above has been fully written AND UEF-9 has returned
-    authority_status=VALID for that exact board -- this function itself
-    performs no such check, ordering is the orchestrator's responsibility.
-    """
-    latest_dir.mkdir(parents=True, exist_ok=True)
-    json_content = json.dumps(board, ensure_ascii=False, indent=2)
-    markdown_content = render_alpha_research_board(board)
+def verify_generation_manifest(manifest_path: Path) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    """The one validator for a generation's COMPLETE.json: checks the
+    manifest exists and is COMPLETE, every referenced artifact still
+    exists, every digest still matches the bytes on disk, and
+    uef9_authority_status is VALID. Only a manifest that passes this may
+    ever be selected by current.json / latest.json."""
+    if not manifest_path.is_file():
+        return False, "manifest_missing", None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"manifest_unreadable:{type(exc).__name__}", None
+
+    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        return False, "manifest_schema_mismatch", manifest
+    if manifest.get("status") != "COMPLETE":
+        return False, f"manifest_status={manifest.get('status')!r}", manifest
+    if manifest.get("uef9_authority_status") != "VALID":
+        return False, f"uef9_authority_status={manifest.get('uef9_authority_status')!r}", manifest
+
+    for prefix in ("board", "uef7", "uef8", "uef9"):
+        artifact_path = Path(str(manifest.get(f"{prefix}_path") or ""))
+        expected_digest = manifest.get(f"{prefix}_digest")
+        if not artifact_path.is_file():
+            return False, f"{prefix}_artifact_missing:{artifact_path}", manifest
+        try:
+            actual_digest = _sha256_file(artifact_path)
+        except OSError as exc:
+            return False, f"{prefix}_artifact_unreadable:{type(exc).__name__}", manifest
+        if actual_digest != expected_digest:
+            return False, f"{prefix}_digest_mismatch", manifest
+
+    return True, "ok", manifest
+
+
+def advance_current_pointer(day_dir: Path, *, day: str, authority_id: str, manifest_path: Path) -> Path:
+    """Atomically point <day>/current.json at a generation that has ALREADY
+    been written and verified by the caller. Also refreshes the legacy-
+    compatibility view (<day>/alpha_research_board.json/.md, copied from
+    the now-current generation) -- explicitly non-authoritative, human/
+    report navigation only; see this module's own docstring."""
+    generation_dir = manifest_path.parent
+    pointer = {
+        "schema_version": CURRENT_POINTER_SCHEMA_VERSION,
+        "day": day,
+        "authority_id": authority_id,
+        "generation_dir": str(generation_dir),
+        "manifest_path": str(manifest_path),
+    }
+    current_path = day_dir / "current.json"
+    _atomic_write_text(current_path, json.dumps(pointer, ensure_ascii=False, indent=2))
+
+    board_json_content = (generation_dir / "alpha_research_board.json").read_text(encoding="utf-8")
+    board_markdown_content = (generation_dir / "alpha_research_board.md").read_text(encoding="utf-8")
+    _atomic_write_text(day_dir / "alpha_research_board.json", board_json_content)
+    _atomic_write_text(day_dir / "alpha_research_board.md", board_markdown_content)
+    return current_path
+
+
+def advance_latest_pointer(*, latest_dir: Path, day: str, authority_id: str, manifest_path: Path) -> Path:
+    """Atomically advance the GLOBAL machine-authority pointer, latest.json,
+    to point at a generation that has already been written, verified, and
+    made current for its own day. This is the sole machine authority this
+    module (or anything else) ever publishes -- see this module's own
+    docstring. Must only be called after advance_current_pointer() for the
+    same generation has already succeeded."""
+    generation_dir = manifest_path.parent
+    pointer = {
+        "schema_version": LATEST_POINTER_SCHEMA_VERSION,
+        "day": day,
+        "authority_id": authority_id,
+        "generation_dir": str(generation_dir),
+        "manifest_path": str(manifest_path),
+    }
     latest_json_path = latest_dir / "latest.json"
-    latest_markdown_path = latest_dir / "latest.md"
-    _atomic_write_text(latest_json_path, json_content)
-    _atomic_write_text(latest_markdown_path, markdown_content)
-    return {"latest_json_path": str(latest_json_path), "latest_markdown_path": str(latest_markdown_path)}
+    _atomic_write_text(latest_json_path, json.dumps(pointer, ensure_ascii=False, indent=2))
+    return latest_json_path
+
+
+def write_latest_presentation(*, latest_dir: Path, board: Dict[str, Any]) -> Optional[Path]:
+    """Regenerate latest.md, the PRESENTATION-ONLY derived view -- never
+    machine authority (that is latest.json alone, advanced separately by
+    advance_latest_pointer() above, already committed by the time this is
+    called). If this write fails, machine authority remains completely
+    valid; only human-readable presentation freshness degrades. Callers
+    must therefore treat a failure here as non-fatal to the overall
+    publication -- this function itself swallows the exception and returns
+    None rather than raising, so a caller cannot accidentally let a
+    presentation-only failure look like an authority failure."""
+    try:
+        markdown_content = render_alpha_research_board(board)
+        latest_markdown_path = latest_dir / "latest.md"
+        _atomic_write_text(latest_markdown_path, markdown_content)
+        return latest_markdown_path
+    except Exception:  # noqa: BLE001 - presentation-only, must never fail the caller
+        return None
+
+
+def resolve_canonical_alpha_board(
+    repo_root: Path, *, day: Optional[str] = None
+) -> Tuple[bool, Optional[Dict[str, Any]], Optional[Dict[str, Any]], str]:
+    """The one reader authoritative daily-EOD consumers should use: resolves
+    the current machine-authority Board (global latest.json if `day` is
+    None, otherwise that day's own current.json), verifies its manifest,
+    and returns (ok, board, manifest, reason). `ok=False` on any
+    verification failure -- callers must never fall back to reading a
+    generation's files directly without going through this."""
+    reports_root = Path(repo_root) / "reports"
+    board_root = reports_root / "evaluation" / "alpha_research_board"
+    if day:
+        pointer_path = board_root / str(day)[:10] / "current.json"
+    else:
+        pointer_path = board_root / "latest.json"
+
+    if not pointer_path.is_file():
+        return False, None, None, "pointer_missing"
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, None, None, f"pointer_unreadable:{type(exc).__name__}"
+
+    manifest_path = Path(str(pointer.get("manifest_path") or ""))
+    ok, reason, manifest = verify_generation_manifest(manifest_path)
+    if not ok or manifest is None:
+        return False, None, manifest, reason
+
+    board_path = Path(str(manifest.get("board_path") or ""))
+    try:
+        board = json.loads(board_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, None, manifest, f"board_unreadable:{type(exc).__name__}"
+
+    return True, board, manifest, "ok"
 
 
 # --- Result / orchestrator ---------------------------------------------------
@@ -226,7 +507,11 @@ class DailyUefEvaluationResult:
     reason: str = ""
     freshness_findings: List[str] = field(default_factory=list)
     board_candidate_count: Optional[int] = None
-    board_path: Optional[str] = None
+    authority_id: Optional[str] = None
+    manifest_path: Optional[str] = None
+    current_pointer_path: Optional[str] = None
+    latest_pointer_path: Optional[str] = None
+    latest_presentation_path: Optional[str] = None
     uef7_run_id: Optional[str] = None
     uef8_run_id: Optional[str] = None
     uef9_run_id: Optional[str] = None
@@ -247,7 +532,11 @@ class DailyUefEvaluationResult:
             "reason": self.reason,
             "freshness_findings": self.freshness_findings,
             "board_candidate_count": self.board_candidate_count,
-            "board_path": self.board_path,
+            "authority_id": self.authority_id,
+            "manifest_path": self.manifest_path,
+            "current_pointer_path": self.current_pointer_path,
+            "latest_pointer_path": self.latest_pointer_path,
+            "latest_presentation_path": self.latest_presentation_path,
             "uef7_run_id": self.uef7_run_id,
             "uef8_run_id": self.uef8_run_id,
             "uef9_run_id": self.uef9_run_id,
@@ -266,46 +555,37 @@ def run_daily_uef_evaluation(
     through_day: str,
     canonical: bool = True,
 ) -> DailyUefEvaluationResult:
-    """The one scheduler-agnostic daily post-market evaluation entry point.
+    """The one scheduler-agnostic daily post-market evaluation entry point,
+    and the sole implementation permitted to publish canonical Alpha Board
+    authority anywhere in this repository (see this module's own
+    docstring for the full authority model).
 
     `canonical=True` (the only mode a scheduler may use): the freshness
-    contracts are always enforced, and reports/evaluation/
-    alpha_research_board/<day>/ + latest.json/.md are only ever written
-    once the full chain succeeds with authority_status=VALID -- using the
-    single board object captured at the start of this call, never rebuilt.
+    contracts (including the unknown-source fail-closed rule) are always
+    enforced, and a new generation/manifest/pointer advance only ever
+    happens once the full chain succeeds with authority_status=VALID --
+    using the single board object captured at the start of this call,
+    never rebuilt.
 
     `canonical=False` (diagnostic only): freshness contracts are NOT
     enforced, so a stale or incomplete source set can still be inspected
     end to end -- but this mode can NEVER write any canonical file,
-    regardless of outcome. This is a hard structural guarantee, not a
-    convention: the persistence branch below is only ever reached when
-    `canonical` is True, so there is no code path by which a diagnostic
-    run's success can advance real canonical state.
+    regardless of outcome. This is a hard structural guarantee: the
+    publication branch below is only ever reached when `canonical` is
+    True, so there is no code path by which a diagnostic run's success can
+    advance real canonical state.
 
-    Fail-closed, in this exact order:
-      1. Build the Alpha Board in-memory EXACTLY ONCE (read-only; nothing
-         persisted yet).
-      2. In canonical mode: evaluate_source_freshness_contracts() -- a
-         blocking finding rejects here, before any UEF stage runs and
-         before any file is written.
-      3. UEF-7 normalizes that EXACT in-memory board object.
-      4. UEF-8 runs against that EXACT UEF-7 result object.
-      5. UEF-9 verifies that EXACT UEF-7 + UEF-8 pair. authority_status
-         must be VALID.
-      6. Only in canonical mode, and only once every stage above has
-         succeeded: UEF-7/8/9 outputs are persisted to their own
-         canonical, content-keyed (idempotent) paths, then
-         persist_canonical_alpha_board() writes the dated bundle from the
-         SAME board object captured in step 1, and only then does
-         advance_latest_pointer() move latest.json/.md. A failure at any
-         earlier stage, or diagnostic mode, leaves every canonical file
-         completely untouched.
-
-    Re-running with the same through_day against unchanged on-disk source
-    state is idempotent: every UEF run_id is a deterministic digest of its
-    own semantic input, so a repeat run reproduces the exact same run_ids
-    and overwrites the exact same output paths with the exact same
-    content. Nothing in this path calls anything outside libs.reporting.*.
+    Fail-closed, in this exact order: build the board once -> freshness
+    contracts (canonical mode only) -> UEF-7 -> UEF-8 -> UEF-9
+    (authority_status must be VALID) -> [canonical mode only] persist
+    UEF-7/8/9 outputs -> write_generation() (single capture, COMPLETE
+    manifest written last) -> verify_generation_manifest() on what was
+    just written (a second, independent check before anything is allowed
+    to point at it) -> advance_current_pointer() -> advance_latest_pointer()
+    -> write_latest_presentation() (best-effort, non-fatal). A failure at
+    any stage before the final pointer advances leaves every existing
+    current.json/latest.json completely untouched -- the prior valid
+    generation (if any) remains authoritative.
     """
 
     through_day = str(through_day)[:10]
@@ -332,9 +612,9 @@ def run_daily_uef_evaluation(
         if findings:
             return DailyUefEvaluationResult(
                 ok=False, through_day=through_day, canonical=canonical, stage_failed="freshness_guard",
-                reason="one or more contractually-daily sources are not dated for the requested day -- "
-                       "refusing to materialize a canonical board that would silently mix a fresh "
-                       "through_day label with stale content",
+                reason="one or more sources failed their registered freshness contract, or are unknown "
+                       "(no registered contract) -- refusing to materialize a canonical board that would "
+                       "silently mix a fresh through_day label with stale or unreviewed content",
                 freshness_findings=findings,
                 board_candidate_count=int(board.get("candidate_count") or 0),
             )
@@ -390,28 +670,64 @@ def run_daily_uef_evaluation(
 
     if not canonical:
         # Diagnostic mode: the chain succeeded and is safe to inspect, but
-        # NOTHING is written -- not the dated board, not latest.json/.md,
-        # not even the UEF-7/8/9 run directories, since those are keyed by
-        # a run_id derived in part from this exact board and would
+        # NOTHING is written -- not a generation, not current.json, not
+        # latest.json/.md, not even the UEF-7/8/9 run directories (keyed by
+        # a run_id derived in part from this exact board, which would
         # otherwise leave canonical-looking evidence on disk from a run
-        # that explicitly bypassed the freshness contract.
+        # that explicitly bypassed the freshness contract).
         return DailyUefEvaluationResult(published=False, **base_result)
 
     uef7_dir = write_uef7_normalization_outputs(uef7, repo_root=repo_root)
     uef8_dir = write_uef8_fair_comparison_outputs(uef8, repo_root=repo_root)
     uef9_dir = write_formal_evaluation_authority(uef9, repo_root=repo_root)
 
-    board_output_dir = reports_root / "evaluation" / "alpha_research_board" / through_day
-    latest_dir = reports_root / "evaluation" / "alpha_research_board"
-    board_write = persist_canonical_alpha_board(board, output_dir=board_output_dir)
-    advance_latest_pointer(board, latest_dir=latest_dir)
+    day_dir = reports_root / "evaluation" / "alpha_research_board" / through_day
+    board_root = reports_root / "evaluation" / "alpha_research_board"
+    authority_id = uef9.uef9_run_id
+
+    manifest_path = write_generation(
+        board,
+        day_dir=day_dir,
+        authority_id=authority_id,
+        uef7_run_id=uef7.uef7_run_id,
+        uef7_output_path=uef7_dir / "normalized_alpha_board.json",
+        uef8_run_id=uef8.uef8_run_id,
+        uef8_output_path=uef8_dir / "fair_comparison_summary.json",
+        uef9_run_id=uef9.uef9_run_id,
+        uef9_output_path=uef9_dir / "formal_evaluation_authority.json",
+        uef9_authority_status=uef9.authority_status,
+    )
+
+    verified, verify_reason, _manifest = verify_generation_manifest(manifest_path)
+    if not verified:
+        # Self-check before anything is allowed to point at this
+        # generation -- if this ever trips, current.json/latest.json are
+        # left completely untouched, exactly like any other failed stage.
+        return DailyUefEvaluationResult(
+            ok=False, through_day=through_day, canonical=canonical, stage_failed="manifest_verification",
+            reason=f"newly-written generation failed self-verification: {verify_reason}",
+            uef7_run_id=uef7.uef7_run_id, uef8_run_id=uef8.uef8_run_id, uef9_run_id=uef9.uef9_run_id,
+            authority_status=uef9.authority_status, freshness_findings=findings,
+        )
+
+    current_path = advance_current_pointer(
+        day_dir, day=through_day, authority_id=authority_id, manifest_path=manifest_path
+    )
+    latest_path = advance_latest_pointer(
+        latest_dir=board_root, day=through_day, authority_id=authority_id, manifest_path=manifest_path
+    )
+    presentation_path = write_latest_presentation(latest_dir=board_root, board=board)
 
     return DailyUefEvaluationResult(
         published=True,
-        board_path=board_write.get("json_path"),
+        authority_id=authority_id,
+        manifest_path=str(manifest_path),
+        current_pointer_path=str(current_path),
+        latest_pointer_path=str(latest_path),
+        latest_presentation_path=str(presentation_path) if presentation_path else None,
         output_dirs={
             "uef7": str(uef7_dir), "uef8": str(uef8_dir), "uef9": str(uef9_dir),
-            "board": str(board_output_dir),
+            "generation": str(manifest_path.parent),
         },
         **base_result,
     )
@@ -420,8 +736,12 @@ def run_daily_uef_evaluation(
 __all__ = [
     "DailyUefEvaluationResult",
     "SourceFreshnessContract",
+    "advance_current_pointer",
     "advance_latest_pointer",
     "evaluate_source_freshness_contracts",
-    "persist_canonical_alpha_board",
+    "resolve_canonical_alpha_board",
+    "verify_generation_manifest",
+    "write_generation",
+    "write_latest_presentation",
     "run_daily_uef_evaluation",
 ]
