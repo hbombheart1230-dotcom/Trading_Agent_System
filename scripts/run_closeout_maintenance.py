@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.reporting.closeout_maintenance import (
-    run_closeout_maintenance,
+    run_closeout_maintenance_with_lock,
     write_closeout_maintenance_report,
 )
 from libs.reporting.scheduled_intelligence import materialize_closeout_intelligence
@@ -76,7 +76,16 @@ def main() -> int:
     _log_lifecycle(run_id=run_id, day=day, event="process_start", detail={"trigger": trigger})
     try:
         _log_lifecycle(run_id=run_id, day=day, event="closeout_start", detail={"trigger": trigger})
-        payload = run_closeout_maintenance(
+        # 2026-09-30 closeout single-owner safety fix: this entrypoint and
+        # the tick-loop trigger (libs/runtime/market_status_closeout.py)
+        # both used to call run_closeout_maintenance() directly, with no
+        # coordination -- nothing prevented both from executing
+        # concurrently. run_closeout_maintenance_with_lock() wraps the
+        # exact same call with a PID-based single-owner lock (reusing
+        # libs/runtime/live_loop_lock.py, already proven for the m13 live
+        # loop's own single-instance guard); see its own docstring for the
+        # full design.
+        payload = run_closeout_maintenance_with_lock(
             day=day,
             reports_root=reports_root,
             event_log_path=Path(str(args.event_log_path)),
@@ -86,24 +95,36 @@ def main() -> int:
             collect_account_snapshot=not bool(args.skip_account_snapshot),
             run_id=run_id,
         )
-        _log_lifecycle(run_id=run_id, day=day, event="closeout_end", detail={"ok": bool(payload.get("ok"))})
+        _log_lifecycle(
+            run_id=run_id, day=day, event="closeout_end",
+            detail={"ok": bool(payload.get("ok")), "skipped": bool(payload.get("skipped"))},
+        )
 
-        _log_lifecycle(run_id=run_id, day=day, event="report_write_start")
-        paths = write_closeout_maintenance_report(payload, reports_root=reports_root)
-        payload["report_paths"] = dict(paths)
-        _log_lifecycle(run_id=run_id, day=day, event="report_write_end", detail={"paths": dict(paths)})
+        if payload.get("skipped"):
+            # Another owner (the tick-loop trigger, or a still-active prior
+            # fallback run) is genuinely running this same closeout right
+            # now -- do not write a report or run scheduled intelligence
+            # here, to avoid a race against whatever the real owner is
+            # about to write. This is a clean, expected skip, not a
+            # failure.
+            paths: dict = {}
+        else:
+            _log_lifecycle(run_id=run_id, day=day, event="report_write_start")
+            paths = write_closeout_maintenance_report(payload, reports_root=reports_root)
+            payload["report_paths"] = dict(paths)
+            _log_lifecycle(run_id=run_id, day=day, event="report_write_end", detail={"paths": dict(paths)})
 
-        _log_lifecycle(run_id=run_id, day=day, event="scheduled_intelligence_start")
-        try:
-            payload["scheduled_intelligence"] = materialize_closeout_intelligence(
-                day=day,
-                closeout_payload=payload,
-                closeout_paths=paths,
-                reports_root=reports_root,
-            )
-        except Exception as exc:
-            payload["scheduled_intelligence"] = {"status": "FAILED", "error": str(exc)}
-        _log_lifecycle(run_id=run_id, day=day, event="scheduled_intelligence_end")
+            _log_lifecycle(run_id=run_id, day=day, event="scheduled_intelligence_start")
+            try:
+                payload["scheduled_intelligence"] = materialize_closeout_intelligence(
+                    day=day,
+                    closeout_payload=payload,
+                    closeout_paths=paths,
+                    reports_root=reports_root,
+                )
+            except Exception as exc:
+                payload["scheduled_intelligence"] = {"status": "FAILED", "error": str(exc)}
+            _log_lifecycle(run_id=run_id, day=day, event="scheduled_intelligence_end")
     except Exception as exc:
         _log_lifecycle(
             run_id=run_id, day=day, event="process_exception", level="error",
@@ -118,13 +139,20 @@ def main() -> int:
 
     if bool(args.json):
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif payload.get("skipped"):
+        print(f"skipped=True skip_reason={payload.get('skip_reason')}")
     else:
         print(f"ok={bool(payload.get('ok'))} report_json={paths.get('report_json_path')} report_md={paths.get('report_md_path')}")
         for name, step in (payload.get("steps") or {}).items():
             if isinstance(step, dict):
                 print(f"{name}={'ok' if step.get('ok') else 'failed'}")
-    exit_code = 0 if bool(payload.get("ok")) else 1
-    _log_lifecycle(run_id=run_id, day=day, event="process_exit", detail={"exit_code": exit_code, "reason": "completed"})
+    # A skipped run (ownership not acquired -- ALREADY_RUNNING) is a clean,
+    # expected outcome of the single-owner guard, not a failure.
+    exit_code = 0 if (bool(payload.get("ok")) or bool(payload.get("skipped"))) else 1
+    _log_lifecycle(
+        run_id=run_id, day=day, event="process_exit",
+        detail={"exit_code": exit_code, "reason": "skipped" if payload.get("skipped") else "completed"},
+    )
     return exit_code
 
 

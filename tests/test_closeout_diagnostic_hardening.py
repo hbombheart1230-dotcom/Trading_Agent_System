@@ -176,7 +176,7 @@ def test_fallback_entrypoint_main_logs_process_exception_and_reraises(tmp_path, 
     def _boom(**_kwargs):
         raise RuntimeError("simulated fallback failure")
 
-    monkeypatch.setattr(mod, "run_closeout_maintenance", _boom)
+    monkeypatch.setattr(mod, "run_closeout_maintenance_with_lock", _boom)
 
     with pytest.raises(RuntimeError, match="simulated fallback failure"):
         mod.main()

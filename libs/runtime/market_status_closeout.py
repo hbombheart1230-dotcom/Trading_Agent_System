@@ -105,11 +105,29 @@ def apply_market_status_closeout_events(state: Dict[str, Any]) -> Dict[str, Any]
             trigger = f"kiwoom_market_status_{code}"
             try:
                 from libs.reporting.closeout_maintenance import (
-                    run_closeout_maintenance,
+                    run_closeout_maintenance_with_lock,
                     write_closeout_maintenance_report,
                 )
 
-                result = run_closeout_maintenance(day=day, trigger=trigger, run_id=f"tick-{day}-{action_key}")
+                # 2026-09-30 closeout single-owner safety fix: this trigger and
+                # the scheduled fallback (scripts/run_closeout_maintenance.py)
+                # both used to call run_closeout_maintenance() directly, with
+                # no coordination -- nothing prevented both from executing
+                # concurrently. run_closeout_maintenance_with_lock() wraps the
+                # exact same call with a PID-based single-owner lock (reusing
+                # libs/runtime/live_loop_lock.py, already proven for the m13
+                # live loop's own single-instance guard); see its own
+                # docstring for the full design.
+                result = run_closeout_maintenance_with_lock(
+                    day=day, trigger=trigger, run_id=f"tick-{day}-{action_key}"
+                )
+                if result.get("skipped"):
+                    # Another owner (the scheduled fallback, or a still-active
+                    # prior tick) is genuinely running this same closeout right
+                    # now -- do not write a report at all here, to avoid a
+                    # race against whatever the real owner is about to write.
+                    processed.add(event_id)
+                    continue
                 reports_root = isolate_canonical_path_for_pytest(
                     "reports", canonical_path="reports", isolated_name="reports"
                 )

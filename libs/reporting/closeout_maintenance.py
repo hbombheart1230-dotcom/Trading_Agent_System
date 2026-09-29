@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict
 
 from libs.agent.reporter import Reporter
 from libs.performance.strategy_memory import sync_strategy_memory_artifacts
 from libs.read.kiwoom_account_snapshot_collector import save_kiwoom_account_snapshot
+from libs.runtime.live_loop_lock import acquire_live_loop_lock, release_live_loop_lock
 from libs.reporting.broker_closed_trade_reconciler import reconcile_broker_closed_trade_reports
 from libs.reporting.carryover_exit_reconciler import reconcile_carryover_exit_reports
 from libs.reporting.closeout_residual_positions import reconcile_closeout_residual_positions
@@ -477,6 +479,127 @@ def run_closeout_maintenance(
         },
     )
     return out
+
+
+# --- Single-owner execution guard (2026-09-30 closeout safety fix) ---------
+#
+# Confirmed defect: both trigger paths -- the tick-loop's own
+# libs/runtime/market_status_closeout.py::apply_market_status_closeout_events
+# and the scheduled-fallback CLI (scripts/run_closeout_maintenance.py) --
+# call run_closeout_maintenance() directly, with no coordination between
+# them. Nothing prevents both from executing concurrently and writing the
+# same dated report/artifact paths at the same time.
+#
+# Reuses this repository's EXISTING PID-based lock primitive
+# (libs/runtime/live_loop_lock.py -- already used, tested, and proven for
+# the m13 live loop's own single-instance guard) rather than inventing a
+# second, unrelated locking mechanism. That primitive already provides
+# everything this guard needs for free: a live owner's lock is respected
+# (lock_active -- reject), a DEAD owner's lock is detected via a real
+# Windows/POSIX process-existence check and reclaimed automatically
+# (avoids a permanent lock after a crash), and a lock held past
+# _CLOSEOUT_LOCK_STALE_SEC is also reclaimed even if its PID happens to
+# still exist (a hard ceiling against a hung-forever owner). The lock file
+# is released in a `finally` block, so both a normal completion and any
+# exception free it -- a later, separate, explicit invocation is never
+# permanently blocked by an earlier failed attempt.
+_DEFAULT_CLOSEOUT_LOCK_PATH = Path("data/state/closeout_maintenance.lock")
+# The one confirmed real closeout duration on record that exceeded the
+# normal few-seconds-to-low-minutes range was the 2026-09-28 anomaly
+# (~10m37s, itself still unexplained -- see the 2026-09-30 closeout
+# diagnostic hardening patch note). 30 minutes gives a wide safety margin
+# above that observed worst case before a held lock is ever treated as
+# stale, while still guaranteeing recovery from a genuinely hung/crashed
+# owner rather than a permanent lock. This is the lock's own staleness
+# window, not a retry/timeout policy for the underlying closeout defects
+# themselves -- no automatic retry is performed anywhere in this guard.
+_DEFAULT_CLOSEOUT_LOCK_STALE_SEC = 1800
+
+
+def run_closeout_maintenance_with_lock(
+    *,
+    day: str,
+    reports_root: Path = Path("reports"),
+    event_log_path: Path = Path("data/logs/events.jsonl"),
+    post_exit_report_dir: Path = Path("reports/dev/analysis/post_exit_shadow_recap"),
+    state_path: Path | None = None,
+    trigger: str = "closeout_maintenance",
+    collect_account_snapshot: bool = True,
+    run_id: str = "",
+    lock_path: Path | None = None,
+    lock_stale_sec: int | None = None,
+) -> Dict[str, Any]:
+    """Single-owner-guarded entry point for run_closeout_maintenance().
+
+    This is the function BOTH trigger paths must call (never
+    run_closeout_maintenance() directly) -- see the module-level comment
+    above for why. run_closeout_maintenance() itself is completely
+    unmodified; this only adds an ownership acquire/release boundary
+    around the exact same call, so its own extensively-exercised internal
+    step logic carries zero additional risk from this change.
+
+    If ownership cannot be acquired (another owner is genuinely still
+    active), returns a safe, clearly-marked ALREADY_RUNNING result
+    WITHOUT ever calling run_closeout_maintenance() -- so a concurrent
+    trigger can never execute twice, and never leaves a partial/competing
+    write behind.
+    """
+    normalized_day = str(day or "").strip()[:10]
+    resolved_run_id = str(run_id or "").strip() or f"closeout-{normalized_day}-{trigger}"
+    resolved_lock_path = Path(lock_path) if lock_path is not None else _DEFAULT_CLOSEOUT_LOCK_PATH
+    resolved_stale_sec = int(lock_stale_sec) if lock_stale_sec is not None else _DEFAULT_CLOSEOUT_LOCK_STALE_SEC
+
+    acquired, reason = acquire_live_loop_lock(resolved_lock_path, lock_stale_sec=resolved_stale_sec)
+    if not acquired:
+        skip_reason = "ALREADY_RUNNING" if reason == "lock_active" else f"OWNERSHIP_NOT_ACQUIRED:{reason}"
+        active_owner_pid = None
+        try:
+            active_owner_pid = json.loads(resolved_lock_path.read_text(encoding="utf-8")).get("pid")
+        except Exception:
+            pass
+        log_closeout_stage(
+            run_id=resolved_run_id, day=normalized_day, stage="closeout_ownership", phase="reject",
+            detail={
+                "trigger": trigger,
+                "reason": reason,
+                "skip_reason": skip_reason,
+                "lock_path": str(resolved_lock_path),
+                "requesting_pid": os.getpid(),
+                "active_owner_pid": active_owner_pid,
+            },
+        )
+        return {
+            "schema_version": "closeout_maintenance.v1",
+            "day": normalized_day,
+            "trigger": str(trigger or "closeout_maintenance"),
+            "ok": False,
+            "skipped": True,
+            "skip_reason": skip_reason,
+            "steps": {},
+        }
+
+    owner_pid = os.getpid()
+    log_closeout_stage(
+        run_id=resolved_run_id, day=normalized_day, stage="closeout_ownership", phase="acquire",
+        detail={"trigger": trigger, "lock_path": str(resolved_lock_path), "owner_pid": owner_pid},
+    )
+    try:
+        return run_closeout_maintenance(
+            day=day,
+            reports_root=reports_root,
+            event_log_path=event_log_path,
+            post_exit_report_dir=post_exit_report_dir,
+            state_path=state_path,
+            trigger=trigger,
+            collect_account_snapshot=collect_account_snapshot,
+            run_id=resolved_run_id,
+        )
+    finally:
+        release_live_loop_lock(resolved_lock_path)
+        log_closeout_stage(
+            run_id=resolved_run_id, day=normalized_day, stage="closeout_ownership", phase="release",
+            detail={"trigger": trigger, "lock_path": str(resolved_lock_path), "owner_pid": owner_pid},
+        )
 
 
 def write_closeout_maintenance_report(payload: Dict[str, Any], *, reports_root: Path = Path("reports")) -> Dict[str, str]:
