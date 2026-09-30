@@ -1571,3 +1571,19 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - This only affects the moment ownership is released, not how ownership is claimed or transferred, which were already verified correct.
 - Verified with a new targeted automated test for this exact situation, plus the full existing test suite with no new regressions.
 - See `docs/daily_patch/2026-09-30_closeout_strict_release_identity_fix2.md`.
+
+# 2026-09-30 - P1.3 Docker Operational Acceptance (In Progress)
+
+- Began formal validation of running this system inside Docker, built from an exact, verified, unmodified snapshot of the code (not today's in-progress work). Initial checks all passed. This does not change which environment is used for real trading, and does not yet close this validation effort -- a full trading-day observation is still pending.
+- Confirmed the Docker image was built from an exact, unmodified snapshot of the code, verified file-by-file, so the results below reflect that snapshot and not any of today's in-progress work.
+- Confirmed the currently-running live trading process on this machine was left completely untouched throughout -- all Docker testing used a separate, isolated copy of the data, with real order placement turned off.
+- The container started up, reported itself healthy within seconds, and correctly took ownership of its own isolated session.
+- Confirmed a second container instance correctly refuses to run at the same time as the first, preventing any risk of double execution.
+- Confirmed the container's saved data survives being fully recreated, with no data loss.
+- Confirmed the system correctly refuses to consider itself ready to trade until its own safety checks are satisfied, rather than assuming it is ready by default.
+- Simulated a hard crash and confirmed the container correctly waits out a safety window before taking over again, logging the handover clearly rather than silently overwriting it.
+- Confirmed a normal stop signal is handled cleanly and quickly, with ownership properly released every time.
+- Measured actual memory cost: the container itself used a small, stable amount of memory. The Docker system as a whole also has its own separate overhead beyond just the container, which was measured and recorded honestly rather than compared only at the container level.
+- Two things were deliberately not done yet: testing the real paper-broker connection (skipped for today specifically because the live trading process was actively using the real account connection at the same time) and a full trading-day observation (started today, still running, marked as pending rather than complete).
+- No decision has been made about which environment will be used going forward; that decision is intentionally separate and still open.
+- See `docs/daily_patch/2026-09-30_p1_3_docker_operational_acceptance.md`.
