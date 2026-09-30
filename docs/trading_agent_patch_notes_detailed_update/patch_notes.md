@@ -1618,3 +1618,11 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Preserved the two 2026-09-30 forensic generations without pointer, registry, or evidence mutation; read-only evaluation now reports `MULTIPLE_COMPLETE_CONFLICT`.
 - This is a narrow UEF7 correctness reopen/refreeze for deterministic contract identity only. UEF8/UEF9 and trading semantics are unchanged.
 - See `docs/daily_patch/2026-09-30_p1_2_determinism_idempotency_correction.md`.
+
+# 2026-10-01 - P1.2 2026-09-30 Deterministic Reconciliation
+
+- Rebuilt the preserved 2026-09-30 Alpha Board read-only using the deterministic tie rule. Its semantic digest uniquely selected generation B, `UEF9RUN_1c29b2de962049a6`.
+- Preserved both physical COMPLETE generations and their manifests. `current.json` and `latest.json` already selected B; the stale observation registry entry was atomically aligned to B and an audit record preserves prior bindings and selection evidence.
+- Daily UEF recognizes only this fully audited two-generation exception; otherwise multiple verified COMPLETE generations still fail closed. The normal same-day rerun returned `ALREADY_COMPLETE` with zero writes and no third generation.
+- 2026-09-30 is OBSERVED; P1.2 remains OBSERVING. The registered Daily UEF scheduler is enabled only after this reconciliation and verification.
+- See `docs/daily_patch/2026-10-01_p1_2_2026_09_30_reconciliation.md`.

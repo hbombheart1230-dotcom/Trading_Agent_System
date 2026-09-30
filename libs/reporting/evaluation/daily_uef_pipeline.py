@@ -523,6 +523,61 @@ def _verified_complete_generations(day_dir: Path) -> List[Tuple[Path, Dict[str, 
     return verified
 
 
+def _reconciled_selected_complete(
+    *,
+    day_dir: Path,
+    board_root: Path,
+    through_day: str,
+    complete_generations: List[Tuple[Path, Dict[str, Any], str]],
+) -> Optional[Tuple[Path, Dict[str, Any], str]]:
+    """Return the sole audited canonical generation among preserved duplicates.
+
+    Historical COMPLETE manifests are normally an unconditional fail-closed
+    conflict. The sole exception is a one-time reconciliation record that
+    binds exactly two verified generations, both authority pointers, and the
+    P1.2 observation registry to one selected authority. Any malformed or
+    incomplete record remains a conflict; this function never repairs state.
+    """
+    if len(complete_generations) != 2:
+        return None
+    try:
+        audit = json.loads((day_dir / "reconciliation.json").read_text(encoding="utf-8"))
+        current = json.loads((day_dir / "current.json").read_text(encoding="utf-8"))
+        latest = json.loads((board_root / "latest.json").read_text(encoding="utf-8"))
+        registry = json.loads((board_root / "p1_2_daily_observation_registry.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not all(isinstance(value, dict) for value in (audit, current, latest, registry)):
+        return None
+    if audit.get("schema_version") != "daily_uef_reconciliation.v1" or audit.get("target_day") != through_day:
+        return None
+    selected_id = str(audit.get("selected_authority_id") or "")
+    non_selected_id = str(audit.get("non_selected_authority_id") or "")
+    by_id = {
+        str(manifest.get("authority_id") or ""): (path, manifest, identity)
+        for path, manifest, identity in complete_generations
+    }
+    if len(by_id) != 2 or {selected_id, non_selected_id} != set(by_id):
+        return None
+    selected = by_id[selected_id]
+    if audit.get("fixed_board_semantic_digest") != selected[2]:
+        return None
+    selected_manifest_path = str(selected[0])
+    if any(
+        str(pointer.get("authority_id") or "") != selected_id
+        or str(pointer.get("manifest_path") or "") != selected_manifest_path
+        for pointer in (current, latest)
+    ):
+        return None
+    observations = registry.get("observations")
+    observed = observations.get(through_day) if isinstance(observations, dict) else None
+    if not isinstance(observed, dict) or str(observed.get("authority_id") or "") != selected_id:
+        return None
+    if str(observed.get("manifest_path") or "") != selected_manifest_path:
+        return None
+    return selected
+
+
 # --- Result / orchestrator ---------------------------------------------------
 
 
@@ -652,16 +707,47 @@ def run_daily_uef_evaluation(
             )
 
         day_dir = reports_root / "evaluation" / "alpha_research_board" / through_day
+        board_root = reports_root / "evaluation" / "alpha_research_board"
         board_identity = alpha_board_semantic_digest(board)
         complete_generations = _verified_complete_generations(day_dir)
         if len(complete_generations) > 1:
+            reconciled = _reconciled_selected_complete(
+                day_dir=day_dir,
+                board_root=board_root,
+                through_day=through_day,
+                complete_generations=complete_generations,
+            )
+            if reconciled is None:
+                return DailyUefEvaluationResult(
+                    ok=False, through_day=through_day, canonical=True,
+                    stage_failed="idempotency_preflight",
+                    reason="multiple verified COMPLETE generations exist for target day",
+                    idempotency_status="MULTIPLE_COMPLETE_CONFLICT",
+                    freshness_findings=findings,
+                    board_candidate_count=int(board.get("candidate_count") or 0),
+                )
+            manifest_path, manifest, existing_identity = reconciled
+            if existing_identity != board_identity:
+                return DailyUefEvaluationResult(
+                    ok=False, through_day=through_day, canonical=True,
+                    stage_failed="idempotency_preflight",
+                    reason="reconciled canonical source identity differs from current Board",
+                    idempotency_status="CANONICAL_SOURCE_CONFLICT",
+                    freshness_findings=findings,
+                    board_candidate_count=int(board.get("candidate_count") or 0),
+                )
             return DailyUefEvaluationResult(
-                ok=False, through_day=through_day, canonical=True,
-                stage_failed="idempotency_preflight",
-                reason="multiple verified COMPLETE generations exist for target day",
-                idempotency_status="MULTIPLE_COMPLETE_CONFLICT",
+                ok=True, through_day=through_day, canonical=True, published=False,
+                reason="target day has an audited reconciled canonical COMPLETE generation",
+                idempotency_status="ALREADY_COMPLETE",
                 freshness_findings=findings,
                 board_candidate_count=int(board.get("candidate_count") or 0),
+                authority_id=str(manifest.get("authority_id") or "") or None,
+                manifest_path=str(manifest_path),
+                uef7_run_id=str(manifest.get("uef7_run_id") or "") or None,
+                uef8_run_id=str(manifest.get("uef8_run_id") or "") or None,
+                uef9_run_id=str(manifest.get("uef9_run_id") or "") or None,
+                authority_status=str(manifest.get("uef9_authority_status") or "") or None,
             )
         if len(complete_generations) == 1:
             manifest_path, manifest, existing_identity = complete_generations[0]

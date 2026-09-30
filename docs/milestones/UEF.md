@@ -177,11 +177,11 @@ foundation underneath it. Not started by this closure.
 
 - **P1.1 Real-Run Acceptance: PASS.** The frozen UEF-7 to UEF-8 to UEF-9 chain was verified against one
   current real Alpha Board capture. See [P1.1 real-run acceptance](../research/uef_p1_1_real_run_acceptance.md).
-- **P1.2 Cross-day Observation: NON-BLOCKING / OBSERVE.** Same-day replay now has deterministic
-  concentration tie handling and a verified-COMPLETE preflight: matching authority returns
-  `ALREADY_COMPLETE`; changed or multiple authority fails closed before publication. The 2026-09-30
-  forensic duplicate state remains preserved and must be handled separately. This does not block
-  implementation work.
+- **P1.2 Cross-day Observation: OBSERVING.** 2026-09-30 is the first trustworthy observation day:
+  its deterministic reconstruction selected one canonical generation while preserving both physical
+  COMPLETE generations as forensic evidence. Same-day rerun returns `ALREADY_COMPLETE`; unmarked or
+  malformed duplicate state remains fail-closed. 2026-09-29 remains PARTIAL / NOT_AVAILABLE. P1.2 is
+  not cross-day closed.
 - **Current execution priority: P1.3 Docker.** Strategy Program Integration remains P2. This current
   roadmap priority does not rewrite the historical next-action statements in frozen records.
 
@@ -239,8 +239,8 @@ These remain separate from the approved UEF-4B adapter sequence.
 | UEF-9 | Formal evaluation authority freeze | FORMALLY FROZEN |
 | UEF COMPLETE | UEF-1..UEF-9 fully frozen evaluation-authority foundation | COMPLETE |
 | P1.1 | UEF real-run acceptance | PASS |
-| P1.2 | UEF cross-day observation | NON-BLOCKING / OBSERVE |
-| P1.3 | Docker | NEXT |
+| P1.2 | UEF cross-day observation | OBSERVING |
+| P1.3 | Docker | PASS / CLOSED |
 | P1.5 | Large-file refactor / modularization | PLANNED |
 | P2 | Strategy Program Integration (not UEF-10) | PLANNED |
 | P3 | Safety Step5D / Step5E / Step6 | PLANNED |

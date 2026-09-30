@@ -600,13 +600,14 @@ def test_t12a_market_status_trigger_respects_long_running_live_owner(tmp_path, m
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
     lock_path = tmp_path / "closeout_maintenance.lock"
+    event_day = mod.datetime.now(mod.KST).date().isoformat()
 
     monkeypatch.setattr(
         mod, "load_market_status",
         lambda: {
             "current": {},
             "events": [
-                {"event_id": "evt-t12a", "received_at": "2026-09-30T06:30:00+00:00", "code": "4"}
+                {"event_id": "evt-t12a", "received_at": f"{event_day}T06:30:00+00:00", "code": "4"}
             ],
         },
     )
@@ -703,13 +704,14 @@ def test_market_status_trigger_skips_report_write_when_ownership_rejected(tmp_pa
 
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    event_day = mod.datetime.now(mod.KST).date().isoformat()
 
     monkeypatch.setattr(
         mod, "load_market_status",
         lambda: {
             "current": {},
             "events": [
-                {"event_id": "evt-skip-1", "received_at": "2026-09-30T06:30:00+00:00", "code": "4"}
+                {"event_id": "evt-skip-1", "received_at": f"{event_day}T06:30:00+00:00", "code": "4"}
             ],
         },
     )

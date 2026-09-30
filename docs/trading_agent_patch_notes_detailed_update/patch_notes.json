@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 95,
+  "entry_count": 96,
   "entries": [
     {
       "date": "2026-09-08",
@@ -2489,6 +2489,30 @@
       "sources": [
         "docs/daily_patch/2026-09-30_p1_2_determinism_idempotency_correction.md",
         "docs/research/uef7_alpha_board_normalization_freeze.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-01",
+      "version": "P1.2 2026-09-30 Deterministic Reconciliation",
+      "title": "The preserved duplicate COMPLETE evidence now has one deterministic canonical authority",
+      "stage": "Evaluation Authority",
+      "types": [
+        "DATA_INTEGRITY",
+        "RELIABILITY"
+      ],
+      "summary": "Reconstructed the target-day Board from preserved sources, selected generation B by its unique fixed semantic digest, and aligned the stale observation registry without deleting either physical generation.",
+      "details": [
+        "The fixed Board digest c432de5c49a1be3622ef72b15ccdb26bf3f69547a7bcd31b9481519ec55c13a7 uniquely matches UEF9RUN_1c29b2de962049a6; the R1 source bundle is 35b167f0360529638efcc76a92b0b2c99d735d89eadf97bb5063ecea8cfb69d0.",
+        "Both COMPLETE generation directories and manifests remain preserved as forensic evidence. The existing current and latest pointers already selected B; the stale registry binding was atomically aligned to B.",
+        "A reconciliation audit record binds exactly two verified generations, both pointers, the registry, the fixed Board digest, and the selected authority. Any unmarked or malformed multiple-COMPLETE state remains fail-closed.",
+        "A normal 2026-09-30 rerun returned ALREADY_COMPLETE with zero writes and exactly two physical generations. No UEF7, UEF8, UEF9, or COMPLETE generation was created.",
+        "2026-09-30 is the first trustworthy observation day. P1.2 remains OBSERVING; 2026-09-29 remains PARTIAL / NOT_AVAILABLE."
+      ],
+      "impact": "The Daily UEF authority has one deterministic 2026-09-30 canonical binding while retaining complete incident evidence and preventing a third generation on rerun.",
+      "sources": [
+        "docs/daily_patch/2026-10-01_p1_2_2026_09_30_reconciliation.md",
+        "docs/daily_patch/2026-09-30_p1_2_determinism_idempotency_correction.md"
       ],
       "status": "current"
     }

@@ -453,6 +453,53 @@ def test_multiple_complete_preflight_fails_closed_without_writes(tmp_path: Path)
     assert registry.read_bytes() == before_registry
 
 
+def test_audited_reconciled_duplicate_returns_already_complete_without_writes(tmp_path: Path) -> None:
+    from libs.reporting.evaluation.uef7.run_identity import alpha_board_semantic_digest
+
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+    first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    assert first.published is True
+    board_root = reports_root / "evaluation" / "alpha_research_board"
+    day_root = board_root / "2026-09-29"
+    source_generation = Path(first.manifest_path).parent
+    forensic_generation = day_root / "generations" / "forensic-second-complete"
+    shutil.copytree(source_generation, forensic_generation)
+    forensic_manifest_path = forensic_generation / "COMPLETE.json"
+    forensic_manifest = json.loads(forensic_manifest_path.read_text(encoding="utf-8"))
+    forensic_manifest["authority_id"] = "UEF9RUN_FORENSIC"
+    _write(forensic_manifest_path, forensic_manifest)
+    selected_manifest = json.loads(Path(first.manifest_path).read_text(encoding="utf-8"))
+    selected_board = json.loads(Path(selected_manifest["board_path"]).read_text(encoding="utf-8"))
+    registry = board_root / "p1_2_daily_observation_registry.json"
+    _write(registry, {"schema_version": "p1_2_daily_observation_registry.v1", "observations": {
+        "2026-09-29": {"authority_id": first.authority_id, "manifest_path": first.manifest_path}
+    }})
+    _write(day_root / "reconciliation.json", {
+        "schema_version": "daily_uef_reconciliation.v1",
+        "target_day": "2026-09-29",
+        "selected_authority_id": first.authority_id,
+        "non_selected_authority_id": "UEF9RUN_FORENSIC",
+        "fixed_board_semantic_digest": alpha_board_semantic_digest(selected_board),
+    })
+    before = {
+        "current": (day_root / "current.json").read_bytes(),
+        "latest": (board_root / "latest.json").read_bytes(),
+        "registry": registry.read_bytes(),
+        "generations": sorted(path.name for path in (day_root / "generations").iterdir()),
+    }
+
+    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+
+    assert result.ok is True
+    assert result.published is False
+    assert result.idempotency_status == "ALREADY_COMPLETE"
+    assert result.authority_id == first.authority_id
+    assert (day_root / "current.json").read_bytes() == before["current"]
+    assert (board_root / "latest.json").read_bytes() == before["latest"]
+    assert registry.read_bytes() == before["registry"]
+    assert sorted(path.name for path in (day_root / "generations").iterdir()) == before["generations"]
+
+
 def test_atomic_write_never_leaves_partial_file_on_failure(tmp_path: Path) -> None:
     from libs.reporting.evaluation.daily_uef_pipeline import _atomic_write_text
 
