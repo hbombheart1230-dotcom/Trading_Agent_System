@@ -191,6 +191,18 @@ def _prospective_concentrations(
             if candidate_id and symbol:
                 day_symbols.setdefault(candidate_id, set()).add((row_day, symbol))
 
+    def _largest_key(counts: Counter[str]) -> str | None:
+        """Return a reproducible mode: count descending, key ascending.
+
+        ``Counter.most_common(1)`` preserves first-seen order for ties.  The
+        source population above is accumulated in sets, whose iteration order
+        intentionally varies between Python hash seeds, so it cannot define
+        daily authority identity.
+        """
+        if not counts:
+            return None
+        return min(counts, key=lambda key: (-counts[key], key))
+
     result: dict[str, dict[str, Any]] = {}
     for candidate_id, pairs in day_symbols.items():
         days = Counter(day for day, _symbol in pairs)
@@ -201,8 +213,8 @@ def _prospective_concentrations(
             "observed_day_count": len(days),
             "largest_day_share": round(max(days.values()) / count, 4) if count else None,
             "largest_symbol_share": round(max(symbols.values()) / count, 4) if count else None,
-            "largest_day": days.most_common(1)[0][0] if days else None,
-            "largest_symbol": symbols.most_common(1)[0][0] if symbols else None,
+            "largest_day": _largest_key(days),
+            "largest_symbol": _largest_key(symbols),
         }
     return result
 

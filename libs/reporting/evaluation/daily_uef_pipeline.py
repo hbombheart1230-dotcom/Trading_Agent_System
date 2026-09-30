@@ -96,7 +96,10 @@ from libs.reporting.alpha_research_board import build_alpha_research_board
 from libs.reporting.alpha_research_board.report import render_alpha_research_board
 from libs.reporting.evaluation.uef7.alpha_board_normalization import normalize_alpha_board
 from libs.reporting.evaluation.uef7.reporter import write_uef7_normalization_outputs
-from libs.reporting.evaluation.uef7.run_identity import normalizer_implementation_digest
+from libs.reporting.evaluation.uef7.run_identity import (
+    alpha_board_semantic_digest,
+    normalizer_implementation_digest,
+)
 from libs.reporting.evaluation.uef8.fair_comparison import analyze_fair_comparisons
 from libs.reporting.evaluation.uef8.reporter import write_uef8_fair_comparison_outputs
 from libs.reporting.evaluation.uef8.run_identity import uef8_implementation_digest
@@ -494,6 +497,32 @@ def resolve_canonical_alpha_board(
     return True, board, manifest, "ok"
 
 
+def _verified_complete_generations(day_dir: Path) -> List[Tuple[Path, Dict[str, Any], str]]:
+    """Return verified COMPLETE manifests and their Board semantic identities.
+
+    This is deliberately read-only and runs before UEF-7.  A malformed or
+    unreadable Board behind an otherwise digest-valid manifest is treated as
+    unusable authority rather than guessed at.
+    """
+    complete_paths = sorted((day_dir / "generations").glob("*/COMPLETE.json"))
+    verified: List[Tuple[Path, Dict[str, Any], str]] = []
+    for manifest_path in complete_paths:
+        ok, _reason, manifest = verify_generation_manifest(manifest_path)
+        if not ok or manifest is None:
+            continue
+        try:
+            board_path = Path(str(manifest.get("board_path") or ""))
+            board = json.loads(board_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            verified.append((manifest_path, manifest, "UNVERIFIABLE_COMPLETE_BOARD"))
+            continue
+        if not isinstance(board, dict):
+            verified.append((manifest_path, manifest, "UNVERIFIABLE_COMPLETE_BOARD"))
+            continue
+        verified.append((manifest_path, manifest, alpha_board_semantic_digest(board)))
+    return verified
+
+
 # --- Result / orchestrator ---------------------------------------------------
 
 
@@ -520,6 +549,7 @@ class DailyUefEvaluationResult:
     uef8_conditional: Optional[int] = None
     uef8_not_comparable: Optional[int] = None
     authority_status: Optional[str] = None
+    idempotency_status: Optional[str] = None
     output_dirs: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -545,6 +575,7 @@ class DailyUefEvaluationResult:
             "uef8_conditional": self.uef8_conditional,
             "uef8_not_comparable": self.uef8_not_comparable,
             "authority_status": self.authority_status,
+            "idempotency_status": self.idempotency_status,
             "output_dirs": self.output_dirs,
         }
 
@@ -576,7 +607,8 @@ def run_daily_uef_evaluation(
     advance real canonical state.
 
     Fail-closed, in this exact order: build the board once -> freshness
-    contracts (canonical mode only) -> UEF-7 -> UEF-8 -> UEF-9
+    contracts (canonical mode only) -> verified-COMPLETE idempotency preflight
+    -> UEF-7 -> UEF-8 -> UEF-9
     (authority_status must be VALID) -> [canonical mode only] persist
     UEF-7/8/9 outputs -> write_generation() (single capture, COMPLETE
     manifest written last) -> verify_generation_manifest() on what was
@@ -617,6 +649,43 @@ def run_daily_uef_evaluation(
                        "silently mix a fresh through_day label with stale or unreviewed content",
                 freshness_findings=findings,
                 board_candidate_count=int(board.get("candidate_count") or 0),
+            )
+
+        day_dir = reports_root / "evaluation" / "alpha_research_board" / through_day
+        board_identity = alpha_board_semantic_digest(board)
+        complete_generations = _verified_complete_generations(day_dir)
+        if len(complete_generations) > 1:
+            return DailyUefEvaluationResult(
+                ok=False, through_day=through_day, canonical=True,
+                stage_failed="idempotency_preflight",
+                reason="multiple verified COMPLETE generations exist for target day",
+                idempotency_status="MULTIPLE_COMPLETE_CONFLICT",
+                freshness_findings=findings,
+                board_candidate_count=int(board.get("candidate_count") or 0),
+            )
+        if len(complete_generations) == 1:
+            manifest_path, manifest, existing_identity = complete_generations[0]
+            if existing_identity != board_identity:
+                return DailyUefEvaluationResult(
+                    ok=False, through_day=through_day, canonical=True,
+                    stage_failed="idempotency_preflight",
+                    reason="verified COMPLETE source identity differs from current Board",
+                    idempotency_status="CANONICAL_SOURCE_CONFLICT",
+                    freshness_findings=findings,
+                    board_candidate_count=int(board.get("candidate_count") or 0),
+                )
+            return DailyUefEvaluationResult(
+                ok=True, through_day=through_day, canonical=True, published=False,
+                reason="target day already has a verified COMPLETE generation with the same source identity",
+                idempotency_status="ALREADY_COMPLETE",
+                freshness_findings=findings,
+                board_candidate_count=int(board.get("candidate_count") or 0),
+                authority_id=str(manifest.get("authority_id") or "") or None,
+                manifest_path=str(manifest_path),
+                uef7_run_id=str(manifest.get("uef7_run_id") or "") or None,
+                uef8_run_id=str(manifest.get("uef8_run_id") or "") or None,
+                uef9_run_id=str(manifest.get("uef9_run_id") or "") or None,
+                authority_status=str(manifest.get("uef9_authority_status") or "") or None,
             )
 
     try:
