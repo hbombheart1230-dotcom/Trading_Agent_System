@@ -1587,3 +1587,14 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Two things were deliberately not done yet: testing the real paper-broker connection (skipped for today specifically because the live trading process was actively using the real account connection at the same time) and a full trading-day observation (started today, still running, marked as pending rather than complete).
 - No decision has been made about which environment will be used going forward; that decision is intentionally separate and still open.
 - See `docs/daily_patch/2026-09-30_p1_3_docker_operational_acceptance.md`.
+
+# 2026-09-30 - P1.3 Docker Post-EOD Final Acceptance Evidence
+
+- Collected the full day's worth of evidence from this morning's Docker validation, all the way through market close and after. Every core mechanic passed cleanly. Two specific items remain before this validation effort can be marked fully complete, and this is reported honestly rather than closed early.
+- The isolated Docker container ran continuously from before market open through well after market close today, stayed healthy the entire time, was never restarted, and never ran low on memory.
+- Because this container was deliberately isolated from real market data (for safety), it never actually received a real market-close signal, so the end-of-day process never had anything to trigger it during this specific run -- confirmed directly from its own detailed activity log, not assumed from the clock. This is reported plainly as still outstanding, not glossed over.
+- Separately ran the actual end-of-day process by itself, using a genuine full-sized copy of today's real activity log (roughly three-quarters of a gigabyte), to specifically measure how much memory that process alone needs under a realistic, full-scale load. It completed in about a minute, using a comfortable amount of memory, well within a safe range -- with the real source data only ever copied, never modified.
+- The container was then shut down normally at the end of this check, and it shut down quickly and cleanly, giving back its claim on the isolated session as expected every time this has been tested today.
+- Only two things are still outstanding before this validation can be marked fully done: getting a genuine end-of-day trigger to fire (not just simulating it separately), and testing the real paper-account connection specifically through this Docker setup -- the second one is still waiting for a safe window when it will not run alongside the live trading process using the same account connection at the same time.
+- No decision has been made about which environment will be used going forward; that decision remains intentionally separate and still open.
+- See `docs/daily_patch/2026-09-30_p1_3_docker_post_eod_final_acceptance.md`.
