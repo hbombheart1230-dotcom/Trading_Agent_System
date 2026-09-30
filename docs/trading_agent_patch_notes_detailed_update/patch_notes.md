@@ -1610,3 +1610,11 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - The real paper-account connection check also remains untested today, for the same reason as the prior update: the live trading process was still actively using that same connection throughout, and testing it at the same time was judged unsafe.
 - Both of these being open is exactly why this validation effort is still not being marked complete -- reporting it honestly as open is the correct outcome here, not a setback.
 - See `docs/daily_patch/2026-09-30_p1_3_eod_cascade_attempt_and_paper_pending.md`.
+
+# 2026-09-30 - P1.2 Deterministic Daily UEF Replay and Idempotency Preflight
+
+- Corrected a reproducible same-input nondeterminism in Alpha Board concentration labels: tied maxima now select count descending, then canonical key ascending.
+- Added a pre-UEF verified-COMPLETE decision: same identity returns `ALREADY_COMPLETE` with no writes; changed identity and multiple COMPLETE generations fail closed before UEF-7.
+- Preserved the two 2026-09-30 forensic generations without pointer, registry, or evidence mutation; read-only evaluation now reports `MULTIPLE_COMPLETE_CONFLICT`.
+- This is a narrow UEF7 correctness reopen/refreeze for deterministic contract identity only. UEF8/UEF9 and trading semantics are unchanged.
+- See `docs/daily_patch/2026-09-30_p1_2_determinism_idempotency_correction.md`.

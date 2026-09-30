@@ -177,9 +177,11 @@ foundation underneath it. Not started by this closure.
 
 - **P1.1 Real-Run Acceptance: PASS.** The frozen UEF-7 to UEF-8 to UEF-9 chain was verified against one
   current real Alpha Board capture. See [P1.1 real-run acceptance](../research/uef_p1_1_real_run_acceptance.md).
-- **P1.2 Cross-day Observation: NON-BLOCKING / OBSERVE.** Observe three or more trading days for a
-  continuing `authority_status=VALID`, no authority mismatch or artifact corruption, and deterministic
-  replay for identical captured input. This does not block implementation work.
+- **P1.2 Cross-day Observation: NON-BLOCKING / OBSERVE.** Same-day replay now has deterministic
+  concentration tie handling and a verified-COMPLETE preflight: matching authority returns
+  `ALREADY_COMPLETE`; changed or multiple authority fails closed before publication. The 2026-09-30
+  forensic duplicate state remains preserved and must be handled separately. This does not block
+  implementation work.
 - **Current execution priority: P1.3 Docker.** Strategy Program Integration remains P2. This current
   roadmap priority does not rewrite the historical next-action statements in frozen records.
 

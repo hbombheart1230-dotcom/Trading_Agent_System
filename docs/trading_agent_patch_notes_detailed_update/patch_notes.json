@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 94,
+  "entry_count": 95,
   "entries": [
     {
       "date": "2026-09-08",
@@ -2465,6 +2465,30 @@
       "impact": "Two specific items remain open before this validation effort can be marked complete; both are reported plainly rather than assumed or worked around, keeping this effort's status trustworthy.",
       "sources": [
         "docs/daily_patch/2026-09-30_p1_3_eod_cascade_attempt_and_paper_pending.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "P1.2 Deterministic Daily UEF Replay and Idempotency Preflight",
+      "title": "Same-day Daily UEF replay is deterministic and refuses duplicate or conflicting publication before UEF-7",
+      "stage": "Evaluation Authority",
+      "types": [
+        "DATA_INTEGRITY",
+        "RELIABILITY"
+      ],
+      "summary": "Corrected tied Alpha Board concentration selection and added a verified-COMPLETE preflight so matching reruns are no-ops and conflicting generations fail closed before publication.",
+      "details": [
+        "Tied concentration maxima now select count descending and canonical key ascending, eliminating hash-seed-dependent labels without changing populations, counts, shares, candidate IDs, or source provenance.",
+        "Before UEF-7, Daily UEF builds and validates the Board once, derives its deterministic identity, and inspects verified COMPLETE generations for that day.",
+        "One matching COMPLETE returns ALREADY_COMPLETE with no UEF, pointer, or registry write; a different identity returns CANONICAL_SOURCE_CONFLICT; two or more COMPLETE generations return MULTIPLE_COMPLETE_CONFLICT.",
+        "The existing 2026-09-30 duplicate generations remain preserved as forensic evidence and are not repaired or mutated by this correction.",
+        "This is a narrow UEF7 correctness reopen/refreeze only; UEF8, UEF9, trading behavior, closeout, Docker, and scheduler registration are unchanged."
+      ],
+      "impact": "Identical Daily UEF inputs now produce deterministic authority identity and reruns cannot create a second canonical publication or alter pointers and registry on no-op/conflict paths.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_p1_2_determinism_idempotency_correction.md",
+        "docs/research/uef7_alpha_board_normalization_freeze.md"
       ],
       "status": "current"
     }
