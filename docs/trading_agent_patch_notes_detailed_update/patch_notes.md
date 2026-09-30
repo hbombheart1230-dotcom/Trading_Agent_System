@@ -1598,3 +1598,15 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Only two things are still outstanding before this validation can be marked fully done: getting a genuine end-of-day trigger to fire (not just simulating it separately), and testing the real paper-account connection specifically through this Docker setup -- the second one is still waiting for a safe window when it will not run alongside the live trading process using the same account connection at the same time.
 - No decision has been made about which environment will be used going forward; that decision remains intentionally separate and still open.
 - See `docs/daily_patch/2026-09-30_p1_3_docker_post_eod_final_acceptance.md`.
+
+# 2026-09-30 - P1.3 Integrated EOD Cascade Attempt (Still Pending)
+
+- Attempted to prove the end-of-day process using only the system's own existing, already-supported input mechanism (not a new shortcut built for this test). The attempt did not produce confirming evidence, so this is reported honestly as still open rather than closed. The real paper-account connection check also remains open, for the same safety reason as before.
+- Before building anything new, first checked whether the system already has a supported way to feed it a realistic market-close signal -- and found one already built in and already used by the real system for this exact purpose.
+- Used that existing, unmodified mechanism (not a new one written for this test) to feed in a realistic market-close signal, in an isolated environment with real order placement turned off.
+- After feeding in the signal and waiting through several of its normal check cycles, no evidence appeared that the end-of-day sequence actually ran. Confirmed separately that the underlying end-of-day process itself works fine on its own -- the issue is specifically about whether the live signal actually reaches and triggers it under these exact conditions.
+- This is reported plainly as unresolved rather than force-fixed or worked around: no new system behavior was written just to make this pass artificially, per the standing rule for this kind of check.
+- The container itself stayed completely healthy throughout this attempt -- no crash, no restart, no resource issue. Only the trigger itself could not be confirmed.
+- The real paper-account connection check also remains untested today, for the same reason as the prior update: the live trading process was still actively using that same connection throughout, and testing it at the same time was judged unsafe.
+- Both of these being open is exactly why this validation effort is still not being marked complete -- reporting it honestly as open is the correct outcome here, not a setback.
+- See `docs/daily_patch/2026-09-30_p1_3_eod_cascade_attempt_and_paper_pending.md`.
