@@ -28,13 +28,22 @@ class _DummyHttp:
         return "https://mockapi.kiwoom.com" + path, _DummyResp(200, "{\"ok\":true}")
 
 
-def test_real_executor_blocks_paper_mode_without_execution_enabled(monkeypatch: pytest.MonkeyPatch):
+def test_real_executor_blocks_paper_mode_mutation_without_execution_enabled(monkeypatch: pytest.MonkeyPatch):
     # Paper Trading Execution Finalization (2026-09-17): EXECUTION_ENABLED
-    # is a global physical-dispatch switch, independent of KIWOOM_MODE.
-    # KIWOOM_MODE=mock (Paper Trading -- a real HTTP call to Kiwoom's own
-    # sandbox) must NOT bypass it -- this test replaces
-    # test_real_executor_allows_mock_mode_without_execution_enabled, which
-    # asserted the opposite (a live-reproduced bypass, fixed here).
+    # is a global physical-dispatch switch for MUTATIONS, independent of
+    # KIWOOM_MODE. KIWOOM_MODE=mock (Paper Trading -- a real HTTP call to
+    # Kiwoom's own sandbox) must NOT bypass it for an order-mutating call --
+    # this test replaces test_real_executor_allows_mock_mode_without_execution_enabled,
+    # which asserted the opposite (a live-reproduced bypass, fixed here).
+    #
+    # Uses a real mutation api_id (kt10000 = BUY) rather than the previous
+    # generic/unrecognized "X" placeholder (P1.3 Paper acceptance,
+    # 2026-09-30): EXECUTION_ENABLED now gates mutations only, not reads
+    # (see RealExecutor.preflight_check()'s own docstring) -- "X" is not a
+    # real Kiwoom api_id and does not represent either category
+    # unambiguously, so it no longer exercises what this test is actually
+    # meant to prove. A genuine BUY/SELL/MODIFY/CANCEL request must still be
+    # blocked; that is what this test asserts now.
     monkeypatch.delenv("EXECUTION_ENABLED", raising=False)
     monkeypatch.setenv("KIWOOM_MODE", "mock")
 
@@ -42,10 +51,39 @@ def test_real_executor_blocks_paper_mode_without_execution_enabled(monkeypatch: 
     http = _DummyHttp()
     ex = RealExecutor(settings=s, http=http)  # type: ignore[arg-type]
 
-    req = PreparedRequest(api_id="X", method="POST", path="/orders", headers={}, query={}, body={"b": 2})
+    req = PreparedRequest(
+        api_id="kt10000", method="POST", path="/api/dostk/ordr", headers={}, query={},
+        body={"stk_cd": "005930", "ord_qty": "1"},
+    )
     with pytest.raises(ExecutionDisabledError):
         ex.execute(req, auth_token="dummy")
     assert not http.calls
+
+
+def test_real_executor_allows_paper_mode_read_without_execution_enabled(monkeypatch: pytest.MonkeyPatch):
+    # P1.3 Paper acceptance (2026-09-30): the read/write gate separation
+    # fix. A pure broker READ (not one of the four mutation api_ids --
+    # here a Kiwoom account-balance query, kt00018) must be allowed through
+    # even with EXECUTION_ENABLED unset/false, in Paper mode
+    # (KIWOOM_MODE=mock) -- this is the exact call shape
+    # KiwoomAccountSnapshotCollector/KiwoomOrderFillReader use, and the
+    # exact gap a live P1.3 acceptance run against the real Kiwoom Paper
+    # sandbox found: every existing production read path was rejected the
+    # same as an order dispatch would be.
+    monkeypatch.delenv("EXECUTION_ENABLED", raising=False)
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+
+    s = Settings.from_env(env_path="__missing__.env")
+    http = _DummyHttp()
+    ex = RealExecutor(settings=s, http=http)  # type: ignore[arg-type]
+
+    req = PreparedRequest(
+        api_id="kt00018", method="POST", path="/api/dostk/acnt", headers={}, query={},
+        body={"qry_tp": "1", "dmst_stex_tp": "KRX"},
+    )
+    out = ex.execute(req, auth_token="dummy")
+    assert out.meta.get("executor") == "real"
+    assert http.calls and http.calls[0]["headers"].get("api-id") == "kt00018"
 
 
 def test_real_executor_allows_paper_mode_with_execution_enabled(monkeypatch: pytest.MonkeyPatch):

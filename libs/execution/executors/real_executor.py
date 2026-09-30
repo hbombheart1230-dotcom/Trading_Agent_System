@@ -22,9 +22,16 @@ class RealExecutor:
     """Real executor: performs actual HTTP call.
 
     Safety:
-    - If KIWOOM_MODE=real:
-        - Requires EXECUTION_ENABLED=true
-        - Requires ALLOW_REAL_EXECUTION=true
+    - Mutations (BUY/SELL/MODIFY/CANCEL -- see
+      libs/execution/guards/broker_mutation.py::is_mutation_request) always
+      require EXECUTION_ENABLED=true, regardless of KIWOOM_MODE.
+    - Reads (auth, account query, open-order query, and any other
+      non-mutation call) do NOT require EXECUTION_ENABLED -- see
+      preflight_check()'s own docstring for the P1.3 read/write gate
+      separation this implements.
+    - If KIWOOM_MODE=real: additionally requires ALLOW_REAL_EXECUTION=true
+      (and valid credentials/base URL) unconditionally, for both reads and
+      writes -- this live-account-only guard is unchanged.
       (Must be enforced BEFORE token issuance / any HTTP call)
     - Optional: SYMBOL_ALLOWLIST (if set) blocks disallowed symbols.
     """
@@ -110,21 +117,51 @@ class RealExecutor:
                               class dispatches to a real Kiwoom account.
 
         EXECUTION_ENABLED is a GLOBAL physical-dispatch switch, independent of
-        KIWOOM_MODE -- checked FIRST, unconditionally. A prior version of this
-        method only enforced it when KIWOOM_MODE == "real", which meant Paper
-        Trading (KIWOOM_MODE=mock, a real HTTP call to Kiwoom's own sandbox)
-        could dispatch with EXECUTION_ENABLED=false or even unset -- a real,
-        live-reproduced bypass (see deploy/trading's own Real Docker
-        Deployment audit). EXECUTION_ENABLED=false now blocks unconditionally,
-        in both Paper and Live.
+        KIWOOM_MODE -- checked FIRST, unconditionally FOR MUTATIONS. A prior
+        version of this method only enforced it when KIWOOM_MODE == "real",
+        which meant Paper Trading (KIWOOM_MODE=mock, a real HTTP call to
+        Kiwoom's own sandbox) could dispatch with EXECUTION_ENABLED=false or
+        even unset -- a real, live-reproduced bypass (see deploy/trading's
+        own Real Docker Deployment audit). EXECUTION_ENABLED=false now blocks
+        unconditionally, in both Paper and Live -- for mutations.
+
+        Read/write gate separation (P1.3 Paper acceptance, 2026-09-30):
+        EXECUTION_ENABLED governs broker WRITE (order-dispatch) authority
+        only -- it must not also block a pure broker READ (auth, account
+        query, open-order query). Every P1.3 Paper acceptance attempt with
+        EXECUTION_ENABLED=false found broker reads (account balance,
+        open-order snapshot) rejected the same as an order dispatch would
+        be, via this exact check, even though nothing here ever reaches
+        _execute_mutation() for those requests. Mutation status is
+        determined by the same allowlist-based classifier
+        (is_mutation_request(), libs/execution/guards/broker_mutation.py --
+        MUTATION_API_IDS: kt10000/kt10001/kt10002/kt10003 = BUY/SELL/
+        MODIFY/CANCEL only) already trusted elsewhere in this file for
+        mutation-transport safety (retry_override=0, no-replay-on-
+        token-invalid) -- reused here, not reinvented. A request this
+        classifier cannot positively identify as a mutation is, by
+        construction of that allowlist, never one of the four order-mutating
+        API ids -- so this can only ever widen which READS are allowed
+        through, never which WRITES are. When req is None (no specific
+        request to classify -- an ambiguous, non-read-specific preflight
+        probe), this fails closed exactly as before: treated as a mutation,
+        still requiring EXECUTION_ENABLED=true.
+
+        The ALLOW_REAL_EXECUTION / credential / base-URL checks below (the
+        live-account-only guard, KIWOOM_MODE == "real" only) are
+        deliberately UNCHANGED and still apply unconditionally, to both
+        reads and writes -- this fix narrows only the EXECUTION_ENABLED
+        check, per its own explicit scope.
 
         ALLOW_REAL_EXECUTION is a LIVE-ACCOUNT-ONLY additional switch, checked
         only when KIWOOM_MODE == "real" -- Paper Trading (KIWOOM_MODE=mock)
-        needs only EXECUTION_ENABLED=true, never this second flag, since it
-        never touches a real account regardless.
+        needs only EXECUTION_ENABLED=true (mutations) or nothing (reads),
+        never this second flag, since it never touches a real account
+        regardless.
         """
+        is_mutation = is_mutation_request(req) if req is not None else True
         enabled = self._env_flag_true("EXECUTION_ENABLED", "false")
-        if not enabled:
+        if not enabled and is_mutation:
             return self._deny(
                 "EXECUTION_DISABLED",
                 "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls.",
@@ -160,8 +197,9 @@ class RealExecutor:
                     "Real mode requires https base URL.",
                 )
         # mode == "mock" (Paper Trading): EXECUTION_ENABLED=true already
-        # confirmed above; ALLOW_REAL_EXECUTION is deliberately NOT required
-        # here -- it is a live-account-only guard.
+        # confirmed above for mutations (reads reach here regardless of
+        # EXECUTION_ENABLED); ALLOW_REAL_EXECUTION is deliberately NOT
+        # required here -- it is a live-account-only guard.
 
         if req is not None:
             allow = self._parse_symbol_allowlist(os.getenv("SYMBOL_ALLOWLIST"))
