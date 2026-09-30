@@ -171,6 +171,24 @@ historical assumption about that candidate's provenance.
 UEF-7 output is a derived evaluation normalization view. It is **not** runtime authority, trading
 authority, promotion authority, or fair-comparison authority. UEF-8 owns comparison admissibility.
 
+## 2026-09-30 narrow correctness reopen and re-freeze
+
+**NARROW UEF7 CORRECTNESS REOPEN.** A reproducible Alpha Board contract-surface
+determinism defect was found during P1.2 same-day replay: tied concentration
+maxima were selected through set-influenced `Counter.most_common(1)` ordering.
+The resulting `largest_day` or `largest_symbol` label could vary by Python hash
+seed, changing the Alpha Board semantic digest and UEF-7 run identity despite
+identical populations, counts, shares, candidate IDs, source references, and
+normalized rows.
+
+The Alpha Board helper now uses count descending, canonical key ascending for
+tied maxima. This is a reproducibility correction only: no UEF-7 normalization
+schema, candidate value, source-provenance rule, UEF-8/UEF-9 semantics, or
+trading behavior changed. Focused Alpha Board/UEF-7/Daily-UEF regression,
+including separate Python hash-seed replay, passed. **UEF7_REFROZEN: YES** for
+this bounded correction. The 11-file UEF-1..UEF-3C core manifest does not
+cover this Alpha Board change and is not represented as authority for it.
+
 ## Related
 
 - [UEF milestones](../milestones/UEF.md)
