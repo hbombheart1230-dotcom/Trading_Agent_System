@@ -366,3 +366,93 @@ def test_completion_authority_module_has_no_execution_imports():
     source = Path(mod.__file__).read_text(encoding="utf-8")
     assert "libs.execution" not in source
     assert "broker" not in source.lower()
+
+
+# =============================================================================
+# G -- end-to-end through the REAL production entrypoints: a market-status
+# trigger that completes successfully is never followed by a duplicate
+# report write, whether the duplicate attempt comes from another
+# market-status event or the scheduled-fallback CLI. This exercises
+# libs/runtime/market_status_closeout.py and scripts/run_closeout_maintenance.py
+# themselves (unmodified), not just run_closeout_maintenance_with_lock in
+# isolation -- proving the existing `if result.get("skipped"): <no report
+# write>` branch in both callers correctly treats ALREADY_COMPLETE the same
+# way it already treats ALREADY_RUNNING_VALID_OWNER.
+# =============================================================================
+
+
+def test_g_no_duplicate_report_write_across_both_real_trigger_paths(tmp_path, monkeypatch):
+    import sys
+
+    import libs.runtime.market_status_closeout as market_status_mod
+    import scripts.run_closeout_maintenance as cli_mod
+    from libs.reporting import closeout_maintenance as closeout_mod
+
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(log_path))
+    lock_path = tmp_path / "closeout_maintenance.lock"
+    completion_path = tmp_path / "closeout_completion_authority.json"
+
+    # Both real callers resolve these through module-level defaults when no
+    # explicit override is passed at their own call sites -- patch those
+    # defaults (same technique tests/test_closeout_single_owner_guard.py
+    # already uses for _DEFAULT_CLOSEOUT_LOCK_PATH) so this test stays
+    # isolated from the real repository and from other tests in this
+    # session, while still exercising the real, unmodified production call
+    # chain end to end.
+    monkeypatch.setattr(closeout_mod, "_DEFAULT_CLOSEOUT_LOCK_PATH", lock_path)
+    import libs.reporting.closeout_completion_authority as authority_mod
+
+    monkeypatch.setattr(authority_mod, "_DEFAULT_COMPLETION_AUTHORITY_PATH", completion_path)
+
+    monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
+
+    report_calls = {"n": 0}
+    monkeypatch.setattr(
+        "libs.reporting.closeout_maintenance.write_closeout_maintenance_report",
+        lambda *a, **k: report_calls.__setitem__("n", report_calls["n"] + 1) or {"report_json_path": "x", "report_md_path": "y"},
+    )
+    monkeypatch.setattr(
+        "libs.reporting.scheduled_intelligence.materialize_closeout_intelligence",
+        lambda **_k: {"status": "SKIPPED_IN_TEST"},
+    )
+
+    # First: a real market-status regular_close event completes successfully.
+    monkeypatch.setattr(
+        market_status_mod, "load_market_status",
+        lambda: {
+            "current": {},
+            "events": [
+                {"event_id": "evt-g1", "received_at": "2026-10-01T06:30:00+00:00", "code": "4"}
+            ],
+        },
+    )
+    state = {"persisted_state": {}}
+    out_state = market_status_mod.apply_market_status_closeout_events(state)
+    assert report_calls["n"] == 1
+    assert "evt-g1" in out_state["persisted_state"]["processed_market_status_event_ids"]
+
+    # Second: a DIFFERENT market-status code (final_refresh, code "9") on the
+    # same day -- the tick-loop's own existing per-action_key dedup would
+    # not catch this on its own (different action_key: "...:final_refresh"
+    # vs "...:regular_close"), but the completion authority must, since the
+    # day's closeout already fully succeeded.
+    monkeypatch.setattr(
+        market_status_mod, "load_market_status",
+        lambda: {
+            "current": {},
+            "events": [
+                {"event_id": "evt-g2", "received_at": "2026-10-01T07:00:00+00:00", "code": "9"}
+            ],
+        },
+    )
+    state2 = {"persisted_state": {}}
+    market_status_mod.apply_market_status_closeout_events(state2)
+    assert report_calls["n"] == 1, "a second market-status action on an already-complete day must not write a second report"
+
+    # Third: the scheduled-fallback CLI, a wholly separate entrypoint/trigger
+    # identity, for the same day.
+    monkeypatch.setattr(sys, "argv", ["run_closeout_maintenance.py", "--day", "2026-10-01"])
+    exit_code = cli_mod.main()
+    assert exit_code == 0
+    assert report_calls["n"] == 1, "the scheduled fallback must not re-run maintenance or write a report once the day is already complete"
