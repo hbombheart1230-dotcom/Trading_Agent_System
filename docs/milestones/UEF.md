@@ -177,9 +177,11 @@ foundation underneath it. Not started by this closure.
 
 - **P1.1 Real-Run Acceptance: PASS.** The frozen UEF-7 to UEF-8 to UEF-9 chain was verified against one
   current real Alpha Board capture. See [P1.1 real-run acceptance](../research/uef_p1_1_real_run_acceptance.md).
-- **P1.2 Cross-day Observation: NON-BLOCKING / OBSERVE.** Observe three or more trading days for a
-  continuing `authority_status=VALID`, no authority mismatch or artifact corruption, and deterministic
-  replay for identical captured input. This does not block implementation work.
+- **P1.2 Cross-day Observation: BLOCKED / IDEMPOTENCY REPAIR REQUIRED.** The registered daily task
+  successfully published the first 2026-09-30 COMPLETE authority and exactly one registry observation.
+  Its same-day retry then created a different COMPLETE generation and advanced current/latest before the
+  registry rejected the conflicting authority. Source freshness remains fail-closed, but deterministic
+  same-authority replay must be repaired before P1.2 can close. This does not alter frozen UEF semantics.
 - **Current execution priority: P1.3 Docker.** Strategy Program Integration remains P2. This current
   roadmap priority does not rewrite the historical next-action statements in frozen records.
 

@@ -249,6 +249,46 @@ def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
     return rows
 
 
+def _iter_jsonl_reverse(path: Path, *, block_size: int = 64 * 1024) -> Iterable[Dict[str, Any]]:
+    """Yield JSONL objects newest-first without materializing the whole file."""
+    if not path.exists():
+        return []
+
+    def _gen() -> Iterable[Dict[str, Any]]:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            remainder = b""
+            while position > 0:
+                read_size = min(block_size, position)
+                position -= read_size
+                handle.seek(position)
+                chunk = handle.read(read_size)
+                lines = (chunk + remainder).split(b"\n")
+                remainder = lines[0]
+                for raw in reversed(lines[1:]):
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line.decode("utf-8"))
+                    except Exception:
+                        continue
+                    if isinstance(obj, dict):
+                        yield obj
+            line = remainder.strip()
+            if not line:
+                return
+            try:
+                obj = json.loads(line.decode("utf-8"))
+            except Exception:
+                return
+            if isinstance(obj, dict):
+                yield obj
+
+    return _gen()
+
+
 def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -1549,9 +1589,8 @@ def load_symbol_run_chain(config: OperatorUIConfig, day: str, symbol: str, *, li
 
 
 def load_latest_strategist_prompt_summary(config: OperatorUIConfig, day: str) -> Dict[str, Any]:
-    rows = list(_iter_jsonl(config.evidence_log_path))
     target = {}
-    for row in reversed(rows):
+    for row in _iter_jsonl_reverse(config.evidence_log_path):
         if str(row.get("agent") or "") != "strategist":
             continue
         if str(row.get("stage") or "") != "theme_selection":
