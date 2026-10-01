@@ -35,9 +35,21 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+_KST = timezone(timedelta(hours=9))
+
+
+def _today_kst_iso() -> str:
+    """libs/runtime/market_status_closeout.py::apply_market_status_closeout_events
+    only dispatches an event whose own KST calendar day matches
+    datetime.now(KST)'s current day -- a hardcoded historical date in a
+    fixture event's received_at would silently stop matching once real
+    wall-clock time moves past it. Computed fresh per test run instead."""
+    return datetime.now(_KST).date().isoformat()
 
 from libs.reporting.closeout_maintenance import run_closeout_maintenance_with_lock
 from libs.runtime.live_loop_lock import (
@@ -100,6 +112,7 @@ def test_t1_live_owner_younger_than_threshold_rejects_second(tmp_path, monkeypat
 
     result = run_closeout_maintenance_with_lock(
         day="2026-09-30", trigger="kiwoom_market_status_4", lock_path=lock_path, lock_stale_sec=1800,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
     )
 
     assert calls["n"] == 0
@@ -155,6 +168,7 @@ def test_t2_live_owner_older_than_threshold_still_rejects_second(tmp_path, monke
     result = run_closeout_maintenance_with_lock(
         day="2026-09-30", trigger="run_closeout_maintenance_fallback", lock_path=lock_path,
         lock_stale_sec=small_stale_sec,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
     )
 
     assert calls["n"] == 0
@@ -192,7 +206,10 @@ def test_t3_dead_owner_lock_is_reclaimed(tmp_path, monkeypatch):
 
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
 
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
 
     assert result["ok"] is True
     assert not result.get("skipped")
@@ -224,7 +241,10 @@ def test_t4_pid_reused_different_process_identity_is_reclaimed(tmp_path, monkeyp
 
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
 
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
 
     assert result["ok"] is True
     assert not result.get("skipped")
@@ -329,7 +349,10 @@ def test_t7a_malformed_json_fails_closed(tmp_path, monkeypatch):
 
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _boom_if_called)
 
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
 
     assert calls["n"] == 0
     assert result["skipped"] is True
@@ -352,7 +375,10 @@ def test_t7b_missing_required_fields_fails_closed(tmp_path, monkeypatch):
         lambda **_k: calls.__setitem__("n", calls["n"] + 1),
     )
 
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
 
     assert calls["n"] == 0
     assert result["skipped"] is True
@@ -396,7 +422,10 @@ def test_t8a_existing_owner_identity_unverifiable_fails_closed(tmp_path, monkeyp
         lambda **_k: calls.__setitem__("n", calls["n"] + 1),
     )
 
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
 
     assert calls["n"] == 0
     assert result["skipped"] is True
@@ -420,7 +449,10 @@ def test_t8b_own_identity_unverifiable_fails_closed(tmp_path, monkeypatch):
         lambda **_k: calls.__setitem__("n", calls["n"] + 1),
     )
 
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
 
     assert calls["n"] == 0
     assert result["skipped"] is True
@@ -476,7 +508,10 @@ def test_t9b_concurrent_reclaim_is_guarded_against_double_reclaim(tmp_path, monk
             lambda **_k: calls.__setitem__("n", calls["n"] + 1),
         )
 
-        result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+        result = run_closeout_maintenance_with_lock(
+            day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800,
+            completion_authority_path=tmp_path / "closeout_completion_authority.json",
+        )
 
         assert calls["n"] == 0
         assert result["skipped"] is True
@@ -503,7 +538,10 @@ def test_t10_exception_during_closeout_still_releases_lock(tmp_path, monkeypatch
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _boom)
 
     with pytest.raises(RuntimeError, match="simulated closeout maintenance failure"):
-        run_closeout_maintenance_with_lock(day="2026-09-30", trigger="kiwoom_market_status_4", lock_path=lock_path)
+        run_closeout_maintenance_with_lock(
+            day="2026-09-30", trigger="kiwoom_market_status_4", lock_path=lock_path,
+            completion_authority_path=tmp_path / "closeout_completion_authority.json",
+        )
 
     assert not lock_path.exists()
 
@@ -522,7 +560,10 @@ def test_normal_completion_releases_lock(tmp_path, monkeypatch):
 
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
 
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", trigger="kiwoom_market_status_4", lock_path=lock_path)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", trigger="kiwoom_market_status_4", lock_path=lock_path,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
 
     assert result["ok"] is True
     assert not result.get("skipped")
@@ -555,10 +596,16 @@ def test_t11_later_explicit_retry_after_failure_is_permitted(tmp_path, monkeypat
 
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _boom)
     with pytest.raises(RuntimeError):
-        run_closeout_maintenance_with_lock(day="2026-09-30", trigger="manual_retry_1", lock_path=lock_path)
+        run_closeout_maintenance_with_lock(
+            day="2026-09-30", trigger="manual_retry_1", lock_path=lock_path,
+            completion_authority_path=tmp_path / "closeout_completion_authority.json",
+        )
 
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", trigger="manual_retry_2", lock_path=lock_path)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", trigger="manual_retry_2", lock_path=lock_path,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
 
     assert result["ok"] is True
     assert not result.get("skipped")
@@ -579,7 +626,10 @@ def test_t11b_retry_permitted_after_dead_owner_without_release(tmp_path, monkeyp
     )
 
     monkeypatch.setattr("libs.reporting.closeout_maintenance.run_closeout_maintenance", _stub_ok)
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", lock_path=lock_path, lock_stale_sec=1800,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
 
     assert result["ok"] is True
     assert not result.get("skipped")
@@ -606,7 +656,7 @@ def test_t12a_market_status_trigger_respects_long_running_live_owner(tmp_path, m
         lambda: {
             "current": {},
             "events": [
-                {"event_id": "evt-t12a", "received_at": "2026-09-30T06:30:00+00:00", "code": "4"}
+                {"event_id": "evt-t12a", "received_at": f"{_today_kst_iso()}T06:30:00+00:00", "code": "4"}
             ],
         },
     )
@@ -685,7 +735,10 @@ def test_no_execution_side_effect_when_ownership_rejected(tmp_path, monkeypatch)
     lock_path = tmp_path / "closeout_maintenance.lock"
     acquire_live_loop_lock(lock_path, lock_stale_sec=1800, strict_owner_identity=True, owner_token="owner-A")
 
-    result = run_closeout_maintenance_with_lock(day="2026-09-30", lock_path=lock_path)
+    result = run_closeout_maintenance_with_lock(
+        day="2026-09-30", lock_path=lock_path,
+        completion_authority_path=tmp_path / "closeout_completion_authority.json",
+    )
     assert result["skipped"] is True
 
 
@@ -709,7 +762,7 @@ def test_market_status_trigger_skips_report_write_when_ownership_rejected(tmp_pa
         lambda: {
             "current": {},
             "events": [
-                {"event_id": "evt-skip-1", "received_at": "2026-09-30T06:30:00+00:00", "code": "4"}
+                {"event_id": "evt-skip-1", "received_at": f"{_today_kst_iso()}T06:30:00+00:00", "code": "4"}
             ],
         },
     )

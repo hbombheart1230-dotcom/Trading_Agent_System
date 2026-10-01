@@ -11,6 +11,11 @@ from libs.agent.reporter import Reporter
 from libs.performance.strategy_memory import sync_strategy_memory_artifacts
 from libs.read.kiwoom_account_snapshot_collector import save_kiwoom_account_snapshot
 from libs.runtime.live_loop_lock import acquire_live_loop_lock, release_live_loop_lock
+from libs.reporting.closeout_completion_authority import (
+    COMPLETION_ACTION_KEY,
+    read_closeout_completion,
+    write_closeout_completion_success,
+)
 from libs.reporting.broker_closed_trade_reconciler import reconcile_broker_closed_trade_reports
 from libs.reporting.carryover_exit_reconciler import reconcile_carryover_exit_reports
 from libs.reporting.closeout_residual_positions import reconcile_closeout_residual_positions
@@ -544,6 +549,7 @@ def run_closeout_maintenance_with_lock(
     run_id: str = "",
     lock_path: Path | None = None,
     lock_stale_sec: int | None = None,
+    completion_authority_path: Path | None = None,
 ) -> Dict[str, Any]:
     """Single-owner-guarded entry point for run_closeout_maintenance().
 
@@ -561,11 +567,49 @@ def run_closeout_maintenance_with_lock(
     active, the existing lock's metadata cannot be verified, or this
     process's own identity cannot be verified -- returns a safe, clearly-
     marked skipped result WITHOUT ever calling run_closeout_maintenance().
+
+    2026-10-01 durable-completion follow-up: BEFORE even attempting the
+    lock, also consults libs/reporting/closeout_completion_authority.py
+    for a prior SUCCESS record for this target_day -- a fact the lock
+    itself cannot represent, since the lock is released on both success
+    and crash/failure alike (see that module's docstring for the full
+    rationale). If the day is already durably complete, returns a skipped
+    result without ever acquiring the lock or calling
+    run_closeout_maintenance() again. This is intentionally a SEPARATE
+    check from lock acquisition, not folded into it -- the lock answers
+    "is someone else running this right now", this answers "has this
+    already successfully finished", and conflating the two would make
+    either one impossible to test or reason about independently.
     """
     normalized_day = str(day or "").strip()[:10]
     resolved_run_id = str(run_id or "").strip() or f"closeout-{normalized_day}-{trigger}"
     resolved_lock_path = Path(lock_path) if lock_path is not None else _DEFAULT_CLOSEOUT_LOCK_PATH
     resolved_stale_sec = int(lock_stale_sec) if lock_stale_sec is not None else _DEFAULT_CLOSEOUT_LOCK_STALE_SEC
+
+    prior_completion = read_closeout_completion(
+        normalized_day, COMPLETION_ACTION_KEY, path=completion_authority_path
+    )
+    if prior_completion is not None:
+        log_closeout_stage(
+            run_id=resolved_run_id, day=normalized_day, stage="closeout_completion_authority", phase="skip",
+            detail={
+                "trigger": trigger,
+                "skip_reason": "ALREADY_COMPLETE",
+                "prior_run_id": prior_completion.get("run_id"),
+                "prior_trigger": prior_completion.get("trigger"),
+                "prior_completed_at_epoch": prior_completion.get("completed_at_epoch"),
+            },
+        )
+        return {
+            "schema_version": "closeout_maintenance.v1",
+            "day": normalized_day,
+            "trigger": str(trigger or "closeout_maintenance"),
+            "ok": True,
+            "skipped": True,
+            "skip_reason": "ALREADY_COMPLETE",
+            "prior_completion": dict(prior_completion),
+            "steps": {},
+        }
 
     owner_token = uuid.uuid4().hex
     requesting_pid = os.getpid()
@@ -626,7 +670,7 @@ def run_closeout_maintenance_with_lock(
         },
     )
     try:
-        return run_closeout_maintenance(
+        result = run_closeout_maintenance(
             day=day,
             reports_root=reports_root,
             event_log_path=event_log_path,
@@ -636,6 +680,23 @@ def run_closeout_maintenance_with_lock(
             collect_account_snapshot=collect_account_snapshot,
             run_id=resolved_run_id,
         )
+        if bool(result.get("ok")):
+            # Durable SUCCESS-only marker -- written ONLY when every step
+            # succeeded, while this run still holds the lock, so no other
+            # trigger can observe a window where the lock is free but the
+            # day's completion is not yet recorded. A failed result (ok=
+            # False, including an exception path, which never reaches this
+            # line) writes nothing, leaving a later retry permitted -- see
+            # closeout_completion_authority.py's own docstring.
+            write_closeout_completion_success(
+                normalized_day,
+                COMPLETION_ACTION_KEY,
+                run_id=resolved_run_id,
+                trigger=trigger,
+                owner_pid=requesting_pid,
+                path=completion_authority_path,
+            )
+        return result
     finally:
         released, release_status = release_live_loop_lock(
             resolved_lock_path,
