@@ -96,7 +96,10 @@ from libs.reporting.alpha_research_board import build_alpha_research_board
 from libs.reporting.alpha_research_board.report import render_alpha_research_board
 from libs.reporting.evaluation.uef7.alpha_board_normalization import normalize_alpha_board
 from libs.reporting.evaluation.uef7.reporter import write_uef7_normalization_outputs
-from libs.reporting.evaluation.uef7.run_identity import normalizer_implementation_digest
+from libs.reporting.evaluation.uef7.run_identity import (
+    alpha_board_semantic_digest,
+    normalizer_implementation_digest,
+)
 from libs.reporting.evaluation.uef8.fair_comparison import analyze_fair_comparisons
 from libs.reporting.evaluation.uef8.reporter import write_uef8_fair_comparison_outputs
 from libs.reporting.evaluation.uef8.run_identity import uef8_implementation_digest
@@ -107,6 +110,7 @@ from libs.reporting.evaluation.uef9.run_identity import uef9_implementation_dige
 MANIFEST_SCHEMA_VERSION = "daily_authority_manifest.v1"
 CURRENT_POINTER_SCHEMA_VERSION = "alpha_research_board_current_pointer.v1"
 LATEST_POINTER_SCHEMA_VERSION = "alpha_research_board_latest_pointer.v1"
+OBSERVATION_REGISTRY_SCHEMA_VERSION = "p1_2_daily_observation_registry.v1"
 
 
 # --- Source freshness contracts -------------------------------------------
@@ -494,6 +498,89 @@ def resolve_canonical_alpha_board(
     return True, board, manifest, "ok"
 
 
+def _verified_complete_generations(day_dir: Path) -> List[Tuple[Path, Dict[str, Any], str]]:
+    """Return verified COMPLETE manifests and their Board semantic identities.
+
+    This is deliberately read-only and runs before UEF-7. A malformed or
+    unreadable Board behind an otherwise digest-valid manifest is treated as
+    unusable authority rather than guessed at.
+
+    2026-10-01 HOST OPS FINAL FIX integration note: this is the already
+    approved P1.2 same-day idempotency/determinism correction (commit
+    6b59e5a on codex/p1-2-idempotency-fix, authored 2026-09-30), applied here
+    onto the canonical Host branch. It was confirmed absent from both
+    committed HEAD and the on-disk working tree by direct code-semantics
+    inspection (not merely commit ancestry) before this integration. Paired
+    with the determinism fix in libs/reporting/alpha_research_board/builder.py
+    (_largest_key) -- without that fix, two runs over identical underlying
+    data could still produce different board semantic digests purely from
+    Python's hash-seed-dependent set iteration order, which would make this
+    preflight's own identity comparison unreliable.
+    """
+    complete_paths = sorted((day_dir / "generations").glob("*/COMPLETE.json"))
+    verified: List[Tuple[Path, Dict[str, Any], str]] = []
+    for manifest_path in complete_paths:
+        ok, _reason, manifest = verify_generation_manifest(manifest_path)
+        if not ok or manifest is None:
+            continue
+        try:
+            board_path = Path(str(manifest.get("board_path") or ""))
+            board = json.loads(board_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            verified.append((manifest_path, manifest, "UNVERIFIABLE_COMPLETE_BOARD"))
+            continue
+        if not isinstance(board, dict):
+            verified.append((manifest_path, manifest, "UNVERIFIABLE_COMPLETE_BOARD"))
+            continue
+        verified.append((manifest_path, manifest, alpha_board_semantic_digest(board)))
+    return verified
+
+
+def record_daily_observation(*, board_root: Path, manifest: Dict[str, Any]) -> Path:
+    """Record one derived P1.2 observation for an already verified COMPLETE
+    generation.  This is an index, never authority: the manifest and pointers
+    remain the canonical source of truth.  Repeating the exact authority is a
+    no-op; a different authority for an already observed day is rejected so a
+    scheduler retry cannot silently rewrite cross-day history.
+    """
+    day = str(manifest.get("target_day") or "")[:10]
+    authority_id = str(manifest.get("authority_id") or "")
+    if not day or not authority_id:
+        raise ValueError("verified manifest missing target_day or authority_id")
+    registry_path = board_root / "p1_2_daily_observation_registry.json"
+    existing = None
+    if registry_path.exists():
+        try:
+            candidate = json.loads(registry_path.read_text(encoding="utf-8"))
+            existing = candidate if isinstance(candidate, dict) else None
+        except (OSError, json.JSONDecodeError):
+            existing = None
+    registry = existing if isinstance(existing, dict) else {
+        "schema_version": OBSERVATION_REGISTRY_SCHEMA_VERSION, "observations": {}
+    }
+    if registry.get("schema_version") != OBSERVATION_REGISTRY_SCHEMA_VERSION:
+        raise ValueError("observation registry schema mismatch")
+    observations = registry.get("observations")
+    if not isinstance(observations, dict):
+        raise ValueError("observation registry malformed")
+    prior = observations.get(day)
+    if isinstance(prior, dict):
+        if prior.get("authority_id") != authority_id:
+            raise ValueError("observation registry already has a different authority for target day")
+        return registry_path
+    observations[day] = {
+        "authority_id": authority_id,
+        "manifest_path": str(manifest.get("board_path") and Path(str(manifest.get("board_path"))).parent / "COMPLETE.json"),
+        "board_digest": manifest.get("board_digest"),
+        "uef7_run_id": manifest.get("uef7_run_id"),
+        "uef8_run_id": manifest.get("uef8_run_id"),
+        "uef9_run_id": manifest.get("uef9_run_id"),
+        "uef9_authority_status": manifest.get("uef9_authority_status"),
+    }
+    _atomic_write_text(registry_path, json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True))
+    return registry_path
+
+
 # --- Result / orchestrator ---------------------------------------------------
 
 
@@ -520,6 +607,8 @@ class DailyUefEvaluationResult:
     uef8_conditional: Optional[int] = None
     uef8_not_comparable: Optional[int] = None
     authority_status: Optional[str] = None
+    idempotency_status: Optional[str] = None
+    observation_registry_path: Optional[str] = None
     output_dirs: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -545,6 +634,8 @@ class DailyUefEvaluationResult:
             "uef8_conditional": self.uef8_conditional,
             "uef8_not_comparable": self.uef8_not_comparable,
             "authority_status": self.authority_status,
+            "idempotency_status": self.idempotency_status,
+            "observation_registry_path": self.observation_registry_path,
             "output_dirs": self.output_dirs,
         }
 
@@ -576,7 +667,8 @@ def run_daily_uef_evaluation(
     advance real canonical state.
 
     Fail-closed, in this exact order: build the board once -> freshness
-    contracts (canonical mode only) -> UEF-7 -> UEF-8 -> UEF-9
+    contracts (canonical mode only) -> verified-COMPLETE idempotency preflight
+    (canonical mode only) -> UEF-7 -> UEF-8 -> UEF-9
     (authority_status must be VALID) -> [canonical mode only] persist
     UEF-7/8/9 outputs -> write_generation() (single capture, COMPLETE
     manifest written last) -> verify_generation_manifest() on what was
@@ -617,6 +709,55 @@ def run_daily_uef_evaluation(
                        "silently mix a fresh through_day label with stale or unreviewed content",
                 freshness_findings=findings,
                 board_candidate_count=int(board.get("candidate_count") or 0),
+            )
+
+        day_dir = reports_root / "evaluation" / "alpha_research_board" / through_day
+        preflight_board_root = reports_root / "evaluation" / "alpha_research_board"
+        board_identity = alpha_board_semantic_digest(board)
+        complete_generations = _verified_complete_generations(day_dir)
+        if len(complete_generations) > 1:
+            return DailyUefEvaluationResult(
+                ok=False, through_day=through_day, canonical=True,
+                stage_failed="idempotency_preflight",
+                reason="multiple verified COMPLETE generations exist for target day",
+                idempotency_status="MULTIPLE_COMPLETE_CONFLICT",
+                freshness_findings=findings,
+                board_candidate_count=int(board.get("candidate_count") or 0),
+            )
+        if len(complete_generations) == 1:
+            manifest_path, manifest, existing_identity = complete_generations[0]
+            if existing_identity != board_identity:
+                return DailyUefEvaluationResult(
+                    ok=False, through_day=through_day, canonical=True,
+                    stage_failed="idempotency_preflight",
+                    reason="verified COMPLETE source identity differs from current Board",
+                    idempotency_status="CANONICAL_SOURCE_CONFLICT",
+                    freshness_findings=findings,
+                    board_candidate_count=int(board.get("candidate_count") or 0),
+                )
+            return DailyUefEvaluationResult(
+                ok=True, through_day=through_day, canonical=True, published=False,
+                reason="target day already has a verified COMPLETE generation with the same source identity",
+                idempotency_status="ALREADY_COMPLETE",
+                freshness_findings=findings,
+                board_candidate_count=int(board.get("candidate_count") or 0),
+                authority_id=str(manifest.get("authority_id") or "") or None,
+                manifest_path=str(manifest_path),
+                uef7_run_id=str(manifest.get("uef7_run_id") or "") or None,
+                uef8_run_id=str(manifest.get("uef8_run_id") or "") or None,
+                uef9_run_id=str(manifest.get("uef9_run_id") or "") or None,
+                authority_status=str(manifest.get("uef9_authority_status") or "") or None,
+                # Not re-invoked here -- the registry was already populated by
+                # whichever earlier call first published this generation, and
+                # P1.2's own idempotency test
+                # (test_same_complete_preflight_keeps_pointers_and_registry_unchanged)
+                # requires the registry file to stay byte-for-byte unchanged on
+                # an ALREADY_COMPLETE short-circuit. The path itself is still
+                # reported -- same deterministic location record_daily_observation()
+                # itself always writes to -- so a caller never sees a surprising
+                # None here just because this particular call happened to be a
+                # no-op.
+                observation_registry_path=str(preflight_board_root / "p1_2_daily_observation_registry.json"),
             )
 
     try:
@@ -677,12 +818,13 @@ def run_daily_uef_evaluation(
         # that explicitly bypassed the freshness contract).
         return DailyUefEvaluationResult(published=False, **base_result)
 
+    day_dir = reports_root / "evaluation" / "alpha_research_board" / through_day
+    board_root = reports_root / "evaluation" / "alpha_research_board"
+
     uef7_dir = write_uef7_normalization_outputs(uef7, repo_root=repo_root)
     uef8_dir = write_uef8_fair_comparison_outputs(uef8, repo_root=repo_root)
     uef9_dir = write_formal_evaluation_authority(uef9, repo_root=repo_root)
 
-    day_dir = reports_root / "evaluation" / "alpha_research_board" / through_day
-    board_root = reports_root / "evaluation" / "alpha_research_board"
     authority_id = uef9.uef9_run_id
 
     manifest_path = write_generation(
@@ -717,6 +859,7 @@ def run_daily_uef_evaluation(
         latest_dir=board_root, day=through_day, authority_id=authority_id, manifest_path=manifest_path
     )
     presentation_path = write_latest_presentation(latest_dir=board_root, board=board)
+    registry_path = record_daily_observation(board_root=board_root, manifest=_manifest or {})
 
     return DailyUefEvaluationResult(
         published=True,
@@ -725,6 +868,7 @@ def run_daily_uef_evaluation(
         current_pointer_path=str(current_path),
         latest_pointer_path=str(latest_path),
         latest_presentation_path=str(presentation_path) if presentation_path else None,
+        observation_registry_path=str(registry_path),
         output_dirs={
             "uef7": str(uef7_dir), "uef8": str(uef8_dir), "uef9": str(uef9_dir),
             "generation": str(manifest_path.parent),
@@ -740,6 +884,7 @@ __all__ = [
     "advance_latest_pointer",
     "evaluate_source_freshness_contracts",
     "resolve_canonical_alpha_board",
+    "record_daily_observation",
     "verify_generation_manifest",
     "write_generation",
     "write_latest_presentation",

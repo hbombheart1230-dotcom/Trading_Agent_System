@@ -16,6 +16,8 @@ from machine authority, and no trading/broker/runtime side effects).
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -143,9 +145,60 @@ def _required_sources(tmp_path: Path, *, target_day: str, daily_sources_day: str
     return root
 
 
+def _write_tied_prospective_daily_sources(reports_root: Path) -> None:
+    root = reports_root / "evaluation/feature_mart/opening_rank1/prospective"
+    for day, symbols in {
+        "2026-08-20": ("000001", "000002"),
+        "2026-09-14": ("000003", "000004"),
+    }.items():
+        _write(
+            root / day / "rank1_candidate_shadow_daily.json",
+            {
+                "observations": [
+                    {"matched": True, "candidate_id": "R1", "day": day, "symbol": symbol}
+                    for symbol in symbols
+                ]
+            },
+        )
+
+
 # ============================================================================
 # Retained Fix2 coverage (updated for the generation/manifest/pointer model)
 # ============================================================================
+
+
+def test_prospective_concentration_ties_use_canonical_key_order(tmp_path: Path) -> None:
+    from libs.reporting.alpha_research_board.builder import _prospective_concentrations
+
+    reports_root = tmp_path / "reports"
+    _write_tied_prospective_daily_sources(reports_root)
+    result = _prospective_concentrations(
+        reports_root=reports_root, first_day="2026-08-01", through_day="2026-09-30"
+    )
+
+    assert result["R1"]["largest_day"] == "2026-08-20"
+    assert result["R1"]["largest_symbol"] == "000001"
+    assert result["R1"]["largest_day_share"] == 0.5
+
+
+def test_prospective_concentration_is_stable_across_python_hash_seeds(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    _write_tied_prospective_daily_sources(reports_root)
+    code = (
+        "import json; from pathlib import Path; "
+        "from libs.reporting.alpha_research_board.builder import _prospective_concentrations; "
+        f"print(json.dumps(_prospective_concentrations(reports_root=Path(r'{reports_root}'), "
+        "first_day='2026-08-01', through_day='2026-09-30'), sort_keys=True))"
+    )
+    outputs = []
+    for seed in ("1", "777"):
+        env = dict(os.environ, PYTHONHASHSEED=seed, PYTHONPATH=str(ROOT))
+        completed = subprocess.run(
+            [sys.executable, "-c", code], cwd=ROOT, env=env, text=True, capture_output=True, check=True
+        )
+        outputs.append(completed.stdout)
+
+    assert outputs[0] == outputs[1]
 
 
 def test_stale_required_source_rejected(tmp_path: Path) -> None:
@@ -305,17 +358,109 @@ def test_rerun_against_unchanged_input_is_idempotent(tmp_path: Path) -> None:
     second = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
 
     assert first.ok is True and second.ok is True
+    assert first.published is True
+    assert second.published is False
+    assert second.idempotency_status == "ALREADY_COMPLETE"
     assert first.uef7_run_id == second.uef7_run_id
     assert first.uef8_run_id == second.uef8_run_id
     assert first.uef9_run_id == second.uef9_run_id
     assert first.authority_id == second.authority_id
-    assert first.to_dict() == second.to_dict()
+    assert second.manifest_path == first.manifest_path
 
     board_json_1 = Path(first.manifest_path).parent.joinpath("alpha_research_board.json").read_text(encoding="utf-8")
     third = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
     board_json_2 = Path(third.manifest_path).parent.joinpath("alpha_research_board.json").read_text(encoding="utf-8")
     assert board_json_1 == board_json_2
     assert third.uef9_run_id == first.uef9_run_id
+
+
+def test_same_complete_preflight_keeps_pointers_and_registry_unchanged(tmp_path: Path) -> None:
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+    first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    assert first.published is True
+    board_root = reports_root / "evaluation" / "alpha_research_board"
+    registry = Path(first.observation_registry_path)
+    before = {
+        "current": (board_root / "2026-09-29" / "current.json").read_bytes(),
+        "latest": (board_root / "latest.json").read_bytes(),
+        "registry": registry.read_bytes(),
+        "generations": sorted(p.name for p in (board_root / "2026-09-29" / "generations").iterdir()),
+    }
+
+    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+
+    assert result.ok is True
+    assert result.idempotency_status == "ALREADY_COMPLETE"
+    assert (board_root / "2026-09-29" / "current.json").read_bytes() == before["current"]
+    assert (board_root / "latest.json").read_bytes() == before["latest"]
+    assert registry.read_bytes() == before["registry"]
+    assert sorted(p.name for p in (board_root / "2026-09-29" / "generations").iterdir()) == before["generations"]
+
+
+def test_different_complete_preflight_fails_closed_before_uef_writes(tmp_path: Path, monkeypatch) -> None:
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+    first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    assert first.published is True
+    board_root = reports_root / "evaluation" / "alpha_research_board"
+    registry = Path(first.observation_registry_path)
+    before = {
+        "current": (board_root / "2026-09-29" / "current.json").read_bytes(),
+        "latest": (board_root / "latest.json").read_bytes(),
+        "registry": registry.read_bytes(),
+        "generations": sorted(p.name for p in (board_root / "2026-09-29" / "generations").iterdir()),
+    }
+    original_build = build_alpha_research_board
+
+    def _different_board(*, reports_root, through_day):
+        board = original_build(reports_root=reports_root, through_day=through_day)
+        board["candidates"][0]["decision"] = "SOURCE_CHANGED"
+        return board
+
+    monkeypatch.setattr("libs.reporting.evaluation.daily_uef_pipeline.build_alpha_research_board", _different_board)
+    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+
+    assert result.ok is False
+    assert result.idempotency_status == "CANONICAL_SOURCE_CONFLICT"
+    assert (board_root / "2026-09-29" / "current.json").read_bytes() == before["current"]
+    assert (board_root / "latest.json").read_bytes() == before["latest"]
+    assert registry.read_bytes() == before["registry"]
+    assert sorted(p.name for p in (board_root / "2026-09-29" / "generations").iterdir()) == before["generations"]
+
+
+def test_multiple_complete_preflight_fails_closed_without_writes(tmp_path: Path) -> None:
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+    first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    assert first.published is True
+    board_root = reports_root / "evaluation" / "alpha_research_board"
+    day_root = board_root / "2026-09-29"
+    generation_root = day_root / "generations"
+    source_generation = Path(first.manifest_path).parent
+    shutil.copytree(source_generation, generation_root / "forensic-second-complete")
+    registry = Path(first.observation_registry_path)
+    before_current = (day_root / "current.json").read_bytes()
+    before_latest = (board_root / "latest.json").read_bytes()
+    before_registry = registry.read_bytes()
+
+    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+
+    assert result.ok is False
+    assert result.idempotency_status == "MULTIPLE_COMPLETE_CONFLICT"
+    assert (day_root / "current.json").read_bytes() == before_current
+    assert (board_root / "latest.json").read_bytes() == before_latest
+    assert registry.read_bytes() == before_registry
+
+
+def test_completed_day_creates_one_derived_p1_2_observation_record(tmp_path: Path) -> None:
+    reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
+
+    first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    second = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+
+    registry_path = reports_root / "evaluation" / "alpha_research_board" / "p1_2_daily_observation_registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert list(registry["observations"]) == ["2026-09-29"]
+    assert registry["observations"]["2026-09-29"]["authority_id"] == first.authority_id == second.authority_id
+    assert first.observation_registry_path == second.observation_registry_path == str(registry_path)
 
 
 def test_atomic_write_never_leaves_partial_file_on_failure(tmp_path: Path) -> None:
@@ -513,10 +658,10 @@ def test_partial_bundle_before_complete_manifest_is_not_authoritative(tmp_path: 
     assert ok is False
 
 
-# --- E: same-day replacement failure leaves the prior generation current ---
+# --- E: same-day source replacement fails before any new generation exists ---
 
 
-def test_same_day_replacement_failure_leaves_prior_generation_current(tmp_path: Path, monkeypatch) -> None:
+def test_same_day_source_conflict_leaves_prior_generation_current(tmp_path: Path) -> None:
     reports_root = _required_sources(tmp_path, target_day="2026-09-29", daily_sources_day="2026-09-29")
 
     first = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
@@ -524,23 +669,19 @@ def test_same_day_replacement_failure_leaves_prior_generation_current(tmp_path: 
     current_before = (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29" / "current.json").read_text(encoding="utf-8")
     latest_before = (reports_root / "evaluation" / "alpha_research_board" / "latest.json").read_text(encoding="utf-8")
 
-    # Mutate a required source so a rerun computes a genuinely different
-    # (but still internally valid) board/authority_id, then fail the
-    # second generation's advance_current_pointer step.
+    # Mutate a required source so the current Board has a genuinely
+    # different identity. The preflight must reject it before UEF/pointer
+    # output is attempted.
+    changed_feature_source = json.loads(json.dumps(_FEATURE_CANDIDATES_PAYLOAD))
+    changed_feature_source["prospective_shadow_candidates"][0]["train"]["avg_net_return_pct"] = 9.99
     _write(
-        reports_root / "evaluation/opening_rank1_shadow/opening_rank1_shadow_cumulative.json",
-        {"schema_version": "fixture", "through_day": "2026-09-29", "summary": {"status": "CHANGED_BUT_STILL_FRESH"}},
+        reports_root / "evaluation/feature_mart/opening_rank1/candidate_selection.json",
+        changed_feature_source,
     )
 
-    import libs.reporting.evaluation.daily_uef_pipeline as mod
-
-    def _boom(*_a, **_k):
-        raise OSError("simulated failure advancing current.json for generation B")
-
-    monkeypatch.setattr(mod, "advance_current_pointer", _boom)
-
-    with pytest.raises(OSError):
-        run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    result = run_daily_uef_evaluation(repo_root=tmp_path, through_day="2026-09-29")
+    assert result.ok is False
+    assert result.idempotency_status == "CANONICAL_SOURCE_CONFLICT"
 
     current_after = (reports_root / "evaluation" / "alpha_research_board" / "2026-09-29" / "current.json").read_text(encoding="utf-8")
     latest_after = (reports_root / "evaluation" / "alpha_research_board" / "latest.json").read_text(encoding="utf-8")
