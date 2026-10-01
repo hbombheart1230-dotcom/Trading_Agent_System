@@ -301,44 +301,92 @@ def acquire_live_loop_lock(
             pass
 
 
-def refresh_live_loop_lock(lock_path: Path, *, current_pid: int | None = None) -> Tuple[bool, str]:
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    now = int(time.time())
-    owner_pid = int(current_pid or os.getpid())
-    now_iso = datetime.now(timezone.utc).isoformat()
-    current_payload = {
-        "pid": owner_pid,
-        "started_epoch": now,
-        "started_ts": now_iso,
-        "heartbeat_epoch": now,
-        "heartbeat_ts": now_iso,
-    }
+def refresh_live_loop_lock(
+    lock_path: Path,
+    *,
+    current_pid: int | None = None,
+    strict_owner_identity: bool = False,
+    owner_token: str | None = None,
+) -> Tuple[bool, str]:
+    if not strict_owner_identity:
+        # --- Existing m13 live-loop semantics, UNCHANGED ------------------
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        now = int(time.time())
+        owner_pid = int(current_pid or os.getpid())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        current_payload = {
+            "pid": owner_pid,
+            "started_epoch": now,
+            "started_ts": now_iso,
+            "heartbeat_epoch": now,
+            "heartbeat_ts": now_iso,
+        }
 
-    if not lock_path.exists():
+        if not lock_path.exists():
+            try:
+                lock_path.write_text(json.dumps(current_payload, ensure_ascii=False), encoding="utf-8")
+                return True, "lock_recreated"
+            except Exception:
+                return False, "lock_recreate_failed"
+
+        existing: Dict[str, Any] = {}
         try:
-            lock_path.write_text(json.dumps(current_payload, ensure_ascii=False), encoding="utf-8")
-            return True, "lock_recreated"
+            existing = json.loads(lock_path.read_text(encoding="utf-8"))
         except Exception:
-            return False, "lock_recreate_failed"
+            existing = {}
 
-    existing: Dict[str, Any] = {}
-    try:
-        existing = json.loads(lock_path.read_text(encoding="utf-8"))
-    except Exception:
-        existing = {}
+        existing_pid = to_int(existing.get("pid"), 0)
+        if existing_pid > 0 and existing_pid != owner_pid and pid_exists(existing_pid):
+            return False, "lock_owned_by_other_process"
 
-    existing_pid = to_int(existing.get("pid"), 0)
-    if existing_pid > 0 and existing_pid != owner_pid and pid_exists(existing_pid):
-        return False, "lock_owned_by_other_process"
+        payload = dict(existing or {})
+        if existing_pid <= 0 or existing_pid != owner_pid:
+            payload["pid"] = owner_pid
+        if to_int(payload.get("started_epoch"), 0) <= 0:
+            payload["started_epoch"] = now
+        if not str(payload.get("started_ts") or "").strip():
+            payload["started_ts"] = now_iso
+        payload["heartbeat_epoch"] = now
+        payload["heartbeat_ts"] = now_iso
+        try:
+            lock_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            return True, "lock_heartbeat_updated"
+        except Exception:
+            return False, "lock_refresh_failed"
 
-    payload = dict(existing or {})
-    if existing_pid <= 0 or existing_pid != owner_pid:
-        payload["pid"] = owner_pid
-    if to_int(payload.get("started_epoch"), 0) <= 0:
-        payload["started_epoch"] = now
-    if not str(payload.get("started_ts") or "").strip():
-        payload["started_ts"] = now_iso
-    payload["heartbeat_epoch"] = now
+    # --- Strict owner-identity mode (2026-10-02 M13/Docker PID-1 fix) -----
+    #
+    # Heartbeat recency plays NO role in strict mode's own reclaim decision
+    # (acquire_live_loop_lock's strict branch only ever reclaims on a
+    # conclusively dead pid or confirmed pid reuse -- never on age), so this
+    # is best-effort observability only, never required for correctness.
+    # Unlike the non-strict path above, a missing lock file is NOT silently
+    # recreated here: under strict mode that would mean ownership was
+    # already lost (reclaimed by a confirmed-dead/pid-reuse takeover, or
+    # removed by this process's own release) and blindly re-establishing a
+    # claim here could race a legitimate new owner. The caller's own
+    # SQLite ownership-lease refresh (a separate, independent authority --
+    # see run_live_loop's own comments) is what actually detects and acts
+    # on a lost claim; this heartbeat is diagnostic metadata layered on an
+    # already-held lock, never a second path to acquiring one.
+    owner_pid = int(current_pid or os.getpid())
+    resolved_token = str(owner_token or "").strip()
+    if not lock_path.exists():
+        return False, "LOCK_MISSING"
+    obj = _read_json_object(lock_path)
+    if obj is None or not _is_strict_lock_well_formed(obj):
+        return False, "LOCK_METADATA_INVALID"
+    existing_pid = to_int(obj.get("pid"), 0)
+    existing_token = str(obj.get("owner_token") or "")
+    existing_identity = str(obj.get("process_start_identity") or "")
+    if not resolved_token or existing_pid != owner_pid or existing_token != resolved_token:
+        return False, "non_owner_refresh_rejected"
+    my_identity = _process_start_identity(owner_pid)
+    if not my_identity or not existing_identity or my_identity != existing_identity:
+        return False, "IDENTITY_UNVERIFIABLE"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload = dict(obj)
+    payload["heartbeat_epoch"] = int(time.time())
     payload["heartbeat_ts"] = now_iso
     try:
         lock_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

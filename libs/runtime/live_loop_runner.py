@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import signal
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -122,6 +123,7 @@ def run_live_loop(
     ownership_instance_id: Optional[str] = None,
     ownership_lease_sec: float = _DEFAULT_OWNERSHIP_LEASE_SEC,
     allow_stale_ownership_takeover: bool = True,
+    strict_owner_identity: bool = True,
 ) -> int:
     if state.get("m13_tick_pipeline") == "legacy_m10" and not state.get("symbol"):
         raise SystemExit("symbol is required for legacy_m10: set --symbol or SYMBOL/UNIVERSE_SYMBOLS env")
@@ -133,7 +135,30 @@ def run_live_loop(
             print(f"live_loop aborted: market_closed session_hard_gate=true now_kst={check_dt.isoformat()}")
             return 5
 
-    acquired, reason = acquire_live_loop_lock(lock_path, lock_stale_sec=max(1, int(lock_stale_sec)))
+    # 2026-10-02 Docker PID-1/M13 restart-storm fix: strict_owner_identity=True
+    # by default (reusing the exact same strict-identity primitive already
+    # proven for closeout's single-owner guard, not a second locking
+    # subsystem). Root cause this replaces: every fresh container gets PID 1
+    # in its own namespace, so the OLD non-strict lock's age-based reclaim
+    # was the only thing standing between a genuinely dead prior container
+    # and a live one -- but Docker's default sub-second restart backoff
+    # means a crashed container's restart attempts can all complete well
+    # inside lock_stale_sec, so none of them ever qualified as "stale" even
+    # though PID 1 in each fresh container is trivially "alive" to
+    # pid_exists(). Strict mode reclaims on conclusively dead pid or
+    # confirmed pid reuse (the OS-provided process creation timestamp
+    # differs even though the pid number is identical) -- never on age --
+    # so a new container's PID 1 correctly reclaims a PID-1 lock left by a
+    # prior, now-dead container on its very first attempt, regardless of
+    # how little wall-clock time has elapsed. Unaffected outside Docker: a
+    # genuinely live Host process is never stolen from merely for running
+    # long (see live_loop_lock.py's own module docstring for the full
+    # acquire/release/refresh decision table).
+    owner_token = uuid.uuid4().hex
+    acquired, reason = acquire_live_loop_lock(
+        lock_path, lock_stale_sec=max(1, int(lock_stale_sec)),
+        strict_owner_identity=strict_owner_identity, owner_token=owner_token,
+    )
     if not acquired:
         print(f"live_loop lock not acquired: {reason} lock_path={lock_path}")
         return 4
@@ -159,7 +184,7 @@ def run_live_loop(
             f"live_loop ownership not acquired: {ownership_result.reason} "
             f"holder={ownership_result.holder}"
         )
-        release_live_loop_lock(lock_path)
+        release_live_loop_lock(lock_path, strict_owner_identity=strict_owner_identity, owner_token=owner_token)
         return 6
     if ownership_result.recovery_required:
         # Lease expiry alone is NEVER execution readiness -- this instance
@@ -199,7 +224,7 @@ def run_live_loop(
             if flag.requested:
                 print(f"live_loop draining: shutdown requested via {flag.signal_name}, no new tick will start")
                 break
-            refresh_live_loop_lock(lock_path)
+            refresh_live_loop_lock(lock_path, strict_owner_identity=strict_owner_identity, owner_token=owner_token)
             ownership_refresh = store.refresh(instance_id=instance_id, lease_seconds=float(ownership_lease_sec))
             if not ownership_refresh.ok:
                 # We have LOST execution authority (our lease expired and a
@@ -215,7 +240,7 @@ def run_live_loop(
                 exit_code = 7
                 break
             state = run_once_fn(state, dt=now_fn())
-            refresh_live_loop_lock(lock_path)
+            refresh_live_loop_lock(lock_path, strict_owner_identity=strict_owner_identity, owner_token=owner_token)
             store.refresh(instance_id=instance_id, lease_seconds=float(ownership_lease_sec))
 
             if once:
@@ -238,7 +263,7 @@ def run_live_loop(
                 break
     finally:
         market_status_listener.stop()
-        release_live_loop_lock(lock_path)
+        release_live_loop_lock(lock_path, strict_owner_identity=strict_owner_identity, owner_token=owner_token)
         # Only ever releases OUR OWN lease (release() is a strict no-op
         # otherwise) -- if ownership was already lost to a takeover above,
         # this does not disturb the new owner's claim.
