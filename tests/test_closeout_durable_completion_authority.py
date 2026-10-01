@@ -32,9 +32,21 @@ repository's existing closeout test conventions.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+_KST = timezone(timedelta(hours=9))
+
+
+def _today_kst_iso() -> str:
+    """libs/runtime/market_status_closeout.py::apply_market_status_closeout_events
+    only dispatches an event whose own KST calendar day matches
+    datetime.now(KST)'s current day -- a hardcoded historical date in a
+    fixture event's received_at would silently stop matching once real
+    wall-clock time moves past it. Computed fresh per test run instead."""
+    return datetime.now(_KST).date().isoformat()
 
 from libs.reporting.closeout_completion_authority import (
     COMPLETION_ACTION_KEY,
@@ -417,13 +429,15 @@ def test_g_no_duplicate_report_write_across_both_real_trigger_paths(tmp_path, mo
         lambda **_k: {"status": "SKIPPED_IN_TEST"},
     )
 
+    today = _today_kst_iso()
+
     # First: a real market-status regular_close event completes successfully.
     monkeypatch.setattr(
         market_status_mod, "load_market_status",
         lambda: {
             "current": {},
             "events": [
-                {"event_id": "evt-g1", "received_at": "2026-10-01T06:30:00+00:00", "code": "4"}
+                {"event_id": "evt-g1", "received_at": f"{today}T06:30:00+00:00", "code": "4"}
             ],
         },
     )
@@ -442,7 +456,7 @@ def test_g_no_duplicate_report_write_across_both_real_trigger_paths(tmp_path, mo
         lambda: {
             "current": {},
             "events": [
-                {"event_id": "evt-g2", "received_at": "2026-10-01T07:00:00+00:00", "code": "9"}
+                {"event_id": "evt-g2", "received_at": f"{today}T07:00:00+00:00", "code": "9"}
             ],
         },
     )
@@ -452,7 +466,7 @@ def test_g_no_duplicate_report_write_across_both_real_trigger_paths(tmp_path, mo
 
     # Third: the scheduled-fallback CLI, a wholly separate entrypoint/trigger
     # identity, for the same day.
-    monkeypatch.setattr(sys, "argv", ["run_closeout_maintenance.py", "--day", "2026-10-01"])
+    monkeypatch.setattr(sys, "argv", ["run_closeout_maintenance.py", "--day", today])
     exit_code = cli_mod.main()
     assert exit_code == 0
     assert report_calls["n"] == 1, "the scheduled fallback must not re-run maintenance or write a report once the day is already complete"

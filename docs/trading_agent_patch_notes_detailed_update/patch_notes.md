@@ -1610,3 +1610,88 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - The real paper-account connection check also remains untested today, for the same reason as the prior update: the live trading process was still actively using that same connection throughout, and testing it at the same time was judged unsafe.
 - Both of these being open is exactly why this validation effort is still not being marked complete -- reporting it honestly as open is the correct outcome here, not a setback.
 - See `docs/daily_patch/2026-09-30_p1_3_eod_cascade_attempt_and_paper_pending.md`.
+
+# 2026-09-30 - P1.2 Daily UEF Automation Integration
+
+- The prepared daily task invokes only the existing canonical UEF entry point after closeout.
+- Clock time is not readiness: existing source-freshness contracts still reject stale or incomplete input.
+- Each verified COMPLETE generation is indexed once for P1.2 observation; the registry is derived metadata, while COMPLETE manifests and verified pointers remain authoritative.
+- The first registered same-day run published a valid 2026-09-30 COMPLETE authority and one observation.
+- The required second-run idempotency check failed: it created a different COMPLETE generation and advanced current/latest before the registry rejected the conflicting already-observed-day authority. P1.2 closure is blocked pending a separately scoped idempotency repair.
+- No historical backfill, frozen UEF change, trading change, or Docker change was introduced.
+- See `docs/daily_patch/2026-09-30_p1_2_daily_automation_integration.md`.
+
+# 2026-09-30 - P1.3 EOD Cascade: Confirmed Reachable (Correction)
+
+- A closer read-only investigation found that the end-of-day trigger mechanism reported as unconfirmed earlier today actually does work correctly -- the earlier check was looking in the wrong place in the saved data, not a real gap in the system. This is now proven directly, including that a duplicate signal correctly does not trigger a second run.
+- Traced the exact code path a real market-close signal takes, step by step, from the program's entry point through to the actual end-of-day report generation, confirming every step is reachable and none of it is blocked by time-of-day.
+- Re-examined the exact same data produced by the earlier attempt and found the proof was there all along -- it had simply been checked in the wrong location within the saved file.
+- Directly confirmed the full chain: a market-close signal is accepted, recorded so it won't be processed twice, the end-of-day process runs, and a complete set of daily report files is produced.
+- Separately proved duplicate protection works: sending a second, equivalent close signal was correctly recognized as already handled and did not produce a second run or a second set of reports.
+- This required no code changes and no new build -- it is a correction to how the earlier result was read, not a fix to the system itself.
+- All previously passed results remain valid and unaffected by this correction.
+- See `docs/daily_patch/2026-09-30_p1_3_eod_cascade_confirmed_reachable_correction.md`.
+
+# 2026-09-30 - P1.3 Final Closure Attempt: Paper Connectivity + Resource Benchmark
+
+- Successfully connected the exact accepted Docker build to the real practice-account broker sandbox and confirmed both login and account-balance lookup work correctly. A third check -- looking up open orders -- was blocked, but for a clear, understood reason: an existing safety switch treats that specific lookup the same as placing an order, so it stays off intentionally while that safety switch is off. Because not all three checks passed, this validation effort remains open rather than closed. Separately, a full three-way comparison of running the trading system on this computer directly versus inside Docker is now complete, with real measured numbers.
+- Gracefully stopped and later safely restarted the live trading process twice today, as explicitly authorized, to make room for these checks -- confirmed healthy and running normally throughout and at the end.
+- Confirmed real login to the broker's own official practice-account sandbox succeeds using the accepted build, with no secrets ever shown or saved anywhere they shouldn't be.
+- Confirmed a real account-balance lookup against the practice sandbox succeeds and returns valid data.
+- The open-orders lookup was blocked -- traced this precisely: every existing way this system has of checking open orders shares the same safety switch as actually placing an order, and that switch is intentionally left off for this kind of check. This is a specific, understood gap, not an unexplained failure, and is reported openly rather than worked around.
+- No order of any kind was placed or even attempted at any point.
+- Completed a fair, three-way, real-world comparison: running everything directly on this computer, running the trading process directly with just the monitoring dashboard in Docker, and running the trading process itself inside Docker alongside the dashboard.
+- Found that having the monitoring dashboard available at all has a real, roughly fixed cost on this computer regardless of where the trading process itself runs -- and that cost is the same whether the trading process is inside Docker or not.
+- Found that the Docker version of the trading process itself is actually lighter than the version running directly on this computer.
+- This is a real measurement, not a preference -- and it does not by itself decide which setup should be used going forward; that remains a separate, deliberate decision for later.
+- Left the live trading process running normally with the monitoring dashboard available, matching how things were set up before this comparison began, with nothing extra left running afterward.
+- See `docs/daily_patch/2026-09-30_p1_3_final_closure_paper_and_resource_benchmark.md`.
+
+# 2026-09-30 - P1.3 CLOSED -- Broker Read/Write Gate Fix
+
+- Found and fixed the exact, narrow reason the one remaining broker check was blocked, verified the fix against the real practice-account sandbox, and re-confirmed that placing a real order is still fully blocked. With that, every required Docker acceptance check now passes and this validation effort is complete.
+- Traced the one remaining blocked check to its precise cause: a safety switch meant only for actually placing orders was, by mistake, also blocking simply looking things up.
+- Made the smallest possible correction so that looking things up (logging in, checking account balance, checking open orders) works independently from the switch that controls actually placing orders -- reusing an existing, already-trusted way this system already tells the two apart, rather than inventing a new one.
+- Re-verified, live, against the real practice-account sandbox with real order placement still turned off: logging in works, checking account balance works, and checking open orders now also works correctly -- with a valid, genuine "nothing pending" result, not a blocked error.
+- Immediately re-confirmed, in that same live session, that actually placing a real buy or sell order is still completely blocked, exactly as intended -- proving the fix only affected lookups, not real order-placement safety.
+- Because this involved an actual code change, a new officially-accepted build was created and independently re-verified byte-for-byte against its own source, separate from today's unrelated in-progress work elsewhere in the project.
+- Re-ran only the specific checks this small change could plausibly affect, rather than repeating everything already proven earlier -- all of them passed, and nothing else needed to be redone.
+- No order of any kind was placed at any point. The live trading process itself was left completely untouched throughout this step.
+- With this fix, every required check for this Docker validation effort now passes, and it is being marked complete.
+- Which environment to actually run going forward remains a separate, deliberate decision for later -- this only confirms Docker works correctly and safely; it does not choose it.
+- See `docs/daily_patch/2026-09-30_p1_3_closed_read_write_gate_fix.md`.
+
+# 2026-10-01 - Storage and Temporary-Artifact Hygiene
+
+- Added a permanent project rule requiring temporary worktrees, test scratch, debugging artifacts, and temporary build
+  resources to be cleaned after their results are safely preserved.
+- Worktrees must be reused where compatible, limited to one temporary worktree per task, and removed after commit
+  preservation is verified. Branches may remain for provenance.
+- Successful tests leave no repo-local pytest scratch; failed-run evidence is bounded rather than accumulated.
+- Docker storage cleanup is evidence-aware: inspect use, remove only proven-unused temporary resources, retain
+  operational, rollback, and frozen acceptance artifacts, and never broadly prune without explicit approval.
+- Canonical market, broker, runtime, UEF, registry, report, and audit evidence is explicitly protected.
+- See `docs/daily_patch/2026-10-01_storage_temp_artifact_hygiene.md`.
+
+# 2026-10-01 - Host Runtime Pivot and Closeout Exactly-Once Completion
+
+- The trading system's production runtime is moving back to running directly on the Host machine, not inside Docker. This is a practical choice about day-to-day reliability, not a sign Docker could not technically do the job -- Docker already passed its earlier acceptance checks, and that validation stands.
+- Docker production adoption is being deferred, not adopted and not declared broken -- purely an operational-complexity decision for a single-machine setup.
+- A second real Docker restart failure happened today with the exact same cause already found and recorded earlier -- kept on record as further evidence, not treated as a new problem. The underlying Docker restart issue remains openly recorded as backlog and is explicitly not fixed by this change.
+- Today's real Docker production-day incident, and the earlier one, are both kept on record as history -- neither is erased or rewritten.
+- The end-of-day closeout process now remembers, durably, once it has fully and successfully finished for a given day -- so if it gets triggered again afterward (from either of the two ways it can start), it correctly recognizes the day is already done instead of redoing the entire reporting battery a second time.
+- Specifically confirmed: retrying an already-completed day reports it as already done rather than redoing the work; the scheduled fallback reports the same already-done result after a successful run from the other path; and a genuinely interrupted attempt leaves no completion record, so a later retry is still allowed through.
+- The daily evaluation script now keeps its own simple start/end record -- who ran it, when, and how it ended -- separate from the Windows Scheduler's own history, so a crash or a hang leaves a trace behind.
+- Added a simple read-only status check an operator can run to see, for any given day, whether the daily evaluation was scheduled-and-ran, never started, started-and-failed, or started-and-completed -- rather than only trusting that the schedule itself is turned on.
+- The daily evaluation task's battery-power restriction was removed today, applied and verified.
+- The daily evaluation task's logon type was changed today so it can run unattended without anyone logged in, applied and verified against the task's own configuration. A live end-to-end unattended trigger was deliberately not performed, to avoid creating a second, duplicate evaluation record for a day that already has a valid, complete one -- the configuration-level confirmation is recorded as today's validation evidence for this change.
+- Today's daily evaluation output was checked and confirmed genuine -- the evaluation itself, once it ran at 17:42 KST, completed correctly.
+- However, today's run did not meet its scheduled 16:45 KST time -- it started about 57 minutes late. This is recorded plainly as a missed on-time run, not treated as a success just because the evaluation itself eventually completed correctly.
+- The exact cause of the late start is not fully proven. The unattended-incapable logon setting is a plausible, consistent contributing factor, but this has not been confirmed as the sole or definitive cause.
+- The next real test of today's scheduling correction is the regular 2026-10-02 16:45 KST run -- its outcome is not yet known and is not being assumed in advance.
+- Finished cleaning up the temporary work areas left over from the earlier Docker testing, and removed the Docker test images from that testing that are no longer needed, while leaving today's real (if now stopped) production Docker container and its image untouched for review.
+- A permanent project rule for cleaning up temporary work areas, test leftovers, and unused Docker build resources was added today, separately from this runtime change.
+- Also found and fixed a real gap: the live daily-evaluation schedule was actually running from code that did not yet contain an already-approved fix for safely handling a day that gets re-evaluated more than once (making repeated runs produce the exact same result, and never silently redoing work or creating conflicting records for a day already finished correctly). That approved fix has now been brought into the same branch the live schedule actually runs from, verified with 29 passing tests plus a broader 65-test regression sweep.
+- A follow-up check on 2026-10-01's result initially looked like the underlying input data had changed after the fact, which would have been serious. It was traced precisely instead to how the check itself was run (a path-formatting difference, not real data change): the same underlying data, checked the same way the real daily task checks it, produces the exact same result as the original. No actual upstream data drift occurred, repeated runs remain consistent, and 2026-10-01's result stands as valid. The narrow path-formatting detail itself is noted for a later, separate, deliberate fix -- not changed today.
+- No change to UEF core logic, Step5C, Step5D, or trading/strategy behavior in any of today's work.
+- See `docs/daily_patch/2026-10-01_host_runtime_pivot_final_ops_cleanup.md` and `docs/daily_patch/2026-10-01_p1_2_idempotency_determinism_integration.md`.
