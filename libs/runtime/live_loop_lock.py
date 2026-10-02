@@ -301,6 +301,30 @@ def acquire_live_loop_lock(
             pass
 
 
+def _atomic_write_json(lock_path: Path, payload: Dict[str, Any]) -> None:
+    """tmp-file-in-the-same-directory + os.replace() -- same idiom already
+    used throughout this codebase (e.g. closeout_completion_authority.py,
+    daily_uef_pipeline.py's own _atomic_write_text). A direct write_text()
+    here is read-torn-able: scripts/docker_healthcheck.py (and any other
+    reader) does read_text() then json.loads() with no retry, so a reader
+    landing mid-write sees a truncated/partial file and fails closed with
+    JSONDecodeError -- reproduced directly during the 2026-10-02 P1.3-R1
+    controlled restart validation (a live healthcheck tick caught exactly
+    this race against the plain write_text() this function used before).
+    os.replace() is atomic on both POSIX and Windows -- a reader always
+    sees either the complete old content or the complete new content,
+    never a partial write."""
+    tmp_path = lock_path.with_name(lock_path.name + f".tmp-{os.getpid()}-{int(time.time() * 1e6)}")
+    try:
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_path, lock_path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+
 def refresh_live_loop_lock(
     lock_path: Path,
     *,
@@ -324,7 +348,7 @@ def refresh_live_loop_lock(
 
         if not lock_path.exists():
             try:
-                lock_path.write_text(json.dumps(current_payload, ensure_ascii=False), encoding="utf-8")
+                _atomic_write_json(lock_path, current_payload)
                 return True, "lock_recreated"
             except Exception:
                 return False, "lock_recreate_failed"
@@ -349,7 +373,7 @@ def refresh_live_loop_lock(
         payload["heartbeat_epoch"] = now
         payload["heartbeat_ts"] = now_iso
         try:
-            lock_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            _atomic_write_json(lock_path, payload)
             return True, "lock_heartbeat_updated"
         except Exception:
             return False, "lock_refresh_failed"
@@ -389,7 +413,7 @@ def refresh_live_loop_lock(
     payload["heartbeat_epoch"] = int(time.time())
     payload["heartbeat_ts"] = now_iso
     try:
-        lock_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        _atomic_write_json(lock_path, payload)
         return True, "lock_heartbeat_updated"
     except Exception:
         return False, "lock_refresh_failed"

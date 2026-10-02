@@ -13,6 +13,66 @@ from libs.runtime.kiwoom_market_status import KiwoomMarketStatusListener
 from libs.runtime.runtime_ownership import SQLiteRuntimeOwnershipStore, new_runtime_instance_id
 
 _DEFAULT_OWNERSHIP_LEASE_SEC = 30.0
+_DEFAULT_OWNERSHIP_WAIT_POLL_SEC = 1.0
+_DEFAULT_OWNERSHIP_WAIT_MARGIN_SEC = 5.0
+
+
+def _acquire_ownership_with_bounded_wait(
+    store: SQLiteRuntimeOwnershipStore,
+    *,
+    instance_id: str,
+    lease_seconds: float,
+    allow_stale_takeover: bool,
+    sleep_fn: Callable[[float], None],
+    wait_poll_sec: float = _DEFAULT_OWNERSHIP_WAIT_POLL_SEC,
+    wait_margin_sec: float = _DEFAULT_OWNERSHIP_WAIT_MARGIN_SEC,
+):
+    """2026-10-02 P1.3-R2 fix: a still-VALID other-instance lease is never
+    stolen (acquire() itself already refuses this unconditionally -- this
+    wrapper changes nothing about that). What changes is the CALLER's
+    reaction: instead of giving up immediately (which, under Docker's
+    on-failure restart policy, meant every restart attempt completing
+    faster than the old lease's own natural expiry would exhaust the
+    retry budget before the legitimate stale-takeover path ever became
+    reachable -- a second restart-storm layer, found during the P1.3-R1
+    controlled-restart validation, distinct from and on top of the
+    already-fixed PID-1 file-lock defect), this waits -- bounded by the
+    REJECTED attempt's own observed `lease_expires_at` (not a second,
+    independently-hardcoded duration) plus a small fixed safety margin --
+    then retries. Once the real lease has legitimately expired,
+    store.acquire()'s own existing stale-takeover path (unchanged, not
+    reimplemented here) takes over exactly as it already does outside
+    Docker. A lease that is somehow still valid at the end of the bounded
+    window (clock skew, a genuinely very-long-lived other owner) times out
+    and fails closed -- this never loops forever and never dispatches
+    before ownership is actually held.
+    """
+    deadline: Optional[float] = None
+    waited = False
+    while True:
+        result = store.acquire(
+            instance_id=instance_id, lease_seconds=lease_seconds,
+            allow_stale_takeover=allow_stale_takeover,
+        )
+        if result.ok or result.reason != "owned_by_other_instance":
+            if waited and result.ok:
+                print(f"OWNERSHIP_ACQUIRED_AFTER_WAIT instance_id={instance_id} generation={result.generation}")
+            return result
+
+        now = time.time()
+        remaining_ttl = max(0.0, result.lease_expires_at - now)
+        if deadline is None:
+            deadline = now + remaining_ttl + float(wait_margin_sec)
+            print(
+                f"OWNERSHIP_WAIT_STARTED current_owner={result.holder} "
+                f"lease_expiry={result.lease_expires_at} remaining_ttl_sec={remaining_ttl:.1f}"
+            )
+        if now >= deadline:
+            print(f"OWNERSHIP_WAIT_TIMEOUT current_owner={result.holder}")
+            return result
+        print(f"OWNERSHIP_RETRY remaining_wait_sec={deadline - now:.1f}")
+        waited = True
+        sleep_fn(max(0.01, min(float(wait_poll_sec), deadline - now)))
 
 
 class ShutdownRequested:
@@ -124,6 +184,8 @@ def run_live_loop(
     ownership_lease_sec: float = _DEFAULT_OWNERSHIP_LEASE_SEC,
     allow_stale_ownership_takeover: bool = True,
     strict_owner_identity: bool = True,
+    ownership_wait_poll_sec: float = _DEFAULT_OWNERSHIP_WAIT_POLL_SEC,
+    ownership_wait_margin_sec: float = _DEFAULT_OWNERSHIP_WAIT_MARGIN_SEC,
 ) -> int:
     if state.get("m13_tick_pipeline") == "legacy_m10" and not state.get("symbol"):
         raise SystemExit("symbol is required for legacy_m10: set --symbol or SYMBOL/UNIVERSE_SYMBOLS env")
@@ -174,10 +236,14 @@ def run_live_loop(
     # different instance_id.
     store = ownership_store if ownership_store is not None else SQLiteRuntimeOwnershipStore()
     instance_id = str(ownership_instance_id or new_runtime_instance_id())
-    ownership_result = store.acquire(
+    ownership_result = _acquire_ownership_with_bounded_wait(
+        store,
         instance_id=instance_id,
         lease_seconds=float(ownership_lease_sec),
         allow_stale_takeover=bool(allow_stale_ownership_takeover),
+        sleep_fn=sleep_fn,
+        wait_poll_sec=float(ownership_wait_poll_sec),
+        wait_margin_sec=float(ownership_wait_margin_sec),
     )
     if not ownership_result.ok:
         print(
