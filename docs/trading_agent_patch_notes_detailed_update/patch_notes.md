@@ -1738,3 +1738,15 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - No orders were placed, the real production state and the running host process were not touched, and nothing about trading, the daily evaluation, or the order-ownership checks changed.
 - Not yet done: the production-state after-hours Docker test against the real paper broker, and the cutover itself. The host remains the live runtime.
 - See `docs/daily_patch/2026-10-02_p1_3_r5_healthcheck_shutdown_recovery_matrix.md`.
+
+# 2026-10-02 - P1.3 Production Docker Cutover
+
+- The live trading runtime moved from the Windows host process to a single Docker container after the close. The host runtime was stopped, the container took over the ownership claim, read the paper broker successfully without placing orders, and survived one deliberate crash-and-restart exactly as designed.
+- Before the move the account was flat (no positions, no open orders, no pending order claims, no orphans) and the day's closeout was complete.
+- The runtime-mode setting was switched to docker: the scheduled tasks stay in place but no longer start the host live loop, while the market-data collectors that feed the daily evaluation are still started by the same code path (proven with a dry run that records launches instead of executing them).
+- Exactly one container, trading-agent-live, runs the exact-SHA image; the previous failed container was kept under an incident name. It restarts through Docker's own restart policy, and Docker Desktop's existing logon autostart is the only startup authority.
+- Auth, account, open-order and market-data reads against the paper broker passed from inside the container; no order was submitted.
+- One controlled restart: the new process was recognised as a new process despite reusing process number 1, waited about 23 seconds for the old claim to expire, took over as generation 3, stayed healthy and never entered a restart loop. A triggered watchdog run did not bring the host runtime back.
+- Not yet proven: fresh green execution readiness and clearing of the post-takeover recovery flag, because market hours are hard-coded and every after-hours cycle is skipped. This is the first-session validation item. The boot simulation was static (no reboot or Docker restart).
+- Rollback is one setting: runtime mode back to host, stop the container, let the claim expire, start the host.
+- See `docs/daily_patch/2026-10-02_p1_3_production_docker_cutover.md`.
