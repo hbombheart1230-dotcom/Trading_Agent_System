@@ -1695,3 +1695,46 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - A follow-up check on 2026-10-01's result initially looked like the underlying input data had changed after the fact, which would have been serious. It was traced precisely instead to how the check itself was run (a path-formatting difference, not real data change): the same underlying data, checked the same way the real daily task checks it, produces the exact same result as the original. No actual upstream data drift occurred, repeated runs remain consistent, and 2026-10-01's result stands as valid. The narrow path-formatting detail itself is noted for a later, separate, deliberate fix -- not changed today.
 - No change to UEF core logic, Step5C, Step5D, or trading/strategy behavior in any of today's work.
 - See `docs/daily_patch/2026-10-01_host_runtime_pivot_final_ops_cleanup.md` and `docs/daily_patch/2026-10-01_p1_2_idempotency_determinism_integration.md`.
+
+# 2026-10-02 - P1.3 R1/R2 Docker Restart Storm Fixes
+
+- Two separate safety checks were each making a restarted Docker trading runtime give up in under a second, which used up its restart allowance and left it stopped. Both were corrected without weakening the rule that a live owner is never displaced.
+- The first check identified the previous owner only by a process number. A restarted container always gets the same small number, so it mistook its own dead predecessor for a live owner. It now also compares the exact start time of the process, so a dead or reused number is recognised and a genuinely live owner is still never taken over.
+- The second check refused a restart while the previous owner's 30-second claim was still valid, and gave up instantly. It now waits, for no longer than that claim's own remaining time plus a few seconds, and then takes over only once the claim has legitimately expired. If the claim is somehow still valid at the end of the wait it stops safely instead of forcing its way in.
+- The shared lock file is now written in one step so a status check can no longer read a half-written file and wrongly report a failure.
+- Today's real Host run showed the strict check protecting the system as designed: a scheduled backup closeout that started mid-way through a 55-minute closeout was turned away rather than allowed to take over, and a later duplicate was skipped as already complete.
+- Docker is still not the live trading runtime. The Host runtime traded and closed out normally today and was not touched.
+- See `docs/daily_patch/2026-10-02_p1_3_r1_r4_docker_restart_safety.md`.
+
+# 2026-10-02 - P1.3 R3 Ownership Heartbeat
+
+- The runtime's claim of ownership expires after 30 seconds but was only renewed between work cycles. Real cycles often took longer, and today's end-of-day closeout took about 55 minutes, so a perfectly healthy owner could look abandoned. A background heartbeat now renews the same claim independently of how long the work takes.
+- The heartbeat renews the same existing ownership claim, not a new one, and starts only after ownership is actually obtained.
+- It renews roughly every third of the claim's length, derived from the claim's own setting rather than a separate number.
+- It can only renew the exact claim this process holds. If another runtime has taken over, the renewal fails, the heartbeat stops for good and the process refuses to start any further work and exits.
+- If the claim cannot be renewed for a full claim period (for example the store is unreachable) it also stops work rather than assuming it is still the owner.
+- A crash stops the heartbeat with the process, so the claim lapses naturally and the bounded wait and takeover from the previous fix apply unchanged.
+- A step already in progress is never interrupted; only the next one is prevented.
+- See `docs/daily_patch/2026-10-02_p1_3_r1_r4_docker_restart_safety.md`.
+
+# 2026-10-02 - P1.3 R4 Runtime Mode Switch
+
+- The weekday 09:00 and watchdog Windows tasks start both the live trading process and the data collectors that feed the daily evaluation, so they cannot simply be switched off when trading moves to Docker. A single setting, TRADING_RUNTIME_MODE, now lets those tasks keep running the collectors while declining to start live trading on the host.
+- host (the default) behaves exactly as before.
+- docker makes the host skip only the live-trading launch, with the logged reason HOST_LIVE_START_SKIPPED_CANONICAL_RUNTIME_DOCKER. The Q10, Q11 and Q12 collectors, the opportunity engine and the macro collectors keep running, and the watchdog neither starts nor tries to recover host live trading.
+- Any other value also skips the host launch, so a typo can never accidentally allow a second live runtime.
+- Rolling back means setting the mode back to host.
+- The setting is configuration only: it does not inspect Docker or process numbers, and it is not an ownership authority. The ownership claim remains the only thing that decides who may trade.
+- The setting is not turned on yet, so tomorrow's tasks still behave as today until the cutover.
+- See `docs/daily_patch/2026-10-02_p1_3_r1_r4_docker_restart_safety.md`.
+
+# 2026-10-02 - P1.3 R5 Healthcheck, Shutdown and Recovery Evidence
+
+- Docker's health check used to judge a runtime by the lock file's heartbeat, which is only updated between work cycles, so long legitimate cycles made a healthy runtime look unhealthy. It now follows the same ownership claim the heartbeat renews, and lock-file information is only a diagnostic. A stop request during a restart wait is also now handled safely, and a full crash-and-recovery sequence was demonstrated in an isolated Docker environment.
+- The health check is strictly read-only: it opens the ownership store in read-only mode and never acquires, renews, releases or changes anything.
+- It reports an explicit reason: owner, generation and remaining claim time when healthy; no valid owner, another runtime owning, or an identity mismatch when not.
+- A stop signal received while a restarted runtime is waiting for the old claim now makes it exit cleanly without ever taking ownership. Before this, the signal handler was installed too late and the process was simply killed.
+- In an isolated Docker run with the real recovery logic and a mock broker: after a hard crash and a quick restart the process stayed alive and waited, took over only when the old claim expired, and showed recovery-required until the mock broker was healthy, then went fresh and green. A second restart repeated this deterministically, and Docker's restart counter stayed at zero.
+- No orders were placed, the real production state and the running host process were not touched, and nothing about trading, the daily evaluation, or the order-ownership checks changed.
+- Not yet done: the production-state after-hours Docker test against the real paper broker, and the cutover itself. The host remains the live runtime.
+- See `docs/daily_patch/2026-10-02_p1_3_r5_healthcheck_shutdown_recovery_matrix.md`.
