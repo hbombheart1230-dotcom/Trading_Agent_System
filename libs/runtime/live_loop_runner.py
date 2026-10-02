@@ -11,11 +11,12 @@ from typing import Any, Callable, Dict, Optional
 from libs.runtime.live_loop_lock import acquire_live_loop_lock, refresh_live_loop_lock, release_live_loop_lock
 from libs.runtime.market_hours import MarketHours, now_kst
 from libs.runtime.kiwoom_market_status import KiwoomMarketStatusListener
-from libs.runtime.runtime_ownership import SQLiteRuntimeOwnershipStore, new_runtime_instance_id
+from libs.runtime.runtime_ownership import OwnershipResult, SQLiteRuntimeOwnershipStore, new_runtime_instance_id
 
 _DEFAULT_OWNERSHIP_LEASE_SEC = 30.0
 _DEFAULT_OWNERSHIP_WAIT_POLL_SEC = 1.0
 _DEFAULT_OWNERSHIP_WAIT_MARGIN_SEC = 5.0
+SHUTDOWN_REQUESTED_REASON = "shutdown_requested"
 
 
 def _acquire_ownership_with_bounded_wait(
@@ -27,6 +28,7 @@ def _acquire_ownership_with_bounded_wait(
     sleep_fn: Callable[[float], None],
     wait_poll_sec: float = _DEFAULT_OWNERSHIP_WAIT_POLL_SEC,
     wait_margin_sec: float = _DEFAULT_OWNERSHIP_WAIT_MARGIN_SEC,
+    should_abort: Optional[Callable[[], bool]] = None,
 ):
     """2026-10-02 P1.3-R2 fix: a still-VALID other-instance lease is never
     stolen (acquire() itself already refuses this unconditionally -- this
@@ -51,6 +53,17 @@ def _acquire_ownership_with_bounded_wait(
     deadline: Optional[float] = None
     waited = False
     while True:
+        # P1.3-R5-B: a shutdown request (SIGTERM / `docker stop`) is checked
+        # BEFORE every acquire attempt, so a contender told to stop never
+        # takes ownership afterwards -- not even if the old lease happens to
+        # expire right after the request. Legitimate stale takeover with no
+        # shutdown request is unchanged.
+        if should_abort is not None and should_abort():
+            print(f"OWNERSHIP_WAIT_ABORTED_SHUTDOWN instance_id={instance_id} waited={waited}")
+            return OwnershipResult(
+                ok=False, reason=SHUTDOWN_REQUESTED_REASON, instance_id=instance_id, generation=0,
+                acquired_at=0.0, lease_expires_at=0.0, recovery_required=False,
+            )
         result = store.acquire(
             instance_id=instance_id, lease_seconds=lease_seconds,
             allow_stale_takeover=allow_stale_takeover,
@@ -351,6 +364,14 @@ def run_live_loop(
     # dispatch." This SQLite/CAS lease is that answer, and fails CLOSED
     # (never silently proceeds) whenever a still-live lease is held by a
     # different instance_id.
+    # P1.3-R5-B: the shutdown flag/handler is installed BEFORE the (possibly
+    # waiting) ownership acquisition, not after it. Previously a SIGTERM
+    # during R2's bounded wait hit Python's default action -- instant
+    # termination, the PID lock left behind -- and a flag-less loop would
+    # still have taken ownership after the wait.
+    flag = _resolve_shutdown_flag(shutdown_flag)
+    if install_signal_handler:
+        install_shutdown_handler(flag)
     store = ownership_store if ownership_store is not None else SQLiteRuntimeOwnershipStore()
     instance_id = str(ownership_instance_id or new_runtime_instance_id())
     ownership_result = _acquire_ownership_with_bounded_wait(
@@ -361,7 +382,15 @@ def run_live_loop(
         sleep_fn=sleep_fn,
         wait_poll_sec=float(ownership_wait_poll_sec),
         wait_margin_sec=float(ownership_wait_margin_sec),
+        should_abort=lambda: bool(flag.requested),
     )
+    if not ownership_result.ok and ownership_result.reason == SHUTDOWN_REQUESTED_REASON:
+        # Asked to stop before ownership was ever acquired: nothing was
+        # dispatched, no lease/generation changed, no heartbeat was started.
+        # Release only the coarse PID lock this process already holds.
+        print(f"live_loop shutdown requested via {flag.signal_name or 'flag'} before ownership was acquired; exiting cleanly")
+        release_live_loop_lock(lock_path, strict_owner_identity=strict_owner_identity, owner_token=owner_token)
+        return 0
     if not ownership_result.ok:
         print(
             f"live_loop ownership not acquired: {ownership_result.reason} "
@@ -394,10 +423,6 @@ def run_live_loop(
         "recovery_required": bool(ownership_result.recovery_required),
         "acquired_at": ownership_result.acquired_at,
     }
-
-    flag = _resolve_shutdown_flag(shutdown_flag)
-    if install_signal_handler:
-        install_shutdown_handler(flag)
 
     exit_code = 0
     market_status_listener = KiwoomMarketStatusListener()

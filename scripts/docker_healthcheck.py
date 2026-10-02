@@ -13,11 +13,24 @@ code -- an orphaned Step5C claim awaiting manual reconciliation means
 container is unhealthy and should be restarted" (that would let Docker's
 restart policy attempt to paper over an execution-safety condition, which
 is exactly backwards).
+
+P1.3-R5 (2026-10-02): LIVENESS now follows the canonical SQLite runtime-
+ownership heartbeat/lease (the same row libs/runtime/live_loop_runner.py's
+OwnershipHeartbeat refreshes on a background thread, independent of tick
+duration) instead of the lock file's heartbeat, which is only rewritten at
+tick boundaries -- legitimate ticks (p90 ~137s, max ~434s, closeout ~55 min)
+routinely exceeded the old 120s lock-heartbeat threshold and made a healthy
+runtime look unhealthy. The lock file is now DIAGNOSTIC process-identity
+information only. This script is strictly READ-ONLY: it opens the ownership
+database with SQLite's read-only URI mode (it never creates, migrates,
+acquires, refreshes, releases, or otherwise writes anything), and it does not
+touch the lock file, readiness snapshot, or generation.
 """
 
 from __future__ import annotations
 
 import json
+import socket
 import sqlite3
 import sys
 import time
@@ -28,25 +41,78 @@ STATE_PATH = Path("/app/data/state.json")
 INTENT_DB_PATH = Path("/app/data/state/intent_state.db")
 OWNERSHIP_DB_PATH = Path("/app/data/state/runtime_ownership.db")
 EXECUTION_READINESS_SNAPSHOT_PATH = Path("/app/data/state/execution_readiness.json")
-LIVENESS_MAX_HEARTBEAT_AGE_SEC = 120
 OWNERSHIP_STALE_WARN_AGE_SEC = 120
 EXECUTION_READINESS_SNAPSHOT_MAX_AGE_SEC = 120
 
 
-def _check_liveness() -> tuple[bool, str]:
+def _own_hostname() -> str:
+    return socket.gethostname()
+
+
+def _read_ownership_row() -> dict | None:
+    """READ-ONLY view of the canonical ownership row (mode=ro: never creates
+    the file, never writes). Returns None when no owner row exists; raises if
+    the database itself is missing/unreadable."""
+    uri = f"file:{OWNERSHIP_DB_PATH.as_posix()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT owner_id, instance_id, acquired_at, heartbeat_at, lease_expires_at, generation "
+            "FROM runtime_ownership WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row is not None else None
+
+
+def _read_lock_diagnostic() -> tuple[dict | None, str]:
+    """Lock file = diagnostic process identity only. Never an authority:
+    missing/unreadable/torn is reported, not failed."""
     if not LOCK_PATH.exists():
-        return False, "lock_file_missing"
+        return None, "lock_diagnostic=missing"
     try:
         payload = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     except Exception as exc:
-        return False, f"lock_file_unreadable:{type(exc).__name__}"
-    heartbeat_epoch = int(payload.get("heartbeat_epoch") or payload.get("started_epoch") or 0)
-    if heartbeat_epoch <= 0:
-        return False, "no_heartbeat_recorded_yet"
-    age = int(time.time()) - heartbeat_epoch
-    if age > LIVENESS_MAX_HEARTBEAT_AGE_SEC:
-        return False, f"heartbeat_stale_age_sec={age}"
-    return True, f"heartbeat_age_sec={age}"
+        return None, f"lock_diagnostic=unreadable:{type(exc).__name__}"
+    if not isinstance(payload, dict):
+        return None, "lock_diagnostic=unreadable:not_an_object"
+    hb = int(payload.get("heartbeat_epoch") or 0)
+    hb_age = f" lock_tick_heartbeat_age_sec={int(time.time()) - hb}" if hb > 0 else ""
+    return payload, f"lock_diagnostic=pid:{payload.get('pid')}{hb_age}"
+
+
+def _check_liveness() -> tuple[bool, str]:
+    """Healthy iff a canonical owner row exists, its lease is currently valid,
+    and it names THIS container's runtime. Authority = SQLite ownership only;
+    the lock heartbeat's age is deliberately ignored."""
+    try:
+        row = _read_ownership_row()
+    except Exception as exc:
+        return False, f"ownership_db_unreadable:{type(exc).__name__}"
+    lock_payload, lock_note = _read_lock_diagnostic()
+    if row is None:
+        return False, f"no_valid_owner:no_owner_row {lock_note}"
+
+    now = time.time()
+    remaining = row["lease_expires_at"] - now
+    ident = (
+        f"instance_id={str(row['instance_id'])[:12]} generation={row['generation']} "
+        f"owner_id={row['owner_id']} heartbeat_age_sec={int(now - row['heartbeat_at'])} "
+        f"lease_remaining_sec={int(remaining)}"
+    )
+    if remaining <= 0:
+        return False, f"no_valid_owner:lease_expired {ident} {lock_note}"
+
+    owner_host, _, owner_pid = str(row["owner_id"]).rpartition(":")
+    if owner_host != _own_hostname():
+        return False, f"owner_is_other_runtime {ident} own_host={_own_hostname()} {lock_note}"
+    if lock_payload is not None and str(lock_payload.get("pid")) != owner_pid:
+        return False, (
+            f"ownership_identity_mismatch sqlite_owner_pid={owner_pid} "
+            f"lock_pid={lock_payload.get('pid')} {ident}"
+        )
+    return True, f"source=sqlite_ownership {ident} {lock_note}"
 
 
 def _check_readiness() -> tuple[bool, str]:
@@ -107,11 +173,7 @@ def _report_ownership_status() -> str:
     exited non-zero and stopped its own loop; this line is purely for an
     operator/dashboard to see the lease's current holder/age/generation."""
     try:
-        sys.path.insert(0, "/app")
-        from libs.runtime.runtime_ownership import SQLiteRuntimeOwnershipStore
-
-        store = SQLiteRuntimeOwnershipStore(str(OWNERSHIP_DB_PATH))
-        status = store.status()
+        status = _read_ownership_row()
         if status is None:
             return "NO_OWNER"
         now = time.time()
