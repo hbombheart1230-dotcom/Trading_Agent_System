@@ -206,7 +206,20 @@ def test_own7_stale_takeover_requires_explicit_recovery_flag(db_path):
 def test_run_live_loop_startup_blocked_by_live_ownership_lease(tmp_path, capsys):
     db_path = str(tmp_path / "runtime_ownership.db")
     other_store = SQLiteRuntimeOwnershipStore(db_path)
-    other_store.acquire(instance_id=new_runtime_instance_id(), owner_id="other-runtime", lease_seconds=60.0)
+    # P1.3-R2: a still-valid foreign lease is no longer refused instantly --
+    # startup waits a bounded time (the observed lease's own remaining TTL +
+    # margin) and only then fails closed. The foreign owner here is genuinely
+    # alive for the whole window (it keeps refreshing, via the injected
+    # sleep), so it must never be displaced, nothing may dispatch, and the
+    # coarse PID lock must still be released. A tiny lease keeps the bounded
+    # window short; the original instant-refusal intent (valid owner is never
+    # displaced) is unchanged.
+    other_id = new_runtime_instance_id()
+    other_store.acquire(instance_id=other_id, owner_id="other-runtime", lease_seconds=0.3)
+
+    def _sleep_while_other_owner_stays_alive(seconds):
+        time.sleep(seconds)
+        other_store.refresh(instance_id=other_id, lease_seconds=0.3)
 
     calls = {"count": 0}
 
@@ -223,19 +236,32 @@ def test_run_live_loop_startup_blocked_by_live_ownership_lease(tmp_path, capsys)
         lock_stale_sec=30,
         now_fn=lambda: datetime(2026, 4, 20, 9, 5, tzinfo=KST),
         run_once_fn=run_once_fn,
-        sleep_fn=lambda _: None,
+        sleep_fn=_sleep_while_other_owner_stays_alive,
         ownership_store=SQLiteRuntimeOwnershipStore(db_path),
+        ownership_lease_sec=0.3,
+        ownership_wait_poll_sec=0.05,
+        ownership_wait_margin_sec=0.1,
     )
 
     assert rc == 6
     assert calls["count"] == 0
     assert "ownership not acquired" in capsys.readouterr().out
+    assert SQLiteRuntimeOwnershipStore(db_path).status()["instance_id"] == other_id
     # The coarse PID lock must not be left held after an ownership-gated
     # refusal -- a later, legitimate retry must still be able to acquire it.
     assert not (tmp_path / "m13.lock").exists()
 
 
-def test_run_live_loop_stops_when_ownership_lost_mid_loop(tmp_path, capsys):
+def test_run_live_loop_stops_when_ownership_lost_mid_loop(tmp_path, capsys, monkeypatch):
+    # P1.3-R3: a live process now keeps its lease fresh from a background
+    # heartbeat, so a takeover can no longer happen merely because a tick ran
+    # long. This test's scenario is a FULLY STALLED process (e.g. SIGSTOP /
+    # host freeze: tick AND heartbeat both starved), so the heartbeat thread
+    # is deliberately not started here; the heartbeat's own loss handling is
+    # covered in tests/test_m13_lease_heartbeat_fix.py.
+    import libs.runtime.live_loop_runner as runner_mod
+
+    monkeypatch.setattr(runner_mod.OwnershipHeartbeat, "start", lambda self: self)
     db_path = str(tmp_path / "runtime_ownership.db")
     calls = {"count": 0}
 

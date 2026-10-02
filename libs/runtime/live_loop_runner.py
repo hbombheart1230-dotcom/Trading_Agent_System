@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import signal
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -73,6 +74,121 @@ def _acquire_ownership_with_bounded_wait(
         print(f"OWNERSHIP_RETRY remaining_wait_sec={deadline - now:.1f}")
         waited = True
         sleep_fn(max(0.01, min(float(wait_poll_sec), deadline - now)))
+
+
+_HEARTBEAT_INTERVAL_DIVISOR = 3.0
+_MIN_HEARTBEAT_INTERVAL_SEC = 0.02
+
+
+def _resolve_heartbeat_interval_sec(lease_seconds: float, explicit: Optional[float]) -> float:
+    """Derived from the EXISTING lease length (never a second, competing
+    contract): a third of the lease, i.e. two full refreshes can be missed
+    before the lease lapses. An explicit override must still sit strictly
+    inside the lease, otherwise the lease could expire between refreshes."""
+    lease = float(lease_seconds)
+    interval = float(explicit) if explicit is not None else lease / _HEARTBEAT_INTERVAL_DIVISOR
+    interval = max(_MIN_HEARTBEAT_INTERVAL_SEC, interval)
+    if interval >= lease:
+        raise ValueError(f"ownership heartbeat interval {interval}s must be < lease_seconds {lease}s")
+    return interval
+
+
+class OwnershipHeartbeat:
+    """P1.3-R3 (2026-10-02): keeps the SAME existing SQLite ownership lease
+    fresh while a long tick runs, independent of tick boundaries.
+
+    Before this, ownership was refreshed only at tick boundaries, but ticks
+    were observed at median ~36s / p90 ~137s / max ~434s (and a ~55 minute
+    closeout tick), against a 30s lease -- so a perfectly healthy, live owner
+    routinely looked stale and a contender's stale-takeover would have
+    succeeded mid-tick. This is NOT a second ownership authority: it only
+    calls SQLiteRuntimeOwnershipStore.refresh() (unchanged), whose CAS is
+    keyed on this process's own instance_id, so it can only ever extend a
+    lease this exact instance still holds. After a takeover the row's
+    instance_id differs, refresh() fails, and this heartbeat records the loss,
+    stops, and never writes again -- a superseded owner is never resurrected.
+    Generation is compared as well as instance_id as a belt-and-braces check.
+
+    Fail closed: ownership loss, or no successful refresh for a full lease
+    period (store unreachable), sets `lost`; run_live_loop checks it before
+    starting any tick and exits 7, exactly like its existing ownership-loss
+    path. This cannot interrupt a tick already in flight (same constraint as
+    the shutdown flag -- Step5C/guards remain the only dispatch authority).
+
+    A crash takes the daemon thread down with the process, so the lease then
+    expires naturally and R2's bounded wait / the store's stale-takeover path
+    apply unchanged.
+    """
+
+    def __init__(
+        self,
+        store: SQLiteRuntimeOwnershipStore,
+        *,
+        instance_id: str,
+        generation: int,
+        lease_seconds: float,
+        interval_sec: Optional[float] = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._store = store
+        self.instance_id = str(instance_id)
+        self.generation = int(generation)
+        self.lease_seconds = float(lease_seconds)
+        self.interval_sec = _resolve_heartbeat_interval_sec(self.lease_seconds, interval_sec)
+        self._clock = clock
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self.lost_reason = ""
+        self.refresh_count = 0
+        self._thread: Optional[threading.Thread] = None
+        self._last_ok = self._clock()
+
+    @property
+    def lost(self) -> bool:
+        return self._lost.is_set()
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self) -> "OwnershipHeartbeat":
+        if self._thread is not None:
+            return self
+        self._last_ok = self._clock()
+        self._thread = threading.Thread(target=self._run, name="ownership-heartbeat", daemon=True)
+        self._thread.start()
+        return self
+
+    def _mark_lost(self, reason: str) -> None:
+        self.lost_reason = reason
+        self._lost.set()
+        print(
+            f"OWNERSHIP_HEARTBEAT_LOST instance_id={self.instance_id} generation={self.generation} "
+            f"reason={reason} -- no further tick will start"
+        )
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_sec):
+            try:
+                result = self._store.refresh(instance_id=self.instance_id, lease_seconds=self.lease_seconds)
+            except Exception as exc:  # noqa: BLE001 - a transient store error must not kill the heartbeat
+                if self._clock() - self._last_ok >= self.lease_seconds:
+                    self._mark_lost(f"refresh_errors_exceeded_lease:{type(exc).__name__}")
+                    return
+                continue
+            if not result.ok or int(result.generation) != self.generation:
+                self._mark_lost(result.reason if not result.ok else "generation_changed")
+                return
+            self._last_ok = self._clock()
+            self.refresh_count += 1
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """Stops the thread and waits for it, so no refresh can land after
+        the caller releases the lease."""
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
 
 
 class ShutdownRequested:
@@ -186,6 +302,7 @@ def run_live_loop(
     strict_owner_identity: bool = True,
     ownership_wait_poll_sec: float = _DEFAULT_OWNERSHIP_WAIT_POLL_SEC,
     ownership_wait_margin_sec: float = _DEFAULT_OWNERSHIP_WAIT_MARGIN_SEC,
+    ownership_heartbeat_interval_sec: Optional[float] = None,
 ) -> int:
     if state.get("m13_tick_pipeline") == "legacy_m10" and not state.get("symbol"):
         raise SystemExit("symbol is required for legacy_m10: set --symbol or SYMBOL/UNIVERSE_SYMBOLS env")
@@ -285,10 +402,26 @@ def run_live_loop(
     exit_code = 0
     market_status_listener = KiwoomMarketStatusListener()
     market_status_listener.start()
+    heartbeat: Optional[OwnershipHeartbeat] = None
     try:
+        # P1.3-R3: started only now that ownership is held; keeps the SAME
+        # SQLite lease fresh during long ticks (see OwnershipHeartbeat).
+        heartbeat = OwnershipHeartbeat(
+            store,
+            instance_id=instance_id,
+            generation=int(ownership_result.generation),
+            lease_seconds=float(ownership_lease_sec),
+            interval_sec=ownership_heartbeat_interval_sec,
+        ).start()
         while True:
             if flag.requested:
                 print(f"live_loop draining: shutdown requested via {flag.signal_name}, no new tick will start")
+                break
+            if heartbeat.lost:
+                print(
+                    f"live_loop ownership lost (heartbeat): {heartbeat.lost_reason} -- stopping before next tick"
+                )
+                exit_code = 7
                 break
             refresh_live_loop_lock(lock_path, strict_owner_identity=strict_owner_identity, owner_token=owner_token)
             ownership_refresh = store.refresh(instance_id=instance_id, lease_seconds=float(ownership_lease_sec))
@@ -320,7 +453,7 @@ def run_live_loop(
             # (default 60s) later -- meaningful under Docker's default
             # stop_grace_period (10s) before SIGKILL.
             remaining = max(1, int(sleep_sec))
-            while remaining > 0 and not flag.requested:
+            while remaining > 0 and not flag.requested and not heartbeat.lost:
                 step = min(1.0, float(remaining))
                 sleep_fn(step)
                 remaining -= step
@@ -329,6 +462,10 @@ def run_live_loop(
                 break
     finally:
         market_status_listener.stop()
+        # Stop (and join) the heartbeat BEFORE releasing anything, so no
+        # refresh can land after the lease is released.
+        if heartbeat is not None:
+            heartbeat.stop()
         release_live_loop_lock(lock_path, strict_owner_identity=strict_owner_identity, owner_token=owner_token)
         # Only ever releases OUR OWN lease (release() is a strict no-op
         # otherwise) -- if ownership was already lost to a takeover above,

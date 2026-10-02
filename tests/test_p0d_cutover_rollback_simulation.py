@@ -127,7 +127,18 @@ def test_section20_docker_cannot_start_while_host_still_owns(tmp_path):
     refused, not silently run concurrently."""
     db_path = str(tmp_path / "runtime_ownership.db")
     host_store = SQLiteRuntimeOwnershipStore(db_path)
-    host_store.acquire(instance_id="host-still-running", owner_id="host", lease_seconds=60.0)
+    # P1.3-R2: startup now waits a bounded time on a still-valid foreign lease
+    # before failing closed (instead of refusing instantly). The host here is
+    # genuinely still running -- it keeps refreshing -- so the Docker side
+    # must still never displace it. A tiny lease keeps the bounded window
+    # short; the safety property under test is unchanged.
+    host_store.acquire(instance_id="host-still-running", owner_id="host", lease_seconds=0.3)
+
+    def _sleep_while_host_stays_alive(seconds):
+        import time as _time
+
+        _time.sleep(seconds)
+        host_store.refresh(instance_id="host-still-running", lease_seconds=0.3)
 
     calls = {"count": 0}
 
@@ -140,8 +151,11 @@ def test_section20_docker_cannot_start_while_host_still_owns(tmp_path):
         lock_stale_sec=30,
         now_fn=lambda: datetime(2026, 4, 20, 9, 5, tzinfo=KST),
         run_once_fn=lambda state, dt=None: (calls.__setitem__("count", calls["count"] + 1), state)[1],
-        sleep_fn=lambda _: None,
+        sleep_fn=_sleep_while_host_stays_alive,
         ownership_store=SQLiteRuntimeOwnershipStore(db_path),
+        ownership_lease_sec=0.3,
+        ownership_wait_poll_sec=0.05,
+        ownership_wait_margin_sec=0.1,
     )
 
     assert rc == 6
