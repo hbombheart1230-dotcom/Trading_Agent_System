@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from libs.runtime.entrypoint_common import to_int
 from libs.runtime.live_loop_lock import pid_exists
 from libs.runtime.live_loop_process_query import query_live_loop_processes, read_lock_owner_pid
+from libs.runtime.runtime_mode import host_live_start_decision
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -275,6 +276,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if bool(args.status_only):
         result = {"ok": True, "status_only": True, "status": _session_status(root, lock_path)}
         print(json.dumps(result, ensure_ascii=False, indent=2) if bool(args.json) else _render_text(result))
+        return 0
+
+    # P1.3-R4 defense in depth (the scheduled chain already skips this script
+    # via scripts/start_trading_day.py): in docker mode this launcher must do
+    # NOTHING -- not even its "stop stale session / remove stale lock" step,
+    # which could otherwise touch the lock a Docker owner holds. To use the
+    # Host runtime again (e.g. rollback), set TRADING_RUNTIME_MODE=host first.
+    allowed, runtime_mode, skip_reason = host_live_start_decision(env_file=root / ".env")
+    if not allowed:
+        result = {"ok": True, "skipped": True, "reason": skip_reason, "runtime_mode": runtime_mode}
+        print(json.dumps(result, ensure_ascii=False, indent=2) if bool(args.json) else f"{skip_reason} runtime_mode={runtime_mode}")
         return 0
 
     stop = _stop_existing_session(root, lock_path, wait_sec=int(args.stop_wait_sec))

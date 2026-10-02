@@ -27,6 +27,7 @@ from libs.runtime.host_supervisor import (
 from libs.runtime.live_loop_lock import pid_exists
 from libs.runtime.live_loop_process_query import query_live_loop_processes, read_lock_owner_pid
 from libs.runtime.process_tree_status import summarize_process_tree
+from libs.runtime.runtime_mode import host_live_start_decision
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -288,7 +289,25 @@ def _live_status() -> dict[str, Any]:
     }
 
 
+def _host_live_gate() -> tuple[bool, dict[str, Any]]:
+    """P1.3-R4: (host_live_start_allowed, info). Reads ONLY the explicit
+    TRADING_RUNTIME_MODE configuration (libs/runtime/runtime_mode.py) --
+    never Docker container state or Host PID liveness. In docker mode only
+    the Host mutation-capable live launch is suppressed; the shadow/
+    collector loops this script also owns are untouched."""
+    allowed, mode, reason = host_live_start_decision(env_file=ROOT / ".env")
+    info: dict[str, Any] = {"runtime_mode": mode}
+    if not allowed:
+        info["skipped"] = True
+        info["reason"] = reason
+        print(f"{reason} runtime_mode={mode}")
+    return allowed, info
+
+
 def _start_live() -> dict[str, Any]:
+    allowed, info = _host_live_gate()
+    if not allowed:
+        return {"returncode": 0, "stdout": "", "stderr": "", "payload": {}, **info}
     cmd = [
         _runtime_python(),
         str(ROOT / "scripts" / "restart_live_session.py"),
@@ -434,16 +453,21 @@ def run_start(day: str) -> dict[str, Any]:
         payload["status_path"] = str(_write_status(day, "start", payload))
         return payload
     shadow = _ensure_shadow_loops(day, replace_stale=True)
+    host_live_allowed, host_live_info = _host_live_gate()
     live_before = _live_status()
     live_start = {"skipped": True, "reason": "already_running"}
     start_reason = recovery_reason(live_before)
-    if start_reason:
+    if not host_live_allowed:
+        live_start = dict(host_live_info)
+        start_reason = str(host_live_info.get("reason") or "")
+    elif start_reason:
         live_start = _start_live()
     live_after = _live_status()
     payload = {
         "schema_version": "trading_day_start.v1",
         "day": day,
         "mode": "start",
+        "runtime_mode": host_live_info.get("runtime_mode"),
         "generated_at": datetime.now(KST).isoformat(timespec="seconds"),
         "live_before": live_before,
         "live_start": live_start,
@@ -453,7 +477,10 @@ def run_start(day: str) -> dict[str, Any]:
         "start_reason": start_reason or "runtime_healthy",
     }
     blockers: list[dict[str, Any]] = []
-    if not live_after.get("running"):
+    # Docker canonical mode: the Host live loop is intentionally not
+    # started, so its absence is not a blocker (collector blockers below
+    # still apply unchanged).
+    if host_live_allowed and not live_after.get("running"):
         blockers.append({"code": "live_session_not_running"})
     for name, row in (shadow.get("running") or {}).items():
         if to_int(row.get("current_day_count"), 0) <= 0:
@@ -526,6 +553,36 @@ def run_watchdog(day: str, *, lookback_min: int) -> dict[str, Any]:
         return payload
     shadow = _ensure_shadow_loops(day, replace_stale=True)
     q10_closeout_recovery = _q10_closeout_recovery(day)
+    host_live_allowed, host_live_info = _host_live_gate()
+    if not host_live_allowed:
+        # P1.3-R4: Docker is the canonical trading runtime. The watchdog
+        # keeps maintaining every collector/shadow loop above, but makes NO
+        # Host live-recovery decision: it does not evaluate or write the Host
+        # supervisor's restart state and never launches run_session.
+        live_status = _live_status()
+        event_health = _event_health(day, lookback_min=lookback_min)
+        blockers = [dict(b) for b in list(event_health.get("blockers") or [])]
+        for name, row in (shadow.get("running") or {}).items():
+            if to_int(row.get("current_day_count"), 0) <= 0:
+                blockers.append({"code": f"{name}_not_running_for_day"})
+        payload = {
+            "schema_version": "trading_day_watchdog.v1",
+            "day": day,
+            "mode": "watchdog",
+            "runtime_mode": host_live_info.get("runtime_mode"),
+            "generated_at": datetime.now(KST).isoformat(timespec="seconds"),
+            "live_before": live_status,
+            "live_start": dict(host_live_info),
+            "live_after": live_status,
+            "shadow_loops": shadow,
+            "event_health": event_health,
+            "supervisor": public_supervisor_summary(supervisor_state),
+            "blockers": blockers,
+            "ok": not blockers,
+            "q10_closeout_recovery": q10_closeout_recovery,
+        }
+        payload["status_path"] = str(_write_status(day, "watchdog", payload))
+        return payload
     live_before = _live_status()
     decision = evaluate_supervisor(live_before, supervisor_state, now=now)
     live_start = {"skipped": True, "reason": "already_running"}
