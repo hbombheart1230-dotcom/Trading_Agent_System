@@ -1750,3 +1750,13 @@ limitations: docs/evaluation/q12_vnext_crypto_equity_confirmation.md.
 - Not yet proven: fresh green execution readiness and clearing of the post-takeover recovery flag, because market hours are hard-coded and every after-hours cycle is skipped. This is the first-session validation item. The boot simulation was static (no reboot or Docker restart).
 - Rollback is one setting: runtime mode back to host, stop the container, let the claim expire, start the host.
 - See `docs/daily_patch/2026-10-02_p1_3_production_docker_cutover.md`.
+
+# 2026-10-03 - Agentra Root Migration Finalization
+
+- Finalized the one remaining privileged Windows Scheduler migration item after moving the repository root to `C:\Agentra`.
+- Re-registered `TradingAgent-DailyUefEvaluation` from an Administrator context while preserving its S4U principal, Limited RunLevel, triggers, schedule, settings, and disabled state.
+- All 13 registered TradingAgent tasks now reference `C:\Agentra`; active Scheduler references to `C:\Trading_Agent_System` are zero, and all tasks remain disabled for weekend maintenance.
+- Docker configuration remains pinned to the `trading-agent-observability` Compose identity with bind mounts under `C:/Agentra`; Docker and the live trading runtime were not restarted.
+- The rebuilt venv passed the dependency drift audit without re-adding historical or optional packages; deterministic, UEF/replay, execution-authority, and production-write-leakage validations remained green.
+- The migration was committed and pushed on `codex/observability-20260824`. The temporary compatibility junction `C:\Trading_Agent_System -> C:\Agentra` remains during soak; accumulated data and runtime state were not relocated.
+- See `docs/daily_patch/2026-10-03_agentra_root_migration.md`.

@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
-  "generated_for": "Trading_Agent_System",
-  "entry_count": 106,
+  "generated_for": "Agentra",
+  "entry_count": 107,
   "entries": [
     {
       "date": "2026-09-08",
@@ -2781,8 +2781,8 @@
         "libs/runtime/live_loop_runner.py"
       ],
       "status": "current"
-    }
-    ,{
+    },
+    {
       "date": "2026-10-03",
       "version": "Agentra Root Migration",
       "title": "Agentra physical root migration and external-boundary update",
@@ -2806,6 +2806,32 @@
         "deploy/compose/.env",
         "deploy/m28_launch_templates/windows/daily_uef_evaluation_task.xml",
         "requirements.txt"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-03",
+      "version": "Agentra Root Migration Finalization",
+      "title": "Agentra root migration fully finalized across Scheduler and Git",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY",
+        "SAFETY"
+      ],
+      "summary": "Completed the final privileged Scheduler update and Git finalization after the physical Agentra root migration.",
+      "details": [
+        "TradingAgent-DailyUefEvaluation was re-registered from an Administrator context with its S4U principal, Limited RunLevel, triggers, schedule, settings, and disabled state preserved.",
+        "All 13 registered TradingAgent tasks now reference C:\\Agentra; active Scheduler references to C:\\Trading_Agent_System are zero and all tasks remain disabled for weekend maintenance.",
+        "Docker configuration remains pinned to the trading-agent-observability Compose identity and resolves bind mounts under C:/Agentra; Docker and the live trading runtime were not restarted.",
+        "The rebuilt venv passed the dependency audit without adding historical or optional packages, and deterministic/UEF/replay/authority/leakage validations remained green.",
+        "The migration changes were committed and pushed on codex/observability-20260824; the temporary C:\\Trading_Agent_System compatibility junction remains for soak and no accumulated data or runtime state was relocated."
+      ],
+      "impact": "Agentra now has a canonical C:\\Agentra root with all active external registrations aligned while remaining safely shut down for weekend maintenance.",
+      "sources": [
+        "docs/daily_patch/2026-10-03_agentra_root_migration.md",
+        "deploy/m28_launch_templates/windows/daily_uef_evaluation_task.xml",
+        "deploy/compose/.env.example"
       ],
       "status": "current"
     }
