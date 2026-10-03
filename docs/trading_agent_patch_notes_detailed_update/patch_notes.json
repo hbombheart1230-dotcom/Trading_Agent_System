@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "generated_for": "Trading_Agent_System",
-  "entry_count": 105,
+  "entry_count": 106,
   "entries": [
     {
       "date": "2026-09-08",
@@ -2779,6 +2779,33 @@
         "libs/runtime/runtime_mode.py",
         "scripts/docker_healthcheck.py",
         "libs/runtime/live_loop_runner.py"
+      ],
+      "status": "current"
+    }
+    ,{
+      "date": "2026-10-03",
+      "version": "Agentra Root Migration",
+      "title": "Agentra physical root migration and external-boundary update",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY",
+        "SAFETY"
+      ],
+      "summary": "Moved the Agentra repository root to C:\\Agentra while preserving accumulated data, runtime state, Git identity, and the pinned Docker compose identity.",
+      "details": [
+        "Created a temporary compatibility junction from C:\\Trading_Agent_System to C:\\Agentra.",
+        "Recreated the Python virtual environment at C:\\Agentra\\venv from requirements.txt.",
+        "Updated Docker TRADING_REPO_ROOT and preserved the trading-agent-observability compose identity.",
+        "Migrated all 13 disabled Scheduler task definitions, including the S4U Daily UEF task with its S4U principal and scheduling semantics preserved.",
+        "No live runtime, Docker workload, trading logic, UEF logic, data, evidence, or execution authority was started or relocated."
+      ],
+      "impact": "Agentra is available at its new root with all disabled Scheduler registrations targeting the new path.",
+      "sources": [
+        "docs/daily_patch/2026-10-03_agentra_root_migration.md",
+        "deploy/compose/.env",
+        "deploy/m28_launch_templates/windows/daily_uef_evaluation_task.xml",
+        "requirements.txt"
       ],
       "status": "current"
     }
