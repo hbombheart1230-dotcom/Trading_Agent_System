@@ -10,6 +10,10 @@ from libs.runtime.commander.shadow_runtime import (
     reset_post_scanner_refresh_shadow,
     reset_pre_buy_refresh_shadow,
 )
+from libs.runtime.stage3_horizon_lineage import (
+    record_stage3_invocation,
+    record_stage3_response,
+)
 
 
 StateFn = Callable[[Dict[str, Any]], Dict[str, Any]]
@@ -63,7 +67,9 @@ def run_pre_scanner_strategist_cycle(
     reset_post_scanner_refresh_shadow(shadow_runtime)
     state = attach_reporter_feedback_policy_fn(state, selected_route="full_cycle", phase="session")
     state = attach_applied_policy_fn(state)
+    record_stage3_invocation(state)
     state = strategist_node_fn(state)
+    record_stage3_response(state)
     mark_strategist_executed(shadow_runtime, state, used_cached=False)
     market_changed = shadow_market_changed_fn(
         prior_cached_output if isinstance(prior_cached_output, dict) else {},

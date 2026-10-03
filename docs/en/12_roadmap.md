@@ -153,3 +153,173 @@ M28 implementation status (2026-02-20, in progress):
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
 - `docs/plan/m31_to_m36_post_golive_plan.md`
+
+## Post-Step6 and parallel tracks (2026-09-13 consolidation)
+
+This section is the single index for every plan that exists only as
+design/research documentation right now. **Nothing in this section has
+been implemented, committed as production behavior, or frozen**, except
+where a sub-item explicitly says so (Step5B/Step5C only). No code,
+runtime, strategy, prompt, evaluation-logic, or execution-logic change is
+implied by anything below until its own item says `IMPLEMENTED`.
+
+### Current position (as of 2026-09-13)
+
+| Track | Current status |
+|---|---|
+| A — Unified Evaluation Foundation (UEF) | UEF-1 Work Package A: **APPROVED / FORMALLY FROZEN** (Codex Final Freeze Audit, 2026-09-13, CRITICAL:0/HIGH:0/MEDIUM:0/LOW:0). UEF-2A (forward semantics inventory + policy contract, no engine): **IN PROGRESS**. UEF-2B..9: **PLANNED**, not started. |
+| B — Execution Safety | Step5B: done. Step5C: **frozen** (`docs/development/step5c_execution_owner.md`). Step5D/5E/Step6: **PLANNED**, not started. |
+| C — Q100 Alpha Research & Learning Program | **DESIGN STAGE**. See `docs/research/q100_research_and_learning_roadmap.md`. No code. |
+| D — Knowledge & Memory Layer / Obsidian UI | **CONCEPT STAGE**. See `docs/architecture/architecture_v2.md` §4.5–§4.9 and §8 (six-layer model). No code, no vault instantiated. |
+| Architecture V2 (7-role reclassification, harness principles) | **DESIGN ONLY**, documentation-only relabeling already written; implementation start condition is Step6 `REFACTORING COMPLETE` (unchanged). |
+
+### Track A — UEF-1 through UEF-9 (full plan)
+
+Formal phase definitions live in
+[`docs/research/unified_evaluation_foundation.md`](../research/unified_evaluation_foundation.md)
+(`## Full UEF roadmap (UEF-1..UEF-9)`). Summary:
+
+| Phase | Purpose | Status |
+|---|---|---|
+| UEF-1 | Canonical evaluation contract/record/identity (Work Package A) | **APPROVED / FORMALLY FROZEN** (2026-09-13) |
+| UEF-2 | Canonical forward-return / checkpoint engine | UEF-2A (inventory + policy contract) **IN PROGRESS**; UEF-2B (engine) PLANNED |
+| UEF-3 | Canonical cost & metric (WR/PF/Avg/MFE/MAE) engine | PLANNED |
+| UEF-4 | Legacy adapter layer (automated legacy-artifact → canonical record) | PLANNED |
+| UEF-5 | Historical recompute & dual-run (shadow canonical recompute vs. legacy) | PLANNED |
+| UEF-6 | Dedup & evidence lineage (cross-episode double-counting detection) | PLANNED |
+| UEF-7 | Alpha Board normalization onto canonical records | PLANNED |
+| UEF-8 | Fair-comparison validation (cross-hypothesis comparability gate) | PLANNED |
+| UEF-9 | Formal freeze / evaluation authority declaration | PLANNED |
+
+UEF-1 is now formally frozen (Codex Final Freeze Audit, 2026-09-13) and is the
+Record/Identity/Relation/Lineage authority for all later UEF phases. UEF-2A
+(forward semantics inventory + `ForwardPolicy` contract, no engine) is in
+progress under this frozen contract; no phase past UEF-2A has any code.
+
+### Track B — Execution Safety Step5D, Step5E, Step6
+
+| Step | Owns | Status |
+|---|---|---|
+| Step5D | Broker-truth reconciliation (detect/repair drift between local intent state and actual broker state) | PLANNED, not started |
+| Step5E | Safe operator recovery (manual intervention paths that cannot violate Step5B/5C invariants) | PLANNED, not started |
+| Step6 | Integrated execution-safety freeze (Step5B+5C+5D+5E declared jointly frozen) | PLANNED, not started |
+
+### Track C — Q100 Alpha Research & Learning Program
+
+Q100-1 through Q100-6 (Research Program Registry, Canonical Evidence
+Mapping, Reporter/Evaluator, Knowledge & Memory Layer, Retrieval Layer,
+Self-Improvement Loop) are fully defined in
+[`docs/research/q100_research_and_learning_roadmap.md`](../research/q100_research_and_learning_roadmap.md).
+Design stage only.
+
+### Track D — Knowledge & Memory Layer / Obsidian Knowledge UI
+
+Covered by Architecture V2 §4.5–§4.9 (Experience/Memory Layer, promotion
+hierarchy, vault reference layout) and §8 (six-layer system model). Concept
+stage only; Obsidian is never operational authority (see prohibition
+principles below).
+
+### Dependency graph (all four tracks)
+
+```
+Execution Safety (Track B)              UEF (Track A)
+Step5D -> Step5E -> Step6               UEF-1 -> UEF-2 -> UEF-3 -> UEF-4
+   |                                        |                (canonical engines
+   |                                        |                 + legacy adapters)
+   |                                        v
+   |                                   UEF-5 (dual-run) -> UEF-6 (dedup/lineage)
+   |                                        |                    |
+   |                                        v                    v
+   |                                   UEF-7 (Alpha Board) -> UEF-8 (fair comparison)
+   |                                        |
+   |                                        v
+   |                                   UEF-9 (freeze / evaluation authority)
+   |                                        |
+   +----------------------+----------------+
+                          v
+         Architecture V2 start condition:
+         Step6 REFACTORING COMPLETE AND UEF-9 freeze
+                          |
+                          v
+   Track C (Q100) can only read from UEF canonical output once UEF-3/UEF-4
+   exist; Q100 design work (registry, evidence mapping design) proceeds in
+   parallel today, but Q100 execution against real canonical metrics waits
+   on UEF-3/UEF-4.
+                          |
+                          v
+   Track D (Knowledge/Memory/Obsidian): memory-write/promotion logic is not
+   activated until Track A's evaluation foundation (at least UEF-3) exists
+   to write trustworthy `ExperienceRecord.outcome` fields from — see
+   prohibition principle 1 below. Vault/UI scaffolding itself may be
+   designed in parallel.
+```
+
+Track A (UEF) and Track B (Execution Safety) are **independent and may
+proceed in parallel** — UEF never touches `libs/execution/*`,
+`libs/supervisor/*`, or the Step5B/5C freeze contracts, and Execution
+Safety work never touches `libs/reporting/evaluation/canonical/*`.
+
+### Intraday operational principle
+
+The production evaluator/report path runs exactly as it does today,
+unchanged, for the entire duration of Tracks A/C/D's build-out. Any
+canonical (UEF) recompute runs **shadow/parallel-only** alongside it
+(this is UEF-5's explicit job) — canonical output is never substituted
+for a production number until UEF-9's formal freeze explicitly says so
+for that specific metric.
+
+### Priority tiers (P0 highest)
+
+- **P0** — Execution-safety correctness (Track B) and anything that could
+  affect real broker mutation. Always takes precedence over Track A/C/D
+  work if they ever conflict for engineering attention.
+- **P1** — UEF-1 Codex closure audit resolution (Track A, currently
+  blocking UEF-2+).
+- **P2** — UEF-2/UEF-3 (canonical forward-return + cost/metric engines) —
+  the highest-leverage next UEF step once UEF-1 is closed.
+- **P3** — Step5D/Step5E/Step6 (Track B continuation) — independent of P1/P2,
+  can run in parallel.
+- **P4** — UEF-4..UEF-8 (adapters, dual-run, dedup, Alpha Board
+  normalization, fair comparison) and Q100 design-stage work (registry,
+  evidence-mapping schema) in parallel.
+- **P5** — UEF-9 freeze, Q100 execution against live canonical metrics,
+  Knowledge/Memory Layer activation, Obsidian vault instantiation,
+  Architecture V2 implementation phases (V2-1..V2-7).
+
+### Prohibition principles (apply to every track above)
+
+1. No memory-learning activation (Q100-4, Q100-6, Architecture V2's
+   Experience Memory writes) before the evaluation foundation (at least
+   UEF-3) is ready — a promoted "lesson" must trace to a trustworthy
+   canonical metric, not a legacy number known to disagree with 4 other
+   modules' version of the same metric.
+2. Obsidian is never operational authority — it is a UI/exploration layer
+   over a plain-Markdown vault; if it is stale, corrupt, or unavailable,
+   nothing in Tracks A/B/C changes behavior.
+3. The Alpha Research Board never becomes its own metric-calculation
+   authority — UEF-3/UEF-7 own metric calculation; the Board only displays
+   and (post UEF-7) normalizes onto canonical records.
+4. Q100 never recomputes UEF metrics — Q100-2's "Canonical Evidence
+   Mapping" reads UEF canonical output; it does not implement a parallel
+   forward-return or cost engine.
+5. No legacy-evidence deletion during UEF migration — UEF-4/UEF-5 are
+   additive; every legacy artifact/report Q9-Q18/Opening Alpha/Alpha
+   Board already produced remains untouched and readable.
+6. UEF work never arbitrarily changes execution-safety freeze contracts —
+   Step5B/5C (and later 5D/5E/Step6) are owned exclusively by Track B;
+   Track A has no write access to those contracts, ever.
+7. No production strategy auto-modification — Q100-6's Self-Improvement
+   Loop is explicitly capped at maturity Level 4-5 (see the Q100 roadmap
+   doc) for the foreseeable planning horizon; Level 6-7 (autonomous
+   production strategy edits) is out of scope for every track above.
+
+### Execution-safety hardening track (unchanged detail)
+
+- Step5B (done) -> Step5C (frozen, see
+  `docs/development/step5c_execution_owner.md`) -> Step5D (broker truth
+  reconciliation, not started) -> Step5E (safe operator recovery, not
+  started) -> Step6 (integrated execution-safety freeze, not started).
+- Post-Step6: Architecture V2 — harness/memory/evaluation modernization.
+  See `docs/architecture/architecture_v2.md`. Design only; implementation
+  starts only after Step6 `REFACTORING COMPLETE` **and** UEF-9's freeze
+  (see dependency graph above). Does not change the Step5D/5E/Step6 order.

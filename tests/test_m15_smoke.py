@@ -165,8 +165,17 @@ def test_m15_executor_agent_blocks_buy_when_notional_guard_price_missing(
 
 def test_m15_real_mode_requires_execution_enabled(isolated_env: pytest.MonkeyPatch, tmp_path: Path):
     """
-    If executor selection is real and KIWOOM_MODE=real, then EXECUTION_ENABLED must be true.
-    We don't actually call the network: RealExecutor blocks before HTTP.
+    If executor selection is real and KIWOOM_MODE=real, then EXECUTION_ENABLED must be true
+    for a mutation (order dispatch). We don't actually call the network: RealExecutor blocks
+    before HTTP.
+
+    P1.3 Paper acceptance (2026-09-30) read/write gate separation: EXECUTION_ENABLED now gates
+    mutations only (see RealExecutor.preflight_check()'s own docstring), not reads -- so this
+    test isolates that specific check with ALLOW_REAL_EXECUTION=true (the live-account-only
+    guard, unrelated to and unchanged by this fix) and a genuine mutation-shaped request
+    (api_id=kt10000/BUY), rather than the previous generic "DUMMY_API" GET, which no longer
+    exercises the EXECUTION_ENABLED gate at all now that it is correctly understood as a
+    read-only call.
     """
     from libs.execution.executors.real_executor import RealExecutor
     from libs.execution.executors.base import ExecutionDisabledError
@@ -174,15 +183,16 @@ def test_m15_real_mode_requires_execution_enabled(isolated_env: pytest.MonkeyPat
 
     isolated_env.setenv("KIWOOM_MODE", "real")
     isolated_env.setenv("EXECUTION_ENABLED", "false")
+    isolated_env.setenv("ALLOW_REAL_EXECUTION", "true")
 
     ex = RealExecutor(Settings.from_env(env_path="__missing__.env"))
     req = PreparedRequest(
-        api_id="DUMMY_API",
-        method="GET",
-        path="/dummy",
+        api_id="kt10000",
+        method="POST",
+        path="/api/dostk/ordr",
         headers={},
         query={},
-        body={"stk_cd": "005930"},
+        body={"stk_cd": "005930", "ord_qty": "1"},
     )
 
     # Real executor must block before any HTTP call when execution is disabled.

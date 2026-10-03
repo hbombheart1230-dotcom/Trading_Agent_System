@@ -88,6 +88,15 @@ def build_monitor_exit_payload(
         "expected_exit_price": decision.get("expected_exit_price"),
         "expected_exit_price_source": str(decision.get("expected_exit_price_source") or ""),
         "expected_exit_price_fallback_used": bool(decision.get("expected_exit_price_fallback_used")),
+        "expected_exit_quote_rejected": bool(decision.get("expected_exit_quote_rejected")),
+        "expected_exit_quote_rejected_reason": str(
+            decision.get("expected_exit_quote_rejected_reason") or ""
+        ),
+        "expected_exit_quote_observed_epoch": decision.get("expected_exit_quote_observed_epoch"),
+        "expected_exit_quote_age_sec": decision.get("expected_exit_quote_age_sec"),
+        "expected_exit_quote_price_divergence_pct": decision.get(
+            "expected_exit_quote_price_divergence_pct"
+        ),
         "expected_exit_slippage_buffer_pct": decision.get("expected_exit_slippage_buffer_pct"),
         "expected_exit_pnl_ratio": decision.get("expected_exit_pnl_ratio"),
         "expected_exit_net_pnl_ratio": decision.get("expected_exit_net_pnl_ratio"),
@@ -143,11 +152,18 @@ def build_monitor_exit_payload(
         "position_entry_stop_loss_pct": decision.get("position_entry_stop_loss_pct"),
         "position_entry_stop_loss_source": str(decision.get("position_entry_stop_loss_source") or ""),
         "position_entry_invalidation_price": decision.get("position_entry_invalidation_price"),
+        "position_entry_raw_structure_stop_loss_pct": decision.get(
+            "position_entry_raw_structure_stop_loss_pct"
+        ),
+        "position_entry_min_structure_stop_loss_pct": decision.get(
+            "position_entry_min_structure_stop_loss_pct"
+        ),
         "effective_exit_policy": dict(effective_exit_policy_base),
         "hold_sec": hold_sec if hold_sec > 0 else None,
         "trailing_drawdown": decision.get("trailing_drawdown"),
         "peak_drawdown": decision.get("peak_drawdown"),
         "vwap_distance": decision.get("vwap_distance"),
+        "vwap_distance_source": str(decision.get("vwap_distance_source") or ""),
         "engine_vwap_distance_rejected": bool(decision.get("engine_vwap_distance_rejected")),
         "engine_vwap_distance_rejected_value": decision.get("engine_vwap_distance_rejected_value"),
         "engine_vwap_distance_rejected_reason": str(
@@ -164,6 +180,7 @@ def build_monitor_exit_payload(
         "volatility_ratio": decision.get("volatility_ratio"),
         "volatility_regime": str(features.get("engine_regime") or ""),
         "price_source": str(decision.get("_price_source") or ""),
+        "price_freshness": dict(decision.get("price_freshness") or {}),
         "effective_price_source": str(decision.get("effective_price_source") or ""),
         "price_source_policy": PRICE_SOURCE_POLICY_TEXT,
         "feature_source": str(decision.get("_feature_source") or ""),

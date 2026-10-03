@@ -39,6 +39,11 @@ from libs.reporting.trade_report_ai import (
     render_trade_summary_markdown_with_evaluation,
 )
 from libs.reporting.trade_regeneration_truth import merge_post_exit_shadow_recap
+from libs.reporting.controlled_mock_lane_report import (
+    apply_controlled_lane_story_surface,
+    attach_controlled_lane_report_surface,
+    build_controlled_lane_report_surface,
+)
 from libs.runtime.strategy_horizon_feedback import update_post_exit_shadow_with_price_observations
 
 
@@ -305,6 +310,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             symbol_hint = str((story_input.get("shared_facts") or {}).get("symbol") or "").strip().upper()
         if symbol_hint:
             affected_symbols.add(symbol_hint)
+        prior_entry = _read_json_object(trade_paths["entry_json"])
+        controlled_lane = build_controlled_lane_report_surface(
+            {"execution": {"order": {"symbol": symbol_hint}}},
+            day=day,
+            root=reports_root.parent,
+            prior_entry=prior_entry,
+        )
+        if controlled_lane:
+            story_input = apply_controlled_lane_story_surface(story_input, controlled_lane)
 
         compact_input_path = output_paths["compact_input_path"]
         compact_input = build_ai_trade_report_compact_input(story_input)
@@ -357,6 +371,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 model_info={"provider": "OpenRouter", "model": ""},
                 meta={"reason": "deterministic_no_llm"},
             )
+        report = attach_controlled_lane_report_surface(dict(report), story_input)
         report = _refresh_report_post_exit_shadow_from_state(
             dict(report),
             runtime_state=runtime_state,

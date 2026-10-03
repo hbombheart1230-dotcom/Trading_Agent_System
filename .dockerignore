@@ -1,0 +1,38 @@
+# deploy/trading/Dockerfile's build context is the repo root (../.. from
+# deploy/trading/). The Dockerfile only ever COPYs a small, explicit
+# allowlist of paths (graphs, libs, scripts, config, data/specs) -- this
+# file is defense-in-depth on top of that, not the primary safety
+# boundary, so it must never exclude anything the Dockerfile explicitly
+# COPYs. Do not add a rule here that shadows `data/specs/`.
+
+.env
+.env.*
+!.env.*.example
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest-work/
+.pytest-work*/
+pytest-work*/
+
+# Runtime/state data -- never baked into the image; supplied exclusively
+# via compose's persistent-volume bind mounts at container start.
+data/state/
+data/evidence_ledger/
+data/strategy_memory/
+data/logs/
+data/token_cache.json
+data/state.json
+reports/
+logs/
+
+# Mock Docker's own isolated validation state.
+deploy/trading/test-state/
+
+# Editors, OS, misc.
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db

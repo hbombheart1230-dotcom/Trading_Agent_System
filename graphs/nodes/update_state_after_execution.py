@@ -580,15 +580,23 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
         next_peak = max(_as_float(peak_map.get(symbol), 0.0), float(weighted_avg), float(price))
         if next_peak > 0.0:
             peak_map[symbol] = float(next_peak)
-        strategy_snapshot = _extract_strategist_output_snapshot(state)
+        strategy_snapshot = _extract_order_strategy_snapshot(order) or _extract_strategist_output_snapshot(state)
         if strategy_snapshot:
+            controlled_lane = bool(strategy_snapshot.get("controlled_mock_lane"))
             strategy_context_map[symbol] = {
                 "output": dict(strategy_snapshot),
                 "generated_epoch": _as_int(time.time(), 0),
-                "source": "buy_execution",
+                "source": (
+                    "controlled_mock_lane_buy_execution"
+                    if controlled_lane
+                    else "buy_execution"
+                ),
                 "horizon_state": initialize_horizon_state(
                     strategy_snapshot,
                     now_epoch=now_epoch,
+                ),
+                "horizon_revision_allowed": bool(
+                    strategy_snapshot.get("horizon_revision_allowed", True)
                 ),
             }
         entry_risk = _extract_entry_risk_from_order(order, symbol=symbol, now_epoch=now_epoch)
@@ -946,6 +954,18 @@ def _extract_strategist_output_snapshot(state: dict | None) -> dict:
     return dict(output) if output else {}
 
 
+def _extract_order_strategy_snapshot(order: dict | None) -> dict:
+    if not isinstance(order, dict):
+        return {}
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    snapshot = (
+        meta.get("position_strategy_snapshot")
+        if isinstance(meta.get("position_strategy_snapshot"), dict)
+        else {}
+    )
+    return dict(snapshot) if snapshot else {}
+
+
 def _extract_strategy_policy_snapshot(state: dict | None) -> dict:
     strategist_output = _extract_strategist_output_snapshot(state)
     strategy_policy = strategist_output.get("strategy_policy") if isinstance(strategist_output.get("strategy_policy"), dict) else {}
@@ -1284,6 +1304,13 @@ def update_state_after_execution(state: dict) -> dict:
     # update audit info always
     ps["last_execution_ok"] = ok
     ps["last_execution_reason"] = ex.get("reason") or ex.get("error") or ("blocked" if blocked else "")
+    # Phase 1 Step 5B: additive, observation-only. Does not change order_sent/
+    # fill/position bookkeeping below -- `ok` semantics and all existing
+    # branches are unchanged. Lets an operator see, from persisted_state
+    # alone, whether the last execution's `not ok` was a firm reject/not-sent
+    # or an unresolved UNKNOWN awaiting reconciliation.
+    ps["last_execution_broker_outcome"] = str(ex.get("broker_outcome") or "")
+    ps["last_execution_reconciliation_required"] = bool(ex.get("reconciliation_required"))
     _update_mock_broker_restricted_symbols(ps, ex)
 
     # Only set last_order_epoch when an order was actually sent.

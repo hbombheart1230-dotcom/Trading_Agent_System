@@ -16,6 +16,7 @@ from libs.approval.service import ApprovalService
 from libs.catalog.api_request_builder import PreparedRequest
 from libs.core.settings import Settings
 from libs.execution.executors.real_executor import RealExecutor
+from libs.execution.intent_identity import physical_order_fingerprint
 from libs.supervisor.intent_state_store import INTENT_STATE_APPROVED, INTENT_STATE_EXECUTING, SQLiteIntentStateStore
 from libs.supervisor.intent_store import IntentStore
 
@@ -153,14 +154,48 @@ def main(argv: Optional[List[str]] = None) -> int:
     duplicate_blocked = False
     if not bool(args.skip_duplicate_case):
         # Case 3: duplicate claim across two services.
+        #
+        # Step5C Fix2: ApprovalService no longer performs its own separate
+        # approved->executing CAS transition (that was the root cause of
+        # Codex's HIGH1 finding -- it gave the intent two independent
+        # claiming mechanisms with no ownership capability tying them
+        # together). execute_fn's own call chain (in production: ToolFacade
+        # /ExecutorAgent -> CompositeSkillRunner -> execute_owned_order) is
+        # now the only place that claims execution. These fakes stand in
+        # for that chain by calling the same canonical claim_execution/
+        # finish_execution primitives a real dispatch would.
         _seed_intent(store, intent_id="i-m24-6-dup")
         svc1.approve(intent_id="i-m24-6-dup", execution_enabled=False, execute_fn=lambda it: {"ok": True})
+        duplicate_fingerprint = physical_order_fingerprint(
+            {},
+            {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "order_type": "market",
+                "trde_tp": "3",
+            },
+        )
 
         dup_box: Dict[str, Any] = {}
 
+        def _dup_execute_fn(it):  # type: ignore[no-untyped-def]
+            # Should never actually run: _exec_main claims first below, so
+            # svc2.approve()'s own early status check rejects this duplicate
+            # before ever calling its execute_fn.
+            return {"ok": True, "id": "dup"}
+
         def _exec_main(intent):  # type: ignore[no-untyped-def]
-            dup = svc2.approve(intent_id="i-m24-6-dup", execution_enabled=True, execute_fn=lambda it: {"ok": True, "id": "dup"})
+            claim = state.claim_execution(
+                "i-m24-6-dup",
+                fingerprint=str(duplicate_fingerprint or ""),
+                owner="owner-main",
+            )
+            if not claim.get("claimed"):
+                return {"ok": False, "id": "main", "reason": claim.get("reason")}
+            dup = svc2.approve(intent_id="i-m24-6-dup", execution_enabled=True, execute_fn=_dup_execute_fn)
             dup_box["dup"] = dup
+            state.finish_execution("i-m24-6-dup", owner="owner-main", execution={"broker_outcome": "ACCEPTED"})
             return {"ok": True, "id": "main"}
 
         out = svc1.approve(intent_id="i-m24-6-dup", execution_enabled=True, execute_fn=_exec_main)

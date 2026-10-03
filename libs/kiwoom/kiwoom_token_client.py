@@ -7,6 +7,7 @@ import json
 import time
 
 from libs.core.http_client import HttpClient
+from libs.core.path_isolation import resolve_runtime_write_path
 from libs.core.settings import Settings
 from libs.kiwoom.token_cache import TokenCache, TokenRecord
 from libs.kiwoom.token_refresh_guard import TokenRefreshGuard
@@ -35,7 +36,19 @@ class KiwoomTokenClient:
     def __init__(self, settings: Settings, http: HttpClient):
         self.s = settings
         self.http = http
-        self.cache = TokenCache(self.s.kiwoom_token_cache_path)
+        # Call-time isolation (Phase 1 P0 Fix 2): Settings.kiwoom_token_cache_path
+        # defaults to a production-relative "./data/token_cache.json" with no
+        # isolation of its own -- TokenCache's saved token, and
+        # TokenRefreshGuard's lock/failure-cooldown sidecar files derived
+        # from the same path, must never land in the real repository during
+        # pytest. Confirmed leak: a test exercising a token-acquisition
+        # failure path writes a real, disk-persistent
+        # data/token_cache.json.refresh_failure.json cooldown record that
+        # then blocks unrelated tests hitting the same real path within the
+        # cooldown window, in a later pytest invocation as well as later in
+        # the same run.
+        self._token_cache_path = resolve_runtime_write_path(self.s.kiwoom_token_cache_path)
+        self.cache = TokenCache(self._token_cache_path)
 
     def ensure_token(self, *, dry_run: bool = False, force_refresh: bool = False) -> EnsureTokenResult:
         # ✅ Dry-run must be side-effect free and must not require secrets.
@@ -57,7 +70,7 @@ class KiwoomTokenClient:
                 reason="Valid cached token",
             )
 
-        guard = TokenRefreshGuard(self.s.kiwoom_token_cache_path)
+        guard = TokenRefreshGuard(self._token_cache_path)
         try:
             with guard:
                 # Another process may have refreshed while this process waited.

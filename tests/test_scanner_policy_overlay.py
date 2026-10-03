@@ -145,6 +145,9 @@ def test_regression_safety():
         scanner_policy=scanner_policy,
         mock_scan_results=mock_results,
     )
+    now_epoch = 1_800_000_000
+    state["now_epoch"] = now_epoch
+    state["persisted_state"]["last_trade_epoch"] = now_epoch - 60
     result = scanner_node(state)
     
     scanner_output = result.get("scanner_output", {})

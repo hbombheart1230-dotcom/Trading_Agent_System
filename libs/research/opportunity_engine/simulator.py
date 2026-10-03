@@ -44,6 +44,11 @@ def _forward_returns(
             "mfe_pct": round(((high / entry_price) - 1.0) * 100.0, 6),
             "mae_pct": round(((low / entry_price) - 1.0) * 100.0, 6),
             "observed_epoch": int(observed["ts"]),
+            # UEF-4B-5 FIX1 source-contract repair: persist the EXACT
+            # candle close this checkpoint's own return/MFE/MAE were
+            # computed from -- additive only, no selection/rounding
+            # semantics above are changed by this field's presence.
+            "observed_price": close,
         }
     eod = next(
         (
@@ -53,25 +58,30 @@ def _forward_returns(
         ),
         None,
     )
+    eod_close = float(eod.get("close") or 0.0) if eod is not None else 0.0
     output["EOD"] = (
         {
             "status": "observed",
             "return_pct": round(
-                ((float(eod.get("close") or 0.0) / entry_price) - 1.0) * 100.0,
+                ((eod_close / entry_price) - 1.0) * 100.0,
                 6,
             ),
             "net_return_pct": round(
                 _net_return_pct(
                     entry_price,
-                    float(eod.get("close") or 0.0),
+                    eod_close,
                     cost_pct,
                     slippage_pct,
                 ),
                 6,
             ),
             "observed_epoch": int(eod.get("ts") or 0),
+            # UEF-4B-5 FIX1 source-contract repair: same additive field
+            # as the forward horizons above -- the exact EOD candle
+            # close this checkpoint's own return was computed from.
+            "observed_price": eod_close,
         }
-        if eod is not None and float(eod.get("close") or 0.0) > 0.0
+        if eod is not None and eod_close > 0.0
         else {"status": "pending"}
     )
     return output

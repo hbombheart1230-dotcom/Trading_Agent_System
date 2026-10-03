@@ -1,0 +1,2839 @@
+{
+  "schema_version": "2.0",
+  "generated_for": "Agentra",
+  "entry_count": 107,
+  "entries": [
+    {
+      "date": "2026-09-08",
+      "version": "Opening Alpha Provenance Correction",
+      "title": "Rank price and passed guard audit trail",
+      "stage": "Trading Operations",
+      "types": [
+        "DATA_INTEGRITY",
+        "REPORTING"
+      ],
+      "summary": "Preserve available Rank observation prices and successful executable-price checks; correct misleading trade summary text.",
+      "details": [
+        "Missing selected price falls back to already available recent quote or timestamped minute close; no API calls or historical fabrication.",
+        "Applicable executable-price guard decisions are logged on pass and block and included in canonical Executor output.",
+        "Remove the hardcoded one-share cost description and quarantine unverified Opening Alpha LLM causal recommendations from the operator summary. Raw responses remain unchanged.",
+        "Eligibility, cost thresholds, sizing and exit conditions remain unchanged.",
+        "Stale max-hold/min-hold test expectations were aligned to the current safety contract, and metrics output now uses pytest write-path isolation without changing production paths.",
+        "Clean-room full regression completed with 3048 passed, 1 skipped and no production-path manifest leak."
+      ],
+      "impact": "Operational evidence is distinguishable from unverified LLM interpretation.",
+      "sources": [
+        "docs/daily_patch/2026-09-08_opening_alpha_observation_integrity.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-07",
+      "version": "Q12-vNext-V2",
+      "title": "Aligned US-session confirmation and timely Q12 inputs",
+      "stage": "Forward Validation",
+      "types": [
+        "REPORTING",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Separate matched US-session BTC return from weekend BTC movement; remove Q12 input dependence on report completion.",
+      "details": [
+        "V1 evidence is preserved; V2 uses exchange-calendar session closes and explicit missing matched references.",
+        "A lightweight opening input worker and direct 08:55 source read eliminate stale BTC MISSING caused by absent Woori candles.",
+        "Weekday 08:45 Q12 preopen task starts the same day-scoped runner before capture; 09:00 reuses it.",
+        "Candidate thresholds, scoring and broker execution are unchanged; data delivery timing is corrected."
+      ],
+      "impact": "Weekend interpretation correction is shadow-only; input delivery repair can restore previously delayed eligible candidates.",
+      "sources": [
+        "docs/evaluation/q12_vnext_delivery_time_alignment.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-07",
+      "version": "Q12-vNext",
+      "title": "Q12 crypto-equity forward confirmation",
+      "stage": "Forward Validation",
+      "types": [
+        "REPORTING"
+      ],
+      "summary": "Independent versioned COIN/MSTR confirmation and A/B shadow observations reuse existing Q12 evidence.",
+      "details": [
+        "Original Q12 candidate and execution contracts are unchanged.",
+        "Missing US sessions and minute evidence remain UNKNOWN; no older-close substitution.",
+        "Immutable observations and cost-adjusted forward outcomes retain restart provenance."
+      ],
+      "impact": "Reporting only; no historical backtest or additional broker order path.",
+      "sources": [
+        "docs/evaluation/q12_vnext_crypto_equity_confirmation.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-06",
+      "version": "Step5C",
+      "title": "Durable order-intent execution ownership",
+      "stage": "Execution Safety",
+      "types": [
+        "EXECUTION_SAFETY"
+      ],
+      "summary": "Atomic SQLite ownership prevents replay of one order intent across concurrent calls and restarts.",
+      "details": [
+        "Explicit intent identity is preserved; payload conflicts fail closed.",
+        "CAS/backend failure submits no broker request; UNKNOWN/crash requires reconciliation.",
+        "Existing guards, Supervisor policy and Step5B mutation safety are unchanged."
+      ],
+      "impact": "Logical execution ownership is independent of broker transport safety.",
+      "sources": [
+        "docs/development/step5c_execution_owner.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-05",
+      "version": "PRE-Step5C",
+      "title": "Observation and execution truth cleanup",
+      "stage": "Execution Safety",
+      "types": [
+        "EXECUTION_SAFETY",
+        "REPORTING"
+      ],
+      "summary": "Canonical rank, fail-honest broker outcomes and evidence-backed Q10 observation persistence.",
+      "details": [
+        "Unverified index close is informational only.",
+        "Permanent logical-attempt claims prevent crash replay; manifest writes are serialized.",
+        "Actual operation and validation evidence are separate."
+      ],
+      "impact": "No strategy threshold or Step5B mutation policy changes.",
+      "sources": [
+        "docs/development/pre_step5c_owner_closeout.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-02-07",
+      "version": "v0.1",
+      "title": "프로젝트 시작 — Traceable Core",
+      "stage": "Foundation",
+      "types": [
+        "CORE",
+        "OBSERVABILITY"
+      ],
+      "summary": "자동매매 기능보다 먼저 실행 이력을 남길 수 있는 코어와 추적 구조를 만들기 시작한 최초 단계.",
+      "details": [
+        "이벤트 로거와 run 단위 추적 개념을 코어 설계에 포함.",
+        "이후 모든 판단·승인·실행 결과를 run_id 중심으로 재현할 수 있는 방향 설정.",
+        "단순 주문 스크립트가 아니라 관찰 가능하고 검증 가능한 시스템을 목표로 확정."
+      ],
+      "impact": "이후 Reporter, audit, replay, evaluation이 붙을 수 있는 기반이 됨.",
+      "sources": [
+        "libs/event_logger.py",
+        "docs/08_observability.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-02-07 ~ 2026-02-10",
+      "version": "M1–M5",
+      "title": "Kiwoom API Catalog와 요청 파이프라인 골격",
+      "stage": "Foundation",
+      "types": [
+        "CORE",
+        "KIWOOM"
+      ],
+      "summary": "키움 REST API 원본을 바로 호출하지 않고 Catalog → Discovery → Planner → Request Builder로 정규화.",
+      "details": [
+        "공식 API 자료를 data/specs 계층으로 정규화하고 canonical API catalog 구성.",
+        "자연어/목표에서 필요한 API 후보를 찾는 Discovery와 호출 계획을 만드는 Planner 분리.",
+        "실제 HTTP 호출 전에 요청 객체를 만드는 Request Builder 계층 구축.",
+        "API raw 응답과 Agent가 소비하는 계약을 분리하기 위한 초기 구조 마련."
+      ],
+      "impact": "브로커 API 세부사항이 Agent 로직 전체로 퍼지는 것을 막는 첫 추상화 계층.",
+      "sources": [
+        "docs/plan/archive/m3_api_discovery.md",
+        "docs/plan/archive/m4_api_planner.md",
+        "docs/plan/archive/m5_prepare_request.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-02-09 ~ 2026-02-10",
+      "version": "M6–M7",
+      "title": "Token/HTTP Client, Read-only Account, Dry-run Guard",
+      "stage": "Execution Skeleton",
+      "types": [
+        "KIWOOM",
+        "SAFETY",
+        "EXECUTION"
+      ],
+      "summary": "브로커 연결을 읽기와 실행으로 나누고 주문은 dry-run/guard 뒤에서만 가능하도록 경계를 만들기 시작.",
+      "details": [
+        "Token client와 공통 HTTP client 도입.",
+        "계좌 조회를 read-only snapshot 형태로 먼저 구현.",
+        "Supervisor를 거치는 주문 dry-run 경로와 실행 전 guard 도입.",
+        "실주문보다 모의·검증 경로를 우선하는 mock-first 원칙 고정."
+      ],
+      "impact": "'데이터를 읽는 코드'와 '돈을 움직이는 코드'가 분리되기 시작함.",
+      "sources": [
+        "docs/plan/archive/m6_token_client.md",
+        "docs/plan/archive/m6_readonly_account.md",
+        "docs/plan/archive/m7_order_dry_run.md",
+        "docs/plan/archive/m7_supervisor.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-02-10",
+      "version": "M8–M10",
+      "title": "Decision Packet → Supervisor → Executor Live Pipeline",
+      "stage": "Execution Skeleton",
+      "types": [
+        "RUNTIME",
+        "EXECUTION",
+        "SAFETY"
+      ],
+      "summary": "판단 결과를 표준 패킷으로 만들고 Supervisor와 Executor를 통해 stateful runtime에 연결.",
+      "details": [
+        "Decision Packet 계약과 executor wiring 구성.",
+        "읽기 snapshot과 판단 결과를 실제 실행 계층에 연결하는 live pipeline 골격 구축.",
+        "실행 전 approval/guard와 실행 후 결과 기록의 책임을 분리.",
+        "상태를 가진 반복 실행 구조로 확장."
+      ],
+      "impact": "단발성 API 호출에서 반복 가능한 trading runtime으로 넘어가는 전환점.",
+      "sources": [
+        "docs/plan/m8_decision_packet.md",
+        "docs/plan/m8_wiring.md",
+        "docs/plan/m8_executors.md",
+        "docs/plan/m10_live_pipeline.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-02-11",
+      "version": "M11",
+      "title": "Scanner와 다종목 후보 탐색",
+      "stage": "Agent Expansion",
+      "types": [
+        "SCANNER",
+        "AGENT"
+      ],
+      "summary": "단일 종목 판단에서 시장 후보를 수집·점수화해 상위 후보를 넘기는 Scanner 계층으로 확장.",
+      "details": [
+        "Scanner 역할과 후보 수집/랭킹 책임 분리.",
+        "후보별 데이터와 특징을 정량적으로 비교하는 구조 도입.",
+        "후속 Strategist가 모든 종목을 직접 탐색하지 않고 압축된 후보군을 받도록 변경."
+      ],
+      "impact": "LLM 비용을 줄이고 전략 판단과 데이터 탐색의 책임이 분리됨.",
+      "sources": [
+        "docs/plan/m11_2_scanner.md",
+        "docs/plan/m11_4_logging_and_reports.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-02-11 ~ 2026-02-12",
+      "version": "M12–M13",
+      "title": "Strategist LLM Provider + Runtime Loop",
+      "stage": "Agent Expansion",
+      "types": [
+        "STRATEGIST",
+        "LLM",
+        "RUNTIME"
+      ],
+      "summary": "LLM Strategist를 provider routing 뒤에 넣고 장중 반복 루프·EOD 보고까지 연결.",
+      "details": [
+        "rule fallback을 보존한 LLM Strategist HTTP/provider routing 도입.",
+        "OrderIntent schema validation과 AI hook 추가.",
+        "tick → 판단 → 상태 저장 → EOD report로 이어지는 runtime loop 정리.",
+        "LLM 장애 시에도 runtime 전체가 멈추지 않도록 fallback 개념 유지."
+      ],
+      "impact": "AI가 포함되지만 AI 자체가 실행 안정성을 소유하지 않는 구조가 만들어짐.",
+      "sources": [
+        "docs/plan/m12_ai_hook.md",
+        "docs/plan/m12_1_provider_routing.md",
+        "docs/plan/m12_2_llm_strategist_http.md",
+        "docs/plan/m13_runtime_loop.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-02-12 ~ 2026-02-13",
+      "version": "M14–M16",
+      "title": "7-Agent Architecture와 Approval Model 확립",
+      "stage": "Architecture Freeze",
+      "types": [
+        "ARCHITECTURE",
+        "SAFETY",
+        "AGENT"
+      ],
+      "summary": "Commander·Strategist·Scanner·Monitor·Supervisor·Executor·Reporter 7개 역할을 공식 구조로 고정.",
+      "details": [
+        "Agent Layer와 Execution Layer를 구조적으로 분리.",
+        "Monitor는 주문을 직접 실행하지 않고 OrderIntent만 생성하도록 non-negotiable rule 고정.",
+        "SupervisorDecision 이후에만 Executor가 실행할 수 있도록 approval layer 구성.",
+        "intent_id 기반 멱등성과 approve/reject/manual 흐름 도입.",
+        "Guard가 approval보다 항상 우선한다는 실행 우선순위 확립."
+      ],
+      "impact": "현재 시스템의 정체성인 'Agents decide, execution is gated'가 완성됨.",
+      "sources": [
+        "README.md",
+        "docs/01_overview.md",
+        "docs/02_principles.md",
+        "docs/05_runtime_flow.md",
+        "docs/07_execution_and_guards.md",
+        "docs/plan/m16_approval_api.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-02-13 ~ 2026-02-14",
+      "version": "M17–M20",
+      "title": "LangGraph Spine, Strategy Signals, News/LLM Reliability",
+      "stage": "Enterprise Baseline",
+      "types": [
+        "LANGGRAPH",
+        "LLM",
+        "NEWS",
+        "OBSERVABILITY"
+      ],
+      "summary": "설정·그래프·전략 signal·뉴스·LLM telemetry를 운영 가능한 수준으로 정리.",
+      "details": [
+        "Settings single-source 방향과 graph spine/risk 구조 정리.",
+        "시장 후보·Top Picks·Scanner scoring·sentiment/news signal 통합.",
+        "Naver News/OpenRouter provider와 global sentiment 입력 추가.",
+        "LLM smoke/fallback, schema retry telemetry, prompt version, token/cost telemetry 도입.",
+        "circuit breaker safe fallback과 LLM metrics/reporting 기반 구축."
+      ],
+      "impact": "LLM을 단순 호출하는 수준에서 실패·비용·버전까지 관리하는 운영 컴포넌트로 승격.",
+      "sources": [
+        "docs/plan/m17_graph_spine_and_risk.md",
+        "docs/plan/m18_strategist_signals.md",
+        "docs/plan/m19_1_naver_news_provider.md",
+        "docs/plan/m19_5_llm_routing_openrouter.md",
+        "docs/plan/m20_1_llm_smoke_and_fallback.md",
+        "docs/plan/m20_7_token_cost_telemetry.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-02-15 ~ 2026-02-21",
+      "version": "M21–M24",
+      "title": "Canonical Runtime, Circuit Breaker, Intent Journal",
+      "stage": "Production Safety",
+      "types": [
+        "RUNTIME",
+        "SAFETY",
+        "STATE"
+      ],
+      "summary": "실행 경로를 하나의 canonical runtime으로 모으고 장애·중복실행·운영자 개입을 상태 기반으로 통제.",
+      "details": [
+        "Commander bridge와 canonical runtime entry를 표준 경로로 통합.",
+        "runtime mode resolution과 agent-chain mapping/parity test 추가.",
+        "Skill-native scanner/monitor와 hydration node, DTO contract 표준화.",
+        "runtime circuit breaker, safe-degrade, cooldown, operator intervention/resume runbook 추가.",
+        "SQLite intent journal/state machine과 duplicate execution claim guard 도입.",
+        "real execution preflight denial reason과 intent state reconciliation tooling 추가."
+      ],
+      "impact": "프로세스 재시작·장애·중복 이벤트가 발생해도 주문 상태를 복구·감사할 수 있는 방향으로 강화.",
+      "sources": [
+        "docs/plan/m21_1_canonical_runtime_entry.md",
+        "docs/plan/m22_5_skill_hydration_node.md",
+        "docs/plan/m23_2_runtime_circuit_breaker_core.md",
+        "docs/plan/m23_6_operator_intervention_resume_runbook.md",
+        "docs/plan/m24_1_intent_journal_state_machine_sqlite.md",
+        "docs/plan/m24_3_duplicate_execution_claim_guard.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-02-18 ~ 2026-02-21",
+      "version": "M25–M30",
+      "title": "Metrics·Alerts·Replay·Portfolio Guard·Deployment·Go-Live Gate",
+      "stage": "Productionization",
+      "types": [
+        "OPS",
+        "QUALITY",
+        "DEPLOYMENT",
+        "PORTFOLIO"
+      ],
+      "summary": "실전 운영을 위한 모니터링·알림·재현성·포트폴리오 제한·배포·릴리즈 승인 절차를 묶어 완성.",
+      "details": [
+        "metric schema freeze와 alert threshold/env profile 정의.",
+        "Slack adapter, retry/noise-control, notification event log 구축.",
+        "fixed dataset/replay runner, scorecard, A/B evaluation, promotion gate 추가.",
+        "multi-strategy allocation, intent conflict resolution, portfolio budget guard 도입.",
+        "runtime lifecycle hook, scheduler/worker wrapper, launch templates, rollback procedure 구성.",
+        "audit completeness, log archive integrity, incident timeline reconstruction, disaster recovery drill 추가.",
+        "quality gate와 release signoff/go-live signoff aggregator 구축."
+      ],
+      "impact": "코드가 돌아가는 수준에서 '운영 가능한 시스템'으로 넘어간 구간.",
+      "sources": [
+        "docs/plan/m20_to_m30_master_plan.md",
+        "docs/plan/m25_1_metric_schema_freeze_v1.md",
+        "docs/plan/m26_2_replay_runner_scaffold.md",
+        "docs/plan/m27_3_portfolio_budget_boundary_guard.md",
+        "docs/plan/m28_3_rollout_checklist_and_rollback_procedure.md",
+        "docs/plan/m29_8_disaster_recovery_drill_restore_replay.md",
+        "docs/plan/m30_4_final_golive_signoff_aggregator.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-03-06",
+      "version": "M31-1~3",
+      "title": "Post-Go-Live 운영 검증 시작",
+      "stage": "Operational Readiness",
+      "types": [
+        "OPS",
+        "SLO",
+        "QUALITY"
+      ],
+      "summary": "SLO·incident review·mock investor exam·weekly health summary로 실제 장중 운영 상태를 계량화.",
+      "details": [
+        "M31 SLO baseline과 incident review workflow 구현.",
+        "Mock Investor Exam protocol/check와 agent-chain probe 추가.",
+        "Weekly health summary operator script 추가.",
+        "3/6 세션 기준 319 runs, 1,376 events를 수집해 execution/LLM 품질을 점검.",
+        "Strategist LLM 성공률 93.5%, 높은 p95 latency와 prompt-version 혼재를 즉시 개선 우선순위로 지정."
+      ],
+      "impact": "'기능 구현 완료'가 아니라 실제 세션 데이터로 운영 준비도를 평가하기 시작.",
+      "sources": [
+        "docs/plan/m31_plus_progress_summary_2026-03-06.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-03-07",
+      "version": "M31 Safety Patch",
+      "title": "Portfolio Snapshot Health Guard + EOD 강제청산",
+      "stage": "Operational Readiness",
+      "types": [
+        "SAFETY",
+        "PORTFOLIO",
+        "EXECUTION"
+      ],
+      "summary": "계좌 snapshot 장애 시 blind BUY를 차단하고 당일 청산 정책을 deterministic rule로 보강.",
+      "details": [
+        "portfolio_snapshot에 reader_ok/error/source/fallback 등의 health metadata 추가.",
+        "real execution에서 snapshot reader 오류 시 BUY를 portfolio_snapshot_reader_error로 차단.",
+        "USE_EOD_FORCE_LIQUIDATION 기반 pre-close SELL rule 추가.",
+        "관련 snapshot/execute/decision 테스트 보강."
+      ],
+      "impact": "브로커 상태를 모르는 상황에서 신규 포지션을 잡는 위험을 구조적으로 줄임.",
+      "sources": [
+        "docs/plan/m31_plus_runtime_safety_patch_2026-03-07.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-03-08",
+      "version": "M31 Audit",
+      "title": "Operational Readiness: NOT_READY → READY",
+      "stage": "Operational Readiness",
+      "types": [
+        "AUDIT",
+        "SAFETY",
+        "STRATEGY"
+      ],
+      "summary": "운영 감사에서 설정 문제를 수정한 뒤 M31 readiness gate를 통과.",
+      "details": [
+        "초기 audit 결과 NOT_READY 확인.",
+        "APPROVAL_MODE=manual로 수정 후 readiness check 재실행.",
+        "Feature/regime engine, Strategy V1, universe/scanner, data-quality propagation, sizing/exit explainability 활성 상태 확인.",
+        "Operator visibility와 readiness scripts의 실제 연결 검증.",
+        "regime_momentum_v1을 Strategy V1 baseline으로 명시."
+      ],
+      "impact": "실전 전환 여부를 사람의 느낌이 아니라 체크 가능한 gate로 판정할 수 있게 됨.",
+      "sources": [
+        "docs/plan/m31_operational_readiness_audit_2026-03-08.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-04-14 ~ 2026-04-16",
+      "version": "Reporter v2",
+      "title": "AI Trade Report 안정화와 Reporter Agentification",
+      "stage": "Explainability",
+      "types": [
+        "REPORTER",
+        "REPORTING",
+        "LLM"
+      ],
+      "summary": "거래 후 보고서를 단순 로그 요약이 아닌 evidence 기반 agent output으로 재설계.",
+      "details": [
+        "Reporter fallback audit 후 recovery/stabilization plan 수행.",
+        "AI Trade Report target example과 improvement plan으로 목표 포맷 고정.",
+        "golden trade matrix와 report runtime regression plan 도입.",
+        "execution snapshot observability와 lifecycle linkage를 report에 연결.",
+        "report surface pruning과 Reporter ownership 정리."
+      ],
+      "impact": "거래 결과뿐 아니라 '왜 그 판단이 나왔고 실제로 어떻게 체결됐는지'를 한 보고서에서 추적 가능해짐.",
+      "sources": [
+        "docs/debug/reporter_fallback_audit_2026-04-14.md",
+        "docs/trade_report_plan/ai_trade_report_improvement_plan_2026-04-15.md",
+        "docs/report_upgrade_plan/reporter_agentification_execution_plan_2026-04-15.md",
+        "docs/trade_report_plan/golden_trade_matrix_2026-04-16.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-04-19 ~ 2026-04-21",
+      "version": "Memory v1",
+      "title": "Market/Symbol/Position Runtime Memory 구축",
+      "stage": "Agent Memory",
+      "types": [
+        "MEMORY",
+        "COMMANDER",
+        "STRATEGIST"
+      ],
+      "summary": "세션 단발 판단을 넘어 과거 시장·종목·포지션 상태를 다음 판단에 전달하는 memory contract 구축.",
+      "details": [
+        "market_memory, symbol_memory, memory_flow, reports usage contract 정의.",
+        "position refresh contract와 symbol read-model 정렬.",
+        "memory packet schema와 Strategist memory packet visibility 추가.",
+        "Commander memory authority, Scanner memory bias, Monitor memory bias 역할 분리.",
+        "불필요한 script/report 중복을 줄이는 reduction policy 도입."
+      ],
+      "impact": "각 Agent가 제멋대로 과거를 해석하지 않고 정해진 memory packet을 통해 맥락을 공유하게 됨.",
+      "sources": [
+        "docs/runtime_memory/market_memory_contract_2026-04-19.md",
+        "docs/runtime_memory/symbol_memory_contract_2026-04-19.md",
+        "docs/runtime_memory/memory_packet_schema_2026-04-21.md",
+        "docs/commander_control/commander_memory_authority_2026-04-21.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-04-20 ~ 2026-04-28",
+      "version": "Truth Alignment",
+      "title": "Kiwoom Truth와 Commander Control 정렬",
+      "stage": "Runtime Integrity",
+      "types": [
+        "KIWOOM",
+        "COMMANDER",
+        "DATA_QUALITY"
+      ],
+      "summary": "broker truth, theme strength, carry/position 관리, 대표 종목 guard를 실제 runtime 판단과 일치시키는 작업.",
+      "details": [
+        "Kiwoom role inventory/data target map으로 어떤 API가 어떤 판단에 쓰이는지 정리.",
+        "Kiwoom truth current-state/next-step plan으로 raw broker truth와 derived value 경계 강화.",
+        "Commander carry control model과 position management policy 정립.",
+        "theme strength packet과 theme API strategy selection 추가.",
+        "entry participation control 및 market representative guard 도입."
+      ],
+      "impact": "리포트 숫자·Agent 판단·브로커 계좌 상태가 서로 다른 truth를 보는 문제를 줄임.",
+      "sources": [
+        "docs/kiwoom_truth/kiwoom_truth_alignment_plan_2026-04-20.md",
+        "docs/commander_control/carry_control_model_2026-04-20.md",
+        "docs/kiwoom_truth/kiwoom_theme_strength_packet_2026-04-27.md",
+        "docs/commander_control/market_representative_guard_2026-04-28.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-04-22",
+      "version": "System Status",
+      "title": "Trade Report/Kiwoom/Entrypoint 안정화 상태 점검",
+      "stage": "Runtime Integrity",
+      "types": [
+        "REPORTER",
+        "MEMORY",
+        "RUNTIME"
+      ],
+      "summary": "5개 주요 workstream을 통합 점검해 닫힌 영역과 계속 개발할 영역을 분리.",
+      "details": [
+        "trade_report_plan, kiwoom_truth, runtime_entrypoint는 거의 안정화 상태로 평가.",
+        "runtime_memory와 commander_control은 계속 active development로 유지.",
+        "AI Trade Report에서 broker truth, fee/tax, memory usage, LLM event flow 검증.",
+        "same-day Reporter feedback을 reporter_evaluation으로 재구성하는 경로 확인."
+      ],
+      "impact": "개발 우선순위를 기능 추가에서 남은 불확실성 제거로 전환.",
+      "sources": [
+        "docs/system_status_2026-04-22.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-04-25 ~ 2026-04-30",
+      "version": "Strategy/Horizon v1",
+      "title": "보유시간·사후 Shadow·설명 계약 + 보수성 Guard",
+      "stage": "Strategy Refinement",
+      "types": [
+        "STRATEGIST",
+        "HORIZON",
+        "GUARD"
+      ],
+      "summary": "진입 여부만 보던 전략에서 보유시간, post-exit shadow, 설명 가능성, 중복매수 방지까지 확장.",
+      "details": [
+        "strategy horizon과 post-exit shadow tracking 계약 추가.",
+        "Strategist explanation contract와 LLM summary artifact 정리.",
+        "news query target flow와 operator-summary memory linkage 연결.",
+        "duplicate buy/closeout guard 및 preopen readiness 점검 추가.",
+        "전략 과보수성 분석 후 runtime guard와 entry gate/reporting memory defaults 보정."
+      ],
+      "impact": "'살까 말까'에서 '왜, 얼마나 들고, 언제 실패로 볼 것인가'로 전략 표현 범위가 확장.",
+      "sources": [
+        "docs/strategy_horizon_feedback/strategy_horizon_and_post_exit_shadow_tracking_2026-04-25.md",
+        "docs/strategist_output/strategist_explanation_contract_2026-04-25.md",
+        "docs/commander_control/duplicate_buy_and_closeout_guard_2026-04-29.md",
+        "docs/daily_patch/2026-04-29_strategy-conservatism-runtime-guards.md",
+        "docs/daily_patch/2026-04-30_entry-gate-reporting-memory-defaults.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-05-04 ~ 2026-05-07",
+      "version": "Live Truth Stabilization",
+      "title": "장중 Cash/가격 Truth와 Report 일치화",
+      "stage": "Live Stabilization",
+      "types": [
+        "LIVE",
+        "REPORTING",
+        "DATA_QUALITY"
+      ],
+      "summary": "실시간 계좌·체결 가격과 보고서에 보이는 값이 어긋나는 문제를 집중 보정.",
+      "details": [
+        "intraday cash truth와 AI report를 교차 검증.",
+        "truth surface와 summary 문구 정렬.",
+        "today-run gap review로 누락된 런/아티팩트 확인.",
+        "trade price truth refresh로 오래된 가격 참조 제거.",
+        "live open patch verification으로 실제 장 시작 시 경로 재검증."
+      ],
+      "impact": "보고서가 계산상 그럴듯한 값이 아니라 당시 broker/runtime truth를 보여주도록 강화.",
+      "sources": [
+        "docs/daily_patch/2026-05-04_intraday-cash-truth-ai-report-check.md",
+        "docs/daily_patch/2026-05-05_truth-surface-summary-alignment.md",
+        "docs/daily_patch/2026-05-06_trade-price-truth-refresh.md",
+        "docs/daily_patch/2026-05-07_live-open-patch-verification.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-05-08",
+      "version": "Strategist 4-Stage Draft",
+      "title": "4단계 Strategist LLM + Horizon Slot 설계",
+      "stage": "Strategy Refinement",
+      "types": [
+        "STRATEGIST",
+        "LLM",
+        "HORIZON"
+      ],
+      "summary": "뉴스/시장 → Scanner 후보 → 보유 판단 → Overnight 판단의 다단계 LLM 구조와 horizon slot 운영안을 설계.",
+      "details": [
+        "Strategist 4-stage LLM flow draft와 chat prompt template 작성.",
+        "LLM reports 4-stage summary layout 정의.",
+        "two-slot runtime과 multi-position minimal patch plan 작성.",
+        "horizon slot one-symbol policy 및 report layout 정의.",
+        "post-scanner refresh latency hotfix로 최신 후보 데이터 연결 지연 감소."
+      ],
+      "impact": "현재 전략가의 다단계 역할 구조가 문서화되고 UI/report에서 단계별 판단을 보여줄 기반 마련.",
+      "sources": [
+        "docs/strategy_horizon_feedback/strategist_4stage_llm_flow_draft_2026-05-08.md",
+        "docs/strategy_horizon_feedback/strategist_4stage_chat_prompt_templates_2026-05-08.md",
+        "docs/strategy_horizon_feedback/two_slot_runtime_patch_plan_2026-05-08.md",
+        "docs/daily_patch/2026-05-08_post-scanner-refresh-latency-fix.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-05-11 ~ 2026-05-12",
+      "version": "Live Guard Pack A",
+      "title": "Scanner↔Monitor 경계와 장중 Guard 대규모 보강",
+      "stage": "Live Stabilization",
+      "types": [
+        "SCANNER",
+        "MONITOR",
+        "GUARD",
+        "LIVE"
+      ],
+      "summary": "실전에서 드러난 stale order, chart-fit, VWAP, closeout, repeat-loss 문제를 집중 보강한 대규모 핫픽스.",
+      "details": [
+        "pending-order stale guard와 pending-exit/recent-fill settle guard 추가.",
+        "Scanner/Monitor chart reading role boundary와 runtime alignment 정리.",
+        "ETF universe·deviation signal, candidate cascade expansion 추가.",
+        "VWAP exit에서 fresh minute source 사용하도록 수정.",
+        "human-chart guard와 chart-fit/horizon alignment 강화.",
+        "full-close trade report gate, closeout preflight fallback 추가.",
+        "defensive Top3/repeat-loss guard와 monitor crash hotfix 적용."
+      ],
+      "impact": "Scanner가 후보를 찾고 Monitor가 진입 타이밍을 감시한다는 책임 경계가 실전 규칙에 반영됨.",
+      "sources": [
+        "docs/strategy_horizon_feedback/scanner_monitor_role_boundary_patch_plan_2026-05-11.md",
+        "docs/strategy_horizon_feedback/scanner_monitor_chart_reading_runtime_alignment_2026-05-12.md",
+        "docs/daily_patch/2026-05-12_candidate-cascade-expansion-hotfix.md",
+        "docs/daily_patch/2026-05-12_human-chart-guard-chartfit-horizon-alignment.md",
+        "docs/daily_patch/2026-05-12_vwap-exit-fresh-minute-source-hotfix.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-05-13 ~ 2026-05-14",
+      "version": "Live Guard Pack B",
+      "title": "Entry/Exit Evidence, Peak Protection, VWAP Reclaim",
+      "stage": "Live Stabilization",
+      "types": [
+        "ENTRY",
+        "EXIT",
+        "REPORTING",
+        "LLM"
+      ],
+      "summary": "진입·청산 사유와 실행 결과를 분리하고 수익 보호·VWAP reclaim·LLM 비용까지 세밀하게 조정.",
+      "details": [
+        "exit trigger와 execution status를 분리해 '팔려고 했다'와 '실제로 팔렸다'를 구분.",
+        "entry/exit evidence line과 operator summary pattern performance 추가.",
+        "pending BUY에 human-chart hard guard 적용.",
+        "chart-positive entry와 cooldown scope 재조정.",
+        "peak-profit protection 및 peak-drawdown profit floor 강화.",
+        "VWAP reclaim strategy와 human-chart entry relaxation 실험.",
+        "Strategist input fingerprint cache gate와 token budget 추가."
+      ],
+      "impact": "전략 논리, 실행 상태, 보고서 표현이 섞이는 문제를 크게 줄이고 LLM 비용 통제도 시작.",
+      "sources": [
+        "docs/daily_patch/2026-05-13_exit-trigger-execution-status-separation.md",
+        "docs/daily_patch/2026-05-13_trade-summary-entry-exit-evidence-lines.md",
+        "docs/daily_patch/2026-05-13_peak-profit-protection-report-evidence.md",
+        "docs/daily_patch/2026-05-14_vwap-reclaim-strategy-and-human-chart-entry-relaxation.md",
+        "docs/daily_patch/2026-05-14_strategist-llm-token-budget.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-05-15 ~ 2026-05-18",
+      "version": "Runtime Refactor",
+      "title": "Runtime-first 점진 리팩터링과 Execution/Reporting 경계 분리",
+      "stage": "Maintainability",
+      "types": [
+        "REFACTOR",
+        "RUNTIME",
+        "REPORTING"
+      ],
+      "summary": "거대한 runtime/reporting hotspot을 기능 변경 없이 단계적으로 분리하는 리팩터링 시작.",
+      "details": [
+        "incremental refactor plan과 revised runtime-first plan 수립.",
+        "대형 reporting hotspot map 작성 후 단계적 extraction 진행.",
+        "live execution reporting boundary를 명시적으로 분리.",
+        "entry cascade hardblock과 summary average 계산 정리.",
+        "리팩터링이 실전 행동을 바꾸지 않도록 regression 중심으로 진행."
+      ],
+      "impact": "기능을 계속 붙이면서도 runtime이 단일 거대 파일로 붕괴하는 것을 방지.",
+      "sources": [
+        "docs/dev/incremental_refactor_plan_2026-05-15.md",
+        "docs/dev/revised_runtime_first_refactor_plan_2026-05-15.md",
+        "docs/dev/phase_9_3_large_reporting_hotspot_map_2026-05-17.md",
+        "docs/daily_patch/2026-05-18_live-execution-reporting-boundary.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-05-20",
+      "version": "Q1–Q7",
+      "title": "Quant Tactic Engine 도입",
+      "stage": "Quant Evaluation",
+      "types": [
+        "QUANT",
+        "SHADOW",
+        "TACTIC"
+      ],
+      "summary": "LLM 판단만 평가하지 않고 규칙 기반 전술 후보를 Q1~Q7 독립 실험으로 비교하는 Quant Tactic Engine 구축.",
+      "details": [
+        "Q1~Q6를 독립 tactic slice로 추가.",
+        "Q7을 3개 slice로 나눠 세부 조건을 분리 검증.",
+        "각 tactic의 판단과 결과를 메인 전략과 분리해 shadow/evaluation 가능하게 설계.",
+        "동일한 시장 데이터에서 전술별 evidence를 비교할 수 있는 기반 마련."
+      ],
+      "impact": "'전략가가 맞았나'에서 '어떤 규칙이 실제 수익 edge를 만들었나'로 평가 단위가 확장.",
+      "sources": [
+        "docs/daily_patch/2026-05-20_quant-tactic-engine-q1.md",
+        "docs/daily_patch/2026-05-20_quant-tactic-engine-q7-slice3.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-05-21 ~ 2026-05-26",
+      "version": "Q8 Bootstrap",
+      "title": "Quant Entry Enforcement와 Q8 Shadow Dataset",
+      "stage": "Quant Evaluation",
+      "types": [
+        "Q8",
+        "QUANT",
+        "DATA_QUALITY"
+      ],
+      "summary": "Q1~Q7 결과를 바탕으로 Q8 검증 루프를 열고 후보·체결·리포트 truth를 고정.",
+      "details": [
+        "quant entry enforcement로 정량 조건이 실제 진입 gate에 반영되는 경로 구축.",
+        "Q7 residual Strategist context를 남겨 규칙과 LLM 상호작용 관찰.",
+        "close review를 통해 Q8 핵심 질문 정의.",
+        "Q8 report integrity와 bundle latency 점검.",
+        "candidate shadow dataset과 broker alignment at report generation 추가.",
+        "Kiwoom account snapshot archive와 truth-first ka10170 경로 검증.",
+        "opening momentum probe shadow 및 guard count fix 적용."
+      ],
+      "impact": "메인 runtime을 계속 바꾸지 않고 shadow evidence를 축적하는 실험 방식이 정착.",
+      "sources": [
+        "docs/daily_patch/2026-05-21_quant-entry-enforcement.md",
+        "docs/daily_patch/2026-05-22_q8_report_integrity_and_bundle_latency.md",
+        "docs/daily_patch/2026-05-24_q8_candidate_shadow_dataset.md",
+        "docs/daily_patch/2026-05-26_opening_momentum_probe_shadow.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-06-01 ~ 2026-06-20",
+      "version": "Q8 Validation",
+      "title": "Q8 장기 검증 — Cost Edge, Lane Decision, 실패 원인 분해",
+      "stage": "Evidence Validation",
+      "types": [
+        "Q8",
+        "EVALUATION",
+        "COST"
+      ],
+      "summary": "Q8을 단기 실험으로 끝내지 않고 실제 기간 데이터를 누적해 비용 이후 edge와 lane별 성능을 검증.",
+      "details": [
+        "Q8 active behavior patch와 cost-edge promotion state 정의.",
+        "daily review와 lane decision table을 날짜별로 누적.",
+        "below-VWAP reclaim subtype 및 historical review 수행.",
+        "실패 원인을 Scanner, entry blocker, timing, cost 관점으로 분리.",
+        "6/19 handoff와 6/20 final comprehensive review로 Q8 평가를 공식 종료/이관."
+      ],
+      "impact": "한두 번의 성공 거래가 아니라 반복 가능한 증거가 있어야 promotion한다는 원칙이 강화됨.",
+      "sources": [
+        "docs/daily_patch/2026-06-01_q8_active_behavior_patch.md",
+        "docs/tactics/q8_lane_decision_table_2026-06-16.md",
+        "docs/evaluation/q8_handoff_2026-06-19.md",
+        "docs/evaluation/q8_final_comprehensive_review_2026-06-20.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-06-22 ~ 2026-06-26",
+      "version": "Q9",
+      "title": "Fixed Forward Window와 Horizon Observability",
+      "stage": "Forward Evaluation",
+      "types": [
+        "Q9",
+        "EVALUATION",
+        "HORIZON"
+      ],
+      "summary": "사후 최적화 편향을 줄이기 위해 고정된 forward window와 horizon 계약을 도입.",
+      "details": [
+        "horizon alignment, Q9 component, loss decomposition decision 문서화.",
+        "fixed forward-window protocol로 평가 조건을 사전에 고정.",
+        "Day1 opening calculation review로 산식과 artifact를 검증.",
+        "5m/15m/30m/EOD horizon observability 계약 추가.",
+        "후속 baseline과 동일한 평가 축을 사용할 수 있도록 준비."
+      ],
+      "impact": "좋은 결과가 나온 뒤 조건을 바꾸는 것을 막고 prospective evaluation 성격을 강화.",
+      "sources": [
+        "docs/evaluation/q9_fixed_forward_window_protocol_2026-06-23.md",
+        "docs/evaluation/q9_horizon_contract_observability_2026-06-26.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-06-23 이후",
+      "version": "Independent Baselines",
+      "title": "Samsung/Hynix + BTC→우리기술투자 독립 비교군",
+      "stage": "Forward Evaluation",
+      "types": [
+        "BASELINE",
+        "BTC_WOORI",
+        "LARGE_CAP"
+      ],
+      "summary": "Q9 자체 성능만 보지 않고 단순하고 독립적인 외부 baseline과 비교하는 평가 구조로 확장.",
+      "details": [
+        "삼성전자/하이닉스 고정 baseline을 Q9와 같은 horizon에서 비교.",
+        "Top1, trade count, 승률, 평균수익률, PF, MDD 비교 구조 마련.",
+        "BTC 선행 움직임과 우리기술투자 반응을 별도 baseline 연구 track으로 추가.",
+        "Commander Final이 baseline 대비 실제 alpha를 냈는지 구분 가능하도록 설계."
+      ],
+      "impact": "복잡한 Agent 시스템이 단순 전략보다 정말 나은지를 검증하는 기준선 확보.",
+      "sources": [
+        "docs/evaluation",
+        "reports/evaluation/baseline_samsung_hynix",
+        "reports/evaluation/baseline_btc_woori"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-07-06",
+      "version": "Q13",
+      "title": "Entry Timing Attribution — 왜 틀렸는지 수치화",
+      "stage": "Attribution",
+      "types": [
+        "Q13",
+        "EXPLAINABILITY",
+        "EVALUATION"
+      ],
+      "summary": "손익 결과만 보지 않고 후보선정→판단→실제 진입까지 어느 단계가 성능을 깎았는지 attribution score로 분해.",
+      "details": [
+        "Q13 entry timing attribution 정의.",
+        "attribution score v0 및 기간 누적 score 생성.",
+        "Scanner/Strategist/entry timing 사이의 지연과 결과를 연결.",
+        "observability patch로 누락 timestamp/evidence 품질 개선.",
+        "실패 원인을 '전략이 나쁨' 하나로 몰지 않는 진단 구조 구축."
+      ],
+      "impact": "개선해야 할 Agent/단계를 데이터로 특정할 수 있게 됨.",
+      "sources": [
+        "docs/q13/q13_entry_timing_attribution_2026-07-06.md",
+        "docs/q13/q13_attribution_score_v0_2026-07-06.md",
+        "docs/q13/observability_patch_2026-07-06.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-07-08 ~ 2026-07-21",
+      "version": "Q14–Q16",
+      "title": "Candidate Filtering과 Cost/Horizon Fit 검증",
+      "stage": "Policy Validation",
+      "types": [
+        "Q14",
+        "Q15",
+        "Q16",
+        "POLICY"
+      ],
+      "summary": "Q13 attribution 결과를 실제 개선 후보로 바꾸되 곧바로 live behavior를 수정하지 않고 단계별 검증.",
+      "details": [
+        "Q15 scanner score component candidate 정의 후 filtering patch 적용.",
+        "2-day decision tree, close decision, adjustment retest로 단기 과적합 방지.",
+        "Q16 cost-horizon-fit patch로 예상 edge가 거래비용을 넘는지 검증.",
+        "조정안은 정해진 close/retest 절차를 통과해야 유지하도록 운영."
+      ],
+      "impact": "아이디어→패치가 아니라 후보→검증→종료/유지의 연구 절차가 정착.",
+      "sources": [
+        "docs/q13_q14_validation/q15_scanner_score_component_candidate_2026-07-08.md",
+        "docs/q13_q14_validation/q15_candidate_filtering_patch_2026-07-10.md",
+        "docs/q13_q14_validation/post_q15_adjustment_retest_close_2026-07-21.md",
+        "docs/q13_q14_validation/q16_cost_horizon_fit_patch_2026-07-21.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-07-22 ~ 2026-07-24",
+      "version": "Measurement Integrity + Q17",
+      "title": "Stale Fill 정합성 수정과 Directional Edge 계약",
+      "stage": "Evaluation Integrity",
+      "types": [
+        "DATA_QUALITY",
+        "Q16",
+        "Q17"
+      ],
+      "summary": "평가값 자체가 오염될 수 있는 stale fill/measurement 문제를 먼저 고치고 방향성 edge 검증으로 진행.",
+      "details": [
+        "measurement integrity fix로 평가 산식과 evidence source 경계 보정.",
+        "broker stale fill reconciliation fix로 잘못 연결된 체결 제거.",
+        "Q16 Day1 review 및 close decision 수행.",
+        "Q17 directional edge contract patch 추가.",
+        "horizon operational contract도 runtime 동작과 평가 정의가 일치하도록 수정."
+      ],
+      "impact": "잘못된 데이터로 전략을 개선하는 더 큰 오류를 막기 위해 measurement authority를 우선시.",
+      "sources": [
+        "docs/q13_q14_validation/measurement_integrity_fix_2026-07-22.md",
+        "docs/q13_q14_validation/broker_stale_fill_reconciliation_fix_2026-07-22.md",
+        "docs/q13_q14_validation/q17_directional_edge_contract_patch_2026-07-24.md",
+        "docs/strategy_horizon_feedback/horizon_operational_contract_fix_2026-07-24.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-07-27 ~ 2026-07-30",
+      "version": "Q8–Q17 Closure",
+      "title": "누적 검증 종료 + Same-Symbol Re-entry Control",
+      "stage": "Policy Closure",
+      "types": [
+        "Q17",
+        "GUARD",
+        "EVALUATION"
+      ],
+      "summary": "Q8~Q17 누적 결과를 닫고 반복 손실 종목 재진입과 평가 무결성을 별도 통제.",
+      "details": [
+        "Q8-Q17 cumulative review와 close review 수행.",
+        "same-symbol loss/re-entry control 추가.",
+        "evaluation integrity close로 legacy/수정 후 evidence 경계를 명시.",
+        "canonical final review를 통해 더 이상 이름만 바꿔 같은 실험을 반복하지 않도록 종료 상태 고정."
+      ],
+      "impact": "실패한 가설을 계속 재포장해 실험하는 연구 부채를 줄임.",
+      "sources": [
+        "docs/q13_q14_validation/q8_q17_cumulative_review_2026-07-27.md",
+        "docs/q13_q14_validation/same_symbol_loss_reentry_control_2026-07-29.md",
+        "docs/q13_q14_validation/q8_q17_canonical_final_review_2026-07-30.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-07-30",
+      "version": "Structural Alpha v1",
+      "title": "Offline Structural Alpha Search와 Hypothesis Competition",
+      "stage": "Alpha Research",
+      "types": [
+        "ALPHA",
+        "OFFLINE",
+        "RESEARCH"
+      ],
+      "summary": "메인 runtime 변경 없이 기존 evidence에서 구조적 alpha 후보를 찾고 서로 경쟁시키는 offline research layer 구축.",
+      "details": [
+        "structural alpha batch1/batch2 contract와 result 생성.",
+        "post-reclaim offline research와 executable policy v0 초안 작성.",
+        "alpha hypothesis competition v1으로 여러 설명 가설을 동일한 evidence에서 비교.",
+        "structural alpha search closure로 살아남지 못한 가설을 종료."
+      ],
+      "impact": "새 전략을 무작정 코딩하기 전에 기존 데이터에서 조건부 edge가 존재하는지 검증하는 연구 단계 추가.",
+      "sources": [
+        "docs/offline_alpha/structural_alpha_batch1_result_2026-07-30.md",
+        "docs/offline_alpha/structural_alpha_batch2_result_2026-07-30.md",
+        "docs/offline_alpha/alpha_hypothesis_competition_v1_result_2026-07-30.md",
+        "docs/offline_alpha/structural_alpha_search_closure_2026-07-30.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-07-31",
+      "version": "Integrated Diagnosis",
+      "title": "Opening Rank-1 + Selection/Horizon/Sequence 통합 진단",
+      "stage": "Alpha Research",
+      "types": [
+        "RANK1",
+        "DIAGNOSIS",
+        "Q11"
+      ],
+      "summary": "Rank-1 후보가 왜 실패/성공하는지 단일 수익률이 아니라 선정·보유시간·동일종목 시퀀스로 통합 분석.",
+      "details": [
+        "existing evidence mining contract/result 작성.",
+        "opening Rank-1 longitudinal, deep-dive, same-symbol sequence review 수행.",
+        "prospective validation 계약으로 사후 분석과 미래 검증 분리.",
+        "integrated selection-horizon-sequence evaluation 추가.",
+        "Scanner market candidates와 Q11 index sanity도 함께 보강."
+      ],
+      "impact": "종목선정 문제와 진입/보유 문제를 한데 섞지 않고 전체 trade lifecycle에서 원인을 찾게 됨.",
+      "sources": [
+        "docs/offline_alpha/opening_rank1_deep_dive_2026-07-31.md",
+        "docs/offline_alpha/opening_rank1_same_symbol_sequence_review_2026-07-31.md",
+        "docs/quant_trade_diagnosis/integrated_selection_horizon_sequence_evaluation_2026-07-31.md",
+        "docs/daily_patch/2026-07-31_scanner_market_candidates_and_q11_index_sanity.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-05 ~ 2026-08-07",
+      "version": "Canonical Alpha Loop",
+      "title": "조건부 Alpha Findings → Canonical Execution Plan → 5-Session Closure",
+      "stage": "Alpha Research",
+      "types": [
+        "ALPHA",
+        "CANONICAL",
+        "VALIDATION"
+      ],
+      "summary": "흩어진 조건부 발견을 하나의 실행/검증 계획과 active research register로 통합.",
+      "details": [
+        "position horizon revision contract로 horizon 정의 재정렬.",
+        "conditional alpha diagnosis와 integrated conditional alpha findings 작성.",
+        "canonical execution plan으로 어떤 evidence를 언제 수집할지 고정.",
+        "active research register로 살아있는/종료된 가설을 관리.",
+        "five-session closure에서 broad Rank-1 opening은 intraday에서 음수임을 확인하고 무조건 promotion을 거부.",
+        "조건부 lane은 shadow-only로 유지."
+      ],
+      "impact": "좋아 보이는 발견을 즉시 전략으로 승격하지 않고 prospective evidence를 요구하는 연구 거버넌스가 완성됨.",
+      "sources": [
+        "docs/offline_alpha/conditional_alpha_diagnosis_2026-08-06.md",
+        "docs/offline_alpha/canonical_execution_plan_2026-08-06.md",
+        "docs/offline_alpha/active_research_register_2026-08-07.md",
+        "docs/offline_alpha/five_session_closure_2026-08-07.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-11 ~ 2026-08-12",
+      "version": "Rank-1 Feature Mart",
+      "title": "Canonical Feature Mart + Prospective Shadow + Strategy Choice Observability",
+      "stage": "Alpha Research",
+      "types": [
+        "FEATURE_MART",
+        "SHADOW",
+        "OBSERVABILITY"
+      ],
+      "summary": "Rank-1 후보 연구에 필요한 feature/evidence를 canonical mart로 고정하고 미래 데이터에서 재검증.",
+      "details": [
+        "canonical Rank-1 feature mart 구축.",
+        "fixed-candidate prospective shadow로 후보 조건을 고정한 채 관찰.",
+        "fresh-change activation shadow로 단순 재등장과 새로운 signal 활성화를 구분.",
+        "strategy-choice observability로 어떤 조건에서 어떤 전략 선택이 일어났는지 기록."
+      ],
+      "impact": "연구 데이터셋이 코드마다 달라지는 문제를 줄이고 prospective comparison의 재현성을 높임.",
+      "sources": [
+        "docs/offline_alpha/canonical_rank1_feature_mart_2026-08-11.md",
+        "docs/offline_alpha/rank1_fixed_candidate_prospective_shadow_2026-08-11.md",
+        "docs/offline_alpha/rank1_fresh_change_activation_shadow_2026-08-12.md",
+        "docs/offline_alpha/rank1_strategy_choice_observability_2026-08-12.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-13",
+      "version": "Memory Integrity Review",
+      "title": "Historical Memory 영향 재검증",
+      "stage": "Agent Memory",
+      "types": [
+        "MEMORY",
+        "EVALUATION"
+      ],
+      "summary": "과거 memory가 실제 의사결정에 도움을 주는지, 잘못된 기억이 누적되지 않는지 별도 integrity review 수행.",
+      "details": [
+        "memory integrity correction으로 잘못된/오염된 memory 연결 수정.",
+        "historical memory impact review로 memory 사용 전후 판단 영향 평가.",
+        "Memory를 무조건 많이 넣는 것이 아니라 evidence가 있는 정보만 유지하는 방향 강화."
+      ],
+      "impact": "Agent memory가 설명용 장식이 아니라 성능/편향을 측정해야 하는 독립 컴포넌트가 됨.",
+      "sources": [
+        "docs/runtime_memory/memory_integrity_correction_2026-08-13.md",
+        "docs/runtime_memory/historical_memory_impact_review_2026-08-13.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-14",
+      "version": "Web Observability M0–M6",
+      "title": "Read-only FastAPI + React/Vite 운영 UI MVP",
+      "stage": "Productization",
+      "types": [
+        "WEB_UI",
+        "API",
+        "OBSERVABILITY"
+      ],
+      "summary": "trading runtime과 완전히 분리된 read-only 웹 관측 계층을 구축해 포트폴리오에서도 시스템 상태를 보여줄 수 있게 됨.",
+      "details": [
+        "M0 product/data contract와 truth/time/cost/availability 계약 고정.",
+        "M1 isolated FastAPI health/config/path/bounded-read foundation 구축.",
+        "M2 Performance, M3 Trades/Reports, M4 Opportunities/Strategies/Market API 완성.",
+        "M5 React/Vite 기반 9-domain operating console 완성.",
+        "M5.1 OpenRouter role/model/stage/status/latency를 보여주는 LLM Operations 추가.",
+        "M6 public profile과 anomaly surface를 server-side sanitized read model로 구현.",
+        "API 계층은 Trading Core import 0, write call 0, non-GET route 0으로 격리 검증."
+      ],
+      "impact": "자동매매 내부 개발 프로젝트에서 외부에 설명 가능한 운영 제품/포트폴리오 형태로 전환.",
+      "sources": [
+        "docs/web_observability/implementation_status_2026-08-14.md",
+        "docs/web_observability/m5_web_ui_implementation_2026-08-14.md",
+        "docs/web_observability/m6_anomaly_public_profile_implementation_2026-08-14.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-14",
+      "version": "Opening Probe",
+      "title": "Opening Rank-1 Controlled Probe",
+      "stage": "Alpha Research",
+      "types": [
+        "RANK1",
+        "PROSPECTIVE",
+        "SHADOW"
+      ],
+      "summary": "오프닝 Rank-1 조건을 통제된 probe로 좁혀 live promotion 없이 prospective evidence를 수집.",
+      "details": [
+        "broad opening rule을 재도입하지 않고 제한된 controlled probe 정의.",
+        "independent episode/day-symbol 단위 표본을 우선하도록 유지.",
+        "비용 기준을 명시해 gross와 live-net을 분리.",
+        "조건부 성능이 나와도 자동 promotion하지 않는 shadow-only 원칙 유지."
+      ],
+      "impact": "과거 성과가 좋아 보이는 조건을 live rule로 즉시 되살리는 것을 방지.",
+      "sources": [
+        "docs/offline_alpha/opening_rank1_controlled_probe_2026-08-14.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-18",
+      "version": "Web M7",
+      "title": "Docker Compose 배포 계층",
+      "stage": "Deployment",
+      "types": [
+        "DOCKER",
+        "WEB_UI",
+        "DEPLOYMENT"
+      ],
+      "summary": "private/public Web UI와 API를 컨테이너로 띄우기 위한 M7 배포 코드 완성.",
+      "details": [
+        "API/UI image와 private/public Compose 구성.",
+        "trading runtime과 web observability의 isolation 유지.",
+        "local Docker engine 검증을 다음 gate로 설정.",
+        "M8 Kubernetes local overlay는 Compose 통과 이후로 순서를 고정."
+      ],
+      "impact": "개발 PC 로컬 실행에서 재현 가능한 배포 단위로 확장.",
+      "sources": [
+        "docs/web_observability/m7_docker_compose_implementation_2026-08-18.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-21",
+      "version": "Measurement Integrity v2",
+      "title": "Q10/Q11/Q13/Q14–Q18 측정 권위 재정립",
+      "stage": "Evaluation Integrity",
+      "types": [
+        "Q10",
+        "Q11",
+        "Q13",
+        "Q18",
+        "DATA_QUALITY"
+      ],
+      "summary": "legacy 평가값과 수정 후 prospective cohort가 섞이지 않도록 point-in-time·timestamp·horizon 계약을 재정의.",
+      "details": [
+        "Q10 point-in-time market snapshot 정합성 보강.",
+        "Q11 shadow-position follow-through와 index sanity 보정.",
+        "Q13 stage timestamp와 decision-to-entry delay를 실제 evidence 기반으로 수정.",
+        "Q14 outcome-conditioned diagnosis와 structural root cause 분리.",
+        "Q16 day-integrity, Q17 intended horizon, Q18 horizon-specific coverage 추가.",
+        "수정 전 legacy 측정은 corrected prospective cohort와 합산하지 않도록 authority boundary 고정."
+      ],
+      "impact": "평가 시스템 자체의 신뢰도를 전략 성능만큼 중요하게 취급하는 단계로 진화.",
+      "sources": [
+        "docs/daily_patch/2026-08-21_q10_q11_q13_measurement_integrity.md",
+        "docs/daily_patch/2026-08-21_q14_q18_measurement_integrity.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-21",
+      "version": "Alpha Research Board",
+      "title": "살아있는 가설/종료 가설을 한 화면에서 관리",
+      "stage": "Research Governance",
+      "types": [
+        "ALPHA",
+        "BOARD",
+        "RESEARCH"
+      ],
+      "summary": "기존 Q와 offline research를 반복하지 않고, 살아있는 discriminator와 폐기된 가설을 하나의 board 계약으로 통합.",
+      "details": [
+        "OPENING_CONDITIONAL, SCANNER_REACTIVATION_HORIZON, BTC_WOORI, LARGE_CAP_TWO_SYMBOL 4개 fixed research track 정의.",
+        "ACTION_REVIEW, OBSERVE_FIXED, DATA_REPAIR_BOUNDARY, CLOSED_NEGATIVE_PROSPECTIVE, CLOSED bucket 도입.",
+        "독립 day-symbol/episode를 primary sample count로 고정.",
+        "gross, 0.28% live research net, broker-observed mock net을 분리.",
+        "R1_SCANNER_RISK_HIGH_30M_V1은 contributor dependence로 reject하여 generic HIGH risk discriminator를 폐기.",
+        "Q phase를 새로 만들지 않고 기존 evidence를 board supplier로 재사용."
+      ],
+      "impact": "연구가 Q번호만 늘어나는 구조에서 '무엇이 살아 있고 무엇이 폐기됐는가'를 관리하는 포트폴리오형 연구 운영으로 전환.",
+      "sources": [
+        "docs/offline_alpha/alpha_research_board_contract_2026-08-21.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-21",
+      "version": "Immediate Opening Runtime Validation",
+      "title": "오프닝 Probe의 Runtime Evidence 검증",
+      "stage": "Research Governance",
+      "types": [
+        "OPENING",
+        "RUNTIME",
+        "VALIDATION"
+      ],
+      "summary": "offline에서 정의한 오프닝 조건이 실제 runtime artifact에서 같은 의미로 관찰되는지 검증.",
+      "details": [
+        "controlled opening probe와 runtime artifact의 필드/시간 정합성 확인.",
+        "missing source는 추정값으로 채우지 않고 missing evidence로 유지.",
+        "promotion이 아니라 measurement path 검증에 초점을 둠."
+      ],
+      "impact": "offline research와 실제 runtime 사이의 semantic drift를 줄임.",
+      "sources": [
+        "docs/offline_alpha/immediate_opening_probe_runtime_validation_2026-08-21.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-27",
+      "version": "Current",
+      "title": "현재 — 7-Agent + Guarded Execution + Evidence Research + Web Observability",
+      "stage": "Current",
+      "types": [
+        "CURRENT",
+        "AGENT",
+        "ALPHA",
+        "WEB_UI"
+      ],
+      "summary": "자동주문 스크립트를 넘어 판단·실행·평가·연구·운영 UI가 서로 분리된 포트폴리오급 Agentic Trading System 상태.",
+      "details": [
+        "Commander/Strategist/Scanner/Monitor/Supervisor/Executor/Reporter 7-Agent 역할 유지.",
+        "실행은 approval + deterministic guards + idempotency 뒤에서만 허용.",
+        "Q8~Q18, Rank-1, Alpha Research Board를 통해 evidence-driven 개선 루프 운영.",
+        "Samsung/Hynix와 BTC→우리기술투자 같은 독립 baseline/research track 보유.",
+        "Runtime Memory와 Reporter feedback/effectiveness를 통해 장기 개선 영향 분석 가능.",
+        "FastAPI/React Web Observability와 public sanitized profile로 외부 시연 가능.",
+        "다음 제품화 과제는 patch-note timeline 자체를 UI에 추가하고, 배포 URL/운영 화면을 하나의 showcase로 묶는 것."
+      ],
+      "impact": "현재 시스템의 핵심 가치는 'AI가 매매한다'가 아니라 'AI 판단을 안전하게 실행하고, 그 결과를 다시 검증해 다음 정책을 개선하는 폐쇄루프'에 있음.",
+      "sources": [
+        "README.md",
+        "docs/01_overview.md",
+        "docs/offline_alpha/alpha_research_board_contract_2026-08-21.md",
+        "docs/web_observability/implementation_status_2026-08-14.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-24",
+      "version": "Evaluation Integrity + Prospective Board",
+      "title": "평가 무결성과 Alpha Research Board의 실장 관측 기반 강화",
+      "stage": "Research Governance",
+      "types": [
+        "ALPHA",
+        "BOARD",
+        "INTEGRITY"
+      ],
+      "summary": "과거 평가 산출물을 다시 만드는 대신 원본 증거의 정합성을 확인하고, 장중 prospective 표본을 고정된 연구 보드에 누적하는 구조를 강화했습니다.",
+      "details": [
+        "Q 평가와 baseline 산출물의 누락·중복·시간 정합성 검사를 강화했습니다.",
+        "과거 발견 표본과 prospective 표본을 분리해 사후 선택 편향을 줄였습니다.",
+        "기존 평가 결과는 Alpha Research Board의 입력 증거로 재사용하도록 권위를 정리했습니다.",
+        "행동 변경 없이 opening, horizon, BTC-Woori, large-cap control 연구를 같은 표에서 비교하도록 했습니다."
+      ],
+      "impact": "평가표가 계속 늘어나는 문제를 줄이고, 동일한 기준에서 가설의 유지·기각·추가 관찰 여부를 추적할 수 있게 되었습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-24_preopen_and_baseline_observability.md",
+        "docs/offline_alpha/deep_discriminator_squeeze_2026-08-24.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-25~2026-08-26",
+      "version": "Q12 Trend + Opening Snapshot + AI Provenance",
+      "title": "BTC 추세·장초반 시장 스냅샷·AI 판단 계보 보강",
+      "stage": "Evidence Quality",
+      "types": [
+        "Q12",
+        "OPENING",
+        "PROVENANCE"
+      ],
+      "summary": "짧은 단일 시점 값에 의존하지 않도록 BTC 추세와 장초반 시장 정보를 확장하고, AI 단계별 입력·출력의 출처를 추적할 수 있게 했습니다.",
+      "details": [
+        "Q12가 BTC의 현재값뿐 아니라 최근 추세와 신호 가용성을 함께 기록하도록 보강했습니다.",
+        "장초반 판단 시점의 국내 지수·야간선물 값과 snapshot 시각·지연을 artifact에 남겼습니다.",
+        "Strategist 단계별 후보·판단·horizon의 provenance를 분리해 사후 비교가 가능해졌습니다.",
+        "성공·실패·성공 가능 사례를 동일 스냅샷 기준으로 재검토할 수 있는 casebook 근거를 추가했습니다."
+      ],
+      "impact": "시장 상태나 AI 단계가 결과에 영향을 주었는지 추정이 아니라 시점이 맞는 증거로 분석할 수 있게 되었습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-25_q12_trend_and_rank1_observability.md",
+        "docs/daily_patch/2026-08-26_opening_overshoot_snapshot_and_casebook.md",
+        "docs/daily_patch/2026-08-26_ai_effectiveness_provenance.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-27",
+      "version": "Strategist Authority Lineage",
+      "title": "2차 전략가 후보 권위와 3차 horizon 계보의 관측 분리",
+      "stage": "Agent Evaluation",
+      "types": [
+        "STRATEGIST",
+        "AUTHORITY",
+        "HORIZON"
+      ],
+      "summary": "전략가가 실제로 후보를 바꾸거나 보유기간을 수정했는지 단계별로 분해해, LLM 기여도를 결과와 연결할 수 있게 했습니다.",
+      "details": [
+        "2차 전략가의 재순위·후보 교체·진입 강화·no-trade 권한을 별도 평가 항목으로 분해했습니다.",
+        "Scanner 원본 순위와 전략가 이후 순위가 같거나 달라진 경우를 후보 ID 기준으로 비교합니다.",
+        "3차 전략가의 최초 horizon, 재평가 horizon, 실제 보유시간을 하나의 lineage로 연결했습니다.",
+        "권한 축소나 행동 변경 전 근거를 누적하는 관측 단계로 유지했습니다."
+      ],
+      "impact": "전략가 호출이 복잡성만 더하는지, 후보 선택 또는 보유기간 판단에 실질적인 가치를 주는지 검증할 기반이 생겼습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-27_stage2_candidate_authority_review.md",
+        "docs/daily_patch/2026-08-27_stage3_horizon_lineage.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-27",
+      "version": "Web Observability M7",
+      "title": "메인 런타임 가시성·호스트 Supervisor·예약 인텔리전스 통합",
+      "stage": "Operations",
+      "types": [
+        "WEB_UI",
+        "SUPERVISOR",
+        "SCHEDULER"
+      ],
+      "summary": "트레이딩 런타임을 Docker로 옮기지 않고도 웹 UI에서 실행 상태와 watchdog 이력을 확인하고, 호스트 Supervisor와 장전·장후 작업을 운영할 수 있게 했습니다.",
+      "details": [
+        "메인 프로세스·watchdog·health 상태를 읽기 전용 UI에서 시각화했습니다.",
+        "호스트 Supervisor가 비정상 종료와 중복 실행을 감시하도록 운영 경계를 정리했습니다.",
+        "장전 브리핑과 장후 closeout intelligence의 예약 실행·산출물 상태를 표시합니다.",
+        "관측 UI 컨테이너는 런타임과 분리하고 reports/logs/state를 read-only로 소비합니다."
+      ],
+      "impact": "매일 콘솔에서 프로세스를 직접 확인하던 운영 부담을 줄이면서 트레이딩 실행 경계는 그대로 유지했습니다.",
+      "sources": [
+        "docs/web_observability/m7_1_main_runtime_visibility_2026-08-27.md",
+        "docs/web_observability/m7_2_host_supervisor_2026-08-27.md",
+        "docs/web_observability/m7_3_scheduled_intelligence_2026-08-27.md",
+        "docs/daily_patch/2026-08-27_scheduled_intelligence_and_supervisor.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-08-27~2026-08-28",
+      "version": "Alpha Board v2 + Q12 Five-Variable Validation",
+      "title": "고정 연구 보드와 BTC→우기투 5변수 가설의 prospective 검증",
+      "stage": "Current Research",
+      "types": [
+        "CURRENT",
+        "ALPHA",
+        "Q12"
+      ],
+      "summary": "장후 판단 기준을 Alpha Research Board로 고정하고, BTC→우리기술투자 가설은 새 전략 생성 없이 합의한 5개 변수만 검증하도록 제한했습니다.",
+      "details": [
+        "장후 closeout 마지막 단계에서 Board를 자동 생성하고 기존 평가 산출물은 입력 증거로만 사용합니다.",
+        "BTC 08:55 수익률, FIRST_SURGE, BREAKOUT, 우기투 opening gap, 09:03~09:05 수급 확인을 고정 변수로 기록합니다.",
+        "09:00·09:03·09:05·09:10·눌림 시점의 forward 성과를 동일 비용·슬리피지 기준으로 비교합니다.",
+        "과거 발견과 prospective 표본을 분리하며 Q9 및 실제 주문·진입·청산 로직은 변경하지 않습니다."
+      ],
+      "impact": "연구 가설이 계속 바뀌는 것을 막고, 실제 장중 데이터가 가설을 지지하는지 같은 표 구조에서 누적 판단할 수 있게 되었습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-27_alpha_research_board_v2.md",
+        "docs/offline_alpha/alpha_research_board_contract_2026-08-27.md",
+        "docs/daily_patch/2026-08-28_q12_five_variable_hypothesis_validation.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Patch Notes Timeline UI",
+      "title": "운영 UI에 검색 가능한 패치 노트 타임라인 추가",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "DOCUMENTATION"
+      ],
+      "summary": "누적 패치 이력과 최근 주요 변경을 운영 UI에서 검색·필터·확장해 볼 수 있는 읽기 전용 화면을 추가했습니다.",
+      "details": [
+        "기존 44개 이력을 수정하지 않고 최근 1주일의 주요 변경 5건을 보강했습니다.",
+        "패치 노트 전용 FastAPI adapter·service·router·schema를 독립 모듈로 추가했습니다.",
+        "전체 변경 수, 최신 기준, 단계, 유형 요약과 검색·stage·type 필터를 제공합니다.",
+        "Docker 관측 컨테이너에는 패치 노트 문서 경로만 read-only로 마운트합니다.",
+        "앞으로 모든 패치는 JSON과 Markdown 패치 노트를 같은 커밋에서 갱신하도록 운영 규칙을 고정했습니다."
+      ],
+      "impact": "변경 이력을 코드 저장소에서 직접 찾지 않아도 운영 화면에서 빠르게 파악할 수 있으며, 트레이딩 런타임에는 실행 의존성을 추가하지 않습니다.",
+      "sources": [
+        "docs/trading_agent_patch_notes_detailed_update/README.md",
+        "apps/api/routers/patch_notes.py",
+        "apps/web/src/features/patch-notes/PatchNotesPage.tsx"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Q10 Lead-Market Forward Validation",
+      "title": "미국 야간시장과 08:50 선행정보의 한국장 Forward Edge 검증",
+      "stage": "Current Research",
+      "types": [
+        "CURRENT",
+        "Q10",
+        "SHADOW",
+        "OBSERVABILITY"
+      ],
+      "summary": "기존 삼성전자·SK하이닉스 Q10 기준선은 유지하면서, 미국 반도체·주가지수와 08:50 선물·환율이 삼성전자·SK하이닉스·KOSPI·KOSDAQ 개장 후 움직임을 예측하는지 앞으로의 실장 데이터로만 검증합니다.",
+      "details": [
+        "SOX·Nvidia·Micron·하이닉스 ADR와 Nasdaq/S&P500, US10Y, VIX 및 08:50 Nasdaq100/S&P500 선물·USD/KRW를 불변 스냅샷으로 저장합니다.",
+        "09:00·09:03·09:05·09:10·09:15·09:30·10:00·종가의 가격과 가능한 거래량, gap·forward return·MFE·MAE를 기록합니다.",
+        "UNDERREACTION·FAIR_REACTION·OVERREACTION·DIVERGENCE를 고정 규칙으로 분류하고 09:00/03/05/10 및 첫 눌림 가상 진입을 동일 비용 기준으로 비교합니다.",
+        "2026-08-31부터 prospective 데이터만 누적하며 과거 백필·백테스트·threshold 최적화·ML·주문 연결을 구조적으로 금지합니다.",
+        "새 기능은 독립 forward_validation 패키지로 분리했고 계측 실패가 기존 Q10 기준선을 중단시키지 않게 격리했습니다."
+      ],
+      "impact": "선행시장 가설을 기존 실거래 로직에 섞지 않고 실제 발생 데이터에서 검증할 수 있으며, 삼성 고유 이벤트와 하이닉스 FIRST_MOVE/EXTENDED 표본도 분리해 볼 수 있습니다.",
+      "sources": [
+        "docs/evaluation/q10_korea_lead_market_forward_validation.md",
+        "docs/evaluation/baseline_samsung_hynix_control.md",
+        "docs/daily_patch/2026-08-28_q10_korea_lead_market_forward_validation.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Scheduled Intelligence Evidence Detail",
+      "title": "예약 브리핑 카드에 원본 근거와 실행 상세 추가",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "OBSERVABILITY"
+      ],
+      "summary": "장전·장후 예약 카드의 한 줄 요약은 유지하면서 원본 파일, 전략 프레임, 모델, 메모리 적용 방식과 단계별 실행 결과를 상세 영역에서 확인할 수 있게 했습니다.",
+      "details": [
+        "장전 브리핑·메모리 전달 영수증·전략 메모리·Strategist 원본 경로를 표시합니다.",
+        "장후 manifest·전략 메모리·통합 인덱스 JSON/Markdown 경로를 표시합니다.",
+        "시장 국면·플레이북·전술·리스크·진입 권한·모델·메모리 모드와 closeout 완료 단계 수를 제공합니다.",
+        "원본 경로는 복사만 가능하고 UI에서 파일 변경이나 실행 호출은 할 수 없습니다.",
+        "장전 canonical 원본이 UTC 날짜 기준으로 전날 폴더에 저장되던 문제를 KST 파티션으로 수정했으며 기존 파일은 보존합니다."
+      ],
+      "impact": "운영자가 예약 작업의 성공 여부뿐 아니라 어떤 전략·메모리·산출물을 근거로 했는지 UI에서 바로 추적할 수 있습니다.",
+      "sources": [
+        "docs/daily_patch/2026-08-28_scheduled_intelligence_detail_ui.md",
+        "apps/api/domain/scheduled_intelligence_projection.py",
+        "apps/web/src/features/runtime-status/ScheduledIntelligencePanel.tsx"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Controlled Mock Four-Lane Execution",
+      "title": "Four independent mock-order validation lanes",
+      "stage": "Controlled Adoption",
+      "types": [
+        "CURRENT",
+        "EXECUTION",
+        "Q10",
+        "Q12"
+      ],
+      "summary": "Opening Alpha, BTC-Woori, Q10 Semiconductor and Q10 Index can each submit one daily Kiwoom mock-broker order attempt through the existing Executor.",
+      "details": [
+        "Opening Alpha keeps existing Strategist, Scanner and Commander selection authority and only applies a bounded Monitor override to HIGH_COMMON_DIRECTIONAL or CONFIRMED_RECURRENT_RANK.",
+        "Q12 requires the fixed BTC 08:55, FIRST_SURGE, breakout, opening-gap and local-confirmation conditions.",
+        "Q10 Semiconductor and Index require an immutable 08:50 lead-market snapshot and a fresh aligned Korean-market response.",
+        "Each independent lane has an atomic daily reservation ledger and existing position, pending-order, broker restriction and loss-reentry guards remain active.",
+        "Independent positions store their own intraday horizon provenance instead of inheriting unrelated Strategist output."
+      ],
+      "impact": "The mock account now produces execution and lifecycle evidence for the strongest fixed research lanes without contaminating Q9 agent attribution.",
+      "sources": [
+        "docs/evaluation/controlled_mock_four_lane_execution_2026-08-28.md",
+        "docs/daily_patch/2026-08-28_controlled_mock_four_lane_execution.md",
+        "libs/runtime/controlled_mock_lanes/"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-28",
+      "version": "Controlled Lane Report Evidence",
+      "title": "Q10/Q12 execution evidence and R3 authority are visible in trade reports",
+      "stage": "Reporting Observability",
+      "types": [
+        "CURRENT",
+        "REPORTER",
+        "Q10",
+        "Q12",
+        "OBSERVABILITY"
+      ],
+      "summary": "Trade reports now preserve the fixed Q10/Q12 signal evidence, hold window and Stage-3 horizon authority without changing trading behavior.",
+      "details": [
+        "The entry report surface records lane ID, signal ID, fixed evidence, signal score and the validation-only execution scope.",
+        "Closed-trade reports recover entry evidence from the persisted position strategy frame and the daily controlled-lane reservation ledger.",
+        "Reports explicitly state whether the Stage-3 Strategist horizon review may alter the active hold horizon.",
+        "Q10/Q12 controlled lanes remain frozen against Stage-3 horizon revision so their fixed-horizon comparison is not contaminated."
+      ],
+      "impact": "Operators can distinguish fixed deterministic validation orders from normal multi-agent trades and can see why R3 did or did not influence the exit horizon.",
+      "sources": [
+        "libs/reporting/controlled_mock_lane_report.py",
+        "libs/reporting/single_trade_report.py",
+        "libs/reporting/trade_report_markdown_clean.py",
+        "tests/test_controlled_mock_lane_report.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-29",
+      "version": "M7.4 Cloudflare Private Ingress",
+      "title": "Authenticated private Web ingress for agentra.win",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "DEPLOYMENT",
+        "SECURITY"
+      ],
+      "summary": "An optional Cloudflare Tunnel overlay publishes only the read-only Web gateway at agentra.win behind a single-operator Access policy.",
+      "details": [
+        "The local Web endpoint remains bound to 127.0.0.1 and the API keeps no host port.",
+        "The cloudflared connector joins only the edge network and routes to the existing web:8080 Nginx gateway.",
+        "The connector image is version-and-digest pinned, non-root, read-only and resource bounded.",
+        "The overlay requires a local secret token and remains inactive under the normal local Compose command.",
+        "Cloudflare Access email allowlisting and one-time PIN authentication are mandatory before connector startup.",
+        "The tunnel, apex DNS route and Access redirect were activated and verified on 2026-08-30."
+      ],
+      "impact": "The operator can open the UI from an external browser without router port forwarding or direct API and Trading Runtime exposure.",
+      "sources": [
+        "deploy/compose/compose.cloudflare.yaml",
+        "deploy/compose/README.md",
+        "docs/web_observability/m7_4_cloudflare_private_ingress_2026-08-29.md",
+        "docs/daily_patch/2026-08-29_cloudflare_private_ingress.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-30",
+      "version": "Scheduled Artifact Viewer",
+      "title": "예약 브리핑 원본 파일을 UI에서 직접 열람",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "OBSERVABILITY",
+        "SECURITY"
+      ],
+      "summary": "장전 브리핑·메모리 전달 영수증·전략 메모리·Strategist 원본과 장후 인덱스를 경로 복사 대신 읽기 전용 Viewer로 바로 확인할 수 있게 했습니다.",
+      "details": [
+        "예약 브리핑 카드에 표시된 JSON·Markdown artifact만 API에서 열람할 수 있습니다.",
+        "reports 루트 밖 경로, 경로 탈출, 미등록 파일과 크기 제한 초과 파일은 차단합니다.",
+        "원본은 포맷된 JSON 모달로 표시하며 변경·다운로드·실행 기능은 제공하지 않습니다.",
+        "API와 데이터 마운트는 기존 read-only 경계를 유지하고 Trading Runtime에는 의존성을 추가하지 않습니다."
+      ],
+      "impact": "외부 인증 UI에서도 예약 인텔리전스의 요약과 실제 근거를 같은 화면에서 빠르게 대조할 수 있습니다.",
+      "sources": [
+        "apps/api/services/scheduled_artifacts.py",
+        "apps/api/routers/runtime_status.py",
+        "apps/web/src/features/runtime-status/ScheduledArtifactViewer.tsx",
+        "tests/apps/api/test_runtime_status.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-30",
+      "version": "M7.5 Operations Command Center",
+      "title": "읽기 전용 운영 관제 화면 추가",
+      "stage": "Web Observability",
+      "types": [
+        "CURRENT",
+        "WEB_UI",
+        "OBSERVABILITY",
+        "OPERATIONS"
+      ],
+      "summary": "장전부터 장후까지의 운영 흐름, 이상 징후, 거래 의사결정 계보와 전일·사후 관측 차이를 하나의 읽기 전용 화면에서 확인합니다.",
+      "details": [
+        "최신 scheduled manifest와 당일 trade bundle을 시간 순서로 조합한 운영 타임라인을 제공합니다.",
+        "기존 anomaly 정책, scheduled issue와 장중 runtime 불일치를 하나의 이상 징후 목록으로 통합합니다.",
+        "Strategist·Scanner·Monitor·Commander·Execution의 실제 trade artifact 필드를 단계별 계보로 표시합니다.",
+        "최신/직전 운영일의 시장 국면·플레이북·리스크·진입 권한·closeout 상태를 비교하고 실제 청산과 post-exit checkpoint 차이를 표시합니다.",
+        "새 API는 GET 전용이며 제어·승인·전략·평가·주문 동작을 추가하지 않습니다."
+      ],
+      "impact": "외부 인증 UI에서 운영자가 왜 거래가 없었는지, 어디서 판단이 바뀌었는지, 어떤 이상과 차이를 확인해야 하는지 빠르게 추적할 수 있습니다.",
+      "sources": [
+        "apps/api/services/operations.py",
+        "apps/api/routers/operations.py",
+        "apps/web/src/features/operations/OperationsPage.tsx",
+        "docs/web_observability/m7_5_operations_command_center_2026-08-30.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-08-31",
+      "version": "Pre-Claude Refactoring Baseline",
+      "title": "Pre-Claude Refactoring Baseline",
+      "stage": "Development Governance",
+      "types": [
+        "CURRENT",
+        "ARCHITECTURE",
+        "PROVENANCE",
+        "DOCUMENTATION"
+      ],
+      "summary": "Git, source, tests, plans, and patch notes evidence was indexed to preserve the Human + Codex-centered pre-Claude refactoring baseline without changing trading behavior.",
+      "details": [
+        "The source baseline is fixed at 6aa4e398e2e1c33482cab3dbf2518e7b03c18a10 on 2026-08-31 with verification 2701 passed, 1 skipped.",
+        "Pre-Git M1-M13 chronology and agent attribution are explicitly marked as inferred, uncertain, or unknown rather than presented as repository fact.",
+        "Technical history is separated into Historical Architecture, Target Architecture, and Current AS-IS.",
+        "AI attribution uses VERIFIED, SUPPORTED, UNCERTAIN, and UNKNOWN; the post-2026-04-07 period is described as a Codex-centered workflow without assigning unsupported authorship to individual commits.",
+        "Current architecture mismatches are recorded as known debt or audit findings pending evidence-based disposition; none were fixed in this documentation change.",
+        "No source, runtime, strategy, execution, guard, DTO, or test behavior changed."
+      ],
+      "impact": "Future Claude Code refactoring and Codex cross-review can compare against a self-contained, evidence-indexed baseline while retaining the exact source commit as the code boundary.",
+      "sources": [
+        "docs/development/development_history.md",
+        "docs/development/ai_provenance.md",
+        "docs/development/pre_claude_refactoring_baseline_2026-08-31.md",
+        "docs/development/evidence_index.md",
+        "docs/development/change_provenance_template.yaml"
+      ],
+      "status": "current",
+      "provenance": {
+        "development_era": "Human + Codex-centered workflow",
+        "final_approval": "Human",
+        "verification": "2701 passed, 1 skipped",
+        "source_baseline": "6aa4e398e2e1c33482cab3dbf2518e7b03c18a10",
+        "provenance_baseline": "c94746b0974e44a80550a7e0af0c20b4101db639"
+      }
+    },
+    {
+      "date": "2026-08-31",
+      "version": "Controlled Lane Observability Integrity",
+      "title": "Controlled Lane Observability and Test Integrity",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "OBSERVABILITY",
+        "REPORTING",
+        "TEST_INTEGRITY"
+      ],
+      "summary": "The existing Opening Alpha and Q10/Q12 controlled policies are now observable without changing trading behavior, and execution tests can no longer contaminate live canonical artifacts.",
+      "details": [
+        "Opening Alpha records evaluated and rejected Rank-1 candidates with exact reasons during the opening window.",
+        "Operator daily summaries expose Q10 Semiconductor, Q10 Index, Q12 BTC-Woori and Opening Alpha evaluation, attempt and accepted-submission state.",
+        "Q12 reports separate intraday shadow-forward evidence from mandatory 08:55 controlled-lane input evidence.",
+        "Execution tests redirect canonical artifacts to pytest temporary storage instead of reports/canonical."
+      ],
+      "impact": "Operators can distinguish no candidate, missing input, guard rejection, broker attempt and accepted submission while preserving the existing mock trading policy.",
+      "sources": [
+        "docs/daily_patch/2026-08-31_controlled_lane_observability_integrity.md",
+        "libs/runtime/opening_rank1_controlled_probe.py",
+        "libs/reporting/controlled_validation_daily.py",
+        "libs/reporting/baseline_btc_woori_tech/report.py",
+        "tests/test_execute_from_packet.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-01",
+      "version": "Q12 Capture and Trade Truth Integrity",
+      "title": "Q12 Capture Rehydration and Trade Report Truth Alignment",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "Q12",
+        "REPORTING",
+        "INTEGRITY"
+      ],
+      "summary": "Q12 preserves the immutable 08:55 observation across long-running processes, while closed-trade summaries consistently use execution timestamps and broker realized PnL.",
+      "details": [
+        "Q12 signal payloads are rehydrated from the immutable 08:55 capture before decisions and hypothesis evaluation.",
+        "The hypothesis feature reads dedicated captured rows so newer incomplete provider rows cannot mask valid point-in-time momentum.",
+        "Closed-trade hold duration is calculated from entry and exit execution timestamps.",
+        "Final and LLM-facing summary text uses broker realized PnL and explicitly separates monitor mark observations.",
+        "No trading policy, threshold, eligibility, routing, approval or execution behavior changed."
+      ],
+      "impact": "Q12 evidence no longer regresses to missing after a valid capture, and operator reports no longer mix monitor drawdown snapshots with actual broker outcomes.",
+      "sources": [
+        "libs/reporting/baseline_btc_woori_tech/point_in_time_capture.py",
+        "libs/reporting/baseline_btc_woori_tech/hypothesis_features.py",
+        "libs/reporting/baseline_btc_woori_tech/pipeline.py",
+        "libs/reporting/trade_report_markdown_clean.py",
+        "tests/test_q12_btc_0855_capture.py",
+        "tests/test_trade_report_ai.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-01",
+      "version": "Opening Alpha Price Integrity",
+      "title": "Opening Alpha Signal and Exit Price Integrity",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "OPENING_ALPHA",
+        "EXECUTION_SAFETY",
+        "REPORTING"
+      ],
+      "summary": "Opening Alpha now bounds delayed signal-price drift, while held-symbol exits use timestamped current quotes and preserve freshness evidence.",
+      "details": [
+        "Open-position symbols are hydrated on every quote pass regardless of the Scanner candidate limit.",
+        "Hydrated quotes carry UTC observation timestamps; quotes older than 90 seconds use an account-position fallback or are rejected.",
+        "Opening Alpha persists the first Rank-1 signal price and rejects positive signal-to-entry drift above 2%.",
+        "Immediately before broker submission, Opening Alpha compares the initial signal price with the latest available best ask and returns NOT_SENT without a broker API call when drift exceeds 2%.",
+        "When a held-symbol quote older than the expected refresh cadence conflicts with the account current price on hard-stop status, the validated account/current source determines both STOP and HOLD outcomes.",
+        "Exit artifacts preserve quote age, account divergence, replacement source and stale-quote rejection evidence.",
+        "Post-exit recap can reuse an observed Opening Rank-1 EOD checkpoint when regular-close minute data is unavailable.",
+        "Alpha Board writes runtime validation from its authoritative builder instead of a canonical payload field that may be omitted.",
+        "The 16:00 Opening Rank-1 closeout refresh falls back to local artifacts when the Kiwoom history endpoint is unavailable and records the degraded source.",
+        "The 2026-09-01 post-exit recap was regenerated with all forward and EOD checkpoints observed."
+      ],
+      "impact": "The controlled relaxation can no longer chase a materially displaced Rank-1 signal or trigger a hard stop from an old quote without exposing and validating its price source.",
+      "sources": [
+        "graphs/nodes/hydrate_skill_results_node.py",
+        "libs/runtime/opening_rank1_controlled_probe.py",
+        "libs/runtime/monitor_exit/preview.py",
+        "libs/runtime/monitor_exit/observability.py",
+        "libs/reporting/post_exit_shadow_recap.py",
+        "libs/reporting/closeout_maintenance.py",
+        "libs/reporting/alpha_research_board/builder.py",
+        "tests/test_monitor_exit_price_freshness.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-07",
+      "version": "Controlled Lane Input and Report Integrity",
+      "title": "Opening Alpha Cost Evidence and Q10 VWAP Integrity",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "OPENING_ALPHA",
+        "Q10",
+        "EXECUTION_INTEGRITY",
+        "REPORTING"
+      ],
+      "summary": "Controlled-lane cost evidence, intraday VWAP provenance, Q10 attribution, and entry timing now use their canonical sources.",
+      "details": [
+        "CONFIRMED_RECURRENT_RANK uses its approved lane evidence only when the normal cost filter lacks directional or gross evidence; explicit negative cost evidence still blocks.",
+        "Intraday VWAP exits accept current-session minute VWAP or deterministic session OHLCV/volume-derived VWAP and reject daily feature-engine VWAP distance.",
+        "Q10/Q12 trade attribution requires an exact entry order ID or entry run ID instead of same-symbol guessing.",
+        "Independent controlled lanes expose Scanner rank as not applicable and calculate entry delay from the lane signal epoch.",
+        "The 2026-09-07 SK Hynix report was regenerated with its Q10 identity and observed post-exit EOD path."
+      ],
+      "impact": "The approved recurrent Rank-1 relaxation can execute without bypassing real cost failures, and Q10 results can be evaluated without false VWAP exits or main-Scanner attribution drift.",
+      "sources": [
+        "docs/daily_patch/2026-09-07_q10_vwap_and_opening_alpha_integrity.md",
+        "libs/runtime/opening_rank1_probe_cost_edge.py",
+        "libs/runtime/monitor_exit/session_vwap.py",
+        "libs/reporting/controlled_mock_lane_report.py",
+        "libs/reporting/evaluation/entry_timing_attribution.py",
+        "tests/test_opening_rank1_controlled_probe.py",
+        "tests/test_monitor_exit_guard.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-09",
+      "version": "Exit Threshold and Horizon Integrity",
+      "title": "Stop Provenance and Active Horizon Alignment",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "EXIT_INTEGRITY",
+        "HORIZON",
+        "REPORTING"
+      ],
+      "summary": "Monitor now exposes the complete entry-stop provenance, applies only current-stage horizon reviews, and aligns both hold limits to the active Commander horizon.",
+      "details": [
+        "Stage 3 and Stage 4 revisions require matching current run ID and Strategist LLM call kind, preventing cached review replay.",
+        "Stage 3 lineage records the exact Commander-evaluated response and detects response/application mismatches.",
+        "Active expected_hold_window.max_sec controls both max_hold_sec and time_stop_sec.",
+        "Monitor artifacts retain raw structural stop, minimum structure floor, stop source, and invalidation price.",
+        "Scanner ranking, entry eligibility, stop and take-profit percentages, and broker execution policy are unchanged."
+      ],
+      "impact": "Exit and horizon decisions can be reconstructed without stale Stage 3 reuse or contradictory hold-limit fields.",
+      "sources": [
+        "docs/daily_patch/2026-09-09_exit_threshold_and_horizon_integrity.md",
+        "libs/runtime/position_horizon_revision.py",
+        "libs/runtime/monitor_strategy_frame.py",
+        "libs/runtime/stage3_horizon_lineage.py",
+        "libs/runtime/monitor_exit/position_risk.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-09",
+      "version": "Evaluation Observability and Opening Matrix",
+      "title": "Truthful Evaluation Status and Opening Alpha Comparison",
+      "stage": "Evaluation Observability",
+      "types": [
+        "CURRENT",
+        "Q9",
+        "Q10",
+        "Q12",
+        "OPENING_ALPHA",
+        "REPORTING"
+      ],
+      "summary": "Evaluation reports now distinguish missing, stale, closed-window and unverified evidence while comparing Opening Alpha outcomes across fixed operational dimensions.",
+      "details": [
+        "A single realized losing sample produces YELLOW trading health rather than GREEN.",
+        "Q12 reports post-09:12 expiry as WINDOW_CLOSED while retaining INPUT_DELAY during the active candidate window.",
+        "Q10 keeps unverified index observations out of calculations and displays their value, status and timestamp separately.",
+        "Q9 validity includes forward reason and checkpoint-status signature counts without relaxing coverage requirements.",
+        "Opening Alpha uses one first episode per day-symbol and compares asset family, risk band, setup, horizon and five forward windows.",
+        "Controlled probe decisions persist a stable lane, asset, risk, setup and horizon discriminator cell through evaluation and submission ledgers.",
+        "The new comparison remains observation-only and cannot authorize a trading behavior change.",
+        "Three stale exit and cooldown tests were aligned with cost-aware max-hold reassessment and applied-policy cooldown authority.",
+        "Patch-note metadata was corrected from 68 to 69 entries without rewriting historical entries.",
+        "The clean full regression completed with 3053 passed, 1 skipped, and no runtime behavior change."
+      ],
+      "impact": "Operators can distinguish real collection defects from expected lifecycle states and inspect whether asset type, setup and horizon separate Opening Alpha outcomes without changing trading behavior.",
+      "sources": [
+        "docs/daily_patch/2026-09-09_evaluation_observability_and_opening_matrix.md",
+        "libs/reporting/short_alpha_discriminator/opening_policy_matrix.py",
+        "libs/reporting/baseline_btc_woori_tech/input_delivery.py",
+        "libs/reporting/baseline_samsung_hynix/forward_validation/report.py",
+        "libs/reporting/evaluation/day_validity.py",
+        "libs/reporting/operator_visibility.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-10",
+      "version": "Stale Expected Exit Quote Integrity",
+      "title": "Fresh Expected-Exit Price Enforcement",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "EXIT_INTEGRITY",
+        "COST_FLOOR",
+        "REPORTING"
+      ],
+      "summary": "Monitor no longer lets a stale or materially conflicting best bid suppress a valid cost-aware profit exit.",
+      "details": [
+        "Expected-exit quotes older than 90 seconds are excluded.",
+        "Best bids diverging from the effective current price by more than 1.5 percent are excluded as conflicting evidence.",
+        "Quote age, divergence, rejection state and reason are retained in Monitor observability.",
+        "Live verification sold all 57 shares of 024060 with take_profit and broker order 0083909.",
+        "The next cycle confirmed zero open positions and generated the completed trade report.",
+        "Focused Monitor exit regression completed with 68 passed."
+      ],
+      "impact": "Fresh execution truth can trigger valid profit exits without being overridden by an entry-time order-book snapshot.",
+      "sources": [
+        "docs/daily_patch/2026-09-10_stale_expected_exit_quote_integrity.md",
+        "libs/runtime/monitor_exit/market_enrichment.py",
+        "libs/runtime/exit_policy.py",
+        "libs/runtime/monitor_exit/observability.py",
+        "tests/test_monitor_exit_price_freshness.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-10",
+      "version": "Evaluation Closeout Integrity",
+      "title": "Scoped Incident Attribution and Complete Forward Recovery",
+      "stage": "Evaluation Observability",
+      "types": [
+        "CURRENT",
+        "Q9",
+        "HORIZON",
+        "REPORTING",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Preserve valid selection and broker outcome evidence while excluding an incident-contaminated exit, and make closeout forward and Alpha Board reports complete.",
+      "details": [
+        "Evaluation exclusions can now target exit and horizon metrics without discarding valid selection, entry, or broker realized PnL evidence.",
+        "The 2026-09-10 024060 trade retains the broker-authoritative +15.05% result while stale-quote-contaminated exit and horizon attribution are excluded.",
+        "Alpha Research Board companion reports are rebuilt from their authoritative builders after canonicalization instead of reading removed legacy keys.",
+        "Q9 closeout recovery persists recovered minute candles and reuses them for day validity; usable forward coverage reached 99.67%.",
+        "Unified Q9 versus Samsung/Hynix comparison treats +120m and +180m as baseline-only horizons and requires completion only on shared Q9 horizons.",
+        "Operator summaries prefer the active Commander horizon, post-exit inventory recognizes the recap artifact, and 024060 resolves to 흥구석유.",
+        "Full regression completed with 3059 passed and 1 skipped."
+      ],
+      "impact": "Today's evidence is reconstructable without overstating exit quality, and post-close Q9/Board status no longer reports false missing evidence.",
+      "sources": [
+        "docs/daily_patch/2026-09-10_evaluation_closeout_integrity.md",
+        "libs/reporting/evaluation/trade_read_model.py",
+        "libs/reporting/evaluation/trade_evaluator.py",
+        "libs/reporting/evaluation/artifact_inventory.py",
+        "libs/reporting/alpha_research_board/builder.py",
+        "libs/reporting/baseline_samsung_hynix/unified_comparison.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-14",
+      "version": "Opening Alpha Initial Signal Price Integrity",
+      "title": "Preserve fresh Rank-1 quote before execution drift validation",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "OPENING_ALPHA",
+        "EXECUTION_INTEGRITY"
+      ],
+      "summary": "Use the already available fresh Rank-1 quote as Opening Alpha's initial signal price when the Scanner candidate has no price.",
+      "details": [
+        "Resolve the existing quote/minute observation before evaluating the controlled Opening Alpha probe.",
+        "Enrich only the probe evaluation copy; Scanner ranking, selected candidate and normal Monitor behavior remain unchanged.",
+        "Preserve the observed price and source through initial_signal_price into the pre-submit executable-price drift guard.",
+        "The existing two-percent drift threshold and broker no-call behavior remain unchanged.",
+        "Focused regression completed with 4 passed."
+      ],
+      "impact": "A valid first Rank-1 probe is no longer blocked solely because its Scanner candidate omitted price, while the final executable-price chase guard remains fail-closed.",
+      "sources": [
+        "graphs/nodes/monitor_node.py",
+        "libs/runtime/opening_rank1_observation_price.py",
+        "tests/test_opening_rank1_controlled_probe.py",
+        "tests/test_execute_from_packet.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-14",
+      "version": "Q10 Signed Executable Price Integrity",
+      "title": "Preserve signed Kiwoom best ask in order-notional validation",
+      "stage": "Trading Operations",
+      "types": [
+        "CURRENT",
+        "Q10",
+        "EXECUTION_INTEGRITY"
+      ],
+      "summary": "Normalize Kiwoom quote direction prefixes before Q10 order-notional validation so a fresh executable best ask is not mistaken for a missing price.",
+      "details": [
+        "Treat signed Kiwoom current, best-ask and best-bid values as absolute executable prices after validating that the numeric value is non-zero.",
+        "Preserve market.quote.best_ask.live_refresh as the selected price provenance.",
+        "Q10 strategy, candidate eligibility, score, order limits and broker semantics remain unchanged.",
+        "The dedicated signed-price regression passed and the focused execution-price suite completed 12 functional test passes; the production-write detector separately observed concurrent watchdog runtime writes."
+      ],
+      "impact": "A valid Q10 candidate with a fresh signed Kiwoom quote can reach normal notional validation instead of being incorrectly blocked as order_notional_price_missing.",
+      "sources": [
+        "graphs/nodes/execute_from_packet.py",
+        "tests/test_opening_alpha_executable_quote_refresh.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-27",
+      "version": "UEF-5.1 Clean Evidence Registry",
+      "title": "Freeze the input-boundary gate for historical evaluation recompute",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF5",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Formally froze the Clean Evidence Registry that decides which historical evidence is admissible before any recompute happens.",
+      "details": [
+        "Establishes CLEAN/QUARANTINED/FIELD_INVALID/REVIEW_REQUIRED/NO_RULE evidence classification, with a positively-proven clean domain required before anything is treated as CLEAN.",
+        "Independently audited and approved after one correction round; a single non-blocking numeric discrepancy was intentionally left on record rather than silently resolved.",
+        "No Scanner ranking, Strategist behavior, Monitor rules, or broker execution changed."
+      ],
+      "impact": "Downstream historical recompute (UEF-5.2) now has a proven, auditable admissibility gate instead of an implicit assumption about which evidence is trustworthy.",
+      "sources": [
+        "docs/research/uef5_1_clean_evidence_registry.md",
+        "docs/daily_patch/2026-09-28_uef5_formal_freeze_and_patch_backfill.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-28",
+      "version": "UEF-5.2 Historical Recompute",
+      "title": "Freeze deterministic historical recompute over clean evidence",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF5",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Formally froze the deterministic, offline recompute of clean historical evidence through the canonical evaluation layer, with a verified market-data trust chain.",
+      "details": [
+        "Candle admission requires a verified, acquisition-issued data receipt rather than a caller-supplied trust flag.",
+        "A dedicated session policy projects admitted candles onto the canonical trading session before any evaluation runs.",
+        "Independently audited and approved after two correction rounds; one non-blocking debt item was intentionally left on record.",
+        "No legacy comparison and no parity claim -- that boundary belongs to UEF-5.3."
+      ],
+      "impact": "Historical evaluation numbers are now reproducible from a bound, verifiable input chain instead of ad hoc recomputation.",
+      "sources": [
+        "docs/research/uef5_2_historical_recompute.md",
+        "docs/decisions/ADR-0003_UEF5_2_Market_Data_Authority_and_Recompute_Identity.md",
+        "docs/daily_patch/2026-09-28_uef5_formal_freeze_and_patch_backfill.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-28",
+      "version": "UEF-5.3 Historical Dual Run",
+      "title": "Freeze legacy-versus-canonical historical comparison",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF5",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Formally froze the comparison between legacy evaluation outputs and the new canonical historical recompute for the same evidence.",
+      "details": [
+        "Classifies every material difference through a bounded taxonomy instead of guessing; never treats an undefined legacy metric as a fake zero.",
+        "Gates any numeric comparison on a positively-proven shared population, never on count equality alone.",
+        "Independently audited and approved after five correction rounds; one non-blocking debt item was intentionally left on record.",
+        "Produces no strategy conclusion and no ranking -- comparison classification only."
+      ],
+      "impact": "The system can now state, with evidence, where legacy and canonical evaluation agree, disagree, or are not comparable -- instead of assuming parity.",
+      "sources": [
+        "docs/research/uef5_3_historical_dual_run.md",
+        "docs/daily_patch/2026-09-28_uef5_3_formal_freeze.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-28",
+      "version": "UEF-6 Dedup and Evidence Lineage",
+      "title": "Freeze duplicate-evidence detection and direct aggregation lineage",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF6",
+        "DATA_INTEGRITY"
+      ],
+      "summary": "Formally froze detection of accidentally duplicated evaluation rows and direct proof of which evidence entered which aggregate metric.",
+      "details": [
+        "Distinguishes raw rows, physical events, evaluation subjects and evaluation records, reusing the existing identity rules rather than inventing new ones.",
+        "A direct evidence-lineage sidecar proves aggregate membership only when it was actually witnessed at computation time; without that witness, lineage is reported as not available rather than guessed.",
+        "Historical validation against a real target run correctly reported a byte-level input mismatch as non-reproducible instead of silently accepting stale data.",
+        "Independently audited and approved after three correction rounds."
+      ],
+      "impact": "Aggregate metrics can now be checked for accidental double-counting and, where a direct witness exists, traced to the exact evidence rows they were built from.",
+      "sources": [
+        "docs/research/uef6_dedup_evidence_lineage_freeze.md",
+        "docs/daily_patch/2026-09-28_uef6_formal_freeze.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "UEF-7 Alpha Board Normalization",
+      "title": "Freeze the normalized comparison-ready view of the Alpha Research Board",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF7"
+      ],
+      "summary": "Formally froze a read-only, derived normalization of the Alpha Research Board that makes candidate rows and their source provenance directly comparable without changing the board itself.",
+      "details": [
+        "Preserves every candidate row exactly -- no merging, no reordering, no promotion decision.",
+        "Groups candidates that share the same source evidence, while explicitly stating that shared or different source evidence never proves the candidates share or don't share a population.",
+        "Independently audited and approved after three correction rounds, including a fix closing an adversarial input path that could otherwise smuggle an unrecognized field into the result's identity."
+      ],
+      "impact": "Downstream comparison tooling can now read one consistent, verified view of the Alpha Board instead of each consumer re-deriving its own interpretation.",
+      "sources": [
+        "docs/research/uef7_alpha_board_normalization_freeze.md",
+        "docs/daily_patch/2026-09-29_uef7_formal_freeze.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "UEF-8 Fair Comparison Validation",
+      "title": "Freeze pairwise comparison-validity checks over the normalized Alpha Board",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF8"
+      ],
+      "summary": "Formally froze a pairwise check of whether two candidates on the Alpha Board can be fairly compared at all -- never which one performs better.",
+      "details": [
+        "Every candidate pair is classified as comparable, conditionally comparable, or not comparable, based only on scope, evidence and provenance facts -- never on a metric's own performance value.",
+        "Independently audited and approved after two correction rounds: individually-proven evidence for two candidates does not by itself prove their populations can be compared, and pair identifiers were hardened against a hash-collision edge case.",
+        "Introduces no score, rank, winner or promotion recommendation of any kind."
+      ],
+      "impact": "The system can now say, with evidence, whether a comparison between two candidates is currently trustworthy -- instead of silently assuming every pair is comparable.",
+      "sources": [
+        "docs/research/uef8_fair_comparison_validation_freeze.md",
+        "docs/daily_patch/2026-09-29_uef8_formal_freeze.md"
+      ],
+      "status": "historical"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "UEF-9 Formal Evaluation Authority -- UEF Complete",
+      "title": "Freeze the final evaluation authority binding; the Unified Evaluation Foundation is complete",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "UEF9",
+        "AUTHORITY"
+      ],
+      "summary": "Formally froze the final authority layer that binds the candidate-level (UEF-7) and pairwise-comparison (UEF-8) evaluation results together and verifies they are internally consistent. With this freeze, the nine-stage Unified Evaluation Foundation (UEF-1 through UEF-9) is complete.",
+      "details": [
+        "Proves that a given comparison result genuinely belongs to a given candidate result, and that no candidate or comparison pair was silently added, dropped, or duplicated.",
+        "Reports one of two outcomes only -- the authority chain is valid, or it is rejected outright -- never a partial or confidence-scored result.",
+        "Records, as an explicit and intentional limitation (not a defect), that the current evaluation schema cannot yet prove two candidates share or differ in their underlying evidence population, so no pair can currently be marked fully comparable.",
+        "Introduces no ranking, promotion, or trading authority -- evaluation validity only."
+      ],
+      "impact": "The evaluation framework underneath the trading system's research process is now a single, internally-verified authority chain from raw candidate facts through to a final validity verdict.",
+      "sources": [
+        "docs/research/uef9_formal_evaluation_authority_freeze.md",
+        "docs/daily_patch/2026-09-29_uef9_uef_complete.md",
+        "docs/milestones/UEF.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "UEF P1.1 Real-Run Acceptance",
+      "title": "Validate the frozen evaluation chain against live repository data",
+      "stage": "Evaluation Authority",
+      "types": [
+        "EVALUATION",
+        "OPERATIONS",
+        "VALIDATION"
+      ],
+      "summary": "Ran the frozen UEF-7 through UEF-9 evaluation chain against one real, current snapshot of the Alpha Research Board to confirm it operates correctly outside of tests, without touching trading runtime state.",
+      "details": [
+        "The chain accepted the real snapshot and returned a valid authority result end to end.",
+        "Replaying the exact same captured snapshot produced identical results, confirming the chain has no hidden randomness or timing dependence.",
+        "Deliberately corrupted copies of the intermediate results were all correctly rejected, confirming the authority checks are not bypassable.",
+        "Verified the evaluation run wrote only to its own report output location and never touched live trading state, logs, or broker data, even while the live trading system kept running and writing concurrently."
+      ],
+      "impact": "Confirms the frozen evaluation framework is not just theoretically correct but actually works against real, live repository data without interfering with trading operations.",
+      "sources": [
+        "docs/research/uef_p1_1_real_run_acceptance.md",
+        "docs/daily_patch/2026-09-29_uef_p1_1_real_run_acceptance.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "Patch Notes Backfill and Canonical Sync",
+      "title": "Backfill the Patch Notes UI through UEF-9 completion and P1.1, and add a drift guard",
+      "stage": "Development Governance",
+      "types": [
+        "DOCUMENTATION",
+        "WEB_UI"
+      ],
+      "summary": "The user-facing Patch Notes UI had silently stopped updating on 2026-09-14 because its structured data file was not updated alongside two weeks of frozen evaluation-framework work. Backfilled the missing entries and added a regression check so this cannot silently recur.",
+      "details": [
+        "Traced the Patch Notes UI to its actual data source (a structured JSON file plus its human-readable companion) and confirmed the API and UI code were both working correctly -- only the underlying data file had gone stale.",
+        "Added the missing UEF-5.1 through UEF-9 freeze milestones and the P1.1 real-run acceptance entry, in the order they actually happened, without altering any existing entry.",
+        "Added a regression test that fails if the technical patch-note archive (docs/daily_patch/) ever contains a newer dated entry than the Patch Notes UI's own data file, so a future stall is caught automatically instead of discovered by a user."
+      ],
+      "impact": "The Patch Notes UI now reflects the true, current state of the project, and a recurrence of the same silent staleness will be caught by an automated check.",
+      "sources": [
+        "docs/trading_agent_patch_notes_detailed_update/patch_notes.json",
+        "docs/trading_agent_patch_notes_detailed_update/README.md",
+        "tests/test_patch_notes_sync.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "P1.3 Pytest Harness Speedup and Shutdown-Flag Safety Fix",
+      "title": "Faster P1.3 safety test loop, plus a real shutdown-signal bug fix",
+      "stage": "Trading Operations",
+      "types": [
+        "TEST_INFRASTRUCTURE",
+        "RELIABILITY"
+      ],
+      "summary": "Cut the fixed cost of the test-session production-write safety scan from minutes to seconds without weakening it, and fixed a background trading loop bug where a caller-supplied shutdown signal could be silently ignored. P1.3 itself remains open pending Docker operational acceptance and a full-session soak.",
+      "details": [
+        "The production-write safety scan run at the start and end of every test session now has a fast default mode (a few seconds) plus an unweakened full audit mode for deliberate pre-freeze checks, instead of always paying the full-tree-scan cost.",
+        "Fixed a concurrent-test-run collision where two test processes running at the same time could fail each other's temporary file cleanup on this machine.",
+        "Classified the 9 tests that genuinely spawn a real separate process so the normal test loop can skip them without losing their coverage; verified no other test was mislabeled this way.",
+        "Fixed a real bug found while isolating a stalled test: a background trading loop's run_live_loop silently ignored a caller-supplied shutdown flag whenever it was not the exact internal class, substituting one that could never be triggered and letting the loop run indefinitely. It now accepts any compatible shutdown flag or fails loudly instead of silently substituting one.",
+        "A fix made earlier in this same change (for the concurrent-test-run collision) briefly broke explicit test path isolation, which made a manual crash-reconciliation audit trail appear to go unwritten in one test; both issues are now confirmed correct and covered by existing tests.",
+        "Taught the fast safety scan to recognize three files this machine's own live trading process legitimately keeps writing to, so concurrent live trading no longer registers as a false test failure -- the full audit mode still checks them.",
+        "Corrected a stale executor-exception test fixture that omitted a required BUY price and fresh empty open-order snapshot and therefore never reached its fake executor; it now asserts one executor call and propagation of the deliberate RuntimeError, without changing production execution behavior.",
+        "The 20-file P1.3 safety-related test set now runs together in 45.58 seconds (220 passed, 0 failed, 9 tests deliberately skipped as a separately-run heavy subset) with zero false failures and zero unexpected new files or folders created, down from a run that previously exceeded 25 minutes. The separate heavy subset (9 tests that spawn a real subprocess) also passes cleanly, 0 failed.",
+        "Explicit acceptance status for this change: implemented = yes, targeted test validation = pass, heavy test validation = pass, Docker operational acceptance = pending, full-session soak = pending, P1.3 overall = not yet closed. This entry covers test-harness correctness and speed only, not the separate P1.3 Docker operational acceptance milestone."
+      ],
+      "impact": "The P1.3 safety test loop is now fast enough to run routinely during development, and a real bug that could have left a live trading process unable to shut down cleanly on signal is fixed.",
+      "sources": [
+        "docs/daily_patch/2026-09-29_p1_3_pytest_harness_and_shutdown_safety_fixes.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "Daily Alpha Board / UEF EOD Automation Gap Closed",
+      "title": "Daily evaluation pipeline now wired end to end, with a stale-data safety check",
+      "stage": "Evaluation Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Found and closed a gap where the daily Alpha Board and evaluation chain had no automatic daily run and no safeguard against silently reusing old data under a fresh-looking date label. Frozen evaluation semantics were unchanged.",
+      "details": [
+        "Discovered during routine cross-day observation: the daily evaluation summary had not actually updated in several days, even though nothing was reporting an error.",
+        "Traced the cause to a missing automatic daily trigger -- the evaluation chain existed and worked correctly whenever it was run, but nothing was running it on a schedule.",
+        "Built one single, reusable daily evaluation entry point that any current or future scheduler can call, so the evaluation logic itself is never duplicated across scheduling systems.",
+        "Added an explicit safety check that refuses to publish a daily result if the underlying data is not actually dated for that day, even if a top-level label would otherwise have said so -- so a stale result can no longer be mistaken for a fresh one.",
+        "A daily result is only published once the full chain -- Alpha Board, then each of the three evaluation stages -- has completed successfully; a failure at any point leaves the previous, still-valid result in place rather than showing a misleading update.",
+        "Verified the fix is safe to run repeatedly and touches no trading, broker, or runtime state -- evaluation and reporting only.",
+        "Attempted today's recovery run: it correctly declined to publish, because some of the underlying daily data genuinely has not updated since the prior trading day -- this is the new safety check working as intended, not a new problem."
+      ],
+      "impact": "The evaluation framework now runs on a reliable daily cadence going forward (once scheduled), and can no longer silently present old evidence as if it were current.",
+      "sources": [
+        "docs/daily_patch/2026-09-29_daily_uef_eod_wiring.md",
+        "docs/daily_patch/2026-09-29_uef_p1_1_real_run_acceptance.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "Daily UEF Publication Boundary Hardened (Fix2)",
+      "title": "Daily evaluation publication boundary hardened: single-capture authority, freshness contracts, fail-closed publication",
+      "stage": "Evaluation Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "An independent review of the same-day daily-evaluation wiring fix found three real gaps before it went live. All three are now closed: only one place in the system may publish a daily evaluation result, that result can no longer drift from what was actually evaluated, and a diagnostic check of old data can never be mistaken for a real published result.",
+      "details": [
+        "Found and removed a second, independent code path that could publish a daily result on its own, without going through the evaluation chain at all.",
+        "Closed a gap where the data actually evaluated and the data actually published could theoretically differ if something changed in between -- publication now uses the exact same captured data throughout, never re-reading it.",
+        "Replaced a one-size-fits-all freshness rule with specific, evidence-based rules per data source, after directly investigating what each source is actually supposed to look like on a fresh day.",
+        "Made it structurally impossible for a diagnostic check run against old data to publish a real result, rather than relying on a flag being used correctly.",
+        "Hardened the final publish step so an interruption partway through can never leave a half-written or mixed-authority result in place.",
+        "Re-verified against this system's real current data: it still correctly declines to publish today's result, because some source data genuinely has not updated -- this remains the safety check working as intended.",
+        "Frozen evaluation semantics were unchanged throughout."
+      ],
+      "impact": "The daily evaluation result can now only ever come from one place, cannot silently mix stale and fresh data, and cannot be corrupted by an interrupted write -- closing gaps that a same-day independent review found before this went into real use.",
+      "sources": [
+        "docs/daily_patch/2026-09-29_daily_uef_eod_wiring_fix2.md",
+        "docs/daily_patch/2026-09-29_daily_uef_eod_wiring.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "Pytest Artifact Hygiene (Permanent Fix)",
+      "title": "Test runs no longer leave leftover folders in the project",
+      "stage": "Trading Operations",
+      "types": [
+        "TEST_INFRASTRUCTURE"
+      ],
+      "summary": "An earlier same-day test-speed fix had an unintended side effect: it left a small leftover folder behind in the project after every test run. That is now fixed permanently -- test runs clean up after themselves automatically.",
+      "details": [
+        "Moved test temporary files to the operating system's own temp folder instead of inside the project.",
+        "A successful test run now deletes its own temporary folder immediately when it finishes.",
+        "A failed or interrupted test run still keeps its temporary folder around briefly for troubleshooting, but it is automatically cleaned up the next time tests run, so nothing builds up over time.",
+        "Removed the leftover folders already found from before this fix.",
+        "Added a permanent project rule and an automated check so this class of leftover cannot quietly return."
+      ],
+      "impact": "Running tests no longer clutters the project with leftover folders, and any future test run that fails or is interrupted is guaranteed to be cleaned up automatically rather than accumulating.",
+      "sources": [
+        "docs/daily_patch/2026-09-29_pytest_artifact_hygiene.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-29",
+      "version": "Daily UEF Canonical Publication Authority Closure",
+      "title": "Daily evaluation result now has one formally verified source of truth",
+      "stage": "Evaluation Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Closed the remaining gap from the same-day publication-boundary hardening: a second, older way of publishing a daily result still existed, unreviewed data sources were silently allowed in, and a complete result was not formally distinguishable from a partial one. All three are now closed. This does not resolve the separate finding that some source data has not updated since 2026-09-25 -- the daily evaluation for today remains unavailable, correctly.",
+      "details": [
+        "Found and closed a second, older path that could still publish a daily result on its own.",
+        "Every piece of data allowed into a daily result must now be on an explicit, reviewed list; anything unreviewed is refused rather than silently allowed through.",
+        "A daily result is now only considered genuine once a small, tamper-evident completion record formally binds every piece of it together and every piece has been verified to be unaltered.",
+        "A day that already has a valid result is never put at risk by a later attempt that fails partway through.",
+        "The single machine-readable pointer to the current result is the only thing anything should trust as authoritative; the human-readable summary is a convenience copy and its own failure never affects the real result.",
+        "Two real bugs were found and fixed while building this safeguard, both caught immediately by the new automated checks before this ever reached real use.",
+        "Re-verified against this system's real current data: today's result is still correctly unavailable, because some source data genuinely has not updated -- unchanged from before this closure.",
+        "Frozen evaluation semantics were unchanged throughout."
+      ],
+      "impact": "The daily evaluation result can now be formally verified as complete and untampered rather than assumed, and cannot be published from more than one place in the system.",
+      "sources": [
+        "docs/daily_patch/2026-09-29_daily_uef_authority_closure.md",
+        "docs/daily_patch/2026-09-29_daily_uef_eod_wiring_fix2.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "Closeout Failure Diagnostics Hardened",
+      "title": "Closeout failure diagnostics hardened to expose tick-loop and scheduled-fallback root causes",
+      "stage": "Trading Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "This does not fix the closeout data-freshness gap found on 2026-09-29 -- it makes the two paths that generate this data diagnosable, since both were previously failing without leaving any usable trace. A behavioral fix is expected in a separate follow-up.",
+      "details": [
+        "Traced why a live background process that should refresh daily evaluation data had not recorded a successful action in several days: it was catching real failures internally but writing the error to a location that never actually gets saved to disk, so the failure was invisible after the fact.",
+        "Traced two separate failures in the scheduled backup path for the same daily refresh: one run hung silently for about ten minutes before failing with no output at all, and a different run on the next day was cut off almost immediately by an external interruption. Confirmed this was not a wider system problem -- four other unrelated scheduled tasks ran normally on the same day.",
+        "Found that two specific pieces of daily data were not failing due to a bug, but because the source market history they depend on was genuinely missing for that day -- a real upstream data gap, not a code defect.",
+        "Traced the exact production chain for a fourth piece of daily data that had not been identified before.",
+        "Added durable, immediately-saved failure logging to both paths, so the next time either one fails, there will be a clear record of exactly what was happening at the time -- without changing how either path behaves when it succeeds.",
+        "Verified the new logging can never itself cause a failure, and does not touch any trading or order-related code."
+      ],
+      "impact": "The next occurrence of either failure will leave a clear, durable record instead of vanishing silently, which is what actually blocked diagnosing this the first time.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_closeout_diagnostic_hardening.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "Closeout Single-Owner Guard",
+      "title": "Closeout execution now enforces single-owner protection across market-status and scheduled fallback triggers",
+      "stage": "Trading Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Closeout execution now enforces single-owner protection across market-status and scheduled fallback triggers. This does not fix the still-unexplained 2026-09-28 hang or 2026-09-29 interruption -- it closes a confirmed, separate gap where both closeout triggers could run at the same time.",
+      "details": [
+        "Confirmed the two paths that run end-of-day closeout maintenance -- the live tick-loop and the scheduled backup task -- had no coordination between them, so both could run at the same time and write to the same output files at once.",
+        "Added a single-owner guard so only one of them can actually run closeout at a time; if the other is already running, the second one safely steps aside instead of racing it.",
+        "Reused this system's existing, already-proven single-instance lock mechanism rather than building a new one.",
+        "A run that safely steps aside is not treated as a failure, and does not overwrite anything.",
+        "If a run is interrupted or crashes partway through, the guard does not stay locked forever -- a later attempt can still run normally.",
+        "Every ownership decision (who ran, who stepped aside, when it was released) is now recorded in the same durable failure log added in the previous closeout diagnostics update.",
+        "Verified with 12 new automated tests covering simultaneous triggers, crash recovery, and later retries, plus the full existing test suite with no new regressions."
+      ],
+      "impact": "Closeout can no longer run twice at once and silently race itself, while a failed or interrupted run still remains safely retryable.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_closeout_single_owner_guard.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "Closeout Strict Owner-Identity Lock Fix",
+      "title": "Closeout ownership hardened so a valid live process cannot lose its lock merely because execution exceeds a stale-age threshold",
+      "stage": "Trading Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "A critical correction to the same-day single-owner protection fix: the first version could have let a genuinely still-running closeout lose its own lock to a second trigger just because it took longer than a fixed time limit. This does not fix the still-unexplained 2026-09-28 hang or 2026-09-29 interruption.",
+      "details": [
+        "An independent review found that the first version of today's single-owner protection had a real gap: it could treat a closeout that was simply taking a long time the same as one that had actually crashed, and let a second attempt take over while the first was still genuinely running.",
+        "Closeout ownership is now proven by verifying it is the exact same running process, using real operating-system process information, rather than by how much time has passed.",
+        "A running process can no longer lose ownership just because it has been running longer than expected.",
+        "Ownership can still be safely taken over the moment the previous process is confirmed to have actually stopped or been replaced.",
+        "If ownership can't be clearly verified one way or the other, the system now always errs on the side of caution and refuses to proceed, rather than guessing.",
+        "Giving back ownership now requires proving it is the exact same claim that was made originally, so one process can never accidentally cancel another's claim.",
+        "Verified with an expanded set of 25 automated tests covering this exact scenario and related edge cases, plus the full existing test suite with no new regressions.",
+        "This fix has not yet been independently re-verified in a live setting and the real scheduled closeout should not be triggered again until that review is complete."
+      ],
+      "impact": "A closeout that is genuinely still running can no longer have its ownership taken away from it early, closing the specific gap found in today's earlier single-owner protection fix.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_closeout_strict_owner_lock_fix.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "Closeout Strict Release-Identity Fail-Closed (Fix2)",
+      "title": "One remaining gap in today's strict-ownership fix closed: giving back ownership now always requires positive proof, never a default pass-through",
+      "stage": "Trading Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "A same-day follow-up to today's strict-ownership lock fix found one remaining unsafe case: if a process could not verify its own identity at the moment it tried to give back ownership, it was allowed to proceed anyway instead of being blocked. This is now blocked. Does not fix the still-unexplained 2026-09-28 hang or 2026-09-29 interruption.",
+      "details": [
+        "Found one specific situation where giving back closeout ownership could still succeed without actually proving it was the rightful owner: if the process could not confirm its own identity at that exact moment, the check was written in a way that let it proceed by default instead of stopping it.",
+        "This is now fixed so that giving back ownership always requires positive, confirmed proof on every check -- if any part of that proof cannot be confirmed, ownership is not given back and the safeguard stays in place.",
+        "This only affects the moment ownership is released, not how ownership is claimed or transferred, which were already verified correct.",
+        "Verified with a new targeted automated test for this exact situation, plus the full existing test suite with no new regressions."
+      ],
+      "impact": "Closes the one remaining case where the new closeout safeguard could have been bypassed, so the protection now holds in every situation that was checked.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_closeout_strict_release_identity_fix2.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "P1.3 Docker Operational Acceptance (In Progress)",
+      "title": "Docker deployment validated against a frozen, verified build -- initial checks passed, full-day observation still pending before this can be marked complete",
+      "stage": "Deployment / Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Began formal validation of running this system inside Docker, built from an exact, verified, unmodified snapshot of the code (not today's in-progress work). Initial checks all passed. This does not change which environment is used for real trading, and does not yet close this validation effort -- a full trading-day observation is still pending.",
+      "details": [
+        "Confirmed the Docker image was built from an exact, unmodified snapshot of the code, verified file-by-file, so the results below reflect that snapshot and not any of today's in-progress work.",
+        "Confirmed the currently-running live trading process on this machine was left completely untouched throughout -- all Docker testing used a separate, isolated copy of the data, with real order placement turned off.",
+        "The container started up, reported itself healthy within seconds, and correctly took ownership of its own isolated session.",
+        "Confirmed a second container instance correctly refuses to run at the same time as the first, preventing any risk of double execution.",
+        "Confirmed the container's saved data survives being fully recreated, with no data loss.",
+        "Confirmed the system correctly refuses to consider itself ready to trade until its own safety checks are satisfied, rather than assuming it is ready by default.",
+        "Simulated a hard crash and confirmed the container correctly waits out a safety window before taking over again, logging the handover clearly rather than silently overwriting it.",
+        "Confirmed a normal stop signal is handled cleanly and quickly, with ownership properly released every time.",
+        "Measured actual memory cost: the container itself used a small, stable amount of memory. The Docker system as a whole also has its own separate overhead beyond just the container, which was measured and recorded honestly rather than compared only at the container level.",
+        "Two things were deliberately not done yet: testing the real paper-broker connection (skipped for today specifically because the live trading process was actively using the real account connection at the same time, and running a second connection alongside it right now was judged unsafe) and a full trading-day observation (started today during the live session, but a full day cannot be observed within this single pass, so it is left running and marked as still pending rather than being marked complete without evidence).",
+        "No decision has been made about which environment -- current setup or Docker -- will be used going forward; that decision is intentionally separate and still open."
+      ],
+      "impact": "Docker is confirmed to start, protect against double execution, survive being recreated, and shut down cleanly using an exact verified build -- but this validation is not yet complete, and no change has been made to how the system currently runs live.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_p1_3_docker_operational_acceptance.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "P1.3 Docker Post-EOD Final Acceptance Evidence",
+      "title": "Full-day Docker validation results are in -- core mechanics all passed, but two specific items still need to happen before this can be marked fully complete",
+      "stage": "Deployment / Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Collected the full day's worth of evidence from this morning's Docker validation, all the way through market close and after. Every core mechanic passed cleanly. Two specific items remain before this validation effort can be marked fully complete, and this is reported honestly rather than closed early.",
+      "details": [
+        "The isolated Docker container ran continuously from before market open through well after market close today, stayed healthy the entire time, was never restarted, and never ran low on memory.",
+        "Because this container was deliberately isolated from real market data (for safety), it never actually received a real market-close signal, so the end-of-day process never had anything to trigger it during this specific run -- confirmed directly from its own detailed activity log, not assumed from the clock. This is reported plainly as still outstanding, not glossed over.",
+        "Separately ran the actual end-of-day process by itself, using a genuine full-sized copy of today's real activity log (roughly three-quarters of a gigabyte), to specifically measure how much memory that process alone needs under a realistic, full-scale load. It completed in about a minute, using a comfortable amount of memory, well within a safe range -- with the real source data only ever copied, never modified.",
+        "The container was then shut down normally at the end of this check, and it shut down quickly and cleanly, giving back its claim on the isolated session as expected every time this has been tested today.",
+        "Only two things are still outstanding before this validation can be marked fully done: getting a genuine end-of-day trigger to fire (not just simulating it separately), and testing the real paper-account connection specifically through this Docker setup -- the second one is still waiting for a safe window when it will not run alongside the live trading process using the same account connection at the same time.",
+        "No decision has been made about which environment will be used going forward; that decision remains intentionally separate and still open."
+      ],
+      "impact": "Docker's core mechanics are now proven solid through a full trading day, but this validation effort is being kept honestly open -- not marked done -- until the two remaining specific checks are completed.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_p1_3_docker_post_eod_final_acceptance.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "P1.3 Integrated EOD Cascade Attempt (Still Pending)",
+      "title": "Tried to trigger a genuine end-of-day sequence using the system's own existing tools -- the attempt did not confirm success, so this stays open rather than being marked done",
+      "stage": "Deployment / Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Attempted to prove the end-of-day process using only the system's own existing, already-supported input mechanism (not a new shortcut built for this test). The attempt did not produce confirming evidence, so this is reported honestly as still open rather than closed. The real paper-account connection check also remains open, for the same safety reason as before.",
+      "details": [
+        "Before building anything new, first checked whether the system already has a supported way to feed it a realistic market-close signal -- and found one already built in and already used by the real system for this exact purpose.",
+        "Used that existing, unmodified mechanism (not a new one written for this test) to feed in a realistic market-close signal, in an isolated environment with real order placement turned off.",
+        "After feeding in the signal and waiting through several of its normal check cycles, no evidence appeared that the end-of-day sequence actually ran. Confirmed separately that the underlying end-of-day process itself works fine on its own -- the issue is specifically about whether the live signal actually reaches and triggers it under these exact conditions.",
+        "This is reported plainly as unresolved rather than force-fixed or worked around: no new system behavior was written just to make this pass artificially, per the standing rule for this kind of check.",
+        "The container itself stayed completely healthy throughout this attempt -- no crash, no restart, no resource issue. Only the trigger itself could not be confirmed.",
+        "The real paper-account connection check also remains untested today, for the same reason as the prior update: the live trading process was still actively using that same connection throughout, and testing it at the same time was judged unsafe.",
+        "Both of these being open is exactly why this validation effort is still not being marked complete -- reporting it honestly as open is the correct outcome here, not a setback."
+      ],
+      "impact": "Two specific items remain open before this validation effort can be marked complete; both are reported plainly rather than assumed or worked around, keeping this effort's status trustworthy.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_p1_3_eod_cascade_attempt_and_paper_pending.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "P1.2 Daily UEF Automation Integration",
+      "title": "Daily evaluation scheduling now uses the existing fail-closed canonical UEF entry point",
+      "stage": "Evaluation Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "The prepared daily UEF task is configured to invoke the one canonical evaluation entry point after closeout. It never treats clock time as proof that input is ready: existing freshness contracts still reject incomplete or stale daily evidence.",
+      "details": [
+        "The first registered same-day run published a valid 2026-09-30 COMPLETE authority and exactly one P1.2 observation.",
+        "The observation index is derived metadata; COMPLETE manifests and verified pointers remain the only machine authority.",
+        "The required second-run idempotency check failed: it created a different COMPLETE generation and advanced current/latest before the registry rejected the conflicting already-observed-day authority.",
+        "P1.2 automation closure is blocked pending a separately scoped idempotency repair; no historical observation was backfilled.",
+        "Frozen UEF, trading, strategy, execution, and Docker behavior are unchanged."
+      ],
+      "impact": "The first same-day canonical observation is valid, but retry idempotency is not: a second invocation can create competing authority before the registry fails closed. P1.2 remains open.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_p1_2_daily_automation_integration.md",
+        "docs/milestones/UEF.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "P1.3 EOD Cascade: Confirmed Reachable (Correction)",
+      "title": "The end-of-day trigger mechanism does work correctly -- an earlier report that it was unconfirmed was based on checking the wrong field, now corrected with definitive proof",
+      "stage": "Deployment / Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "A closer read-only investigation found that the end-of-day trigger mechanism reported as unconfirmed earlier today actually does work correctly -- the earlier check was looking in the wrong place in the saved data, not a real gap in the system. This is now proven directly, including that a duplicate signal correctly does not trigger a second run.",
+      "details": [
+        "Traced the exact code path a real market-close signal takes, step by step, from the program's entry point through to the actual end-of-day report generation, confirming every step is reachable and none of it is blocked by time-of-day.",
+        "Re-examined the exact same data produced by the earlier attempt and found the proof was there all along -- it had simply been checked in the wrong location within the saved file.",
+        "Directly confirmed the full chain: a market-close signal is accepted, recorded so it won't be processed twice, the end-of-day process runs, and a complete set of daily report files is produced.",
+        "Separately proved duplicate protection works: sending a second, equivalent close signal was correctly recognized as already handled and did not produce a second run or a second set of reports.",
+        "This required no code changes and no new build -- it is a correction to how the earlier result was read, not a fix to the system itself.",
+        "All previously passed results remain valid and unaffected by this correction."
+      ],
+      "impact": "The end-of-day trigger is now confirmed working correctly, including duplicate protection, using the exact same frozen, already-accepted build -- removing one of the two remaining items before this validation effort can be marked complete.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_p1_3_eod_cascade_confirmed_reachable_correction.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "P1.3 Final Closure Attempt: Paper Connectivity + Resource Benchmark",
+      "title": "Real paper-broker connectivity confirmed for authentication and account balance -- one specific read (open orders) is blocked by an existing safety switch, so this stays open; a full Host vs. Docker resource comparison is now complete",
+      "stage": "Deployment / Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Successfully connected the exact accepted Docker build to the real practice-account broker sandbox and confirmed both login and account-balance lookup work correctly. A third check -- looking up open orders -- was blocked, but for a clear, understood reason: an existing safety switch treats that specific lookup the same as placing an order, so it stays off intentionally while that safety switch is off. Because not all three checks passed, this validation effort remains open rather than closed. Separately, a full three-way comparison of running the trading system on this computer directly versus inside Docker is now complete, with real measured numbers.",
+      "details": [
+        "Gracefully stopped and later safely restarted the live trading process twice today, as explicitly authorized, to make room for these checks -- confirmed healthy and running normally throughout and at the end.",
+        "Confirmed real login to the broker's own official practice-account sandbox succeeds using the accepted build, with no secrets ever shown or saved anywhere they shouldn't be.",
+        "Confirmed a real account-balance lookup against the practice sandbox succeeds and returns valid data.",
+        "The open-orders lookup was blocked -- traced this precisely: every existing way this system has of checking open orders shares the same safety switch as actually placing an order, and that switch is intentionally left off for this kind of check. This is a specific, understood gap, not an unexplained failure, and is reported openly rather than worked around.",
+        "No order of any kind was placed or even attempted at any point.",
+        "Completed a fair, three-way, real-world comparison: running everything directly on this computer, running the trading process directly with just the monitoring dashboard in Docker, and running the trading process itself inside Docker alongside the dashboard.",
+        "Measured actual total memory use, available memory, and processor load in each of the three setups, not just one isolated number.",
+        "Found that having the monitoring dashboard available at all has a real, roughly fixed cost on this computer regardless of where the trading process itself runs -- and that cost is the same whether the trading process is inside Docker or not.",
+        "Found that the Docker version of the trading process itself is actually lighter than the version running directly on this computer.",
+        "This is a real measurement, not a preference -- and it does not by itself decide which setup should be used going forward; that remains a separate, deliberate decision for later.",
+        "Left the live trading process running normally with the monitoring dashboard available, matching how things were set up before this comparison began, with nothing extra left running afterward."
+      ],
+      "impact": "Two of three required real broker checks now pass with a precisely understood reason for the third, and a genuine, measured comparison of running this system on the computer directly versus in Docker is now available to inform a future decision -- without making that decision here.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_p1_3_final_closure_paper_and_resource_benchmark.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-09-30",
+      "version": "P1.3 CLOSED -- Broker Read/Write Gate Fix",
+      "title": "The last remaining item is fixed and verified against the real practice-account broker -- this multi-day Docker validation effort is now complete",
+      "stage": "Deployment / Operations",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Found and fixed the exact, narrow reason the one remaining broker check was blocked, verified the fix against the real practice-account sandbox, and re-confirmed that placing a real order is still fully blocked. With that, every required Docker acceptance check now passes and this validation effort is complete.",
+      "details": [
+        "Traced the one remaining blocked check to its precise cause: a safety switch meant only for actually placing orders was, by mistake, also blocking simply looking things up.",
+        "Made the smallest possible correction so that looking things up (logging in, checking account balance, checking open orders) works independently from the switch that controls actually placing orders -- reusing an existing, already-trusted way this system already tells the two apart, rather than inventing a new one.",
+        "Re-verified, live, against the real practice-account sandbox with real order placement still turned off: logging in works, checking account balance works, and checking open orders now also works correctly -- with a valid, genuine \"nothing pending\" result, not a blocked error.",
+        "Immediately re-confirmed, in that same live session, that actually placing a real buy or sell order is still completely blocked, exactly as intended -- proving the fix only affected lookups, not real order-placement safety.",
+        "Because this involved an actual code change, a new officially-accepted build was created and independently re-verified byte-for-byte against its own source, separate from today's unrelated in-progress work elsewhere in the project.",
+        "Re-ran only the specific checks this small change could plausibly affect, rather than repeating everything already proven earlier -- all of them passed, and nothing else needed to be redone.",
+        "No order of any kind was placed at any point. The live trading process itself was left completely untouched throughout this step.",
+        "With this fix, every required check for this Docker validation effort now passes, and it is being marked complete.",
+        "Which environment to actually run going forward remains a separate, deliberate decision for later -- this only confirms Docker works correctly and safely; it does not choose it."
+      ],
+      "impact": "This multi-day Docker validation effort is now fully complete, with every required real-broker safety check passing -- while still leaving the choice of which environment to actually use as a separate, later decision.",
+      "sources": [
+        "docs/daily_patch/2026-09-30_p1_3_closed_read_write_gate_fix.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-01",
+      "version": "Storage and Temporary-Artifact Hygiene",
+      "title": "Engineering work now has a permanent cleanup and evidence-retention rule",
+      "stage": "Engineering Governance",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "The project now requires temporary worktrees, tests, debugging artifacts, and build resources to be cleaned after their results are safely preserved, while explicitly protecting canonical trading and audit evidence.",
+      "details": [
+        "Agents must reuse compatible worktrees where possible, create no more than one temporary worktree for a task, and remove completed worktrees after commit preservation is verified.",
+        "Successful test runs must leave no repo-local pytest scratch; failure evidence is bounded rather than retained indefinitely.",
+        "Docker disk use is inspected after substantial build or test work, but only proven-unused temporary resources may be removed. Broad destructive pruning still requires explicit approval.",
+        "Canonical runtime state, broker evidence, UEF evidence, registries, accepted reports, and audit trails are explicitly protected from storage cleanup.",
+        "This is a project-governance documentation change only and does not alter runtime, trading, scheduler, or UEF behavior."
+      ],
+      "impact": "Completed engineering work now includes safe cleanup verification without treating unknown or canonical data as disposable.",
+      "sources": [
+        "docs/ground_rules/AGENT_RULES.md",
+        "docs/daily_patch/2026-10-01_storage_temp_artifact_hygiene.md"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-01",
+      "version": "Host Runtime Pivot and Closeout Exactly-Once Completion",
+      "title": "Trading now runs on the Host machine again; a second safeguard stops end-of-day reporting from ever running twice",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "The trading runtime is moving back to the Host machine; Docker remains technically validated but is not adopted for production use. End-of-day closeout now durably remembers a day it already finished, so a retry correctly does nothing instead of redoing the work. The daily evaluation schedule had its battery restriction removed and its logon type changed to run unattended, both verified at the configuration level; today's run completed correctly but about 57 minutes late, which is recorded honestly rather than glossed over, and the exact cause is not yet fully proven.",
+      "details": [
+        "Canonical trading runtime is now the Host machine, not Docker. This is an operational choice, not a sign Docker could not work -- Docker already passed its earlier technical acceptance tests, and that validation stands.",
+        "Docker production adoption is explicitly deferred, not adopted and not rejected as technically broken -- this is purely an operational-complexity decision for a single-machine deployment.",
+        "A second, independent Docker restart failure happened today with the identical cause already on record from earlier -- kept as further evidence for this decision, not treated as a new problem. The underlying Docker restart/PID-1 issue is recorded as backlog and is explicitly NOT fixed in this change.",
+        "Today's real 2026-10-01 Docker production-day incident (and the earlier one) are both kept on record as historical evidence, not erased or rewritten.",
+        "End-of-day closeout now remembers, durably, once it has fully finished successfully for a given day -- so a later retry from either of the two ways closeout can start correctly reports the day as already completed instead of redoing the full reporting battery.",
+        "Specifically verified: a repeat attempt on an already-completed day reports ALREADY_COMPLETED rather than re-running; the scheduled fallback path reports the same ALREADY_COMPLETED outcome after a successful run from the other path; and an attempt that is genuinely interrupted before finishing leaves no completion record, so a later retry is still allowed to run.",
+        "The daily evaluation script now keeps its own simple start/end record -- who ran it, when, and how it ended -- separate from the Windows Scheduler's own history, so a crash or a hang leaves a trace behind.",
+        "Added a simple read-only status check an operator can run to see, for any given day, whether the daily evaluation was scheduled-and-ran, never started, started-and-failed, or started-and-completed -- rather than only trusting that the schedule itself is turned on.",
+        "The daily evaluation task's battery-power restriction was removed today (applied and verified).",
+        "The daily evaluation task's logon type was changed today to run unattended, without needing anyone logged into the computer (applied and verified against the task's own configuration). A live, real end-to-end unattended trigger was deliberately not performed, to avoid creating a second, duplicate evaluation record for a day that already has a valid, complete one -- the configuration-level confirmation is being recorded as the validation evidence for this change.",
+        "Today's daily evaluation output was checked and confirmed to be a genuine, correctly-produced result for 2026-10-01 -- the underlying evaluation run itself, once it executed at 17:42 KST, completed successfully.",
+        "However, today's run did not meet its scheduled 16:45 KST timing -- it started about 57 minutes late. This is being recorded plainly as a missed on-time run, not quietly treated as a success just because the evaluation itself eventually completed correctly.",
+        "The exact cause of today's late start is not fully proven. The logon-type setting being unattended-incapable is a plausible, consistent contributing factor, but this has not been confirmed as the sole or definitive cause, and is not being claimed as conclusively diagnosed.",
+        "The next real test of today's scheduling correction is the regularly scheduled 2026-10-02 16:45 KST run -- its outcome is not yet known and is not being assumed or claimed in advance.",
+        "Finished cleaning up the temporary work areas left over from the earlier Docker testing, and removed the Docker test images from that testing that are no longer needed, while leaving today's real (if now stopped) production Docker container and its image untouched for review.",
+        "A permanent project rule for cleaning up temporary work areas, test leftovers, and unused Docker build resources was added today, separately from this runtime change.",
+        "No change to UEF core logic, Step5C, Step5D, or trading/strategy behavior in any of today's work.",
+        "Also found and fixed a real gap: the live daily-evaluation schedule was actually running from code that did not yet contain an already-approved fix for safely handling a day that gets re-evaluated more than once (a fix for making repeated runs produce the exact same result, and for never silently redoing work or creating conflicting records for a day already finished correctly). That approved fix has now been brought into the same branch the live schedule actually runs from, verified with 29 passing tests plus a broader 65-test regression sweep, with no change to UEF core logic, Step5C, Step5D, or trading behavior.",
+        "A follow-up check on 2026-10-01's result initially looked like the underlying input data had changed after the fact, which would have been serious. It was traced precisely instead to how the check itself was run (a path-formatting difference, not real data change): the same underlying data, checked the same way the real daily task checks it, produces the exact same result as the original. No actual upstream data drift occurred, repeated runs remain consistent, and 2026-10-01's result stands as valid. The narrow path-formatting detail itself is noted for a later, separate, deliberate fix -- not changed today."
+      ],
+      "impact": "Production trading operates on Host going forward; end-of-day reporting is now protected against accidental duplication; the daily evaluation schedule is more reliable and leaves a clearer trace if something goes wrong.",
+      "sources": [
+        "docs/daily_patch/2026-10-01_host_runtime_pivot_final_ops_cleanup.md",
+        "libs/reporting/closeout_completion_authority.py",
+        "tests/test_closeout_durable_completion_authority.py",
+        "scripts/run_daily_uef_evaluation.py",
+        "scripts/check_daily_uef_run_status.py",
+        "tests/test_daily_uef_run_status.py",
+        "scripts/verify_uef_freeze_manifest.py",
+        "docs/daily_patch/2026-10-01_p1_2_idempotency_determinism_integration.md",
+        "libs/reporting/evaluation/daily_uef_pipeline.py",
+        "libs/reporting/alpha_research_board/builder.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-02",
+      "version": "P1.3 R1/R2 Docker Restart Storm Fixes",
+      "title": "The trading runtime can now restart inside a container without locking itself out",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY"
+      ],
+      "summary": "Two separate safety checks were each making a restarted Docker trading runtime give up in under a second, which used up its restart allowance and left it stopped. Both were corrected without weakening the rule that a live owner is never displaced.",
+      "details": [
+        "The first check identified the previous owner only by a process number. A restarted container always gets the same small number, so it mistook its own dead predecessor for a live owner. It now also compares the exact start time of the process, so a dead or reused number is recognised and a genuinely live owner is still never taken over.",
+        "The second check refused a restart while the previous owner's 30-second claim was still valid, and gave up instantly. It now waits, for no longer than that claim's own remaining time plus a few seconds, and then takes over only once the claim has legitimately expired. If the claim is somehow still valid at the end of the wait it stops safely instead of forcing its way in.",
+        "The shared lock file is now written in one step so a status check can no longer read a half-written file and wrongly report a failure.",
+        "Today's real Host run showed the strict check protecting the system as designed: a scheduled backup closeout that started mid-way through a 55-minute closeout was turned away rather than allowed to take over, and a later duplicate was skipped as already complete.",
+        "Docker is still not the live trading runtime. The Host runtime traded and closed out normally today and was not touched."
+      ],
+      "impact": "A crashed or restarted Docker runtime can recover on its own after a short, bounded wait instead of ending up stopped.",
+      "sources": [
+        "docs/daily_patch/2026-10-02_p1_3_r1_r4_docker_restart_safety.md",
+        "libs/runtime/live_loop_lock.py",
+        "libs/runtime/live_loop_runner.py",
+        "tests/test_m13_strict_owner_identity_restart_fix.py",
+        "tests/test_m13_ownership_lease_bounded_wait_fix.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-02",
+      "version": "P1.3 R3 Ownership Heartbeat",
+      "title": "A running trading process now keeps its ownership claim fresh even during long steps",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY",
+        "SAFETY"
+      ],
+      "summary": "The runtime's claim of ownership expires after 30 seconds but was only renewed between work cycles. Real cycles often took longer, and today's end-of-day closeout took about 55 minutes, so a perfectly healthy owner could look abandoned. A background heartbeat now renews the same claim independently of how long the work takes.",
+      "details": [
+        "The heartbeat renews the same existing ownership claim, not a new one, and starts only after ownership is actually obtained.",
+        "It renews roughly every third of the claim's length, derived from the claim's own setting rather than a separate number.",
+        "It can only renew the exact claim this process holds. If another runtime has taken over, the renewal fails, the heartbeat stops for good and the process refuses to start any further work and exits.",
+        "If the claim cannot be renewed for a full claim period (for example the store is unreachable) it also stops work rather than assuming it is still the owner.",
+        "A crash stops the heartbeat with the process, so the claim lapses naturally and the bounded wait and takeover from the previous fix apply unchanged.",
+        "A step already in progress is never interrupted; only the next one is prevented."
+      ],
+      "impact": "A healthy owner can no longer be displaced just because one step ran long, while a genuinely dead owner is still replaced after its claim expires.",
+      "sources": [
+        "docs/daily_patch/2026-10-02_p1_3_r1_r4_docker_restart_safety.md",
+        "libs/runtime/live_loop_runner.py",
+        "tests/test_m13_lease_heartbeat_fix.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-02",
+      "version": "P1.3 R4 Runtime Mode Switch",
+      "title": "One explicit setting now decides whether the Windows host may start live trading",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "SAFETY"
+      ],
+      "summary": "The weekday 09:00 and watchdog Windows tasks start both the live trading process and the data collectors that feed the daily evaluation, so they cannot simply be switched off when trading moves to Docker. A single setting, TRADING_RUNTIME_MODE, now lets those tasks keep running the collectors while declining to start live trading on the host.",
+      "details": [
+        "host (the default) behaves exactly as before.",
+        "docker makes the host skip only the live-trading launch, with the logged reason HOST_LIVE_START_SKIPPED_CANONICAL_RUNTIME_DOCKER. The Q10, Q11 and Q12 collectors, the opportunity engine and the macro collectors keep running, and the watchdog neither starts nor tries to recover host live trading.",
+        "Any other value also skips the host launch, so a typo can never accidentally allow a second live runtime.",
+        "Rolling back means setting the mode back to host.",
+        "The setting is configuration only: it does not inspect Docker or process numbers, and it is not an ownership authority. The ownership claim remains the only thing that decides who may trade.",
+        "The setting is not turned on yet, so tomorrow's tasks still behave as today until the cutover."
+      ],
+      "impact": "Trading can move to Docker without losing the data collectors, and the host can be prevented from starting a competing trading process.",
+      "sources": [
+        "docs/daily_patch/2026-10-02_p1_3_r1_r4_docker_restart_safety.md",
+        "libs/runtime/runtime_mode.py",
+        "scripts/start_trading_day.py",
+        "scripts/restart_live_session.py",
+        "tests/test_runtime_mode_gate.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-02",
+      "version": "P1.3 R5 Healthcheck, Shutdown and Recovery Evidence",
+      "title": "Docker health now follows the real ownership claim, and restart recovery was demonstrated end to end in isolation",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY",
+        "SAFETY"
+      ],
+      "summary": "Docker's health check used to judge a runtime by the lock file's heartbeat, which is only updated between work cycles, so long legitimate cycles made a healthy runtime look unhealthy. It now follows the same ownership claim the heartbeat renews, and lock-file information is only a diagnostic. A stop request during a restart wait is also now handled safely, and a full crash-and-recovery sequence was demonstrated in an isolated Docker environment.",
+      "details": [
+        "The health check is strictly read-only: it opens the ownership store in read-only mode and never acquires, renews, releases or changes anything.",
+        "It reports an explicit reason: owner, generation and remaining claim time when healthy; no valid owner, another runtime owning, or an identity mismatch when not.",
+        "A stop signal received while a restarted runtime is waiting for the old claim now makes it exit cleanly without ever taking ownership. Before this, the signal handler was installed too late and the process was simply killed.",
+        "In an isolated Docker run with the real recovery logic and a mock broker: after a hard crash and a quick restart the process stayed alive and waited, took over only when the old claim expired, and showed recovery-required until the mock broker was healthy, then went fresh and green. A second restart repeated this deterministically, and Docker's restart counter stayed at zero.",
+        "No orders were placed, the real production state and the running host process were not touched, and nothing about trading, the daily evaluation, or the order-ownership checks changed.",
+        "Not yet done: the production-state after-hours Docker test against the real paper broker, and the cutover itself. The host remains the live runtime."
+      ],
+      "impact": "Docker health and restart behavior are now trustworthy enough to proceed to the production-state cutover test.",
+      "sources": [
+        "docs/daily_patch/2026-10-02_p1_3_r5_healthcheck_shutdown_recovery_matrix.md",
+        "scripts/docker_healthcheck.py",
+        "libs/runtime/live_loop_runner.py",
+        "tests/test_docker_healthcheck_ownership_liveness.py",
+        "tests/test_m13_shutdown_during_lease_wait.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-02",
+      "version": "P1.3 Production Docker Cutover",
+      "title": "Docker is now the canonical live runtime; one controlled restart validated, readiness left for the next session",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY",
+        "SAFETY"
+      ],
+      "summary": "The live trading runtime moved from the Windows host process to a single Docker container after the close. The host runtime was stopped, the container took over the ownership claim, read the paper broker successfully without placing orders, and survived one deliberate crash-and-restart exactly as designed.",
+      "details": [
+        "Before the move the account was flat (no positions, no open orders, no pending order claims, no orphans) and the day's closeout was complete.",
+        "The runtime-mode setting was switched to docker: the scheduled tasks stay in place but no longer start the host live loop, while the market-data collectors that feed the daily evaluation are still started by the same code path (proven with a dry run that records launches instead of executing them).",
+        "Exactly one container, trading-agent-live, runs the exact-SHA image; the previous failed container was kept under an incident name. It restarts through Docker's own restart policy, and Docker Desktop's existing logon autostart is the only startup authority.",
+        "Auth, account, open-order and market-data reads against the paper broker passed from inside the container; no order was submitted.",
+        "One controlled restart: the new process was recognised as a new process despite reusing process number 1, waited about 23 seconds for the old claim to expire, took over as generation 3, stayed healthy and never entered a restart loop. A triggered watchdog run did not bring the host runtime back.",
+        "Not yet proven: fresh green execution readiness and clearing of the post-takeover recovery flag, because market hours are hard-coded and every after-hours cycle is skipped. This is the first-session validation item. The boot simulation was static (no reboot or Docker restart).",
+        "Rollback is one setting: runtime mode back to host, stop the container, let the claim expire, start the host."
+      ],
+      "impact": "Docker is the single live runtime from the next session; the next market session must confirm readiness and recovery clearing.",
+      "sources": [
+        "docs/daily_patch/2026-10-02_p1_3_production_docker_cutover.md",
+        "libs/runtime/runtime_mode.py",
+        "scripts/docker_healthcheck.py",
+        "libs/runtime/live_loop_runner.py"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-03",
+      "version": "Agentra Root Migration",
+      "title": "Agentra physical root migration and external-boundary update",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY",
+        "SAFETY"
+      ],
+      "summary": "Moved the Agentra repository root to C:\\Agentra while preserving accumulated data, runtime state, Git identity, and the pinned Docker compose identity.",
+      "details": [
+        "Created a temporary compatibility junction from C:\\Trading_Agent_System to C:\\Agentra.",
+        "Recreated the Python virtual environment at C:\\Agentra\\venv from requirements.txt.",
+        "Updated Docker TRADING_REPO_ROOT and preserved the trading-agent-observability compose identity.",
+        "Migrated all 13 disabled Scheduler task definitions, including the S4U Daily UEF task with its S4U principal and scheduling semantics preserved.",
+        "No live runtime, Docker workload, trading logic, UEF logic, data, evidence, or execution authority was started or relocated."
+      ],
+      "impact": "Agentra is available at its new root with all disabled Scheduler registrations targeting the new path.",
+      "sources": [
+        "docs/daily_patch/2026-10-03_agentra_root_migration.md",
+        "deploy/compose/.env",
+        "deploy/m28_launch_templates/windows/daily_uef_evaluation_task.xml",
+        "requirements.txt"
+      ],
+      "status": "current"
+    },
+    {
+      "date": "2026-10-03",
+      "version": "Agentra Root Migration Finalization",
+      "title": "Agentra root migration fully finalized across Scheduler and Git",
+      "stage": "Operations and Reliability",
+      "types": [
+        "OPERATIONS",
+        "RELIABILITY",
+        "SAFETY"
+      ],
+      "summary": "Completed the final privileged Scheduler update and Git finalization after the physical Agentra root migration.",
+      "details": [
+        "TradingAgent-DailyUefEvaluation was re-registered from an Administrator context with its S4U principal, Limited RunLevel, triggers, schedule, settings, and disabled state preserved.",
+        "All 13 registered TradingAgent tasks now reference C:\\Agentra; active Scheduler references to C:\\Trading_Agent_System are zero and all tasks remain disabled for weekend maintenance.",
+        "Docker configuration remains pinned to the trading-agent-observability Compose identity and resolves bind mounts under C:/Agentra; Docker and the live trading runtime were not restarted.",
+        "The rebuilt venv passed the dependency audit without adding historical or optional packages, and deterministic/UEF/replay/authority/leakage validations remained green.",
+        "The migration changes were committed and pushed on codex/observability-20260824; the temporary C:\\Trading_Agent_System compatibility junction remains for soak and no accumulated data or runtime state was relocated."
+      ],
+      "impact": "Agentra now has a canonical C:\\Agentra root with all active external registrations aligned while remaining safely shut down for weekend maintenance.",
+      "sources": [
+        "docs/daily_patch/2026-10-03_agentra_root_migration.md",
+        "deploy/m28_launch_templates/windows/daily_uef_evaluation_task.xml",
+        "deploy/compose/.env.example"
+      ],
+      "status": "current"
+    }
+  ]
+}

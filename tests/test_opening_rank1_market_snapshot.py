@@ -61,6 +61,11 @@ def test_market_snapshot_uses_latest_observation_at_or_before_decision(tmp_path:
     assert result["kospi_pct"] == 0.5
     assert result["kosdaq_pct"] == -0.2
     assert result["snapshot_age_sec"] == 60
+    assert result["freshness_status"] == "FRESH"
+    assert result["timeline_snapshot_count"] == 2
+    assert result["eligible_snapshot_count"] == 1
+    assert result["next_snapshot_delay_sec"] == 60
+    assert result["next_snapshot_usage"] == "POST_DECISION_OBSERVABILITY_ONLY"
     assert result["snapshot_epoch"] <= decision_epoch
     assert result["source_path"].endswith("090100_macro_indicators.json")
 
@@ -73,6 +78,8 @@ def test_market_snapshot_does_not_use_future_observation() -> None:
     )
     assert result["evidence_status"] == "MISSING_NO_SNAPSHOT_AT_OR_BEFORE_DECISION"
     assert result["snapshot_epoch"] is None
+    assert result["next_snapshot_delay_sec"] == 1
+    assert result["freshness_status"] == "MISSING"
 
 
 def test_feature_mart_persists_point_in_time_market_provenance() -> None:

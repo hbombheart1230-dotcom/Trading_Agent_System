@@ -22,9 +22,24 @@ def _mk_req(symbol: str) -> PreparedRequest:
     )
 
 
-def test_m24_5_preflight_mock_mode_ok_without_execution_enabled(monkeypatch: pytest.MonkeyPatch):
+def test_m24_5_preflight_paper_mode_blocked_without_execution_enabled(monkeypatch: pytest.MonkeyPatch):
+    # Paper Trading Execution Finalization (2026-09-17): replaces
+    # test_m24_5_preflight_mock_mode_ok_without_execution_enabled, which
+    # asserted the opposite -- KIWOOM_MODE=mock (Paper Trading) bypassing
+    # EXECUTION_ENABLED=false. EXECUTION_ENABLED is now a global gate.
     monkeypatch.setenv("KIWOOM_MODE", "mock")
     monkeypatch.setenv("EXECUTION_ENABLED", "false")
+
+    ex = RealExecutor(settings=Settings.from_env(env_path="__missing__.env"))
+    pf = ex.preflight_check(_mk_req("005930"))
+    assert pf["ok"] is False
+    assert pf["code"] == "EXECUTION_DISABLED"
+
+
+def test_m24_5_preflight_paper_mode_ok_with_execution_enabled_no_allow_real_needed(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
+    monkeypatch.delenv("ALLOW_REAL_EXECUTION", raising=False)
 
     ex = RealExecutor(settings=Settings.from_env(env_path="__missing__.env"))
     pf = ex.preflight_check(_mk_req("005930"))

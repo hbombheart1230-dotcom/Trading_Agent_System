@@ -19,8 +19,19 @@ data/
 
 # Reports
 reports/
+!apps/web/src/features/reports/
+!apps/web/src/features/reports/**
 
 # State & Dynamic Data
 data/state/
 data/evidence_ledger/
 data/strategy_memory/
+
+# Docker trading runtime -- mock validation state, never committed;
+# real deployment credentials, never committed (compose.trading.real.yaml's
+# EXECUTION_ENABLED/ALLOW_REAL_EXECUTION safety does not depend on this
+# gitignore rule -- those are hardcoded literals in the compose file itself
+# -- but real broker credentials in .env.real must never reach git regardless)
+deploy/trading/test-state/
+deploy/trading/.env.real
+deploy/trading/real-dry-run-mirror/

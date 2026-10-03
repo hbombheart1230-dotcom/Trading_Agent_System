@@ -501,3 +501,44 @@ def test_post_exit_shadow_recap_fetches_fresh_minutes_when_cache_stops_before_ma
     assert trade["source_minute_rows"] == 3
     assert trade["checkpoints"]["+60m"]["status"] == "observed"
     assert trade["checkpoints"]["+60m"]["price"] == 14580.0
+
+
+def test_post_exit_shadow_recap_reuses_opening_rank1_eod_observation(
+    tmp_path: Path,
+) -> None:
+    reports_root = tmp_path / "reports"
+    source_path = (
+        reports_root
+        / "evaluation"
+        / "opening_rank1_shadow"
+        / "2026-09-01"
+        / "opening_rank1_shadow_daily.json"
+    )
+    _write_json(
+        source_path,
+        {
+            "episodes": [
+                {
+                    "symbol": "001210",
+                    "checkpoints": {
+                        "EOD": {
+                            "status": "observed",
+                            "price": 13070,
+                            "observed_epoch": _epoch(2026, 9, 1, 6, 30),
+                        }
+                    },
+                }
+            ]
+        },
+    )
+
+    row, meta = recap_mod.opening_rank1_eod_fallback_row(
+        reports_root=reports_root,
+        day="2026-09-01",
+        symbol="001210",
+    )
+
+    assert meta["applied"] is True
+    assert row is not None
+    assert row["close"] == 13070.0
+    assert row["source"] == "opening_rank1_shadow.EOD"

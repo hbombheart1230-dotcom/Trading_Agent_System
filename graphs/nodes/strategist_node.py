@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from libs.core.evidence_identity import stable_evidence_id
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 from libs.ai.strategist_config import (
     strategist_llm_requested,
     strategist_llm_strict,
@@ -56,6 +58,7 @@ from libs.runtime.canonical_artifacts import (
 )
 from libs.runtime.regime import classify_regime_v2
 from libs.runtime.strategist_explanation import build_strategist_explanation_fields
+from libs.runtime.strategist_feedback_trace import build_feedback_application_trace
 from libs.runtime.strategy_horizon_feedback import (
     build_commander_horizon_policy,
     build_horizon_context,
@@ -290,7 +293,7 @@ def _load_strategy_memory_advisory(state: Dict[str, Any], policy: Dict[str, Any]
         else os.getenv("STRATEGY_PERFORMANCE_AUTO_BUILD", "false")
     )
     auto_build = _is_trueish(auto_build_raw)
-    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    reports_root = isolate_canonical_path_for_pytest(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports", canonical_path="reports", isolated_name="reports")
     day = str(
         policy.get("strategy_performance_day")
         or state.get("day")
@@ -2377,7 +2380,7 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
         if isinstance(src, dict) and src:
             return dict(src)
 
-        reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+        reports_root = isolate_canonical_path_for_pytest(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports", canonical_path="reports", isolated_name="reports")
         day = str(policy.get("reporter_feedback_day") or state.get("day") or _resolve_state_day(state)).strip()
         try:
             packet = build_strategist_feedback_packet(
@@ -2402,6 +2405,8 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
         gate_reason: str,
         source_status: str = "",
         source_available: bool = False,
+        feedback_id: str = "",
+        source_day: str = "",
     ) -> Dict[str, Any]:
         return {
             "available": False,
@@ -2420,6 +2425,8 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
             "feedback_gate_reason": str(gate_reason or ""),
             "source_status": str(source_status or ""),
             "source_available": bool(source_available),
+            "feedback_id": str(feedback_id or ""),
+            "source_day": str(source_day or ""),
             "data_freshness": {},
         }
 
@@ -2512,6 +2519,8 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
             gate_reason="source_unavailable",
             source_status=str(src.get("status") or "unavailable"),
             source_available=bool(src.get("available")),
+            feedback_id=str(out.get("feedback_id") or ""),
+            source_day=str(src.get("source_day") or ""),
         )
 
     freshness = out.get("data_freshness") if isinstance(out.get("data_freshness"), dict) else {}
@@ -2541,6 +2550,8 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
             gate_reason="source_unavailable",
             source_status=str(src.get("status") or "unavailable"),
             source_available=False,
+            feedback_id=str(out.get("feedback_id") or ""),
+            source_day=str(src.get("source_day") or ""),
         )
     if stale:
         return _empty_feedback_packet(
@@ -2550,6 +2561,8 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
             gate_reason="stale",
             source_status=str(src.get("status") or "ok"),
             source_available=True,
+            feedback_id=str(out.get("feedback_id") or ""),
+            source_day=str(src.get("source_day") or ""),
         )
     if not confidence_ok:
         return _empty_feedback_packet(
@@ -2559,6 +2572,8 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
             gate_reason="low_confidence",
             source_status=str(src.get("status") or "ok"),
             source_available=True,
+            feedback_id=str(out.get("feedback_id") or ""),
+            source_day=str(src.get("source_day") or ""),
         )
     if not relevant:
         return _empty_feedback_packet(
@@ -2568,6 +2583,8 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
             gate_reason="not_relevant",
             source_status=str(src.get("status") or "ok"),
             source_available=True,
+            feedback_id=str(out.get("feedback_id") or ""),
+            source_day=str(src.get("source_day") or ""),
         )
     out["consumed"] = True
     out["feedback_gate_reason"] = "auto_accepted"
@@ -3083,7 +3100,7 @@ def _compact_read_model_facts_for_llm(facts: Any) -> Dict[str, Any]:
 
 def _load_deterministic_read_models(state: Dict[str, Any], candidates: List[str]) -> Dict[str, Any]:
     """Phase 6-2: Gather strictly deterministic read models for Strategist context."""
-    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    reports_root = isolate_canonical_path_for_pytest(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports", canonical_path="reports", isolated_name="reports")
     trades_root = reports_root / "trades"
     
     recent_trades = []
@@ -3267,6 +3284,7 @@ def _compact_candidate_context_for_refresh(row: Any) -> Dict[str, Any]:
 def _slim_refresh_context_for_llm(context: Any) -> Dict[str, Any]:
     src = context if isinstance(context, dict) else {}
     out = dict(src)
+    out["feedback_id"] = str(src.get("feedback_id") or stable_evidence_id("feedback", src))
     for key in ("scanner_primary_candidate", "actual_selected_candidate", "scanner_rank1_candidate"):
         out[key] = _compact_candidate_context_for_refresh(src.get(key))
     out["scanner_runner_ups"] = [
@@ -7559,7 +7577,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         recent_strategy_feedback.get("suggested_report_focus"),
         limit=8,
     )
-    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    reports_root = isolate_canonical_path_for_pytest(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports", canonical_path="reports", isolated_name="reports")
     read_model_facts = _load_deterministic_read_models(state, candidate_symbols)
     read_model_facts_summary = summarize_read_model_facts(read_model_facts)
     
@@ -8464,6 +8482,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["strategist_blocked"] = bool(strategist_llm_blocked)
     state["strategist_blocked_reason"] = str(strategist_llm_block_reason or "")
     state["strategist_llm"] = {
+        "run_id": str(state.get("run_id") or ""),
         "status": str(llm_meta.get("status") or "disabled"),
         "llm_status": str(llm_meta.get("status") or "disabled"),
         "model": str(llm_meta.get("model") or ""),
@@ -8574,6 +8593,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     }
     state["strategist_news_evidence_ranked"] = dict(news_evidence_ranked_payload)
     state["strategist_candidate_symbols_hint"] = list(state.get("candidate_symbols") or [])[:10]
+    strategist_output["feedback_application_trace"] = build_feedback_application_trace(
+        feedback_packet=reporter_feedback_packet,
+        strategist_output=strategist_output,
+    )
     strategist_explanation_fields = build_strategist_explanation_fields(
         strategist_output=strategist_output,
         state=state,

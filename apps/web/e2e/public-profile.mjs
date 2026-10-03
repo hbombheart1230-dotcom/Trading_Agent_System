@@ -10,6 +10,7 @@ const candidates = [
 ].filter(Boolean);
 const executablePath = candidates.find((candidate) => fs.existsSync(candidate));
 if (!executablePath) throw new Error("No Chromium-compatible browser was found");
+const baseUrl = (process.env.BASE_URL ?? "http://127.0.0.1:5173").replace(/\/$/, "");
 
 const browser = await chromium.launch({ executablePath, headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
@@ -27,18 +28,19 @@ await page.route("**/health/ready", async (route) => {
     }),
   });
 });
-await page.goto("http://127.0.0.1:5173/#overview", { waitUntil: "networkidle" });
+await page.goto(`${baseUrl}/#overview`, { waitUntil: "networkidle" });
 
-const text = await page.locator("body").innerText();
+const bodyText = await page.locator("body").innerText();
 const failures = [];
-if (!text.includes("PUBLIC SHOWCASE")) failures.push("missing public profile marker");
-if (!text.includes("SIMULATION / MOCK")) failures.push("missing simulation marker");
+if (!bodyText.includes("PUBLIC SHOWCASE")) failures.push("missing public profile marker");
+if (!bodyText.includes("SIMULATION / MOCK")) failures.push("missing simulation marker");
 for (const privateLabel of ["LLM 운영", "리포트", "데이터 품질"]) {
   if (await page.locator("nav").getByText(privateLabel, { exact: true }).count()) {
     failures.push(`private navigation visible: ${privateLabel}`);
   }
 }
 await browser.close();
+
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);

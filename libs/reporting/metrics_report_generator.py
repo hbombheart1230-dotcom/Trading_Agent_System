@@ -34,6 +34,7 @@ from libs.reporting.metrics_report.markdown import (
     render_metrics_markdown as _render_metrics_markdown,
 )
 from libs.reporting.report_source_helpers import build_commander_route_summary
+from libs.core.path_isolation import resolve_runtime_write_path
 
 
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
@@ -58,6 +59,7 @@ def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
 
 def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = None) -> Tuple[Path, Path]:
     """Generate daily metrics summary (MD + JSON) from events.jsonl."""
+    out_dir = resolve_runtime_write_path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     source_rows = iter_jsonl_events(events_path, day=day) if day else _iter_events(events_path)

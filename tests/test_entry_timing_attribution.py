@@ -178,3 +178,39 @@ def test_entry_timing_excludes_confirmed_runtime_defect(tmp_path):
 
     assert report["trade_count"] == 0
     assert report["excluded_trade_count"] == 1
+
+
+def test_controlled_lane_uses_signal_anchor_and_never_later_scanner_time(tmp_path):
+    reports = tmp_path / "reports"
+    day_dir = reports / "operator_summary" / "daily" / "2026-09-07"
+    day_dir.mkdir(parents=True)
+    later_scanner_epoch = _epoch("2026-09-07T00:14:51+00:00")
+    (day_dir / "q9_decision_windows.json").write_text(
+        f'{{"windows":[{{"decision_id":"LATE","decision_epoch":{later_scanner_epoch}}}]}}',
+        encoding="utf-8",
+    )
+    model = _model(
+        trade_id="TRD_Q10", symbol="000660", decision_id="LATE",
+        entry_ts="2026-09-07T00:11:00+00:00", entry_price=1749500.0, realized=-1.27,
+    )
+    model["controlled_mock_lane"] = {
+        "lane_id": "Q10_SEMICONDUCTOR",
+        "selection_authority": "deterministic_independent_lane",
+        "signal_epoch": _epoch("2026-09-07T00:10:00+00:00"),
+    }
+    candles = {"000660": [
+        _row("2026-09-07T00:10:00+00:00", 1748000.0),
+        _row("2026-09-07T00:11:00+00:00", 1749500.0),
+        _row("2026-09-07T00:16:00+00:00", 1751000.0),
+    ]}
+    report = build_entry_timing_attribution_report(
+        day="2026-09-07", models=[model], reports_root=reports,
+        minute_rows_by_symbol=candles,
+    )
+    row = report["rows"][0]
+    assert row["selection_authority"] == "deterministic_independent_lane"
+    assert row["scanner_to_entry_delay_sec"] is None
+    assert row["strategist_to_entry_delay_sec"] is None
+    assert row["selected_to_entry_delay_sec"] == 60
+    assert row["decision_window_to_entry_delay_sec"] == 60
+    assert row["selected_rank"] is None

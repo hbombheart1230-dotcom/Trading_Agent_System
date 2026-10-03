@@ -78,6 +78,9 @@ def test_q9_snapshot_upserts_scanner_and_commander_under_one_id(tmp_path) -> Non
                         "compact_feature_snapshot": {
                             "engine_close_last": 198000,
                             "engine_signal_score": 0.8,
+                            "quote_payload_available": True,
+                            "quote_source": "skill_quote",
+                            "quote_evidence_status": "OBSERVED",
                         },
                     },
                     {"symbol": "035420", "rank": 2, "sources": ["top_volume"]},
@@ -118,6 +121,13 @@ def test_q9_snapshot_upserts_scanner_and_commander_under_one_id(tmp_path) -> Non
         window["scanner_pre_strategist_universe"]["intrinsic_ranked_top20"][0]
         ["compact_feature_snapshot"]
     )
+    compact = (
+        window["scanner_pre_strategist_universe"]["intrinsic_ranked_top20"][0]
+        ["compact_feature_snapshot"]
+    )
+    assert compact["quote_payload_available"] is True
+    assert compact["quote_source"] == "skill_quote"
+    assert compact["quote_evidence_status"] == "OBSERVED"
     first_pre = window["scanner_pre_strategist_universe"]["intrinsic_ranked_top20"][0]
     assert first_pre["sources"] == ["top_value"]
     assert first_pre["source_scores"] == {"top_value": 0.8}

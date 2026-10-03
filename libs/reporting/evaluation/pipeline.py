@@ -8,7 +8,12 @@ from typing import Any
 
 from libs.reporting.broker_closed_trade_reconciler import reconcile_broker_closed_trade_reports
 
-from .artifact_inventory import build_artifact_inventory, iter_trade_dirs, read_json
+from .artifact_inventory import (
+    build_artifact_inventory,
+    iter_trade_dirs,
+    load_q9_pre_strategist_rows,
+    read_json,
+)
 from .agent_effectiveness_scorecard import write_agent_effectiveness_scorecard
 from .attribution_score_v0 import build_attribution_score_v0, render_attribution_score_v0
 from .counterfactuals import build_selection_attribution
@@ -48,6 +53,7 @@ from .scanner_alignment_root_cause import (
 )
 from .start_gate import build_full_chain_start_gate
 from .strategist_effectiveness import build_strategist_effectiveness
+from .stage2_authority import write_stage2_authority_review
 from .trade_evaluator import evaluate_trade
 from .trade_read_model import build_q9_trade_read_model
 
@@ -67,10 +73,35 @@ def _baseline_hash() -> str:
     return hashlib.sha256(json.dumps(basis, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
 
 
-def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[int, ...] = (5, 10, 20)) -> dict[str, Any]:
+def build_q9_evaluation(
+    reports_root: Path,
+    day: str,
+    *,
+    rolling_windows: tuple[int, ...] = (5, 10, 20),
+    recover_forward: bool = False,
+) -> dict[str, Any]:
     reports_root = Path(reports_root)
     evaluation_root = reports_root / "evaluation"
     broker_closed_reconciliation = reconcile_broker_closed_trade_reports(reports_root=reports_root, day=day)
+    if recover_forward:
+        from libs.reporting.q9_forward_candles import load_q9_forward_candles
+
+        forward_rows = load_q9_pre_strategist_rows(reports_root, day)
+        recovered = load_q9_forward_candles(
+            forward_rows,
+            allow_fresh_fetch=True,
+            run_id_prefix="q9_closeout_forward_recovery",
+        )
+        _write_json(
+            evaluation_root / "daily" / day / "q9_forward_recovery_candles.json",
+            {
+                "schema_version": "q9_forward_recovery_candles.v1",
+                "day": day,
+                "candidate_count": len(forward_rows),
+                "symbol_count": len(recovered),
+                "minute_rows_by_symbol": recovered,
+            },
+        )
     inventory = build_artifact_inventory(reports_root, day)
     models = [build_q9_trade_read_model(path) for path in iter_trade_dirs(reports_root, day)]
     evaluations = [evaluate_trade(model) for model in models]
@@ -240,13 +271,31 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
             if model_payload:
                 all_models.append(model_payload)
 
-    strategist = build_strategist_effectiveness(all_evaluations, all_attributions)
+    q9_windows: list[dict[str, Any]] = []
+    q9_daily_root = reports_root / "operator_summary" / "daily"
+    if q9_daily_root.exists():
+        q9_days = sorted(
+            path.name for path in q9_daily_root.iterdir() if path.is_dir() and path.name <= day
+        )[-20:]
+        for q9_day in q9_days:
+            payload = read_json(q9_daily_root / q9_day / "q9_decision_windows.json")
+            for window in list(payload.get("windows") or []):
+                if isinstance(window, dict):
+                    q9_windows.append(dict(window))
+
+    strategist = build_strategist_effectiveness(all_evaluations, all_attributions, q9_windows)
     strategist["source_days"] = evaluation_days
-    feedback = build_feedback_effectiveness(all_models)
+    feedback = build_feedback_effectiveness(all_models, q9_windows)
     feedback["source_days"] = evaluation_days
     _write_json(evaluation_root / "strategist" / day / "strategist_effectiveness.json", strategist)
     _write_json(evaluation_root / "feedback" / day / "feedback_effectiveness.json", feedback)
     agent_effectiveness = write_agent_effectiveness_scorecard(
+        reports_root=reports_root,
+        start=day,
+        end=day,
+        output_dir=evaluation_root / "agent_effectiveness" / day,
+    )
+    stage2_authority = write_stage2_authority_review(
         reports_root=reports_root,
         start=day,
         end=day,
@@ -272,4 +321,5 @@ def build_q9_evaluation(reports_root: Path, day: str, *, rolling_windows: tuple[
         "strategist_effectiveness": str(evaluation_root / "strategist" / day / "strategist_effectiveness.json"),
         "feedback_effectiveness": str(evaluation_root / "feedback" / day / "feedback_effectiveness.json"),
         "agent_effectiveness_scorecard": agent_effectiveness,
+        "strategist_stage2_authority_review": stage2_authority,
     }

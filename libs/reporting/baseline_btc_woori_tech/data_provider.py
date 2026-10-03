@@ -7,10 +7,12 @@ from typing import Any, Mapping
 
 from libs.reporting.baseline_samsung_hynix.data_provider import load_existing_candles
 
-from .contracts import TARGET_SYMBOL
+from .contracts import TARGET_SYMBOL, TARGET_TICKER
+from .trend_context import build_recent_btc_trend_context
 
 
 KST = timezone(timedelta(hours=9))
+_DAILY_RESEARCH_CACHE: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
 
 def evaluate_multihorizon_leading_signal(
@@ -71,14 +73,20 @@ def load_woori_candles(
     ).get(TARGET_SYMBOL, [])
 
 
-def _yf_rows(ticker: str, *, day: str) -> list[dict[str, Any]]:
+def _yf_rows(
+    ticker: str,
+    *,
+    day: str,
+    period: str = "2d",
+    interval: str = "1m",
+    restrict_to_recent_days: bool = True,
+) -> list[dict[str, Any]]:
     try:
         import yfinance as yf  # type: ignore
     except Exception:
         return []
     try:
-        # Two calendar days are required for the 24-hour regime observation.
-        frame = yf.Ticker(ticker).history(period="2d", interval="1m")
+        frame = yf.Ticker(ticker).history(period=period, interval=interval)
     except Exception:
         return []
     if frame is None or getattr(frame, "empty", True):
@@ -98,7 +106,7 @@ def _yf_rows(ticker: str, *, day: str) -> list[dict[str, Any]]:
                 dt = dt.replace(tzinfo=timezone.utc)
             epoch = int(dt.timestamp())
             kst = datetime.fromtimestamp(epoch, tz=KST)
-            if kst.strftime("%Y%m%d") not in allowed_days:
+            if restrict_to_recent_days and kst.strftime("%Y%m%d") not in allowed_days:
                 continue
             close = float(row.get("Close") or 0.0)
             if close <= 0:
@@ -108,6 +116,9 @@ def _yf_rows(ticker: str, *, day: str) -> list[dict[str, Any]]:
                     "ts": epoch,
                     "raw_ts": kst.strftime("%Y%m%d%H%M%S"),
                     "close": close,
+                    "open": float(row.get("Open") or close),
+                    "high": float(row.get("High") or close),
+                    "low": float(row.get("Low") or close),
                     "volume": float(row.get("Volume") or 0.0),
                 }
             )
@@ -165,7 +176,9 @@ def _momentum_rows(rows: list[Mapping[str, Any]], *, source: str) -> list[dict[s
     return output
 
 
-def load_btc_signal_rows(*, day: str) -> dict[str, Any]:
+def load_btc_signal_rows(
+    *, day: str, include_research_context: bool = True
+) -> dict[str, Any]:
     btc_usd_rows = _yf_rows("BTC-USD", day=day)
     coin_rows = _yf_rows("COIN", day=day)
     krw_rows = _yf_rows("KRW=X", day=day)
@@ -188,14 +201,47 @@ def load_btc_signal_rows(*, day: str) -> dict[str, Any]:
         "btc_usd": _momentum_rows(btc_usd_rows, source="yfinance:BTC-USD"),
         "coinbase_proxy": _momentum_rows(coin_rows, source="yfinance:COIN"),
     }
-    available = [key for key, rows in sources.items() if rows]
+    from .point_in_time_capture import merge_capture_into_signal_payload
+
+    captured_payload = merge_capture_into_signal_payload(
+        {"sources": sources},
+        day=day,
+    )
+    sources = dict(captured_payload.get("sources") or {})
+    available = list(captured_payload.get("available_sources") or [])
+    # This daily history is research-only. It is deliberately excluded from
+    # ``sources`` so existing Q12 eligibility and ranking cannot consume it.
+    def daily_research_rows(ticker: str) -> list[dict[str, Any]]:
+        key = (ticker, day)
+        if key not in _DAILY_RESEARCH_CACHE:
+            _DAILY_RESEARCH_CACHE[key] = _yf_rows(
+                ticker,
+                day=day,
+                period="max",
+                interval="1d",
+                restrict_to_recent_days=False,
+            )
+        return [dict(row) for row in _DAILY_RESEARCH_CACHE[key]]
+
+    btc_daily_rows = daily_research_rows("BTC-USD") if include_research_context else []
+    woori_daily_rows = daily_research_rows(TARGET_TICKER) if include_research_context else []
     return {
         "schema_version": "baseline_btc_signal_rows.v2",
         "day": day,
         "available": bool(available),
         "available_sources": available,
         "sources": sources,
+        "research_context": {
+            "schema_version": "q12_btc_research_context.v1",
+            "behavior_effect": "observation_only",
+            "btc_usd_daily": btc_daily_rows,
+            "woori_daily": woori_daily_rows,
+        },
         "fallback_reason": "" if available else "btc_and_crypto_proxy_unavailable",
+        "btc_0855_capture_reused": bool(captured_payload.get("btc_0855_capture_reused")),
+        "btc_0855_capture_status": str(captured_payload.get("btc_0855_capture_status") or ""),
+        "btc_0855_capture_reason": str(captured_payload.get("btc_0855_capture_reason") or ""),
+        "research_context_requested": bool(include_research_context),
     }
 
 
@@ -231,6 +277,13 @@ def signal_at(payload: Mapping[str, Any], *, epoch: int) -> dict[str, Any]:
         momentum_60m=momentum_60m,
         momentum_24h=momentum_24h,
     )
+    recent_trend = build_recent_btc_trend_context(
+        payload,
+        epoch=epoch,
+        momentum_15m=momentum_15m,
+        momentum_60m=momentum_60m,
+        momentum_24h=momentum_24h,
+    )
     stale_sources = [str(row.get("name") or "") for row in observations if row.get("stale")]
     return {
         "available": momentum is not None,
@@ -245,6 +298,7 @@ def signal_at(payload: Mapping[str, Any], *, epoch: int) -> dict[str, Any]:
         "leading_positive": leading["leading_positive"],
         "leading_signal_policy": "q12_btc_multihorizon_leading_signal.v2",
         "leading_signal_reason": leading["leading_signal_reason"],
+        "recent_trend": recent_trend,
         "observations": observations,
         "source_count": len(observations),
         "fresh_source_count": sum(1 for row in observations if not row.get("stale")),

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -18,28 +18,59 @@ from libs.contracts.agent_outputs import (
     validate_artifact,
 )
 from libs.runtime.llm_report_classifier import find_llm_run_dir, organize_llm_run
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
+
+
+KST = timezone(timedelta(hours=9))
 
 
 def _reports_root(state: Dict[str, Any] | None = None) -> Path:
+    # Phase 1 P0: state["reports_root"] must go through the same isolation
+    # check as the env fallback below. This used to return Path(raw)
+    # immediately whenever state carried *any* reports_root value -- but a
+    # test that explicitly sets state["reports_root"] = "reports" (the
+    # literal canonical default, just re-stated rather than left unset) is
+    # exactly the case isolate_canonical_path_for_pytest exists to catch,
+    # and skipping it here was a confirmed write into the real
+    # reports/canonical/ and reports/llm/ trees during pytest (see
+    # completion report: the "strategist-llm-test" run_id leak).
     if isinstance(state, dict):
         raw = str(state.get("reports_root") or "").strip()
         if raw:
-            return Path(raw)
+            return isolate_canonical_path_for_pytest(
+                raw, canonical_path="reports", isolated_name="reports"
+            )
     raw_env = str(os.getenv("REPORTS_ROOT", "reports")).strip() or "reports"
-    return Path(raw_env)
+    # Phase 1 Step 5B Safety Fix: project-wide pytest isolation. If a test
+    # doesn't explicitly override REPORTS_ROOT/state["reports_root"], this
+    # keeps canonical artifact writes out of the real reports/ tree without
+    # requiring every test file to carry its own isolation fixture (a
+    # missing per-file fixture is exactly how real reports/canonical/
+    # entries got contaminated by test runs before this fix).
+    return isolate_canonical_path_for_pytest(
+        raw_env, canonical_path="reports", isolated_name="reports"
+    )
 
 
 def _iso_day(value: Any) -> str:
     text = str(value or "").strip()
     if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
-        return text[:10]
+        if len(text) == 10:
+            return text
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(KST).strftime("%Y-%m-%d")
+        except ValueError:
+            return text[:10]
     try:
         epoch = int(float(value))
     except Exception:
         epoch = 0
     if epoch > 0:
-        return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(epoch, tz=KST).strftime("%Y-%m-%d")
+    return datetime.now(KST).strftime("%Y-%m-%d")
 
 
 def _resolve_day(state: Dict[str, Any]) -> str:
@@ -47,7 +78,7 @@ def _resolve_day(state: Dict[str, Any]) -> str:
         value = state.get(key)
         if value not in (None, ""):
             return _iso_day(value)
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(KST).strftime("%Y-%m-%d")
 
 
 def canonical_run_artifact_paths(

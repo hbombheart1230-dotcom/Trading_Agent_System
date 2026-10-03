@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 from libs.core.symbols import normalize_symbol
+from libs.runtime.monitor_entry_sizing import position_by_symbol
 
 def _norm_symbol(v: Any) -> str:
     return normalize_symbol(v)
@@ -30,6 +31,29 @@ def _unique_symbols(candidates: Iterable[Any], *, limit: int = 5) -> List[str]:
         seen.add(sym)
         if len(out) >= max(1, int(limit)):
             break
+    return out
+
+
+def _quote_hydration_symbols(state: Dict[str, Any], *, candidate_limit: int) -> List[str]:
+    candidates = state.get("candidates") if isinstance(state.get("candidates"), list) else []
+    out = _unique_symbols(candidates, limit=candidate_limit)
+    seen = set(out)
+
+    selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
+    selected_symbol = _norm_symbol(selected.get("symbol"))
+    if selected_symbol and selected_symbol not in seen:
+        out.append(selected_symbol)
+        seen.add(selected_symbol)
+
+    for symbol, row in position_by_symbol(state).items():
+        try:
+            qty = int(float((row or {}).get("qty") or 0))
+        except Exception:
+            qty = 0
+        normalized = _norm_symbol(symbol)
+        if qty > 0 and normalized and normalized not in seen:
+            out.append(normalized)
+            seen.add(normalized)
     return out
 
 
@@ -158,6 +182,8 @@ def _fetch_market_quotes(
     ready_map: Dict[str, Dict[str, Any]] = {}
     errors: List[str] = []
     attempted = 0
+    observed_at = datetime.now(timezone.utc).replace(microsecond=0)
+    observed_epoch = int(observed_at.timestamp())
     for sym in symbols:
         attempted += 1
         raw = runner.run(run_id=run_id, skill="market.quote", args={"symbol": sym})
@@ -168,6 +194,8 @@ def _fetch_market_quotes(
             if isinstance(data, dict):
                 row = dict(data)
                 row.setdefault("symbol", sym)
+                row["_observed_epoch"] = observed_epoch
+                row["_observed_at_utc"] = observed_at.isoformat()
                 ready_map[sym] = row
         else:
             reason = _error_reason(rec) or "error:unknown"
@@ -252,14 +280,13 @@ def hydrate_skill_results_node(state: Dict[str, Any]) -> Dict[str, Any]:
         return state
 
     run_id = str(state.get("run_id") or "m22-skill-fetch")
-    candidates = state.get("candidates") if isinstance(state.get("candidates"), list) else []
     candidate_k = 5
     if isinstance(state.get("policy"), dict):
         try:
             candidate_k = int(state["policy"].get("candidate_k") or candidate_k)
         except Exception:
             candidate_k = 5
-    symbols = _unique_symbols(candidates, limit=candidate_k)
+    symbols = _quote_hydration_symbols(state, candidate_limit=candidate_k)
     order_ref = state.get("order_ref") if isinstance(state.get("order_ref"), dict) else None
 
     market_quote_value, mq = _fetch_market_quotes(runner, run_id=run_id, symbols=symbols)

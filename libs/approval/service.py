@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from libs.supervisor.intent_store import IntentStore
+from libs.execution.intent_identity import physical_order_fingerprint
 from libs.supervisor.intent_state_store import (
     INTENT_STATE_APPROVED,
     INTENT_STATE_EXECUTED,
@@ -62,16 +61,19 @@ class ApprovalService:
         self.store = store
         self.state_store = state_store
         if self.state_store is None:
-            db_path = str((os.getenv("INTENT_STATE_DB_PATH", "") or "").strip())
-            if not db_path:
-                p = getattr(store, "path", None)
-                if isinstance(p, Path):
-                    db_path = str(p.with_suffix(".db"))
-            if db_path:
-                try:
-                    self.state_store = SQLiteIntentStateStore(db_path)
-                except Exception:
-                    self.state_store = None
+            # Step5C Fix1: previously fell back to store.path.with_suffix(
+            # ".db") (data/logs/intents.db) whenever INTENT_STATE_DB_PATH was
+            # unset -- a different physical file than the canonical intent
+            # ownership DB (data/state/intent_state.db) used by the
+            # automated execute_from_packet path, so the two execution
+            # entry points could each independently "own" the same real
+            # order. No local fallback is computed here anymore; the
+            # canonical resolver inside SQLiteIntentStateStore (shared by
+            # every consumer) is the single source of truth.
+            try:
+                self.state_store = SQLiteIntentStateStore()
+            except Exception:
+                self.state_store = None
 
     # ---------- low-level journal helpers ----------
 
@@ -108,6 +110,55 @@ class ApprovalService:
             return None
         except Exception as e:
             return f"intent state transition failed ({to_state}): {e}"
+
+    @staticmethod
+    def _execution_order(intent: Dict[str, Any]) -> Dict[str, Any]:
+        order_type = str(intent.get("order_type") or "market").strip().lower()
+        return {
+            "action": str(intent.get("action") or "").strip().upper(),
+            "symbol": intent.get("symbol"),
+            "qty": intent.get("qty"),
+            "price": intent.get("price"),
+            "order_type": order_type,
+            "trde_tp": "3" if order_type in ("market", "mkt") else "0",
+            "orig_ord_no": intent.get("orig_ord_no"),
+            "cncl_qty": intent.get("cncl_qty"),
+            "mdfy_qty": intent.get("mdfy_qty"),
+            "mdfy_uv": intent.get("mdfy_uv"),
+        }
+
+    def admit_pre_approved_intent(self, intent: Dict[str, Any], *, source: str = "automatic_policy") -> Optional[str]:
+        """Persist intent_id into the canonical store as approved, without
+        going through the manual approve() gate.
+
+        Step5C Fix4: claim_execution() never self-admits an intent_id; a
+        caller-supplied or deterministic identity does not carry execution
+        authority by itself. A legitimate "auto" path (APPROVAL_MODE=auto in
+        ExecutorAgent.submit_order_intent / ToolFacade.order_place_intent,
+        which never goes through approve()'s own PENDING->APPROVED
+        transition) must explicitly persist this intent as approved through
+        this authorized call BEFORE reaching execute_owned_order, exactly
+        as creation authority is separate from execution authority: the
+        risk-gate decision inside TwoPhaseSupervisor.create_intent, plus
+        the caller's own APPROVAL_MODE=auto + EXECUTION_ENABLED=true
+        configuration, is what authorizes this -- not the runner
+        self-admitting an arbitrary identity it has never seen before.
+        Idempotent: a no-op (returns None) if already approved/beyond.
+        """
+        iid = str((intent or {}).get("intent_id") or "").strip()
+        if not iid or self.state_store is None:
+            return "intent_id and a configured state_store are required"
+        try:
+            order = self._execution_order(intent)
+            fingerprint = physical_order_fingerprint({}, order)
+            if fingerprint is None:
+                return "intent admission failed: invalid physical order"
+            admitted = self.state_store.admit_intent(iid, fingerprint=fingerprint, source=source)
+            if not admitted.get("admitted"):
+                return f"intent admission failed: {admitted.get('reason')}"
+            return None
+        except Exception as e:
+            return f"intent admission failed: {e}"
 
     def _state_status(self, intent_id: str) -> str:
         if self.state_store is None:
@@ -291,16 +342,23 @@ class ApprovalService:
                     "note": "Already approved. Execution is still disabled.",
                 }
 
-        if effective_status != "approved":
-            state_err = self._safe_state_transition(
-                intent_id=iid,
-                to_state=INTENT_STATE_APPROVED,
-                expected_from_state=INTENT_STATE_PENDING,
-                reason="manual approve",
-                meta={"source": "approval_service", "op": "approve"},
-            )
+        # Step5C Fix5 (item 9/20): admission is created here ONLY as the
+        # first-ever transition into "approved" -- via admit_intent's own
+        # pending->approved promotion, triggered by this explicit approve()
+        # call using the intent's own persisted payload. A row that is
+        # ALREADY "approved" with no admission (a genuinely legacy state --
+        # e.g. one set via a direct transition() call bypassing admission
+        # entirely) is deliberately NOT repaired here: that would be exactly
+        # the kind of implicit authority-creation this Fix closes inside
+        # claim_execution() itself, just relocated one layer up. Such a row
+        # falls through unchanged and fails closed downstream at
+        # claim_execution() (ADMISSION_NOT_FOUND, broker calls 0) --
+        # correct, since nothing ever explicitly admitted it.
+        if effective_status in ("", INTENT_STATE_PENDING):
+            state_err = self.admit_pre_approved_intent(intent, source="manual_approval")
             if state_err:
                 return {"ok": False, "intent_id": iid, "message": state_err}
+        if effective_status != "approved":
             # Mark approved first (audit trail)
             self._append_marker(intent_id=iid, status="approved", reason="manual approve", intent=intent)
 
@@ -312,59 +370,93 @@ class ApprovalService:
                 "note": "Execution is disabled (EXECUTION_ENABLED=false).",
             }
 
-        state_err = self._safe_state_transition(
-            intent_id=iid,
-            to_state=INTENT_STATE_EXECUTING,
-            expected_from_state=INTENT_STATE_APPROVED,
-            reason="execution started",
-            meta={"source": "approval_service", "op": "execute_start"},
-        )
-        if state_err:
-            current = self._state_status(iid)
-            if current == INTENT_STATE_EXECUTING:
-                return {"ok": False, "intent_id": iid, "message": "Intent is executing."}
-            if current == INTENT_STATE_EXECUTED:
-                return {
-                    "ok": True,
-                    "intent_id": iid,
-                    "status": "executed",
-                    "execution": latest.get("execution") if latest else None,
-                    "note": "Already executed. Returned cached execution.",
-                }
-            if current == INTENT_STATE_FAILED:
-                return {
-                    "ok": False,
-                    "intent_id": iid,
-                    "message": "Intent previously failed. Create a new intent for retry.",
-                }
-            return {"ok": False, "intent_id": iid, "message": state_err}
+        # Step5C Fix2 (HIGH1 root cause): this service used to perform its
+        # own separate approved->executing CAS transition here, before
+        # calling execute_fn. That gave the intent TWO independent claiming
+        # mechanisms -- this one, and libs/execution/intent_execution_owner.
+        # py's claim_execution() inside the runner -- with no ownership
+        # capability check tying them together, which is exactly what let
+        # Codex's audit reproduce two concurrent runner invocations both
+        # seeing state==executing and both dispatching to the broker. There
+        # is now exactly one place that ever claims execution:
+        # execute_owned_order(), reached inside execute_fn's own call chain
+        # (ToolFacade.order_execute / ExecutorAgent.execute_order ->
+        # CompositeSkillRunner.run()). The intent is intentionally left in
+        # "approved" state here; execute_fn's own downstream CAS is what
+        # atomically claims it (and is what a second, concurrent approve()
+        # call for the same intent_id will lose against).
         self._append_marker(intent_id=iid, status="executing", reason="execution started", intent=intent)
 
         try:
             exec_res = execute_fn(intent)
         except Exception as e:
             fail_reason = str(e)
-            self._safe_state_transition(
-                intent_id=iid,
-                to_state=INTENT_STATE_FAILED,
-                reason=fail_reason,
-                meta={"source": "approval_service", "op": "execute_fail"},
-            )
-            self._append_marker(intent_id=iid, status="failed", reason=fail_reason, intent=intent)
+            # Step5C Fix3 (MEDIUM2): the JSON read-model marker must never
+            # contradict the canonical SQLite lifecycle. Only mark FAILED
+            # here (both canonical state AND this marker) when we know for
+            # certain no canonical claim was ever taken (state is still
+            # "approved") -- there is no ambiguity about a broker dispatch
+            # in that case. If a claim WAS taken (state is "executing"),
+            # this is exactly the crash/exception-during-normalization
+            # boundary execute_owned_order's own contract already governs
+            # (EXECUTING stays durable, no implicit replay) -- do not
+            # second-guess it, and do not let the read-model claim "failed"
+            # when canonical truth says otherwise.
+            if self._state_status(iid) == INTENT_STATE_APPROVED:
+                self._safe_state_transition(
+                    intent_id=iid,
+                    to_state=INTENT_STATE_FAILED,
+                    expected_from_state=INTENT_STATE_APPROVED,
+                    reason=fail_reason,
+                    meta={"source": "approval_service", "op": "execute_fail_pre_claim"},
+                )
+                self._append_marker(intent_id=iid, status="failed", reason=fail_reason, intent=intent)
+            else:
+                self._append_marker(intent_id=iid, status="executing",
+                                     reason=f"reconciliation_required: {fail_reason}", intent=intent)
             raise
 
-        state_err = self._safe_state_transition(
-            intent_id=iid,
-            to_state=INTENT_STATE_EXECUTED,
-            reason="execution done",
-            meta={"source": "approval_service", "op": "execute_done"},
-            execution=exec_res,
-        )
-        if state_err:
-            return {"ok": False, "intent_id": iid, "message": state_err}
+        # The canonical intent_state row (written by execute_owned_order's
+        # claim_execution/finish_execution, not by this service) is the sole
+        # source of truth for what actually happened -- never force a
+        # status here that outruns it (Fix2 MEDIUM1: an UNKNOWN broker
+        # outcome must never be recorded as "executed").
+        final_status = self._state_status(iid)
+        execution_owner = None
+        try:
+            execution_owner = self.state_store.get_owner(iid) if self.state_store else None
+        except Exception:
+            execution_owner = None
 
-        self._append_marker(intent_id=iid, status="executed", reason=None, intent=intent, execution=exec_res)
-        return {"ok": True, "intent_id": iid, "status": "executed", "execution": exec_res}
+        if final_status == INTENT_STATE_EXECUTED:
+            self._append_marker(intent_id=iid, status="executed", reason=None, intent=intent, execution=exec_res)
+            return {"ok": True, "intent_id": iid, "status": "executed",
+                    "execution": exec_res, "execution_owner": execution_owner}
+        if final_status == INTENT_STATE_FAILED:
+            self._append_marker(intent_id=iid, status="failed", reason="execution_failed", intent=intent, execution=exec_res)
+            return {"ok": False, "intent_id": iid, "status": "failed",
+                    "execution": exec_res, "execution_owner": execution_owner,
+                    "message": "Execution failed or was blocked."}
+        if final_status == INTENT_STATE_EXECUTING:
+            # UNKNOWN / crash / terminal-persistence-failure boundary
+            # (Step5C contract, unchanged): stays non-terminal, durably
+            # locked against replay, and explicitly reconciliation-required
+            # -- never silently promoted to "executed".
+            self._append_marker(intent_id=iid, status="executing", reason="reconciliation_required",
+                                 intent=intent, execution=exec_res)
+            return {"ok": False, "intent_id": iid, "status": "executing",
+                    "execution": exec_res, "execution_owner": execution_owner,
+                    "reconciliation_required": True,
+                    "message": "Execution outcome is unknown; reconciliation required."}
+        # The ownership claim itself was denied before any real dispatch
+        # (e.g. a losing concurrent approve() call, a physical-order
+        # conflict, or the CAS backend being unavailable) -- state is
+        # whatever it already was (typically still "approved"); broker call
+        # count for this call is zero.
+        self._append_marker(intent_id=iid, status="execute_denied", reason=None, intent=intent, execution=exec_res)
+        return {"ok": False, "intent_id": iid, "status": final_status or "approved",
+                "execution": exec_res, "execution_owner": execution_owner,
+                "message": "Execution was not dispatched."}
 
     def list_intents(self, limit: int = 10) -> Dict[str, Any]:
         rows = self.store.load_all_rows()

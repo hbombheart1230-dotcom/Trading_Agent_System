@@ -142,6 +142,9 @@ def test_repair_enriches_candidate_price_from_canonical_scanner(tmp_path) -> Non
                 "feature_snapshot": {
                     "skill_quote_price": 70100,
                     "engine_close_last": 70000,
+                    "quote_payload_available": True,
+                    "quote_source": "skill_quote",
+                    "quote_evidence_status": "OBSERVED",
                 },
             },
         },
@@ -161,6 +164,9 @@ def test_repair_enriches_candidate_price_from_canonical_scanner(tmp_path) -> Non
     assert result["canonical_enriched_window_count"] == 1
     candidate = payload["windows"][0]["scanner_control"]["top20"][0]
     assert candidate["compact_feature_snapshot"]["skill_quote_price"] == 70100
+    assert candidate["compact_feature_snapshot"]["quote_payload_available"] is True
+    assert candidate["compact_feature_snapshot"]["quote_source"] == "skill_quote"
+    assert candidate["compact_feature_snapshot"]["quote_evidence_status"] == "OBSERVED"
 
 
 def test_repair_backfills_monitor_noop_reason_from_shadow_top_pick(tmp_path) -> None:

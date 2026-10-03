@@ -107,3 +107,25 @@ The standalone comparison command is:
 ```powershell
 venv\Scripts\python.exe scripts\run_q9_baseline_comparison.py --day YYYY-MM-DD
 ```
+
+## Prospective Lead-Market Extension
+
+Beginning on `2026-08-31`, Q10 also runs the independent
+`Q10_KOREA_LEAD_MARKET_FORWARD_VALIDATION` experiment. The original Q10
+ranking baseline above remains unchanged.
+
+The extension asks whether prior US semiconductor/equity moves and the 08:50
+KST futures/FX snapshot have forward edge for Samsung Electronics, SK Hynix,
+KOSPI, and KOSDAQ after 09:00.
+
+Hard boundaries:
+
+- prospective observations only
+- no pre-activation artifact generation
+- no historical backfill or backtest
+- no threshold search, ML, or automatic optimization
+- no order intent, Executor connection, or main strategy change
+
+The detailed frozen contract, daily flow, and artifact definitions are in:
+
+- `docs/evaluation/q10_korea_lead_market_forward_validation.md`

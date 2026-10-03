@@ -9,6 +9,21 @@ if not exist "%PY%" (
   exit /b 3
 )
 
+pushd "%ROOT%"
+
+rem Q10 owns an immutable 08:50 capture and must not depend on the 09:00 loop.
+"%PY%" "%ROOT%\scripts\capture_q10_preopen_snapshot.py" ^
+  --env-path "%ROOT%\.env" ^
+  --reports-root "%ROOT%\reports" ^
+  --state-path "%ROOT%\data\state.json"
+set "Q10_CAPTURE_RC=%ERRORLEVEL%"
+
+rem Capture point-in-time macro/index evidence before the first opening decision.
+"%PY%" "%ROOT%\scripts\capture_preopen_macro_snapshot.py" ^
+  --env-path "%ROOT%\.env" ^
+  --state-path "%ROOT%\data\state.json"
+set "CAPTURE_RC=%ERRORLEVEL%"
+
 rem Scheduled preopen is a short strategist/portfolio warmup, not the legacy mock-exam gate suite.
 "%PY%" "%ROOT%\scripts\run_session.py" ^
   --mode live ^
@@ -16,4 +31,13 @@ rem Scheduled preopen is a short strategist/portfolio warmup, not the legacy moc
   --env-path "%ROOT%\.env" ^
   %*
 
-exit /b %ERRORLEVEL%
+set "RUN_RC=%ERRORLEVEL%"
+
+rem Additive observability only. Its failure never changes the existing preopen result.
+"%PY%" "%ROOT%\scripts\run_scheduled_intelligence.py" ^
+  --phase preopen ^
+  --capture-rc %CAPTURE_RC% ^
+  --session-rc %RUN_RC% ^
+  --reports-root "%ROOT%\reports"
+popd
+exit /b %RUN_RC%

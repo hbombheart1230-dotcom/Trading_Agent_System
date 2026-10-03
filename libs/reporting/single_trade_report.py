@@ -16,6 +16,10 @@ from libs.reporting.llm_artifacts import (
 )
 from libs.reporting.intraday_trade_reports import build_same_day_reporter_linkage
 from libs.reporting.intraday_trade_reports import build_holding_phase_observability
+from libs.reporting.controlled_mock_lane_report import (
+    attach_controlled_lane_report_surface,
+    build_controlled_lane_report_surface,
+)
 from libs.reporting.trade_execution_snapshot import build_execution_details
 from libs.reporting.trade_report_ai import (
     build_ai_trade_report,
@@ -381,6 +385,10 @@ def _build_trade_report_inputs(
     strategist = _entry_strategist_context(state, symbol)
     execution_ts = str(execution.get("ts") or state.get("ts") or _utc_iso()).strip()
     execution_details = _execution_details_from_state(state)
+    prior_entry = _load_json_dict(trade_paths["entry_json"])
+    controlled_mock_lane = build_controlled_lane_report_surface(
+        state, day=day, root=root, prior_entry=prior_entry
+    )
     entry_execution_details = dict(execution_details if action == "BUY" else _null_execution_details())
     exit_execution_details = dict(execution_details if action == "SELL" else _null_execution_details())
     monitor_snapshot = _build_monitor_snapshot(monitor, symbol=symbol, run_id=run_id, ts=execution_ts)
@@ -391,6 +399,11 @@ def _build_trade_report_inputs(
         or monitor.get("decision_summary")
         or "Entry context was recovered from the preserved strategist frame."
     )
+    if controlled_mock_lane:
+        entry_reason = (
+            f"{controlled_mock_lane.get('lane_label') or controlled_mock_lane.get('lane_id')} 독립 결정 레인이 "
+            f"{symbol}을 선택했습니다. 메인 Scanner 순위는 이 거래에 적용되지 않습니다."
+        )
     exit_reason = str(
         monitor.get("decision_summary")
         or monitor.get("entry_exit_reason")
@@ -481,9 +494,25 @@ def _build_trade_report_inputs(
         "evidence_provenance": evidence_provenance,
         "artifacts": artifacts,
     }
+    if controlled_mock_lane:
+        bundle_out["controlled_mock_lane"] = dict(controlled_mock_lane)
     story_contract = build_story_contract(bundle_out)
     market_context_human = build_market_context_human(dict(strategist))
     scanner_reason_human = build_scanner_reason_human(dict(scanner), dict(strategist))
+    if controlled_mock_lane:
+        scanner_reason_human = {
+            "summary": entry_reason,
+            "comparison": "This trade did not use the main Scanner ranking authority.",
+            "bullets": [
+                f"Independent lane: {controlled_mock_lane.get('lane_id')}",
+                "Scanner rank: not applicable",
+                f"Signal ID: {controlled_mock_lane.get('signal_id') or 'not_captured'}",
+            ],
+            "selected_symbol": symbol,
+            "selected_rank": None,
+            "universe_size": None,
+            "selection_authority": "deterministic_independent_lane",
+        }
     filters_human = build_filters_human(dict(scanner), dict(strategist), dict(supervisor))
     monitor_reason_human = build_monitor_reason_human(dict(monitor), dict(execution_view))
     canonical_scanner = (
@@ -576,6 +605,11 @@ def _build_trade_report_inputs(
             "guard_context": dict(supervisor if action == "BUY" else {}),
             "execution_context": dict(entry_execution_details),
             "execution_details": dict(entry_execution_details),
+            **(
+                {"controlled_mock_lane": dict(controlled_mock_lane)}
+                if action == "BUY" and controlled_mock_lane
+                else {}
+            ),
         },
         "holding": {
             "run_ids": [run_id] if hold_duration_sec > 0 and run_id else [],
@@ -669,6 +703,8 @@ def _build_trade_report_inputs(
         "applied_policy": dict(state.get("applied_policy") or {}),
     }
     story_input["reporter_policy"] = dict((state.get("applied_policy") or {}).get("reporter") or {})
+    if controlled_mock_lane:
+        story_input["controlled_mock_lane"] = dict(controlled_mock_lane)
     artifact_links = {
         "lifecycle_bundle_json": str(trade_paths["lifecycle_bundle_json"]),
         "entry_json": str(trade_paths["entry_json"]),
@@ -711,6 +747,8 @@ def _build_trade_report_inputs(
             "exit_execution_details": dict(exit_execution_details),
         }
     )
+    if controlled_mock_lane:
+        lifecycle_bundle["controlled_mock_lane"] = dict(controlled_mock_lane)
     return {
         "trade_paths": trade_paths,
         "story_input": story_input,
@@ -785,6 +823,7 @@ def generate_single_trade_report(
     write_json(trade_paths["ai_trade_report_compact_input_json"], compact_artifact)
 
     report = build_ai_trade_report(story_input, enabled=True)
+    report = attach_controlled_lane_report_surface(report, story_input)
     llm_artifact = report.get("llm_response_artifact") if isinstance(report.get("llm_response_artifact"), dict) else {}
     generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
     report_status = str(generation.get("status") or report.get("ai_trade_report_status") or report.get("status") or "").strip()

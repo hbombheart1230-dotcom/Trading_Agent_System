@@ -31,6 +31,21 @@ Examples:
 
 Keep this folder concise. Detailed design notes can stay in each owner folder, and this folder should link or summarize the daily operational change.
 
+## When To Add An Entry
+
+Add an entry on:
+
+- a formal freeze (any UEF/Safety/adapter phase reaching FORMALLY FROZEN)
+- an architecture decision (new or amended ADR)
+- a production/runtime safety fix
+- a research-lifecycle promotion or deprecation (e.g. a family moving CLEAN/BLOCKED, an adapter
+  approved/frozen)
+- a major operational incident
+- a major roadmap change
+
+Do not add an entry for every test, minor refactor, formatting change, or internal helper -- those stay
+in commit history and code comments, not this log.
+
 ## Latest Weekend Review
 
 - `2026-05-09_weekend-validation-report-regeneration-review.md`: 2026-04-29 through 2026-05-08 patch status review, report regeneration timeout fix, and next live-check list.

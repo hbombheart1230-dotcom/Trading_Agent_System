@@ -155,6 +155,9 @@ def _compact_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
                 "engine_close_last",
                 "quote_best_bid",
                 "quote_best_ask",
+                "quote_payload_available",
+                "quote_source",
+                "quote_evidence_status",
                 "intraday_change_pct",
             )
             if feature_snapshot.get(key) not in (None, "")
@@ -226,6 +229,49 @@ def _compact_mapping(value: Mapping[str, Any], *, list_limit: int = 20) -> dict[
         elif isinstance(raw, (str, int, float, bool)) or raw is None:
             out[str(key)] = raw
     return out
+
+
+def _strategist_provenance(strategist: Mapping[str, Any]) -> dict[str, Any]:
+    feedback = _mapping(strategist.get("feedback_application_trace"))
+    memory = _mapping(strategist.get("memory_usage_trace"))
+    memory_summary = _mapping(memory.get("application_summary"))
+    layer_decisions = _mapping(memory.get("layer_decisions"))
+    return {
+        "schema_version": "q9_strategist_provenance.v1",
+        "behavior_effect": "observation_only",
+        "feedback": {
+            "feedback_id": str(feedback.get("feedback_id") or ""),
+            "source_day": str(feedback.get("source_day") or ""),
+            "available": bool(feedback.get("available")),
+            "consumed": bool(feedback.get("consumed")),
+            "gate_reason": str(feedback.get("gate_reason") or ""),
+            "adoption_status": str(feedback.get("adoption_status") or ""),
+            "changed_fields": [
+                str(value)[:80]
+                for value in list(feedback.get("changed_fields") or [])[:12]
+            ],
+            "causal_attribution": False,
+        },
+        "memory": {
+            "memory_usage_disabled": bool(memory.get("memory_usage_disabled")),
+            "context_used": bool(memory_summary.get("context_used")),
+            "deterministic_delta_applied": bool(
+                memory_summary.get("deterministic_delta_applied")
+            ),
+            "applied_packet_ids": [
+                str(value)[:96]
+                for value in list(memory_summary.get("applied_packet_ids") or [])[:8]
+            ],
+            "layer_packet_ids": {
+                str(layer): str(_mapping(decision).get("packet_id") or "")
+                for layer, decision in layer_decisions.items()
+                if _mapping(decision).get("packet_id")
+            },
+            "causal_strategy_change_attributed": bool(
+                memory_summary.get("causal_strategy_change_attributed")
+            ),
+        },
+    }
 
 
 def _day(state: Mapping[str, Any]) -> str:
@@ -376,6 +422,10 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         or scanner.get("pre_strategist_full_universe_snapshot")
     )
     source_universe = _mapping(state.get("scanner_source_universe_before_strategy_weighting"))
+    control_eligibility = _mapping(
+        pre_strategist_universe.get("full_strategist_control_eligibility")
+        or source_universe.get("full_strategist_control_eligibility")
+    )
     if source_universe:
         pre_strategist_universe = {
             **pre_strategist_universe,
@@ -437,7 +487,14 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
                 "top10": _compact_candidates(intrinsic, limit=10),
                 "top20": _compact_candidates(intrinsic, limit=20),
                 "top1_symbol": str((intrinsic[0] if intrinsic else {}).get("symbol") or ""),
-                "universe_control_available": False,
+                "universe_control_available": bool(control_eligibility.get("eligible")),
+                "full_strategist_control_eligibility": {
+                    **_compact_scalar_mapping(control_eligibility),
+                    "ineligibility_reasons": [
+                        str(reason)[:120]
+                        for reason in list(control_eligibility.get("ineligibility_reasons") or [])[:12]
+                    ],
+                },
                 "limitation": (
                     "Candidate sourcing may already reflect Strategist guidance; this control isolates "
                     "ranking weights within the same candidate universe."
@@ -477,6 +534,7 @@ def capture_scanner_decision_snapshot(state: dict[str, Any]) -> dict[str, Any]:
                 "selected_symbol": str(selected.get("symbol") or scanner.get("top_stock") or ""),
                 "evidence_class": "REALIZED_DECISION_SNAPSHOT",
             },
+            "strategist_provenance": _strategist_provenance(strategist),
             "post_scanner_strategist_refresh": refresh_observation,
         },
     )

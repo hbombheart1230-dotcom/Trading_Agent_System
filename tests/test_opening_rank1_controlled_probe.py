@@ -8,9 +8,14 @@ import graphs.nodes.monitor_node as monitor_module
 from graphs.nodes.monitor_node import monitor_node
 from libs.runtime.opening_rank1_controlled_probe import (
     classify_candidate_setup,
+    classify_opening_alpha_condition,
     evaluate_opening_rank1_controlled_probe,
+    load_probe_evaluations,
     load_probe_submissions,
+    load_rank_observations,
+    record_probe_evaluation,
     record_probe_submission,
+    record_rank1_observation,
 )
 from libs.runtime.opening_rank1_probe_authority import (
     resolve_opening_rank1_probe_authority,
@@ -24,10 +29,13 @@ def _epoch(hour: int = 9, minute: int = 10) -> int:
     return int(datetime(2026, 8, 17, hour, minute, tzinfo=KST).timestamp())
 
 
-def _candidate(*, fresh: bool = True) -> dict:
+def _candidate(*, fresh: bool = False) -> dict:
     return {
         "symbol": "005930",
+        "name": "Samsung Electronics",
+        "asset_class_detected": "common_stock",
         "rank": 1,
+        "risk_score": 0.8,
         "sources": ["top_change_rate", "top_value"] if fresh else ["top_value", "top_volume"],
         "score_breakdown": {
             "momentum": 0.1,
@@ -74,13 +82,30 @@ def _evaluate(**overrides) -> dict:
     return evaluate_opening_rank1_controlled_probe(**params)
 
 
-def test_fresh_change_rank1_probe_is_applied_with_quarter_size() -> None:
+def test_high_common_directional_rank1_probe_is_applied_with_quarter_size() -> None:
     result = _evaluate()
 
     assert result["applied"] is True
-    assert result["candidate_setup"] == "FRESH_CHANGE_ACTIVATION"
+    assert result["candidate_setup"] == "DIRECTIONAL_BREADTH"
+    assert result["opening_alpha_condition"]["condition"] == "HIGH_COMMON_DIRECTIONAL"
     assert result["probe_qty"] == 2
     assert result["qty_fraction_effective"] == 0.25
+    discriminator = result["opening_alpha_discriminator"]
+    assert discriminator["cell_id"] == (
+        "HIGH_COMMON_DIRECTIONAL|COMMON_STOCK|HIGH|DIRECTIONAL_BREADTH|MISSING"
+    )
+    assert discriminator["eligibility_effect"] == "NONE"
+
+
+def test_first_rank1_signal_preserves_current_price_for_execution_guard() -> None:
+    candidate = _candidate()
+    candidate["price"] = 101.8
+
+    result = _evaluate(selected=candidate, prior_rank_observations=[])
+
+    assert result["applied"] is True
+    assert result["initial_signal_price"] == 101.8
+    assert result["cached_decision_price"] == 101.8
 
 
 def test_directional_breadth_can_override_only_listed_quant_volume_block() -> None:
@@ -108,7 +133,111 @@ def test_liquidity_only_candidate_is_not_eligible() -> None:
 
     assert classify_candidate_setup(candidate) == "LIQUIDITY_ONLY"
     assert result["applied"] is False
-    assert result["reason"] == "candidate_setup_not_allowed"
+    assert result["reason"] == "opening_alpha_condition_not_allowed"
+
+
+def test_confirmed_recurrent_rank_is_eligible_without_high_risk() -> None:
+    candidate = _candidate(fresh=False)
+    candidate["risk_score"] = 0.2
+    condition = classify_opening_alpha_condition(
+        candidate=candidate,
+        now_epoch=_epoch(),
+        prior_rank_observations=[
+            {"symbol": "005930", "observed_epoch": _epoch(9, 7)}
+        ],
+        recent_minute_rows=[{"close": 100.0}, {"close": 100.5}],
+    )
+    result = _evaluate(
+        selected=candidate,
+        prior_rank_observations=[
+            {"symbol": "005930", "observed_epoch": _epoch(9, 7)}
+        ],
+        recent_minute_rows=[{"close": 100.0}, {"close": 100.5}],
+    )
+
+    assert condition["condition"] == "CONFIRMED_RECURRENT_RANK"
+    assert result["applied"] is True
+
+
+def test_confirmed_recurrent_rank_uses_lane_cost_evidence_not_setup_bucket() -> None:
+    candidate = _candidate(fresh=False)
+    candidate["risk_score"] = 0.2
+    candidate["score_breakdown"] = {"momentum": 0.1}
+    result = _evaluate(
+        selected=candidate,
+        prior_rank_observations=[{"symbol": "005930", "observed_epoch": _epoch(9, 7)}],
+        recent_minute_rows=[{"close": 100.0}, {"close": 100.5}],
+        base_entry_guard_blocked=True,
+        base_entry_guard_reason="cost_adjusted_edge_not_ready",
+        entry_cost_filter={
+            "enabled": True, "passed": False,
+            "fail_reasons": ["directional_edge_evidence_missing", "estimated_gross_edge_missing"],
+            "min_cost_adjusted_edge_pct": 0.001,
+        },
+        quant_entry_enforcement={"blocked": True, "matched_blockers": ["cost_edge_fail"]},
+    )
+    assert result["applied"] is True
+    evidence = result["cost_edge_evidence"]
+    assert evidence["lane_condition"] == "CONFIRMED_RECURRENT_RANK"
+    assert evidence["evidence_scope"] == "lane_condition"
+    assert evidence["candidate_setup"] == "LIQUIDITY_ONLY"
+    assert evidence["independent_day_symbol_count"] == 3
+    assert evidence["conservative_net_return"] == 0.04673851
+
+
+def test_confirmed_recurrent_rank_does_not_override_real_negative_cost_evidence() -> None:
+    candidate = _candidate(fresh=False)
+    candidate["risk_score"] = 0.2
+    result = _evaluate(
+        selected=candidate,
+        prior_rank_observations=[{"symbol": "005930", "observed_epoch": _epoch(9, 7)}],
+        recent_minute_rows=[{"close": 100.0}, {"close": 100.5}],
+        entry_cost_filter={
+            "enabled": True, "passed": False,
+            "fail_reasons": ["estimated_gross_edge_below_cost_floor"],
+            "estimated_gross_edge_pct": 0.001,
+        },
+    )
+    assert result["applied"] is False
+    assert result["reason"] == "cost_adjusted_edge_not_ready"
+    assert result["cost_edge_evidence"]["fallback_applied"] is False
+
+
+def test_probe_rejects_late_chase_after_rank1_signal_price_drift() -> None:
+    candidate = _candidate(fresh=False)
+    candidate["price"] = 103.0
+
+    result = _evaluate(
+        selected=candidate,
+        prior_rank_observations=[
+            {
+                "symbol": "005930",
+                "observed_epoch": _epoch(9, 7),
+                "observed_price": 100.0,
+            }
+        ],
+    )
+
+    assert result["applied"] is False
+    assert result["reason"] == "opening_alpha_signal_price_drift_exceeded"
+    assert round(result["opening_alpha_condition"]["signal_price_drift_pct"], 6) == 0.03
+
+
+def test_rank1_observation_persists_signal_price(tmp_path: Path) -> None:
+    recorded = record_rank1_observation(
+        day="2026-08-17",
+        symbol="005930",
+        observed_epoch=_epoch(9, 1),
+        run_id="signal-price",
+        observed_price=71300.0,
+        price_source="market.quote.cur",
+        root=tmp_path,
+    )
+
+    assert recorded["recorded"] is True
+    rows = load_rank_observations("2026-08-17", root=tmp_path)
+    assert rows[0]["observed_price"] == 71300.0
+    assert rows[0]["price_source"] == "market.quote.cur"
 
 
 def test_probe_preserves_hard_safety_guards() -> None:
@@ -175,10 +304,10 @@ def test_probe_uses_frozen_setup_edge_only_for_missing_cost_evidence() -> None:
     assert result["overridden_quant_blockers"] == ["cost_edge_fail"]
     evidence = result["cost_edge_evidence"]
     assert evidence["fallback_applied"] is True
-    assert evidence["candidate_setup"] == "FRESH_CHANGE_ACTIVATION"
-    assert evidence["independent_day_symbol_count"] == 6
-    assert evidence["source_live_net_return_30m"] == 0.04875
-    assert evidence["conservative_net_return"] == 0.04068151
+    assert evidence["candidate_setup"] == "DIRECTIONAL_BREADTH"
+    assert evidence["independent_day_symbol_count"] == 18
+    assert evidence["source_live_net_return_30m"] == 0.014919
+    assert evidence["conservative_net_return"] == 0.00685051
     assert evidence["cost_basis"]["target_mock_drag_ratio"] == 0.01086849
 
 
@@ -209,6 +338,39 @@ def test_probe_rejects_missing_intrinsic_rank1_evidence() -> None:
 
     assert result["applied"] is False
     assert result["reason"] == "intrinsic_rank1_evidence_missing"
+
+
+def test_probe_uses_intrinsic_rank1_when_selected_candidate_rank_is_missing() -> None:
+    candidate = _candidate()
+    candidate.pop("rank")
+
+    result = _evaluate(selected=candidate)
+
+    assert result["applied"] is True
+    assert result["scanner_rank"] == 1
+    assert result["scanner_rank_source"] == "scanner_authority_intrinsic_rank1"
+
+
+def test_probe_does_not_infer_rank1_from_misaligned_authority() -> None:
+    candidate = _candidate()
+    candidate.pop("rank")
+
+    result = _evaluate(
+        selected=candidate,
+        selection_authority={
+            "status": "SYMBOL_MISMATCH",
+            "evidence_available": True,
+            "aligned": False,
+            "selected_symbol": "005930",
+            "intrinsic_rank1_symbol": "000660",
+            "intrinsic_rank1_rank": 1,
+        },
+    )
+
+    assert result["applied"] is False
+    assert result["scanner_rank"] == 0
+    assert result["scanner_rank_source"] == "missing"
+    assert result["reason"] == "scanner_rank1_required"
 
 
 def test_selection_authority_uses_pre_strategist_intrinsic_rank1() -> None:
@@ -329,6 +491,40 @@ def test_probe_ledger_allows_only_one_submission_per_day(tmp_path: Path) -> None
     assert second["reason"] == "daily_probe_limit_reached"
     assert len(rows) == 1
     assert rows[0]["run_id"] == "run-1"
+    assert rows[0]["opening_alpha_discriminator"]["cell_id"].startswith(
+        "HIGH_COMMON_DIRECTIONAL|COMMON_STOCK|HIGH|DIRECTIONAL_BREADTH"
+    )
+
+
+def test_probe_evaluation_records_rejection_reason_once_per_run_and_symbol(
+    tmp_path: Path,
+) -> None:
+    decision = {
+        **_evaluate(original_wait_reason="same_symbol_position_open"),
+        "selection_authority": {"aligned": True},
+    }
+
+    first = record_probe_evaluation(
+        decision,
+        run_id="run-rejected",
+        recorded_at="2026-08-17T00:10:00+00:00",
+        root=tmp_path,
+    )
+    second = record_probe_evaluation(
+        decision,
+        run_id="run-rejected",
+        recorded_at="2026-08-17T00:11:00+00:00",
+        root=tmp_path,
+    )
+
+    rows = load_probe_evaluations("2026-08-17", root=tmp_path)
+    assert first["recorded"] is True
+    assert second["recorded"] is False
+    assert second["reason"] == "evaluation_already_recorded"
+    assert len(rows) == 1
+    assert rows[0]["applied"] is False
+    assert rows[0]["reason"] == "wait_reason_not_overrideable"
+    assert rows[0]["opening_alpha_discriminator"]["eligibility_effect"] == "NONE"
 
 
 def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> None:
@@ -344,8 +540,10 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
     def _forced_probe(**kwargs) -> dict:
         assert kwargs["is_top_pick"] is True
         assert kwargs["selection_authority"]["aligned"] is True
+        assert kwargs["selected"]["price"] == 101.8
+        assert kwargs["selected"]["_monitor_price_source"] == "market.quote.price"
         return {
-            "schema_version": "opening_rank1_controlled_probe.v2",
+            "schema_version": "opening_rank1_controlled_probe.v3",
             "applied": True,
             "eligible": True,
             "reason": "opening_rank1_controlled_probe_applied",
@@ -361,17 +559,28 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
 
     monkeypatch.setattr(monitor_module, "evaluate_opening_rank1_controlled_probe", _forced_probe)
     monkeypatch.setattr(monitor_module, "load_probe_submissions", lambda _day: [])
+    monkeypatch.setattr(monitor_module, "load_rank_observations", lambda _day: [])
+    monkeypatch.setattr(
+        monitor_module,
+        "record_rank1_observation",
+        lambda **_kwargs: {"recorded": True, "count": 1},
+    )
+    monkeypatch.setattr(
+        monitor_module,
+        "record_probe_evaluation",
+        lambda *_args, **_kwargs: {"recorded": True, "reason": "recorded", "count": 1},
+    )
     monkeypatch.setattr(
         monitor_module,
         "record_probe_submission",
         lambda *_args, **_kwargs: {"recorded": True, "reason": "recorded", "count": 1},
     )
     state = {
+        "tick_ts": _epoch(),
         "plan": {"thesis": "controlled probe integration"},
         "selected": {
             "symbol": "005930",
             "rank": 1,
-            "price": 101.8,
             "score": 0.9,
             "risk_score": 0.2,
             "confidence": 0.8,
@@ -385,6 +594,11 @@ def test_monitor_attaches_probe_provenance_and_caps_order_qty(monkeypatch) -> No
             }
         },
         "minute_ohlcv_by_symbol": {"005930": rows},
+        "market_quote": {
+            "symbol": "005930",
+            "price": 101.8,
+            "_observed_epoch": _epoch(),
+        },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
         "market_snapshot": {"symbol": "005930", "price": 101.8},
         "policy": {

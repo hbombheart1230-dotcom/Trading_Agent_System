@@ -14,12 +14,16 @@ from .contracts import (
     DEFAULT_SLIPPAGE_PCT,
     FORWARD_SCHEMA,
     PROGRAM_ID,
+    PERSISTENT_TREND_POLICY_ID,
     REPORT_SCHEMA,
     TARGET_SYMBOL,
+    STRONG_BTC_POLICY_ID,
 )
 from .crypto_fear_greed import load_crypto_fear_greed_index, unavailable as unavailable_crypto_fear_greed
 from .data_provider import load_btc_signal_rows, load_woori_candles
-from .forward_returns import attach_forward_returns, summarize
+from .forward_returns import attach_forward_returns, summarize, summarize_policy_variant
+from .hypothesis_pipeline import build_hypothesis_validation_artifacts
+from .point_in_time_capture import merge_capture_into_signal_payload
 from .report import render_report
 from .strategy import build_decision_snapshot
 
@@ -95,6 +99,9 @@ def build_baseline_btc_woori_artifacts(
             "fallback_reason": "fresh_fetch_disabled",
         }
     )
+    # The 08:55 collector runs independently. Re-read its immutable artifact so
+    # a baseline process holding a pre-capture payload cannot report MISSING.
+    signal_payload = merge_capture_into_signal_payload(signal_payload, day=day)
     if crypto_fear_greed is not None:
         fear_greed_payload = dict(crypto_fear_greed)
     elif allow_fresh_fetch:
@@ -155,6 +162,20 @@ def build_baseline_btc_woori_artifacts(
     cost_pct = float(profile.get("conservative_round_trip_cost_pct") or 0.0) * 100.0
     forward_rows = attach_forward_returns(decisions, candles=candle_rows)
     summary = summarize(forward_rows, cost_pct=cost_pct, slippage_pct=slippage_pct)
+    strong_btc_summary = summarize_policy_variant(
+        forward_rows,
+        decisions,
+        policy_id=STRONG_BTC_POLICY_ID,
+        cost_pct=cost_pct,
+        slippage_pct=slippage_pct,
+    )
+    persistent_trend_summary = summarize_policy_variant(
+        forward_rows,
+        decisions,
+        policy_id=PERSISTENT_TREND_POLICY_ID,
+        cost_pct=cost_pct,
+        slippage_pct=slippage_pct,
+    )
     observed = sum(
         1
         for row in forward_rows
@@ -174,6 +195,10 @@ def build_baseline_btc_woori_artifacts(
         "row_count": len(forward_rows),
         "rows": forward_rows,
         "summary": summary,
+        "policy_variant_summaries": {
+            STRONG_BTC_POLICY_ID: strong_btc_summary,
+            PERSISTENT_TREND_POLICY_ID: persistent_trend_summary,
+        },
     }
     comparison = build_comparison(
         day=day,
@@ -214,10 +239,63 @@ def build_baseline_btc_woori_artifacts(
             "markdown_path": str(report_path),
         },
     )
-    return {
+    hypothesis_daily = output_dir / "q12_btc_woori_hypothesis_validation.json"
+    signal_sources = signal_payload.get("sources")
+    signal_sources = signal_sources if isinstance(signal_sources, Mapping) else {}
+    has_signal_rows = any(
+        isinstance(rows, list) and rows for rows in signal_sources.values()
+    )
+    if hypothesis_daily.exists() and (not candle_rows or not has_signal_rows):
+        from .input_delivery import merge_fresh_btc_into_preserved_report
+        from .vnext.storage import publish
+        preserved = _read(hypothesis_daily)
+        refreshed = merge_fresh_btc_into_preserved_report(preserved, signal_payload, day)
+        if refreshed != preserved:
+            publish(hypothesis_daily, refreshed)
+        hypothesis_root = reports_root / "evaluation" / "baseline_btc_woori_tech" / "hypothesis_validation"
+        hypothesis = {
+            "daily_json": str(hypothesis_daily),
+            "daily_markdown": str(output_dir / "q12_btc_woori_hypothesis_validation.md"),
+            "cumulative_json": str(hypothesis_root / "q12_btc_woori_hypothesis_cumulative.json"),
+            "cumulative_markdown": str(hypothesis_root / "q12_btc_woori_hypothesis_cumulative.md"),
+        }
+    else:
+        hypothesis = build_hypothesis_validation_artifacts(
+            day=day,
+            reports_root=reports_root,
+            candles=candle_rows,
+            btc_signals=signal_payload,
+            cost_pct=cost_pct,
+            slippage_pct=slippage_pct,
+        )
+    result = {
         "decisions": str(decisions_path),
         "forward_returns": str(forward_path),
         "daily_report": str(report_path),
         "daily_report_metadata": str(metadata_path),
         "comparison": str(comparison_path),
     }
+    result.update({f"hypothesis_{key}": value for key, value in hypothesis.items()})
+    controlled_validation = _read(Path(hypothesis.get("daily_json") or ""))
+    report_path.write_text(
+        render_report(
+            day=day,
+            decisions=decisions_payload,
+            forward=forward_payload,
+            comparison=comparison,
+            controlled_validation=controlled_validation,
+        ),
+        encoding="utf-8",
+    )
+    # Optional reporting-only extension runs after all existing Q12 artifacts.
+    # Failure cannot affect the production candidate contract or broker path.
+    try:
+        from .vnext.pipeline import build_vnext
+        result['vnext'] = build_vnext(
+            day=day, reports_root=reports_root, signals=signal_payload,
+            candles=candle_rows, control_payload=controlled_validation,
+            cost_pct=cost_pct, slippage_pct=slippage_pct, allow_fetch=allow_fresh_fetch,
+        )
+    except Exception as exc:
+        result['vnext'] = {'status': 'INSUFFICIENT_EVIDENCE', 'reason': type(exc).__name__}
+    return result

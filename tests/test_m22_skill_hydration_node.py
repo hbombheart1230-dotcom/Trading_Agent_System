@@ -98,6 +98,26 @@ def test_m22_hydration_node_populates_skill_results_for_scanner_monitor():
     assert out["monitor"]["order_lifecycle"]["stage"] == "partial_fill"
 
 
+def test_m22_hydration_always_refreshes_open_position_quotes() -> None:
+    state = {
+        "run_id": "r-m22-held-symbol",
+        "skill_runner": _FakeSkillRunnerOk(),
+        "policy": {"candidate_k": 1},
+        "candidates": [{"symbol": "AAA"}, {"symbol": "BBB"}],
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "positions": [{"symbol": "HELD", "qty": 3, "current_price": 990}]
+        },
+    }
+
+    out = hydrate_skill_results_node(state)
+
+    quotes = out["skill_results"]["market.quote"]
+    assert set(quotes) == {"AAA", "BBB", "HELD"}
+    assert quotes["HELD"]["_observed_epoch"] > 0
+    assert quotes["HELD"]["_observed_at_utc"].endswith("+00:00")
+
+
 def test_m22_hydration_logs_skill_hydration_summary_event():
     logger = _CaptureLogger()
     state = {

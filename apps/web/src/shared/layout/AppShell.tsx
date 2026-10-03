@@ -2,6 +2,8 @@ import { Menu, RefreshCw, ShieldCheck, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { NAV_ITEMS, type PageId } from "../../app/navigation";
+import { RuntimeStateBadge } from "../../features/runtime-status/RuntimeStateBadge";
+import { useRuntimeStatus } from "../../features/runtime-status/RuntimeStatusContext";
 import { useApi } from "../api/useApi";
 import { formatDateTime } from "../formatters/dates";
 import { StatusPill } from "../components/StatusPill";
@@ -24,6 +26,7 @@ interface Props {
 export function AppShell({ page, onNavigate, children }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const health = useApi<Health>("/health/ready");
+  const runtime = useRuntimeStatus();
   const navigate = (target: PageId) => {
     onNavigate(target);
     setMenuOpen(false);
@@ -59,6 +62,7 @@ export function AppShell({ page, onNavigate, children }: Props) {
           <div className="topbar-signals">
             <span className="readonly-flag">READ ONLY</span>
             <span className="mode-flag">SIMULATION / MOCK</span>
+            {runtime.data && <RuntimeStateBadge state={runtime.data.runtime_state} />}
             {health.data?.public_mode && <span className="public-flag">PUBLIC SHOWCASE</span>}
             {health.data && <StatusPill status={health.data.status} />}
           </div>

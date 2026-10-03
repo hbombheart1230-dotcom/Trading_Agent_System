@@ -28,6 +28,9 @@ def main() -> int:
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval-sec", type=int, default=300)
     args = parser.parse_args()
+    if args.loop and not args.no_fresh_fetch:
+        from libs.reporting.baseline_btc_woori_tech.input_worker import start_input_worker
+        start_input_worker(day=args.day, reports_root=Path(args.reports_root), state_path=Path(args.state_path))
     while True:
         result = build_baseline_btc_woori_artifacts(
             day=args.day,

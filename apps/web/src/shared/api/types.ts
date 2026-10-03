@@ -80,6 +80,8 @@ export interface Portfolio {
   issues: string[];
 }
 
+export type PortfolioPosition = Portfolio["positions"][number];
+
 export interface Overview {
   status: Availability;
   day: string;

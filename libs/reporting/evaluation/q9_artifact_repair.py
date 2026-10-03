@@ -59,6 +59,9 @@ def _compact_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
                 "engine_close_last",
                 "quote_best_bid",
                 "quote_best_ask",
+                "quote_payload_available",
+                "quote_source",
+                "quote_evidence_status",
                 "intraday_change_pct",
             )
             if feature_snapshot.get(key) not in (None, "")
@@ -96,6 +99,9 @@ def _canonical_scanner_candidates(
                     "engine_close_last",
                     "quote_best_bid",
                     "quote_best_ask",
+                    "quote_payload_available",
+                    "quote_source",
+                    "quote_evidence_status",
                     "intraday_change_pct",
                 )
                 if feature_snapshot.get(key) not in (None, "")

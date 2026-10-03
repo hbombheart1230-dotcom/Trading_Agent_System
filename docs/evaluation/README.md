@@ -194,8 +194,18 @@ The current Q9 instrumentation persists:
 - source-level forward outcomes
 
 Historical days without these additive fields remain unavailable rather than
-being inferred. Feedback ID to later decision adoption linkage is still a
-future comparison.
+being inferred. New runtime windows now add:
+
+- `full_strategist_control_eligibility`: identifies naturally strategy-neutral
+  Scanner sourcing cycles without adding a second market-data call
+- `feedback_id` and `feedback_application_trace`: links Reporter feedback to a
+  later Q9 decision and distinguishes exposure, consumption, and an observed
+  frame-change candidate
+- memory packet IDs and applied-packet linkage in `memory_usage_trace`
+
+These links improve provenance only. An observed frame change is not causal
+proof, and Strategist/feedback economic value remains unavailable until paired
+forward outcomes exist.
 
 Unavailable comparisons must remain unavailable. They must not be inferred
 from current rank or narrative text.

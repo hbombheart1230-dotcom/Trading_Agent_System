@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
 from libs.catalog.api_catalog import ApiCatalog
 from libs.catalog.api_request_builder import ApiRequestBuilder, PrepareResult, PreparedRequest
 from libs.core.event_logger import EventLogger
+from libs.core.symbols import normalize_symbol
 from libs.execution.executors import get_executor
+from libs.execution.guards.broker_mutation import is_mutation_api_id
+from libs.execution.guards.unknown_quarantine import (
+    evaluate_unknown_quarantine_guard,
+    quarantine_symbol_for_unknown_outcome,
+)
 from libs.core.settings import Settings
 
 from .registry import SkillRegistry, SkillSpec
@@ -138,11 +145,207 @@ class CompositeSkillRunner:
                     meta={"api_id": api_id, "step": idx},
                 )
 
+            # Phase 1 Step 5B Fix 3 (HIGH1): this is a second, independent
+            # live mutation path (reached via ToolFacade.order_execute /
+            # ExecutorAgent.execute_order, both of which call this method)
+            # that previously never checked or wrote the durable UNKNOWN
+            # quarantine state graphs/nodes/execute_from_packet.py's guard
+            # chain uses -- so a symbol quarantined by one path was not
+            # respected by the other, and an UNKNOWN outcome from *this*
+            # path never quarantined anything, letting the same logical
+            # mutation be resubmitted. Scoped strictly to mutation api_ids
+            # (kt10000/kt10001/kt10002/kt10003); read/token steps are
+            # unaffected.
+            is_mutation = is_mutation_api_id(api_id)
+
+            if is_mutation:
+                # Step5C Fix5 (HIGH1): mutation detection must decide the
+                # authority boundary BEFORE symbol normalization is even
+                # attempted -- Codex's exact reproduction was `BUY 0082N0`:
+                # is_mutation_api_id() was True, normalize_symbol() returned
+                # "" for the malformed code, and the OLD `if is_mutation and
+                # mutation_symbol:` guard treated an empty mutation_symbol as
+                # "not a protected mutation", falling through to the plain
+                # `self.executor.execute(prep.request)` branch with zero
+                # ownership/quarantine/physical-claim protection at all
+                # (broker calls == 1, expected 0). A mutation whose symbol
+                # cannot be canonicalized is not "less of a mutation" -- it
+                # is an invalid one, and must fail closed, never reach the
+                # generic executor path.
+                mutation_symbol = normalize_symbol(ctx.get("stk_cd") or args.get("symbol"))
+                if not mutation_symbol:
+                    self.events.log(run_id=run_id, stage="skill_execute", event="ownership_claim_denied", payload={
+                        "skill": skill, "api_id": api_id, "step": idx,
+                        "raw_symbol": ctx.get("stk_cd") or args.get("symbol"),
+                        "reason": "INVALID_SYMBOL",
+                    })
+                    return SkillRunResult(
+                        action="error",
+                        skill=skill,
+                        outputs=spec.outputs,
+                        data=None,
+                        missing=[],
+                        question="",
+                        meta={
+                            "api_id": api_id,
+                            "step": idx,
+                            "raw_symbol": ctx.get("stk_cd") or args.get("symbol"),
+                            "blocked_reason": "INVALID_SYMBOL",
+                            "broker_api_called": False,
+                        },
+                    )
+
+                guard_allowed, guard_reason, guard_details = evaluate_unknown_quarantine_guard(mutation_symbol)
+                if not guard_allowed:
+                    self.events.log(run_id=run_id, stage="skill_execute", event="quarantine_block", payload={
+                        "skill": skill, "api_id": api_id, "step": idx, "symbol": mutation_symbol,
+                        "reason": guard_reason, **guard_details,
+                    })
+                    return SkillRunResult(
+                        action="error",
+                        skill=skill,
+                        outputs=spec.outputs,
+                        data=None,
+                        missing=[],
+                        question="",
+                        meta={
+                            "api_id": api_id,
+                            "step": idx,
+                            "blocked_reason": guard_reason,
+                            "symbol": mutation_symbol,
+                            "quarantine": guard_details,
+                        },
+                    )
+
             self.events.log(run_id=run_id, stage="skill_execute", event="call", payload={
                 "skill": skill, "api_id": api_id, "step": idx, "path": prep.request.path
             })
 
-            res = self.executor.execute(prep.request)  # real/mock governed by env
+            # Step5C Fix2 (HIGH1): every real broker mutation reachable
+            # through this runner (order.place -> kt10000/kt10001 today)
+            # goes through libs/execution/intent_execution_owner.py's single
+            # canonical claim-dispatch-finish sequence, unconditionally --
+            # there is deliberately no "state already reads EXECUTING, some
+            # other caller (e.g. ApprovalService) must have legitimately
+            # claimed it, so just dispatch" shortcut. Codex's independent
+            # audit reproduced exactly that shortcut allowing two concurrent
+            # runner invocations to both see EXECUTING and both call the
+            # executor (broker calls == 2, not <= 1) -- a state VALUE is not
+            # ownership evidence; only winning the atomic CAS inside
+            # execute_owned_order is. ApprovalService.approve() (see
+            # libs/approval/service.py) no longer performs its own separate
+            # approved->executing transition for this reason -- this is now
+            # the only call site that ever claims execution.
+            #
+            # Fix2 (item 16): a real mutation also requires the caller to
+            # supply a canonical intent_id established upstream (at
+            # OrderIntent creation, e.g. TwoPhaseSupervisor.create_intent or
+            # decide_trade.py) -- this runner does not invent one. A caller
+            # reaching this point with no intent_id at all is a caller bug,
+            # not a case to paper over with a freshly-hashed identity.
+            #
+            # Step5C Fix5 (HIGH1, item 2): is_mutation alone now decides
+            # whether this branch or the plain generic-executor branch below
+            # runs -- there is no secondary "and mutation_symbol truthy"
+            # condition left anywhere on this path (mutation_symbol is
+            # already guaranteed valid by the fail-closed check above, or
+            # this line is never reached for this api_id at all).
+            if is_mutation:
+                owner_intent_id = str(args.get("intent_id") or "").strip()
+                if not owner_intent_id:
+                    self.events.log(run_id=run_id, stage="skill_execute", event="ownership_claim_denied", payload={
+                        "skill": skill, "api_id": api_id, "step": idx, "symbol": mutation_symbol,
+                        "reason": "missing_canonical_intent_identity",
+                    })
+                    return SkillRunResult(
+                        action="error",
+                        skill=skill,
+                        outputs=spec.outputs,
+                        data=None,
+                        missing=[],
+                        question="",
+                        meta={
+                            "api_id": api_id,
+                            "step": idx,
+                            "symbol": mutation_symbol,
+                            "blocked_reason": "missing_canonical_intent_identity",
+                            "broker_api_called": False,
+                        },
+                    )
+                from libs.execution.intent_execution_owner import execute_owned_order
+                owner_order = {
+                    "intent_id": owner_intent_id,
+                    "action": str(args.get("side") or "").upper() or "BUY",
+                    "symbol": mutation_symbol,
+                    # The caller's own typed args (not the HTTP-body ctx,
+                    # which templates everything to str) so the identity
+                    # fingerprint matches what an automated-path caller
+                    # building the same real-world order would hash.
+                    "qty": args.get("qty"),
+                    "price": ctx.get("ord_uv") if str(ctx.get("trde_tp") or "") != "3" else args.get("price"),
+                    "order_type": args.get("order_type"),
+                    "trde_tp": ctx.get("trde_tp"),
+                }
+                dispatch: Dict[str, Any] = {}
+                def _capture_dispatch(result, _dispatch=dispatch):
+                    _dispatch["result"] = result
+                    if result is None:
+                        return {"broker_outcome": "NOT_SENT"}
+                    # Same fallback convention as execute_order.py's own
+                    # normalize_legacy: prefer the executor's own
+                    # broker_outcome meta, else derive ACCEPTED/REJECTED
+                    # from response.ok for an executor (e.g.
+                    # MockExecutor) that doesn't emit one. This is only
+                    # used to record the correct terminal state in the
+                    # canonical intent store below -- it does not
+                    # replace the broker_outcome this function's
+                    # existing quarantine check reads from res.meta.
+                    outcome = str((getattr(result, "meta", None) or {}).get("broker_outcome") or "").strip().upper()
+                    if not outcome:
+                        ok = bool(getattr(getattr(result, "response", None), "ok", False))
+                        outcome = "ACCEPTED" if ok else "REJECTED"
+                    return {"broker_outcome": outcome}
+                owned = execute_owned_order(
+                    state={"run_id": run_id}, order=owner_order, request=prep.request,
+                    executor=self.executor, normalize=_capture_dispatch,
+                )
+                if not owned.get("intent_claim", {}).get("claimed"):
+                    self.events.log(run_id=run_id, stage="skill_execute", event="ownership_claim_denied", payload={
+                        "skill": skill, "api_id": api_id, "step": idx, "symbol": mutation_symbol,
+                        "intent_id": owner_intent_id, "reason": owned.get("reason"),
+                        "physical_order_key": owned.get("physical_order_key"),
+                    })
+                    return SkillRunResult(
+                        action="error",
+                        skill=skill,
+                        outputs=spec.outputs,
+                        data=None,
+                        missing=[],
+                        question="",
+                        meta={
+                            "api_id": api_id,
+                            "step": idx,
+                            "symbol": mutation_symbol,
+                            "intent_id": owner_intent_id,
+                            "blocked_reason": owned.get("reason") or "execution_ownership_denied",
+                            "physical_order_key": owned.get("physical_order_key"),
+                            "broker_api_called": False,
+                        },
+                    )
+                res = dispatch["result"]
+            else:
+                res = self.executor.execute(prep.request)  # real/mock governed by env
+            if is_mutation:
+                broker_outcome = str((res.meta or {}).get("broker_outcome") or "").strip().upper()
+                if broker_outcome == "UNKNOWN":
+                    quarantine_symbol_for_unknown_outcome(
+                        symbol=mutation_symbol,
+                        operation=str(args.get("side") or "").upper() or "MUTATION",
+                        now_epoch=int(time.time()),
+                        run_id=run_id,
+                        exception_type=str((res.meta or {}).get("exception_type") or ""),
+                        reason="broker_outcome_unknown",
+                    )
             payload = res.response.payload if res and res.response else {}
             payloads.append(payload)
             step_meta.append({"api_id": api_id, "url": (res.meta or {}).get("url")})

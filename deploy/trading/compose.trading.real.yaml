@@ -1,0 +1,231 @@
+# Paper Trading Runtime -- SEPARATE compose project from both
+# deploy/compose/compose.yaml (observability) and deploy/trading/
+# compose.trading.yaml (Mock Execution, isolated test-state/ volume). A
+# redeploy of any one of the three must never restart another.
+#
+# CANONICAL TERMINOLOGY (Paper Trading Execution Finalization, 2026-09-17
+# -- fixed going forward, matches libs/execution/executors/real_executor.py
+# ::preflight_check's own docstring):
+#   Mock Execution -- EXECUTION_MODE=mock -> MockExecutor, no broker network.
+#   Paper Trading  -- EXECUTION_MODE=real, KIWOOM_MODE=mock -> RealExecutor,
+#                     dispatches to Kiwoom's OWN sandbox server. THIS FILE.
+#   Live Trading   -- EXECUTION_MODE=real, KIWOOM_MODE=real -> RealExecutor,
+#                     a real Kiwoom account. NOT this file, not in scope --
+#                     flipping KIWOOM_MODE to "real" here would silently
+#                     turn this into a live-trading deployment; don't.
+#
+# THIS FILE'S PURPOSE: the Docker runtime replacing the host runtime,
+# sharing the exact same canonical persistent data the host uses (single
+# ownership authority is only meaningful if both sides look at the same
+# file -- see libs/runtime/runtime_ownership.py's own docstring and the
+# Real Docker Deployment audit's HOST + DOCKER DOUBLE RUNTIME finding),
+# running genuine Paper Trading (real HTTP calls to Kiwoom's sandbox, zero
+# real-account risk by construction: KIWOOM_MODE=mock is hardcoded below,
+# never the live-account credential/URL path).
+#
+# ============================================================================
+# HARD SAFETY BOUNDARY -- READ BEFORE EVER EDITING THIS FILE
+# ============================================================================
+# KIWOOM_MODE and ALLOW_REAL_EXECUTION below are LITERAL values, never
+# ${VAR}-interpolated (see the `environment:` block's own comment for why
+# ${VAR} would be a materially weaker guarantee here) -- together they are
+# what keeps this file structurally incapable of live-account dispatch
+# regardless of any other setting:
+#   - KIWOOM_MODE="mock" (never "real") means RealExecutor.preflight_check()
+#     never even reaches its live-account branch (ALLOW_REAL_EXECUTION,
+#     credentials, https base-url checks) -- Paper Trading's own branch has
+#     no live-account guard to bypass in the first place.
+#   - ALLOW_REAL_EXECUTION="false" is redundant defense-in-depth for the
+#     same reason: even if KIWOOM_MODE were ever mistakenly changed to
+#     "real" in a future edit, this line alone would still categorically
+#     block live dispatch.
+#
+# EXECUTION_ENABLED is the ONE flag this file's own operator legitimately
+# flips (false -> true) to turn Paper Trading order placement on -- see
+# EXECUTION_ENABLED's own comment below for why this is now safe to do
+# (two bugs, both fixed this same phase, previously made it unsafe).
+# ============================================================================
+
+name: trading-agent-real-runtime
+
+services:
+  trading-runtime:
+    build:
+      context: ../..
+      dockerfile: deploy/trading/Dockerfile
+    image: trading-agent-real-runtime:local
+    container_name: trading-agent-real-runtime
+    # Safety > availability (Real Docker Deployment audit Section 17):
+    # ownership contention (exit 6/7) is an EXPECTED, correct safety
+    # rejection, not a crash to retry past -- live-confirmed in the prior
+    # audit phase that `on-failure:5` crash-loops a losing second runtime
+    # 5 times in under 2 seconds. A losing container should stay stopped
+    # and visible (`docker ps -a` shows Exited, not endlessly Restarting)
+    # until an operator deliberately investigates and re-runs it -- never
+    # auto-retried into possibly succeeding once a stale lease it should
+    # NOT have taken over happens to expire.
+    restart: "no"
+    init: true
+    environment:
+      # `${VAR:-default}` substitution in a compose YAML is resolved from
+      # docker compose's OWN `.env` file / shell environment at PARSE time
+      # -- a completely different mechanism from the `env_file:` directive
+      # below, which only injects values into the CONTAINER's runtime
+      # environment. Every value in this block is a literal for that
+      # reason: using ${VAR} would make it silently overridable by
+      # anything exporting the same-named shell variable before
+      # `docker compose up`, which is not the guarantee this file needs.
+      # `env_file: .env.real` (below) is reserved exclusively for actual
+      # secrets (broker app key/secret, LLM API keys), never these flags.
+      #
+      # EXECUTION_ENABLED: default "false" (safe starting state); flip to
+      # "true" directly in this file (a small, reviewable one-line diff --
+      # not an env-var override) to turn ON Paper Trading order placement.
+      # This is now SAFE to do, given two bugs this same phase fixed:
+      #   (1) KIWOOM_MODE=mock used to let RealExecutor bypass
+      #       EXECUTION_ENABLED entirely (preflight_check branched on
+      #       KIWOOM_MODE, not EXECUTION_MODE, to decide whether to even
+      #       check it) -- live-reproduced in the prior Real Docker
+      #       Deployment audit phase. Fixed: EXECUTION_ENABLED is now
+      #       checked first, unconditionally, regardless of KIWOOM_MODE.
+      #   (2) An EXECUTION_ENABLED=false denial used to raise
+      #       ExecutionDisabledError uncaught all the way through
+      #       commander_runtime.py and libs/runtime/live_loop_runner.py's
+      #       tick loop, crashing the whole process the first time a
+      #       real-mode BUY/SELL was ever approved while disabled --
+      #       live-reproduced in the same prior audit phase. Fixed:
+      #       execute_from_packet.py now returns a clean, fully-populated
+      #       NOT_SENT/blocked result for this specific, deterministic
+      #       policy-rejection exception type, and the live loop continues
+      #       to the next tick -- verified in this phase to survive 40
+      #       consecutive denied ticks without crashing
+      #       (tests/test_paper_trading_execution_finalization.py).
+      # With both fixed, EXECUTION_ENABLED=false is now a genuinely STABLE
+      # resting state (not just a block that happens to also crash), and
+      # EXECUTION_ENABLED=true is now safe to set for Paper Trading
+      # specifically (zero real-account risk, by construction, via
+      # KIWOOM_MODE=mock below).
+      EXECUTION_ENABLED: "false"
+      # Live-account-only guard (see file header) -- always false here.
+      # Paper Trading needs only EXECUTION_ENABLED=true; this flag has no
+      # effect while KIWOOM_MODE=mock and stays false as defense-in-depth
+      # regardless.
+      ALLOW_REAL_EXECUTION: "false"
+      # EXECUTION_MODE=real selects RealExecutor (not MockExecutor) --
+      # required for genuine Paper Trading (a real HTTP call to Kiwoom's
+      # sandbox, not a synthetic in-process echo). KIWOOM_MODE=mock is what
+      # keeps that real HTTP call pointed at Kiwoom's OWN sandbox server,
+      # never a live account -- see the file header's HARD SAFETY BOUNDARY.
+      #
+      # Historical note (kept for the next reader -- both bugs below are
+      # FIXED as of this phase; this file used to default EXECUTION_MODE to
+      # "mock" as a workaround for bug (2) before the real fix existed):
+      #   (1) KIWOOM_MODE=mock used to let RealExecutor.preflight_check()
+      #       bypass EXECUTION_ENABLED entirely (it branched on KIWOOM_MODE,
+      #       not EXECUTION_MODE, to decide whether to even check it) --
+      #       live-reproduced in the prior Real Docker Deployment audit
+      #       phase: with real sandbox credentials configured, that
+      #       combination would have dispatched a real HTTP order to
+      #       Kiwoom's sandbox even with EXECUTION_ENABLED=false. Fixed in
+      #       libs/execution/executors/real_executor.py::preflight_check.
+      #   (2) An EXECUTION_ENABLED=false denial (ExecutionDisabledError)
+      #       used to propagate uncaught through commander_runtime.py and
+      #       libs/runtime/live_loop_runner.py's tick loop, crashing the
+      #       whole process the first time a real-mode BUY/SELL was ever
+      #       approved while disabled -- also live-reproduced in that same
+      #       audit phase. Fixed in graphs/nodes/execute_from_packet.py:
+      #       this exception now returns a clean NOT_SENT/blocked result
+      #       and the live loop continues to the next tick (verified to
+      #       survive 40 consecutive denied ticks without crashing --
+      #       tests/test_paper_trading_execution_finalization.py).
+      # With both fixed, this file now uses its semantically correct,
+      # intended values below: genuine Paper Trading.
+      EXECUTION_MODE: "real"
+      KIWOOM_MODE: "mock"
+      SYMBOL_ALLOWLIST: ""
+      MAX_ORDER_QTY: "0"
+      MAX_ORDER_NOTIONAL: "0"
+    env_file:
+      # Real, populated CREDENTIALS ONLY (KIWOOM_APP_KEY/APP_SECRET/
+      # ACCOUNT_NO, OPENROUTER_API_KEY, etc.) go in a local, gitignored
+      # deploy/trading/.env.real (see .env.real.example for the documented
+      # key set) -- never baked into the image, never committed. This file
+      # must never redeclare EXECUTION_ENABLED/ALLOW_REAL_EXECUTION/
+      # EXECUTION_MODE/KIWOOM_MODE -- the `environment:` block above always
+      # wins over env_file for a key present in both (compose precedence),
+      # so doing so would be a no-op at best, but .env.real.example
+      # deliberately omits them entirely to avoid the confusion of having
+      # them written somewhere they cannot take effect. `env_file` on a
+      # missing path is a hard error for `docker compose`, so any run of
+      # this file needs a `.env.real` to exist locally (blank is fine).
+      - .env.real
+    volumes:
+      # ============================================================
+      # CANONICAL, SHARED PERSISTENT STATE -- NOT an isolated copy.
+      # ============================================================
+      # Deliberately the OPPOSITE of compose.trading.yaml's own
+      # ./test-state/ isolation: this file's entire purpose is that the
+      # Docker runtime and the host runtime see the EXACT SAME
+      # data/state/runtime_ownership.db, data/state/intent_state.db,
+      # data/state.json, data/logs/events.jsonl, and reports/ -- because
+      # libs/runtime/runtime_ownership.py's single-owner CAS lease is only
+      # meaningful when every runtime that could dispatch shares one
+      # physical file. Two DIFFERENT paths (the mistake this file exists
+      # to avoid) would let host and Docker each believe they alone hold
+      # authority -- see the "HOST + DOCKER DOUBLE RUNTIME" audit finding.
+      #
+      # `../..` here is this repo's root (deploy/trading/../..) -- the
+      # exact same `data/` and `reports/` directories
+      # libs/runtime/runtime_ownership.py::resolve_runtime_ownership_db_path(),
+      # libs/supervisor/intent_state_store.py::resolve_intent_state_db_path(),
+      # and the host's own scripts/restart_live_session.py /
+      # libs/runtime/entrypoints/m13_live_loop.py resolve to by default
+      # when run directly on the host with no override. Whole-directory
+      # mount (not per-file), for the same atomic-tmp-file-then-replace
+      # reason documented in compose.trading.yaml.
+      #
+      # data/specs/ (read-only reference config: api_catalog.jsonl,
+      # default_rules.json) needs NO separate host-side copy here, unlike
+      # the mock file's ./test-state/data/specs/ workaround -- mounting the
+      # real repo-root data/ directory already includes the real,
+      # always-current data/specs/ naturally. Single canonical source, no
+      # duplication.
+      - type: bind
+        source: ../../data
+        target: /app/data
+      - type: bind
+        source: ../../reports
+        target: /app/reports
+    networks:
+      - trading-real
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: 1.0
+    mem_limit: 1g
+    stop_signal: SIGTERM
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - scripts/docker_healthcheck.py
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+networks:
+  trading-real:
+    # NOT internal -- a real deployment eventually needs outbound HTTPS to
+    # Kiwoom's real API. Safe today regardless of this setting:
+    # EXECUTION_ENABLED=false blocks dispatch before any network call is
+    # ever attempted (RealExecutor.preflight_check's own unconditional,
+    # unmodified check), so network reachability has no bearing on the
+    # "real broker dispatch during test = 0" guarantee.
+    internal: false

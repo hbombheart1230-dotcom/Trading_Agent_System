@@ -56,6 +56,7 @@ def test_monitor_uses_commander_canonical_intraday_window() -> None:
     )["policy"]
     assert exit_policy["profit_time_stop_sec"] == 1800
     assert exit_policy["max_hold_sec"] == 14400
+    assert exit_policy["time_stop_sec"] == 14400
 
 
 def test_monitor_uses_long_horizon_without_live_validation_downgrade() -> None:

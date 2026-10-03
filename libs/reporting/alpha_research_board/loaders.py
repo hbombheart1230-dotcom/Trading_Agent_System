@@ -35,14 +35,16 @@ def metric_snapshot(value: Any) -> dict[str, Any]:
     row = mapping(value)
     return {
         "sample_count": int(
-            row.get("day_symbol_count")
+            row.get("sample_count")
+            or row.get("day_symbol_count")
             or row.get("observed_count")
             or row.get("trade_count")
             or row.get("count")
             or 0
         ),
         "window_count": int(
-            row.get("observed_count")
+            row.get("window_count")
+            or row.get("observed_count")
             or row.get("episode_count")
             or row.get("trade_count")
             or row.get("count")

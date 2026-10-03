@@ -13,6 +13,10 @@ import { formatKrw, formatNumber, formatPct, formatRatioPct, toneFor } from "../
 import { PerformanceChart } from "../performance/PerformanceChart";
 import type { PerformanceSeries } from "../performance/types";
 import { OverviewAlerts } from "../alerts";
+import { RuntimeStatusPanel } from "../runtime-status/RuntimeStatusPanel";
+import { WatchdogHistoryPanel } from "../runtime-status/WatchdogHistoryPanel";
+import { ScheduledIntelligencePanel } from "../runtime-status/ScheduledIntelligencePanel";
+import { PositionTable } from "./PositionTable";
 
 export function OverviewPage() {
   const overview = useApi<Overview>("/api/v1/overview");
@@ -37,6 +41,9 @@ export function OverviewPage() {
       </DataState>
 
       <div className="page-grid" style={{ marginTop: 14 }}>
+        <RuntimeStatusPanel />
+        <WatchdogHistoryPanel />
+        <ScheduledIntelligencePanel />
         <Panel title="운영 알림" meta="고정 정책 · observation only" className="span-12">
           <OverviewAlerts />
         </Panel>
@@ -57,7 +64,7 @@ export function OverviewPage() {
 
         <Panel title="보유 포지션" meta={`${portfolio?.position_count ?? 0}종목`} className="span-7">
           {!portfolio?.positions.length ? <div className="empty-line">현재 표시할 잔존 포지션이 없습니다.</div> : (
-            <div className="data-table-wrap"><table className="data-table"><thead><tr><th>종목</th><th>수량</th><th>평균가</th><th>현재가</th><th>평가손익</th><th>상태</th></tr></thead><tbody>{portfolio.positions.map((position) => <tr key={position.symbol}><td className="symbol-cell"><strong>{position.symbol_name ?? position.symbol}</strong><span>{position.symbol}</span></td><td>{formatNumber(position.quantity, 0)}</td><td>{formatNumber(position.average_price, 0)}</td><td>{formatNumber(position.current_price, 0)}</td><td className={toneFor(position.unrealized_pnl)}>{formatKrw(position.unrealized_pnl)}</td><td>{position.lifecycle_status ?? "-"}</td></tr>)}</tbody></table></div>
+            <PositionTable positions={portfolio.positions} />
           )}
         </Panel>
         <Panel title="데이터 주의사항" meta={`${overview.data?.issues.length ?? 0}건`} className="span-5">

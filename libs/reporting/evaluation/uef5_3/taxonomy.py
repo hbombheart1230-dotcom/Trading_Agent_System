@@ -1,0 +1,52 @@
+"""Bounded enums for the UEF-5.3 dual run.
+
+Every enum here is the exact, bounded list given by the UEF-5.3 mandate.
+A new member may be added only when actual observed evidence requires a
+reason code that does not already fit -- never speculatively.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+
+
+class SourceAlignment(str, Enum):
+    """Classifies whether the legacy and canonical sides even look at the
+    same underlying evidence, BEFORE any numeric comparison is attempted."""
+
+    EXACT_SAME_SOURCE = "EXACT_SAME_SOURCE"
+    SAME_PRIMARY_DIFFERENT_SECONDARY = "SAME_PRIMARY_DIFFERENT_SECONDARY"
+    LEGACY_UNATTESTED = "LEGACY_UNATTESTED"
+    MISSING_CANONICAL_SOURCE = "MISSING_CANONICAL_SOURCE"
+    MISSING_LEGACY_SOURCE = "MISSING_LEGACY_SOURCE"
+    NON_COMPARABLE = "NON_COMPARABLE"
+
+
+class ComparisonResult(str, Enum):
+    """The dual-run verdict for one comparison unit."""
+
+    EXACT_MATCH = "EXACT_MATCH"
+    EXPLAINED_DIVERGENCE = "EXPLAINED_DIVERGENCE"
+    NON_COMPARABLE = "NON_COMPARABLE"
+    BLOCKED = "BLOCKED"
+    UNEXPLAINED_DIVERGENCE = "UNEXPLAINED_DIVERGENCE"
+
+
+class DivergenceReason(str, Enum):
+    """The bounded divergence-reason-code taxonomy."""
+
+    SOURCE_POPULATION_DIFFERENCE = "SOURCE_POPULATION_DIFFERENCE"
+    ELIGIBILITY_DIFFERENCE = "ELIGIBILITY_DIFFERENCE"
+    LEGACY_DATA_AUTHORITY_BLOCKED = "LEGACY_DATA_AUTHORITY_BLOCKED"
+    MISSING_INPUT = "MISSING_INPUT"
+    HORIZON_DEFINITION_DIFFERENCE = "HORIZON_DEFINITION_DIFFERENCE"
+    REFERENCE_SELECTION_DIFFERENCE = "REFERENCE_SELECTION_DIFFERENCE"
+    EXIT_SEMANTICS_DIFFERENCE = "EXIT_SEMANTICS_DIFFERENCE"
+    COST_POLICY_DIFFERENCE = "COST_POLICY_DIFFERENCE"
+    RETURN_UNIT_DIFFERENCE = "RETURN_UNIT_DIFFERENCE"
+    MISSING_EXCLUDED_SEMANTICS_DIFFERENCE = "MISSING_EXCLUDED_SEMANTICS_DIFFERENCE"
+    METRIC_FORMULA_DIFFERENCE = "METRIC_FORMULA_DIFFERENCE"
+    ORDERING_DIFFERENCE = "ORDERING_DIFFERENCE"
+    LEGACY_BUG = "LEGACY_BUG"
+    CANONICAL_CORRECTION = "CANONICAL_CORRECTION"
+    UNEXPLAINED = "UNEXPLAINED"

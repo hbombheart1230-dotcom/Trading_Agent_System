@@ -367,10 +367,13 @@ def opening_observability(
             "best_bid": best_bid,
             "best_ask": best_ask,
             "spread_pct": spread_pct,
+            "payload_available": bool(compact.get("quote_payload_available")),
+            "source": str(compact.get("quote_source") or ""),
             "status": (
                 "OBSERVED"
                 if best_bid and best_ask
-                else "MISSING_FROM_Q9_SNAPSHOT"
+                else str(compact.get("quote_evidence_status") or "")
+                or "MISSING_FROM_Q9_SNAPSHOT"
             ),
         },
         "asset_observation": _asset_observation(candidate),

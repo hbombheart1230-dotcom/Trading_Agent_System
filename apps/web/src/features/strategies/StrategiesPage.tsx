@@ -9,14 +9,15 @@ import { PageHeader } from "../../shared/components/PageHeader";
 import { Panel } from "../../shared/components/Panel";
 import { StatusPill } from "../../shared/components/StatusPill";
 import { isoDayOffset } from "../../shared/formatters/dates";
-import { formatNumber, formatPct, toneFor } from "../../shared/formatters/numbers";
+import { formatPct, toneFor } from "../../shared/formatters/numbers";
 import { StrategyChart } from "./StrategyChart";
+import { StrategyPerformanceTable } from "./StrategyPerformanceTable";
 import type { StrategyDimension, StrategyPerformance } from "./types";
 
 const DIMENSIONS: Array<{ key: StrategyDimension; label: string }> = [{ key: "playbook", label: "Playbook" }, { key: "tactic", label: "Tactic" }, { key: "horizon", label: "Horizon" }, { key: "theme", label: "Theme" }];
 
 export function StrategiesPage() {
-  const [start, setStart] = useState(isoDayOffset(-90));
+  const [start, setStart] = useState(isoDayOffset(-45));
   const [end, setEnd] = useState(isoDayOffset(0));
   const [dimension, setDimension] = useState<StrategyDimension>("playbook");
   const data = useApi<StrategyPerformance>(query("/api/v1/strategies/performance", { start, end, dimension }));
@@ -35,7 +36,7 @@ export function StrategiesPage() {
     </DataState>
     <div className="page-grid" style={{ marginTop: 14 }}>
       <Panel title={`${DIMENSIONS.find((item) => item.key === dimension)?.label} 평균 수익률`} meta="표본 보유 그룹 상위 12개" className="span-6"><DataState loading={data.loading} error={data.error} empty={!data.data?.items.length}><StrategyChart items={data.data?.items ?? []} /></DataState></Panel>
-      <Panel title="그룹별 상세" meta="mock broker net" className="span-6"><DataState loading={data.loading} error={data.error} empty={!data.data?.items.length}><div className="data-table-wrap"><table className="data-table"><thead><tr><th>그룹</th><th>표본</th><th>Coverage</th><th>승률</th><th>평균</th><th>PF</th><th>MDD</th></tr></thead><tbody>{data.data?.items.map((item) => <tr key={item.key}><td><strong>{item.label}</strong></td><td>{item.resolved_count}/{item.trade_count}</td><td>{formatPct((item.coverage ?? 0) * 100)}</td><td>{formatPct(item.win_rate != null ? item.win_rate * 100 : null)}</td><td className={toneFor(item.average_return_pct)}>{formatPct(item.average_return_pct, true)}</td><td>{formatNumber(item.profit_factor)}</td><td className="negative">{formatPct(item.max_drawdown_pct)}</td></tr>)}</tbody></table></div></DataState></Panel>
+      <Panel title="그룹별 상세" meta="mock broker net" className="span-6"><DataState loading={data.loading} error={data.error} empty={!data.data?.items.length}><StrategyPerformanceTable items={data.data?.items ?? []} /></DataState></Panel>
     </div>
   </>;
 }

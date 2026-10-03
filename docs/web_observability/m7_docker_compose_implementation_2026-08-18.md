@@ -2,9 +2,10 @@
 
 ## Status
 
-M7 deployment source is complete. Docker Engine validation remains pending
-because WSL2, Docker Desktop, Docker CLI, and Docker Compose are not installed
-on the host.
+M7 deployment source is complete. On 2026-08-26 Docker Desktop 4.88.1,
+Docker CLI 29.7.2, Compose v5.4.0, and kubectl v1.36.1 were installed.
+Docker Engine validation completed on 2026-08-26 after the required Windows
+restart. Both services are healthy under Linux containers and M8 is unblocked.
 
 No Trading Runtime, strategy, evaluation, broker, order, report-generation,
 or live-session code was changed. The existing Web and API processes were not
@@ -63,7 +64,9 @@ The default Compose profile is private.
 
 * only Web is published at `127.0.0.1:3000`;
 * API has no host port;
-* the shared network is internal;
+* the API/Web service network is internal;
+* Web alone also joins an `edge` network so Docker Desktop can publish the
+  localhost-only port;
 * reports, runtime logs, state, and evidence ledger are bind-mounted read-only;
 * both root filesystems are read-only;
 * only bounded `/tmp` tmpfs mounts are writable;
@@ -98,14 +101,14 @@ The tests enforce:
 
 ## Engine Validation Gate
 
-Perform this only after market close because WSL installation normally needs
-administrator access and a Windows restart.
+This gate was executed after market close on 2026-08-26 following the required
+Windows restart.
 
 ```powershell
 wsl --install
 ```
 
-After restart and Docker Desktop installation:
+Executed post-restart commands:
 
 ```powershell
 docker version
@@ -128,4 +131,24 @@ The engine gate passes only when:
   materially unchanged;
 * `docker compose down` stops only the observability services.
 
-M8 Kubernetes work remains blocked until this gate passes.
+M8 Kubernetes work is unblocked because this gate passed on 2026-08-26.
+
+## 2026-08-26 Host Gate Update
+
+Pre-restart baseline:
+
+* M7 Compose contract prepared;
+* read-only API tests: 57 passed, 1 skipped;
+* Web unit tests: 3 passed;
+* Web production build: passed;
+* `docker compose config --quiet`: passed;
+* host Web and API healthy on ports 5173 and 8000 before container migration.
+
+Completed after restart:
+
+* `wsl --status` and WSL2 backend confirmation;
+* Linux Docker Engine start and `hello-world`;
+* image build and Compose up;
+* container health, proxy, and read-only mount proof;
+* private/public browser verification;
+* Compose down isolation proof.

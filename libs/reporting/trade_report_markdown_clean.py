@@ -69,6 +69,9 @@ from libs.reporting.quant_tactic_report import (
 from libs.reporting.strategist_quant_context_report import (
     render_strategist_quant_context_usage_lines as _render_strategist_quant_context_usage_lines_impl,
 )
+from libs.reporting.controlled_mock_lane_report import (
+    render_controlled_lane_report_lines as _render_controlled_lane_report_lines,
+)
 
 
 def _same_day_current_result(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -249,6 +252,7 @@ def render_trade_report_markdown_clean(report: Dict[str, Any]) -> str:
     lines.extend(_section("시장 환경 요약", _build_market_context(report)))
     lines.extend(_section("전략가 요약", _build_strategist_summary(report)))
     lines.extend(_section("전략 보유 기간", _build_strategy_horizon_lines(report)))
+    lines.extend(_section("통제 모의투자 레인 근거", _render_controlled_lane_report_lines(report)))
     lines.extend(_section("전략가 Refresh Trace", _build_strategist_refresh_trace(report)))
     lines.extend(_section("전략가 Quant Context 사용", _render_strategist_quant_context_usage_lines_impl(report)))
     lines.extend(_section("전략가 출력 근거", _build_strategist_output_surface(report)))
@@ -445,7 +449,9 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     exit_blob = "\n".join(_section_texts(exit_decision, holding)).lower()
     cost_analysis = _build_trade_cost_analysis(report)
     cost_drag_pct = _num_opt(cost_analysis.get("cost_drag_pct"))
-    holding_duration_summary = _pick(shared.get("holding_duration"), report.get("hold_duration"), "")
+    holding_duration_summary = _authoritative_holding_duration_label(report) or _pick(
+        shared.get("holding_duration"), report.get("hold_duration"), ""
+    )
     rank_num = _num_opt(_selected_rank(selection))
     selection_fallback_summary = _selection_fallback_context(selection, symbol)
     scanner_top_pick = _metadata_value(selection_fallback_summary.get("scanner_top_pick_symbol"))
@@ -555,7 +561,7 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
         else:
             cause_lines.append("상위 후보 탈락 후 차순위 후보에서 진입이 성립됨")
     if cost_analysis.get("mock_cost_warning") and cost_drag_pct is not None:
-        cause_lines.append(f"1주 모의투자 수수료/세금이 손익률을 {_fmt_pct(cost_drag_pct)} 압박")
+        cause_lines.append(f"모의투자 수수료/세금이 손익률을 {_fmt_pct(cost_drag_pct)} 압박")
     if not cause_lines:
         cause_lines.append("진입/청산 구조의 반복성은 당일 패턴 섹션에서 추가 확인 필요")
 
@@ -635,7 +641,9 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
         blocked_reason = ""
         entry_reason = _RECOVERED_PARTIAL_ENTRY_NOTE
         entry_confidence = ""
-    holding_duration = _pick(shared.get("holding_duration"), report.get("hold_duration"), "")
+    holding_duration = _authoritative_holding_duration_label(report) or _pick(
+        shared.get("holding_duration"), report.get("hold_duration"), ""
+    )
     exit_signal_texts = _section_texts(exit_decision) + _section_texts(holding)
     exit_signal_snapshot = _extract_exit_signal_snapshot(exit_signal_texts)
     exit_signal_snapshot = _enrich_exit_signal_snapshot_from_monitor(exit_signal_snapshot, monitor)
@@ -695,6 +703,12 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     lines.append(f"* 거래 유형: {story_type}")
     lines.append(f"* 상태: {status}")
     lines.append(f"* 실행 모드: {execution_mode}")
+    controlled_lane_lines = _render_controlled_lane_report_lines(report)
+    if controlled_lane_lines:
+        lines.append("")
+        lines.append("### 통제 모의투자 레인")
+        lines.append("")
+        lines.extend(controlled_lane_lines)
     if recovered_partial_exit:
         lines.append(f"* {_RECOVERED_PARTIAL_EXIT_NOTE}")
     if carryover_exit:
@@ -994,9 +1008,14 @@ def render_trade_summary_markdown_clean(report: Dict[str, Any]) -> str:
     lines.append(f"* 상태: {status}")
     lines.append(f"* 액션: {action}")
     lines.append("")
-    final_summary = _correct_final_operator_summary(
-        _ensure_sentence(_translate_text(final.get("summary"))) if final.get("summary") else "",
+    final_summary = _authoritative_final_operator_summary(
+        report,
         action=action,
+        fallback=(
+            _ensure_sentence(_translate_text(final.get("summary")))
+            if final.get("summary")
+            else ""
+        ),
     )
     if final_summary:
         lines.append(f"👉 **{final_summary}**")
@@ -1131,6 +1150,13 @@ def build_trade_summary_input_clean(report: Dict[str, Any]) -> Dict[str, Any]:
     exit_signal_snapshot = _enrich_exit_signal_snapshot_from_monitor(exit_signal_snapshot, monitor)
     post_exit_shadow_summary = _compact_post_exit_shadow(_post_exit_shadow_surface(report))
     strategy_horizon_summary = _strategy_horizon_report_surface(report)
+    authoritative_hold_sec = _authoritative_hold_duration_seconds(report)
+    authoritative_hold_label = _authoritative_holding_duration_label(report)
+    if authoritative_hold_sec is not None:
+        strategy_horizon_summary = dict(strategy_horizon_summary)
+        strategy_horizon_summary["actual_hold_sec"] = authoritative_hold_sec
+        strategy_horizon_summary["actual_hold_label"] = authoritative_hold_label
+        strategy_horizon_summary["actual_hold_source"] = "entry_exit_execution_timestamps"
     exit_trigger = _first_matching_line(
         _listify(exit_decision.get("bullets")),
         ["촉발", "트리거", "청산 사유", "peak_drawdown", "고점 대비"],
@@ -1350,7 +1376,11 @@ def build_trade_summary_input_clean(report: Dict[str, Any]) -> Dict[str, Any]:
             if not exit_only_report
             else "",
             "entry_observation": entry_signal_snapshot,
-            "holding_duration": _pick(shared.get("holding_duration"), report.get("hold_duration"), carryover_context.get("duration_label")),
+            "holding_duration": authoritative_hold_label or _pick(
+                shared.get("holding_duration"),
+                report.get("hold_duration"),
+                carryover_context.get("duration_label"),
+            ),
             "exit_reason": exit_trigger_label,
             "exit_trigger": exit_trigger_label,
             "exit_trigger_basis": "monitor_signal_snapshot_not_realized_result",
@@ -1365,9 +1395,10 @@ def build_trade_summary_input_clean(report: Dict[str, Any]) -> Dict[str, Any]:
             "carryover_note": "오버나이트/주말 이월 포지션 청산은 당일 신규 스캐너 선정 평가에서 제외합니다." if carryover_exit else "",
             "carryover_context": carryover_context,
             "exit_observation": exit_signal_snapshot,
-            "final_operator_summary": _correct_final_operator_summary(
-                _translate_text(final.get("summary")).strip(),
+            "final_operator_summary": _authoritative_final_operator_summary(
+                report,
                 action=action_label,
+                fallback=_translate_text(final.get("summary")).strip(),
             ),
         },
         "strategy_horizon": strategy_horizon_summary,
@@ -1417,7 +1448,7 @@ def render_trade_summary_markdown_with_evaluation_clean(
 
     base = render_trade_summary_markdown_clean(report).rstrip()
     deterministic_section = _build_summary_deterministic_diagnostics_section(summary_report, report=report)
-    llm_section = _build_summary_llm_evaluation_section(summary_report)
+    llm_section = _build_summary_llm_evaluation_section(summary_report, report=report)
     section = list(deterministic_section)
     if deterministic_section and llm_section:
         section.append("")
@@ -1558,7 +1589,11 @@ def _build_summary_deterministic_diagnostics_section(
     return _strip_trailing_blanks(lines)
 
 
-def _build_summary_llm_evaluation_section(summary_report: Dict[str, Any]) -> List[str]:
+def _build_summary_llm_evaluation_section(
+    summary_report: Dict[str, Any],
+    *,
+    report: Dict[str, Any] | None = None,
+) -> List[str]:
     payload = summary_report if isinstance(summary_report, dict) else {}
     evaluation = _as_dict(payload.get("llm_evaluation"))
     generation = _as_dict(payload.get("generation"))
@@ -1582,21 +1617,56 @@ def _build_summary_llm_evaluation_section(summary_report: Dict[str, Any]) -> Lis
     ]
     if status:
         lines.append(f"* 상태: {status}")
+    action = _action_label(
+        _first_present_impl(
+            _as_dict((report or {}).get("final_operator_conclusion")).get("current_action"),
+            (report or {}).get("action"),
+            _as_dict((report or {}).get("shared_facts")).get("action"),
+        )
+    )
     conclusion = _summary_eval_sentence(evaluation.get("conclusion"))
+    if report:
+        conclusion = _authoritative_final_operator_summary(
+            report,
+            action=action,
+            fallback=_normalize_evaluation_hold_duration(conclusion, report),
+        )
     if conclusion:
         lines.append(f"* 결론: **{conclusion}**")
-    root_cause = _summary_eval_sentence(evaluation.get("root_cause"))
+    root_cause = _normalize_evaluation_hold_duration(
+        _summary_eval_sentence(evaluation.get("root_cause")),
+        report or {},
+    )
+    trade = _as_dict(_as_dict((report or {}).get("fact_payload")).get("trade"))
+    entry = _as_dict(trade.get("entry_summary"))
+    opening_probe = entry.get("reason_human") == "opening_rank1_controlled_probe"
+    if opening_probe:
+        root_cause = (
+            "Opening Alpha 예외 진입 거래입니다. 기존 진입 대기/차단 항목과 최종 레인 승인 결과는 구분해야 합니다. "
+            "기존 blocker의 존재만으로 손실 원인이나 무단 우회를 단정할 수 없습니다. "
+            "LLM 원문 해석은 검증되지 않았으며 원본 응답 파일에 보존합니다."
+        )
     if root_cause:
         lines.append(f"* 원인 해석: {root_cause}")
 
-    actions = [_summary_eval_sentence(item) for item in _listify(evaluation.get("priority_actions")) if str(item or "").strip()]
+    actions = [
+        _normalize_evaluation_hold_duration(_summary_eval_sentence(item), report or {})
+        for item in _listify(evaluation.get("priority_actions"))
+        if str(item or "").strip()
+    ]
+    if opening_probe:
+        actions = ["레인 승인 근거, 실제 체결 가격, 최종 청산 트리거를 대조해 원인을 검증합니다."]
     if actions:
         lines.append("")
         lines.append("### 우선 액션")
         lines.append("")
         lines.extend(f"{idx}. {item}" for idx, item in enumerate(actions[:4], 1))
 
-    risks = [_summary_eval_sentence(item) for item in _listify(evaluation.get("risk_notes")) if str(item or "").strip()]
+    risks = [
+        _normalize_evaluation_hold_duration(_summary_eval_sentence(item), report or {})
+        for item in _listify(evaluation.get("risk_notes"))
+        if str(item or "").strip()
+    ]
     if risks:
         lines.append("")
         lines.append("### 리스크")
@@ -1611,6 +1681,18 @@ def _build_summary_llm_evaluation_section(summary_report: Dict[str, Any]) -> Lis
         lines.extend(f"* {item}" for item in questions[:4])
 
     return _strip_trailing_blanks(lines)
+
+
+def _normalize_evaluation_hold_duration(text: str, report: Dict[str, Any]) -> str:
+    duration = _authoritative_holding_duration_label(report)
+    if not text or not duration:
+        return text
+    return re.sub(
+        r"\b\d+(?:\.\d+)?\s*(?:초|분|시간|s|m|h)\s*(?=(?:동안\s*)?(?:보유|만에))",
+        duration + " ",
+        text,
+        flags=re.IGNORECASE,
+    )
 
 
 def _section(title: str, content: List[str]) -> List[str]:
@@ -1924,7 +2006,7 @@ def _hold_window_label(window: Dict[str, Any]) -> str:
 
 
 def _strategy_horizon_report_surface(report: Dict[str, Any]) -> Dict[str, Any]:
-    return _strategy_horizon_report_surface_impl(
+    surface = _strategy_horizon_report_surface_impl(
         report,
         as_dict=_as_dict,
         first_report_path=_first_report_path,
@@ -1934,6 +2016,13 @@ def _strategy_horizon_report_surface(report: Dict[str, Any]) -> Dict[str, Any]:
         num_opt=_num_opt,
         duration_label_compact_fn=_duration_label_compact,
     )
+    authoritative_hold_sec = _authoritative_hold_duration_seconds(report)
+    if authoritative_hold_sec is not None:
+        surface = dict(surface)
+        surface["actual_hold_sec"] = authoritative_hold_sec
+        surface["actual_hold_label"] = _duration_label_seconds(authoritative_hold_sec)
+        surface["actual_hold_source"] = "entry_exit_execution_timestamps"
+    return surface
 
 
 def _build_strategy_horizon_lines(report: Dict[str, Any], *, compact: bool = False) -> List[str]:
@@ -2013,15 +2102,63 @@ def _duration_label_seconds(value: Any) -> str:
     total = int(round(seconds))
     days, rem = divmod(total, 86400)
     hours, rem = divmod(rem, 3600)
-    minutes, _ = divmod(rem, 60)
+    minutes, seconds = divmod(rem, 60)
     parts: List[str] = []
     if days:
         parts.append(f"{days}일")
     if hours:
         parts.append(f"{hours}시간")
-    if minutes or not parts:
+    if minutes:
         parts.append(f"{minutes}분")
+    if seconds or not parts:
+        parts.append(f"{seconds}초")
     return " ".join(parts)
+
+
+def _authoritative_hold_duration_seconds(report: Dict[str, Any]) -> Optional[float]:
+    """Resolve actual hold time from entry/exit execution timestamps first."""
+
+    entry_ts = _first_report_path(
+        report,
+        [
+            "fact_payload.trade.entry_execution_details.ts",
+            "entry_execution_details.ts",
+            "fact_payload.trade.entry_summary.ts",
+            "entry_summary.ts",
+        ],
+    )
+    exit_ts = _first_report_path(
+        report,
+        [
+            "fact_payload.trade.exit_execution_details.ts",
+            "fact_payload.trade.execution_details.ts",
+            "exit_execution_details.ts",
+            "execution_details.ts",
+            "fact_payload.trade.exit_summary.ts",
+            "exit_summary.ts",
+        ],
+    )
+    entry_dt = _parse_report_datetime(entry_ts)
+    exit_dt = _parse_report_datetime(exit_ts)
+    if entry_dt is not None and exit_dt is not None and exit_dt >= entry_dt:
+        return float((exit_dt - entry_dt).total_seconds())
+
+    return _num_opt(
+        _first_report_path(
+            report,
+            [
+                "fact_payload.trade.exit_vs_strategy_intent.actual_hold_sec",
+                "fact_payload.trade.canonical_agent_artifacts.monitor.exit_vs_strategy_intent.actual_hold_sec",
+                "monitor_snapshot.exit_vs_strategy_intent.actual_hold_sec",
+                "exit_vs_strategy_intent.actual_hold_sec",
+                "shared_facts.exit_vs_strategy_intent.actual_hold_sec",
+            ],
+        )
+    )
+
+
+def _authoritative_holding_duration_label(report: Dict[str, Any]) -> str:
+    return _duration_label_seconds(_authoritative_hold_duration_seconds(report))
 
 
 def _carry_state_label(value: Any, *, weekend_carry: bool = False) -> str:
@@ -2067,6 +2204,43 @@ def _correct_final_operator_summary(summary: str, *, action: Any) -> str:
     if action_label == "매수":
         return re.sub(r"현재 판단은 청산 완료(?:입니다|이다)\.?", "현재 판단은 진입 유지입니다.", text, count=1)
     return text
+
+
+def _authoritative_final_operator_summary(
+    report: Dict[str, Any],
+    *,
+    action: Any,
+    fallback: str = "",
+) -> str:
+    """Keep the closed-trade conclusion on broker truth, not monitor marks."""
+
+    shared = _as_dict(report.get("shared_facts"))
+    truth = _get_truth_surface(report)
+    pnl = _as_dict(truth.get("pnl"))
+    truth_status = _as_dict(truth.get("status"))
+    status = str(truth_status.get("status") or report.get("status") or shared.get("status") or "").lower()
+    action_label = str(action or "").strip()
+    pnl_value = _num_opt(pnl.get("value"))
+    pnl_pct, _ = _operator_pnl_pct_impl(pnl, shared)
+    if status != "closed" or action_label != "매도" or (pnl_value is None and pnl_pct is None):
+        return _correct_final_operator_summary(fallback, action=action)
+
+    symbol = _clip(report.get("symbol") or shared.get("symbol"), 32) or "해당 종목"
+    duration = _authoritative_holding_duration_label(report)
+    result_basis = pnl_value if pnl_value is not None else _num_opt(pnl_pct)
+    result_label = "이익" if (result_basis or 0.0) > 0 else "손실" if (result_basis or 0.0) < 0 else "보합"
+    details: List[str] = []
+    if pnl_pct is not None:
+        details.append(_fmt_pct(pnl_pct))
+    if pnl_value is not None:
+        details.append(f"{pnl_value:,.0f}원")
+    detail_text = f" ({', '.join(details)})" if details else ""
+    duration_text = f"{duration} 보유 후 " if duration else ""
+    return (
+        f"현재 판단은 청산 완료입니다. {symbol} 거래는 브로커 체결 기준 "
+        f"{duration_text}{result_label}{detail_text}로 청산 완료됐습니다. "
+        "모니터의 청산 전 시세 관측값은 실제 체결 손익과 구분합니다."
+    )
 
 
 def _selection_fallback_context(selection: Dict[str, Any], traded_symbol: Any = "") -> Dict[str, Any]:

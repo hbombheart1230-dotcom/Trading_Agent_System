@@ -4541,6 +4541,63 @@ def test_m31_integrated_chain_hydrates_held_symbols_before_monitor_after_scanner
     ]
 
 
+def test_controlled_mock_lane_runs_before_strategist_and_scanner(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1_000_000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        state["risk_context"] = {"max_positions": 3}
+        return state
+
+    def fake_controlled_path(state: Dict[str, Any], **_: Any):
+        calls.append("controlled_mock_lane")
+        state["execution"] = {
+            "allowed": True,
+            "ok": True,
+            "order": {"action": "BUY", "symbol": "041190"},
+        }
+        return state, True
+
+    def fail_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        raise AssertionError("Strategist must not gate an accepted controlled lane")
+
+    def fail_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        raise AssertionError("Scanner must not gate an accepted controlled lane")
+
+    monkeypatch.setattr(
+        "graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot",
+        fake_build_portfolio_snapshot,
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.build_risk_context.build_risk_context",
+        fake_build_risk_context,
+    )
+    monkeypatch.setattr(
+        "graphs.commander_runtime.run_controlled_mock_lane_path",
+        fake_controlled_path,
+    )
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fail_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fail_scanner)
+
+    out = _run_integrated_chain({}, execute_fn=lambda state: state)
+
+    assert out["path"] == "controlled_mock_lane_pre_strategist"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "controlled_mock_lane",
+    ]
+
+
 def test_m31_integrated_chain_runs_strategist_when_flat_cache_is_stale(monkeypatch):
     calls: list[str] = []
 

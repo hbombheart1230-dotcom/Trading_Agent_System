@@ -6,6 +6,7 @@ from pathlib import Path
 
 from libs.reporting.operator_visibility import _build_trading_health_status
 from libs.reporting.operator_period_summary import (
+    _extract_trade_decision_fields,
     _operator_label_fallback,
     _top_counter,
     generate_operator_daily_summary_artifact,
@@ -39,6 +40,31 @@ def test_operator_summary_sanitizes_mojibake_labels_without_touching_normal_kore
     assert rows[1] == {"name": "VWAP 위 눌림목 + 거래량 확인", "count": 1}
 
 
+def test_trade_decision_fields_prefer_active_commander_horizon_over_stale_exit_shadow(
+    tmp_path: Path,
+) -> None:
+    trade = tmp_path / "reports" / "trades" / "2026-09-10" / "0900" / "TRD_TEST"
+    _write_json(trade / "exit.json", {"post_exit_shadow": {"strategy_horizon": "intraday"}})
+    _write_json(
+        trade / "lifecycle_bundle.json",
+        {
+            "monitor_summary": {
+                "exit_vs_strategy_intent": {
+                    "strategy_horizon": "scalp",
+                    "commander_horizon_policy": {"strategy_horizon": "scalp"},
+                }
+            }
+        },
+    )
+
+    result = _extract_trade_decision_fields(
+        {"trade_root_path": str(trade), "trade_id": "TRD_TEST", "day": "2026-09-10"},
+        tmp_path / "reports",
+    )
+
+    assert result["strategy_horizon"] == "scalp"
+
+
 def test_trading_health_status_turns_red_on_weak_intraday_performance(tmp_path: Path) -> None:
     reports = tmp_path / "reports"
     _write_json(
@@ -56,6 +82,25 @@ def test_trading_health_status_turns_red_on_weak_intraday_performance(tmp_path: 
 
     assert status["trading_health_level"] == "RED"
     assert status["avg_return"] == -0.0107
+
+
+def test_trading_health_status_does_not_call_single_realized_loss_green(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    _write_json(
+        reports / "performance" / "2026-09-09" / "summary.json",
+        {
+            "total_trades": 1,
+            "return_sample_count": 1,
+            "win_rate": 0.0,
+            "avg_return": -0.017,
+            "profit_factor": 0.0,
+        },
+    )
+
+    status = _build_trading_health_status(reports, "2026-09-09")
+
+    assert status["trading_health_level"] == "YELLOW"
+    assert "watch" in status["reasoning"][0]
 
 
 def test_operator_weekly_and_monthly_summary_reports_use_operator_symbol_history(tmp_path: Path) -> None:
@@ -1130,3 +1175,62 @@ def test_operator_daily_summary_syncs_strategy_memory_artifacts(tmp_path: Path) 
     assert "entry_exit:breakout->peak_drawdown" in (
         memory.get("pattern_performance_snapshot", {}).get("problem_patterns") or []
     )
+
+
+def test_operator_daily_summary_exposes_controlled_lane_and_opening_alpha_status(
+    tmp_path: Path,
+) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-08-31"
+    controlled = tmp_path / "data" / "logs" / "controlled_mock_lanes" / day
+    opening = tmp_path / "data" / "logs" / "opening_rank1_controlled_probe" / day
+    _write_json(
+        controlled / "lane_evaluations.json",
+        {
+            "evaluations": [
+                {
+                    "lane_id": "Q10_SEMICONDUCTOR",
+                    "status": "NO_CANDIDATE",
+                    "reason": "preopen_snapshot_missing",
+                    "observation_count": 3,
+                },
+                {
+                    "lane_id": "BTC_WOORI",
+                    "status": "READY",
+                    "reason": "conditions_met",
+                    "observation_count": 1,
+                },
+            ]
+        },
+    )
+    _write_json(
+        controlled / "lane_attempts.json",
+        {"attempts": [{"lane_id": "BTC_WOORI", "status": "BROKER_REJECTED"}]},
+    )
+    _write_json(controlled / "lane_submissions.json", {"submissions": []})
+    _write_json(
+        opening / "probe_evaluations.json",
+        {
+            "evaluations": [
+                {
+                    "eligible": True,
+                    "applied": False,
+                    "reason": "non_overrideable_quant_blocker",
+                }
+            ]
+        },
+    )
+
+    md, _json, payload = generate_operator_daily_summary_artifact(
+        reports_root=reports,
+        day=day,
+    )
+
+    controlled_payload = payload["controlled_validation"]
+    assert controlled_payload["opening_alpha"]["evaluation_count"] == 1
+    assert controlled_payload["opening_alpha"]["applied_count"] == 0
+    assert controlled_payload["lanes"][0]["reason"] == "preopen_snapshot_missing"
+    text = md.read_text(encoding="utf-8")
+    assert "## Controlled Validation Lanes" in text
+    assert "Q12 BTC-Woori: `READY`" in text
+    assert "non_overrideable_quant_blocker=1" in text

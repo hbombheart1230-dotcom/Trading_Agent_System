@@ -67,16 +67,44 @@ def update_position_peak_price(
     *,
     avg_price: float,
     observed_price: float,
+    observed_price_symbol: str = "",
+    observed_price_source: str = "",
 ) -> float:
     persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
     peak_map = persisted.get("position_peak_price") if isinstance(persisted.get("position_peak_price"), dict) else {}
     normalized_symbol = normalize_symbol(symbol)
     cur_peak = to_float(peak_map.get(normalized_symbol))
-    next_peak = max(cur_peak, to_float(avg_price), to_float(observed_price))
+    candidate_symbol = normalize_symbol(observed_price_symbol) or normalized_symbol
+    candidate_price = to_float(observed_price)
+    source = str(observed_price_source or "").strip()
+    accepted = bool(
+        normalized_symbol
+        and candidate_symbol == normalized_symbol
+        and candidate_price > 0.0
+        and source
+        and source not in {"unavailable", "position_symbol_mismatch"}
+    )
+    next_peak = max(cur_peak, to_float(avg_price), candidate_price if accepted else 0.0)
     if normalized_symbol and next_peak > 0.0:
         peak_map[normalized_symbol] = float(next_peak)
         persisted["position_peak_price"] = peak_map
         state["persisted_state"] = persisted
+    events = state.get("peak_update_events") if isinstance(state.get("peak_update_events"), list) else []
+    events.append(
+        {
+            "symbol": normalized_symbol,
+            "old_peak": float(cur_peak) if cur_peak > 0.0 else None,
+            "candidate_price": float(candidate_price) if candidate_price > 0.0 else None,
+            "candidate_price_symbol": candidate_symbol or None,
+            "candidate_price_source": source or None,
+            "new_peak": float(next_peak) if next_peak > 0.0 else None,
+            "run_id": str(state.get("run_id") or ""),
+            "timestamp": _resolve_now_epoch(state) or None,
+            "accepted": accepted,
+            "reason": "accepted" if accepted else "price_identity_or_source_invalid",
+        }
+    )
+    state["peak_update_events"] = events[-100:]
     return float(next_peak)
 
 

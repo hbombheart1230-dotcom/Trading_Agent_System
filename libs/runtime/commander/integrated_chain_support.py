@@ -7,6 +7,7 @@ from __future__ import annotations
 from libs.runtime.commander.execution import (
     emit_intraday_trade_report,
     execute_approved_monitor_decision,
+    run_controlled_mock_lane_path,
     run_monitor_decision_path,
 )
 from libs.runtime.commander.fast_paths import (
@@ -36,6 +37,7 @@ __all__ = [
     "reset_post_scanner_refresh_shadow",
     "reset_pre_buy_refresh_shadow",
     "run_closeout_guard_fast_path",
+    "run_controlled_mock_lane_path",
     "run_monitor_decision_path",
     "run_monitor_only_fast_path",
     "run_pre_entry_exit_sweep_if_needed",

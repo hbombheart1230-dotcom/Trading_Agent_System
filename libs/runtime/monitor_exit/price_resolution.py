@@ -46,7 +46,9 @@ def resolve_price_with_source(
                     return price, f"market.quote.{key}"
 
     if isinstance(position, dict):
-        pos_live_price, pos_live_source = position_live_price_with_source(position)
+        pos_live_price, pos_live_source = position_live_price_with_source(
+            position, requested_symbol=sym
+        )
         if pos_live_price is not None and pos_live_price > 0.0:
             return pos_live_price, pos_live_source
 
@@ -88,14 +90,38 @@ def resolve_price_with_source(
     return None, "unavailable"
 
 
+def quote_observed_epoch(quote: Dict[str, Any] | None) -> int | None:
+    if not isinstance(quote, dict):
+        return None
+    for key in ("_observed_epoch", "observed_epoch"):
+        value = quote.get(key)
+        try:
+            epoch = int(float(value))
+        except Exception:
+            continue
+        if epoch > 0:
+            return epoch
+    return None
+
+
 def position_mark_price(position: Dict[str, Any] | None) -> float | None:
     price, _source = position_mark_price_with_source(position)
     return price
 
 
-def position_live_price_with_source(position: Dict[str, Any] | None) -> tuple[float | None, str]:
+def position_live_price_with_source(
+    position: Dict[str, Any] | None,
+    *,
+    requested_symbol: str = "",
+) -> tuple[float | None, str]:
     if not isinstance(position, dict):
         return None, "no_position"
+    requested = normalize_symbol(requested_symbol)
+    position_symbol = normalize_symbol(
+        position.get("symbol") or position.get("stk_cd") or position.get("code")
+    )
+    if requested and position_symbol and requested != position_symbol:
+        return None, "position_symbol_mismatch"
     for key in ("price", "cur_price", "last_price", "current_price"):
         price = to_float(position.get(key))
         if price > 0.0:

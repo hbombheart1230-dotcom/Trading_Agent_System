@@ -127,6 +127,18 @@ Stage 3/4 contract update:
 - Stage 3 is for stale intraday hold review only. Commander should schedule it from a persisted review artifact using strategy horizon, elapsed hold time, thesis status, market state, and review cadence.
 - Stage 3 may revise `active_horizon` only between `scalp` and `intraday`; it cannot authorize overnight carry.
 - Stage 3 must not wait in front of hard deterministic exits such as stop loss, price/PnL anomaly, broker truth mismatch, or closeout hard flat.
+
+Stage 3 lineage observability:
+
+- `reports/canonical/YYYY-MM-DD/<run_id>/stage3_horizon_lineage.json` is the
+  canonical trace from review scheduling through Monitor consumption.
+- It separates requested, skipped, responded, Commander-evaluated, horizon-
+  changed, and Monitor-consumed states.
+- `tighten_exit`, `exit_now`, and `request_exit` are still advisory and are
+  explicitly marked `exit_advisory_not_forwarded` when no deterministic exit
+  path adopted them.
+- Legacy Stage 3 calls before the mutable horizon contract are not causal
+  evidence for current horizon revision behavior.
 - Stage 4 is for closeout/overnight carry review only. It should run near the carry window only when a held position is a plausible carry candidate and qualitative overnight risk matters.
 - New positions require explicit per-symbol Stage 4 approval before Monitor can carry them overnight.
 - Weekend/holiday carry blocks remain hard Commander/Monitor policy. LLM may explain risk but cannot bypass them.

@@ -1,0 +1,79 @@
+schema_version: "change_provenance.v1"
+
+change_id: "example-change"
+date: "YYYY-MM-DD"
+title: "Short change title"
+
+baseline:
+  commit: "full-parent-or-baseline-commit"
+  branch: "branch-name"
+
+owner:
+  human: "project_owner"
+  agent: "codex | claude-code | gemini | other | none"
+
+roles:
+  analysis:
+    - "human | codex | claude-code | gemini | other"
+  design:
+    - "human | codex | claude-code | gemini | other"
+  implementation:
+    - "human | codex | claude-code | gemini | other"
+  review:
+    - "human | codex | claude-code | gemini | other"
+  verification:
+    - "human | codex | claude-code | gemini | other"
+  final_approval: "human"
+
+attribution:
+  confidence: "VERIFIED | SUPPORTED | UNCERTAIN | UNKNOWN"
+  evidence:
+    - "committed provenance, review artifact, or other direct evidence"
+  limitations:
+    - "what this record does not prove"
+
+scope:
+  components:
+    - "component/path"
+  change_class:
+    - "architecture | runtime | strategy | execution | guard | contract | reporting | evaluation | deployment | documentation"
+  behavior_impact: "none | observability_only | controlled | production"
+
+architecture:
+  historical_state: "optional historical context"
+  current_as_is: "state before this change"
+  target_state: "intended state after this change"
+  known_debt:
+    - "debt intentionally not solved by this change"
+
+constraints:
+  preserved:
+    - "contract or behavior that must remain unchanged"
+  prohibited:
+    - "out-of-scope operation"
+
+verification:
+  unit_tests:
+    - "command or test path"
+  integration_tests:
+    - "command or test path"
+  regression_tests:
+    - "command and result"
+  runtime_validation:
+    - "artifact or not_applicable"
+  cross_model_review:
+    reviewer: "codex | claude-code | gemini | human | not_assigned"
+    reviewed_commit: "full-commit-or-empty"
+    artifact: "review artifact path or empty"
+
+audit_findings:
+  - finding_id: "optional-finding-id"
+    status: "CONFIRMED | NOT_REPRODUCED | DESIGN_QUESTION | ACCEPTED_RISK"
+    evidence:
+      - "source/test/artifact"
+    disposition: "fixed | deferred | rejected | accepted"
+
+approval:
+  human_status: "pending | approved | rejected"
+  approved_commit: "full-commit-or-empty"
+  notes: ""

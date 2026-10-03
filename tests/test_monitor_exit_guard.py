@@ -4466,7 +4466,7 @@ def test_monitor_peak_drawdown_respects_min_hold_guard(monkeypatch):
     assert "sell_guard_min_hold" in str(exit_info.get("sell_guard_reason") or "")
 
 
-def test_monitor_vwap_breakdown_exit_uses_feature_signal(monkeypatch):
+def test_monitor_vwap_breakdown_rejects_non_session_feature_signal(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
     monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
@@ -4506,9 +4506,8 @@ def test_monitor_vwap_breakdown_exit_uses_feature_signal(monkeypatch):
     assert intents == []
     exit_info = out.get("monitor_exit") or {}
     assert str(exit_info.get("reason") or "") == "hold"
-    assert str(exit_info.get("hold_block_reason") or "") == "vwap_breakdown_confirmation_pending"
-    assert bool(exit_info.get("vwap_breakdown_confirmation_pending")) is True
-    assert float(exit_info.get("vwap_distance") or 0.0) == -0.01
+    assert bool(exit_info.get("engine_vwap_distance_rejected")) is True
+    assert str(exit_info.get("engine_vwap_distance_rejected_reason") or "") == "not_current_session_minute_vwap"
 
 
 def test_monitor_vwap_breakdown_exit_after_two_minute_confirmations(monkeypatch):
@@ -4694,6 +4693,11 @@ def test_monitor_trend_breakdown_exit_uses_feature_signal(monkeypatch):
         "cash": 2_000_000.0,
         "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
     }
+    state["minute_ohlcv_by_symbol"] = {
+        "005930": [
+            {"open": 101.5, "high": 101.6, "low": 100.4, "close": 100.5, "vwap": 101.6, "volume": 1000}
+        ]
+    }
     state["policy"] = {
         "use_exit_policy": True,
         "trend_strength_floor": -0.10,
@@ -4706,7 +4710,7 @@ def test_monitor_trend_breakdown_exit_uses_feature_signal(monkeypatch):
     assert intents[0]["side"] == "SELL"
     exit_info = out.get("monitor_exit") or {}
     assert str(exit_info.get("reason") or "") == "trend_breakdown"
-    assert float(exit_info.get("vwap_distance") or 0.0) == -0.01
+    assert float(exit_info.get("vwap_distance") or 0.0) < -0.01
 
 
 def test_monitor_rejects_implausible_engine_vwap_for_trend_breakdown(monkeypatch):
@@ -4748,7 +4752,35 @@ def test_monitor_rejects_implausible_engine_vwap_for_trend_breakdown(monkeypatch
     assert str(exit_info.get("reason") or "") != "trend_breakdown"
     assert exit_info.get("engine_vwap_distance_rejected") is True
     assert float(exit_info.get("engine_vwap_distance_rejected_value")) == -0.3867531480191311
-    assert str(exit_info.get("engine_vwap_distance_rejected_reason") or "") == "outside_session_plausibility_bound"
+    assert str(exit_info.get("engine_vwap_distance_rejected_reason") or "") == "not_current_session_minute_vwap"
+
+
+def test_monitor_does_not_false_exit_on_daily_engine_vwap_when_session_vwap_is_positive(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+    state = _base_state()
+    state["selected"] = {
+        "symbol": "000660", "price": 1_743_000.0,
+        "features": {"engine_vwap_distance": -0.116055},
+    }
+    state["portfolio_snapshot"] = {"cash": 2_000_000.0, "positions": [{
+        "symbol": "000660", "qty": 1, "avg_price": 1_749_500.0,
+        "current_price": 1_743_000.0, "hold_sec": 4766,
+    }]}
+    state["minute_ohlcv_by_symbol"] = {"000660": [
+        {"open": 1_735_000, "high": 1_745_000, "low": 1_734_000, "close": 1_740_000, "volume": 1000},
+        {"open": 1_740_000, "high": 1_748_000, "low": 1_739_000, "close": 1_743_000, "volume": 1200},
+    ]}
+    state["policy"] = {
+        "use_exit_policy": True, "vwap_breakdown_pct": 0.005,
+        "take_profit_pct": 0.0, "peak_drawdown_exit_pct": 0.0,
+    }
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") != "vwap_breakdown"
+    assert float(exit_info.get("vwap_distance") or 0.0) > -0.005
+    assert "derived_current_session_minute_vwap" in str(exit_info.get("vwap_distance_source") or "")
 
 
 def test_monitor_exit_policy_prefers_commander_carry_overrides():

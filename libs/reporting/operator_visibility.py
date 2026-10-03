@@ -13,6 +13,10 @@ from libs.reporting.event_log_reader import iter_jsonl_events
 from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.narrative_axes import build_narrative_explanation, narrative_axis_policy
 from libs.reporting.operator_candidate_decisions import load_candidate_decision_summary
+from libs.reporting.controlled_validation_daily import (
+    build_controlled_validation_daily,
+    render_controlled_validation_daily_lines,
+)
 from libs.reporting.report_metadata import (
     build_data_freshness,
     build_route_provenance,
@@ -153,25 +157,26 @@ def _epoch_to_iso(epoch: Any) -> str:
     return datetime.fromtimestamp(n, tz=timezone.utc).isoformat(timespec="seconds")
 
 
-def _build_report_freshness(day_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    latest_row: Dict[str, Any] | None = None
+def _build_report_freshness(day_rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    # Single streaming pass (day_rows may be a one-shot iterator) -- was two
+    # separate passes over a materialized list before the OOM RCA follow-up.
+    latest_run_id = ""
     latest_epoch = 0
-    run_ids = {
-        str(row.get("run_id") or "").strip()
-        for row in day_rows
-        if str(row.get("run_id") or "").strip()
-    }
+    run_ids: set[str] = set()
     for row in day_rows:
+        run_id = str(row.get("run_id") or "").strip()
+        if run_id:
+            run_ids.add(run_id)
         epoch = int(row.get("_epoch") or 0)
         if epoch <= 0:
             continue
         if epoch >= latest_epoch:
             latest_epoch = epoch
-            latest_row = row
+            latest_run_id = run_id
     return {
         "generated_at": _utc_now_iso(),
         "source_run_count": int(len(run_ids)),
-        "latest_run_id": str((latest_row or {}).get("run_id") or ""),
+        "latest_run_id": latest_run_id,
         "latest_run_ts": _epoch_to_iso(latest_epoch),
     }
 
@@ -212,7 +217,7 @@ def _build_trading_health_status(reports_root: Path, day: str) -> Dict[str, Any]
         reasons.append(
             f"trade performance weak: sample={sample_count}, win_rate={win_rate:.2%}, avg_return={avg_return:.2%}"
         )
-    elif sample_count >= 2 and (win_rate < 0.40 or avg_return < 0.0):
+    elif avg_return < 0.0 or (sample_count >= 2 and win_rate < 0.40):
         level = "YELLOW"
         reasons.append(
             f"trade performance watch: sample={sample_count}, win_rate={win_rate:.2%}, avg_return={avg_return:.2%}"
@@ -602,10 +607,39 @@ def _decision_trace_inner(payload: Dict[str, Any]) -> Dict[str, Any]:
     return inner if isinstance(inner, dict) else {}
 
 
-def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _iter_day_rows_with_epoch(events_path: Path, day: str) -> Iterable[Dict[str, Any]]:
+    """Streams one day's rows with _epoch/_day attached, without ever
+    materializing the day into a list -- backs the day-scoped calls in
+    generate_decision_story_report/generate_run_card_report. Relies on
+    iter_jsonl_events's own per-day disk cache, so multiple calls for the
+    same (events_path, day) within one report -- one per consumer -- only
+    pay the full-file scan once; the rest stream the much smaller day cache.
+    """
+    for raw in iter_jsonl_events(events_path, day=day):
+        ts = raw.get("ts") or (raw.get("payload") or {}).get("ts")
+        yield {**raw, "_epoch": _to_epoch(ts), "_day": _utc_day(ts)}
+
+
+def _build_run_contexts(day_rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # OOM RCA follow-up (2026-09-23): day_rows used to be pre-sorted here
+    # (sorted(day_rows, key=epoch)), which required the caller to already
+    # hold the whole day as a materialized list -- fine for the small
+    # fixtures this was validated against, but a real busy trading day's
+    # own JSON can be tens of MB, and retaining every row as a live Python
+    # dict for the whole function scales linearly toward the 1GiB container
+    # limit on its own, independent of the (already-fixed) unbounded
+    # total-history bug. events.jsonl has exactly one active writer at a
+    # time (SQLiteRuntimeOwnershipStore's single-owner lease), so file
+    # order already IS chronological order for all practical purposes; the
+    # final `stories.sort(key=first_epoch)` below independently
+    # re-establishes correct STORY ordering regardless of fold order, and
+    # within a single run_id the fold's per-stage fields only get
+    # overwritten by a same-stage-same-event repeat, which does not happen
+    # in this system's normal one-decision-per-run flow. So this now folds
+    # directly off the iterator in file/stream order, discarding each row
+    # right after folding it, instead of pre-sorting a fully materialized list.
     by_run: Dict[str, Dict[str, Any]] = {}
-    sorted_rows = sorted(day_rows, key=lambda r: int(r.get("_epoch") or 0))
-    for row in sorted_rows:
+    for row in day_rows:
         run_id = str(row.get("run_id") or "").strip()
         if not run_id:
             continue
@@ -1272,6 +1306,10 @@ def generate_operator_daily_summary(
 
     target_day = str(out.get("day") or day or "")
     canonical_report_root = _canonical_report_root(report_dir)
+    out["controlled_validation"] = build_controlled_validation_daily(
+        reports_root=canonical_report_root,
+        day=target_day,
+    )
     paths = daily_artifact_paths(canonical_report_root, target_day)
     js_path = paths["operator_summary_json"]
     md_path = paths["operator_summary_md"]
@@ -1386,6 +1424,11 @@ def generate_operator_daily_summary(
         "- semantics: candidate rejection occurs before OrderIntent; it is not an execution guard block.",
         "",
     ]
+    md_lines += render_controlled_validation_daily_lines(
+        out.get("controlled_validation")
+        if isinstance(out.get("controlled_validation"), dict)
+        else {}
+    )
     narrative_policy = out.get("narrative_axis_policy") if isinstance(out.get("narrative_axis_policy"), dict) else {}
     md_lines += [
         "## Narrative Axis Policy",
@@ -1434,20 +1477,43 @@ def generate_decision_story_report(
 ) -> Tuple[Path, Dict[str, Any]]:
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    rows: List[Dict[str, Any]] = []
-    for raw in _iter_jsonl(events_path):
-        ts = raw.get("ts") or (raw.get("payload") or {}).get("ts")
-        rows.append({**raw, "_epoch": _to_epoch(ts), "_day": _utc_day(ts)})
-
-    target_day = _pick_day(rows, day)
-    day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
-    route_summary = build_commander_route_summary(
-        reports_root=_canonical_report_root(report_dir),
-        day=target_day,
-        day_rows=day_rows,
-    )
-    stories_all = _apply_commander_route_overlay(_build_run_contexts(day_rows), route_summary)
-    freshness = _build_report_freshness(day_rows)
+    if day:
+        # Day-scoped fast path: three independent, bounded streaming passes
+        # over iter_jsonl_events's own per-day disk cache (built once on
+        # the first pass, reused cheaply by the rest) instead of
+        # materializing the whole day as one list held for the entire
+        # function. See _build_run_contexts's own comment for the OOM RCA
+        # this follows up on (2026-09-23 day-axis finding: a single busy
+        # trading day's own JSON, independent of total history size, was
+        # itself enough to approach/exceed the 1GiB container limit).
+        target_day = str(day).strip()
+        route_summary = build_commander_route_summary(
+            reports_root=_canonical_report_root(report_dir),
+            day=target_day,
+            day_rows=_iter_day_rows_with_epoch(events_path, target_day),
+        )
+        stories_all = _apply_commander_route_overlay(
+            _build_run_contexts(_iter_day_rows_with_epoch(events_path, target_day)),
+            route_summary,
+        )
+        freshness = _build_report_freshness(_iter_day_rows_with_epoch(events_path, target_day))
+    else:
+        # No day requested (manual/CLI "auto-detect latest day" usage, not
+        # the EOD-critical path -- see _pick_day) -- unchanged full-file
+        # behavior, since there is no day to scope the read to yet.
+        rows: List[Dict[str, Any]] = []
+        for raw in _iter_jsonl(events_path):
+            ts = raw.get("ts") or (raw.get("payload") or {}).get("ts")
+            rows.append({**raw, "_epoch": _to_epoch(ts), "_day": _utc_day(ts)})
+        target_day = _pick_day(rows, day)
+        day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
+        route_summary = build_commander_route_summary(
+            reports_root=_canonical_report_root(report_dir),
+            day=target_day,
+            day_rows=day_rows,
+        )
+        stories_all = _apply_commander_route_overlay(_build_run_contexts(day_rows), route_summary)
+        freshness = _build_report_freshness(day_rows)
     if bool(trade_only):
         stories_all = [s for s in stories_all if _is_trade_story(s)]
     limit = int(max_runs or 0)
@@ -1567,20 +1633,35 @@ def generate_run_card_report(
 ) -> Tuple[Path, Dict[str, Any]]:
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    rows: List[Dict[str, Any]] = []
-    for raw in _iter_jsonl(events_path):
-        ts = raw.get("ts") or (raw.get("payload") or {}).get("ts")
-        rows.append({**raw, "_epoch": _to_epoch(ts), "_day": _utc_day(ts)})
-
-    target_day = _pick_day(rows, day)
-    day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
-    route_summary = build_commander_route_summary(
-        reports_root=_canonical_report_root(report_dir),
-        day=target_day,
-        day_rows=day_rows,
-    )
-    stories_all = _apply_commander_route_overlay(_build_run_contexts(day_rows), route_summary)
-    freshness = _build_report_freshness(day_rows)
+    if day:
+        # See generate_decision_story_report's matching comment: day-scoped
+        # fast path, three independent bounded streaming passes instead of
+        # one materialized day_rows list held for the whole function.
+        target_day = str(day).strip()
+        route_summary = build_commander_route_summary(
+            reports_root=_canonical_report_root(report_dir),
+            day=target_day,
+            day_rows=_iter_day_rows_with_epoch(events_path, target_day),
+        )
+        stories_all = _apply_commander_route_overlay(
+            _build_run_contexts(_iter_day_rows_with_epoch(events_path, target_day)),
+            route_summary,
+        )
+        freshness = _build_report_freshness(_iter_day_rows_with_epoch(events_path, target_day))
+    else:
+        rows: List[Dict[str, Any]] = []
+        for raw in _iter_jsonl(events_path):
+            ts = raw.get("ts") or (raw.get("payload") or {}).get("ts")
+            rows.append({**raw, "_epoch": _to_epoch(ts), "_day": _utc_day(ts)})
+        target_day = _pick_day(rows, day)
+        day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
+        route_summary = build_commander_route_summary(
+            reports_root=_canonical_report_root(report_dir),
+            day=target_day,
+            day_rows=day_rows,
+        )
+        stories_all = _apply_commander_route_overlay(_build_run_contexts(day_rows), route_summary)
+        freshness = _build_report_freshness(day_rows)
     if bool(trade_only):
         stories_all = [s for s in stories_all if _is_trade_story(s)]
     stories_all = sorted(stories_all, key=lambda s: int(s.get("first_epoch") or 0))

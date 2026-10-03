@@ -1,0 +1,82 @@
+# Mock Trading Runtime -- SEPARATE compose project from
+# deploy/compose/compose.yaml (observability). Deliberately: a redeploy of
+# one must never restart the other. `docker compose -f <this file> up -d
+# --build` only ever touches this service.
+#
+# MOCK-ONLY SAFETY: EXECUTION_MODE/KIWOOM_MODE/EXECUTION_ENABLED/
+# ALLOW_REAL_EXECUTION below are LITERAL values, not ${VAR}-interpolated --
+# no host/CI environment variable can override them. get_executor()
+# resolves to MockExecutor whenever EXECUTION_MODE=mock (verified against
+# source; MockExecutor never calls the network, never dispatches to a
+# broker). .env.test additionally documents the same values for anyone
+# reading the file, but this `environment:` block is the actual
+# enforcement boundary (libs/core/settings.py::load_env_file never
+# overrides an already-set process env var).
+
+name: trading-agent-mock-runtime
+
+services:
+  trading-runtime:
+    build:
+      context: ../..
+      dockerfile: deploy/trading/Dockerfile
+    image: trading-agent-mock-runtime:local
+    container_name: trading-agent-mock-runtime
+    restart: on-failure:5
+    init: true
+    environment:
+      # --- hard mock safety (literal, never interpolated) ---
+      EXECUTION_MODE: mock
+      KIWOOM_MODE: mock
+      EXECUTION_ENABLED: "false"
+      ALLOW_REAL_EXECUTION: "false"
+      SYMBOL_ALLOWLIST: ""
+      MAX_ORDER_QTY: "0"
+      MAX_ORDER_NOTIONAL: "0"
+    env_file:
+      - .env.test
+    volumes:
+      # The ENTIRE /app/data tree is mounted as one persistent volume, not
+      # per-file/per-subdirectory: StateStore.save() and the guard-file
+      # writers all use an atomic tmp-file-in-the-SAME-directory-then-
+      # os.replace() pattern (verified in the prior audit), which requires
+      # the containing directory itself to be writable, not just the
+      # target file. A single-file bind mount (tried first, reverted)
+      # leaves the parent directory on the read-only image layer and
+      # breaks every atomic write with EROFS. ./test-state/data/specs/ is
+      # a host-side copy of the real data/specs/ (api_catalog.jsonl,
+      # default_rules.json) precisely because this whole-directory mount
+      # otherwise shadows the image-baked copy at the mount point.
+      - type: bind
+        source: ./test-state/data
+        target: /app/data
+      - type: bind
+        source: ./test-state/reports
+        target: /app/reports
+    networks:
+      - trading-mock
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: 1.0
+    mem_limit: 1g
+    stop_signal: SIGTERM
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - scripts/docker_healthcheck.py
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+networks:
+  trading-mock:
+    internal: true

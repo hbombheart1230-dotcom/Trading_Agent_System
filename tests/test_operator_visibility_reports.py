@@ -34,6 +34,19 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     m30_go = tmp_path / "m30_go"
     m31_dir = tmp_path / "m31"
     out_dir = tmp_path / "operator_summary"
+    _write_json(
+        tmp_path / "data" / "logs" / "controlled_mock_lanes" / day / "lane_evaluations.json",
+        {
+            "evaluations": [
+                {
+                    "lane_id": "Q10_INDEX",
+                    "status": "INPUT_MISSING",
+                    "reason": "q10_preopen_snapshot_missing",
+                    "observation_count": 1,
+                }
+            ]
+        },
+    )
 
     _write_jsonl(
         events,
@@ -201,6 +214,7 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert obj["trading_activity_summary"]["execution_guard_blocked_total"] == 1
     assert obj["trading_activity_summary"]["commander_candidate_rejected_total"] == 1
     assert obj["candidate_decision_summary"]["candidate_noop_total"] == 1
+    assert obj["controlled_validation"]["lanes"][1]["reason"] == "q10_preopen_snapshot_missing"
     md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
     assert "Data Freshness" in md_body
     assert "Executive Summary" in md_body
@@ -213,6 +227,8 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert "Trading Activity Summary" in md_body
     assert "Safety Guard Interventions" in md_body
     assert "Commander Candidate Decisions" in md_body
+    assert "Controlled Validation Lanes" in md_body
+    assert "Q10 Index: `INPUT_MISSING`" in md_body
     assert "candidate rejection occurs before OrderIntent" in md_body
     assert "Top Issues" in md_body
     assert "Recommended Operator Actions" in md_body

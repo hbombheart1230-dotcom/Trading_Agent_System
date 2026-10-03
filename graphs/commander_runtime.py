@@ -51,6 +51,7 @@ from libs.runtime.position_horizon_revision import (
     ensure_horizon_state,
     position_review_due,
 )
+from libs.runtime.stage3_horizon_lineage import record_stage3_assessment
 from libs.runtime.strategy_horizon_feedback import (
     build_commander_horizon_policy,
     build_horizon_context,
@@ -65,6 +66,7 @@ from libs.runtime.commander.integrated_chain_support import (
     load_integrated_chain_nodes,
     mark_strategist_executed,
     run_closeout_guard_fast_path,
+    run_controlled_mock_lane_path,
     run_monitor_decision_path,
     run_monitor_only_fast_path,
     run_pre_entry_exit_sweep_if_needed,
@@ -4203,7 +4205,8 @@ def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
     market = state.get("market_snapshot") if isinstance(state.get("market_snapshot"), dict) else {}
     price = it0.get("price")
-    if price in (None, ""):
+    controlled_lane = isinstance(meta.get("controlled_mock_lane"), dict)
+    if price in (None, "") and not controlled_lane:
         entry_metrics = meta.get("entry_metrics") if isinstance(meta.get("entry_metrics"), dict) else {}
         entry_cost_filter = meta.get("entry_cost_filter") if isinstance(meta.get("entry_cost_filter"), dict) else {}
         sizing = meta.get("sizing") if isinstance(meta.get("sizing"), dict) else {}
@@ -4717,17 +4720,24 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 }
             )
         position_age_seconds = _resolve_position_age_seconds(state, row, symbol)
-        horizon_review_due = position_review_due(
+        symbol_strategy_context = (
             position_strategy_context.get(symbol)
             if isinstance(position_strategy_context, dict)
-            else {},
+            else {}
+        )
+        symbol_strategy_context = (
+            symbol_strategy_context if isinstance(symbol_strategy_context, dict) else {}
+        )
+        horizon_revision_allowed = bool(
+            symbol_strategy_context.get("horizon_revision_allowed", True)
+        )
+        horizon_review_due = horizon_revision_allowed and position_review_due(
+            symbol_strategy_context,
             position_age_seconds=position_age_seconds,
             now_epoch=now_epoch,
         )
         position_horizon_state = ensure_horizon_state(
-            position_strategy_context.get(symbol)
-            if isinstance(position_strategy_context, dict)
-            else {}
+            symbol_strategy_context
         )
         carry_control = _assess_position_carry_control(
             state=state,
@@ -4770,6 +4780,7 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 "entry_state": _compact_monitor_entry_state_for_refresh(previous_entry_state),
                 "position_age_seconds": position_age_seconds,
                 "horizon_review_due": bool(horizon_review_due),
+                "horizon_revision_allowed": bool(horizon_revision_allowed),
                 "position_horizon_state": dict(position_horizon_state),
                 "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
                 "refresh_cooldown_remaining_sec": max(0, int(refresh_cooldown_until - now_epoch))
@@ -4830,6 +4841,8 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         candidates = []
         for item in rows_summary:
             if not isinstance(item, dict):
+                continue
+            if not bool(item.get("horizon_revision_allowed", True)):
                 continue
             if (
                 _coerce_int(item.get("hold_repeat_count"), 0) < 3
@@ -5052,6 +5065,7 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
         return False, payload
     override_assessment = _assess_open_position_commander_override(state)
     state["commander_open_position_override"] = dict(override_assessment)
+    record_stage3_assessment(state, override_assessment)
     payload.update(
         {
             "carry_state": str(override_assessment.get("carry_state") or ""),
@@ -5641,6 +5655,8 @@ def _run_integrated_chain_impl(
     """Run a visible end-to-end chain inside canonical runtime."""
     nodes = load_integrated_chain_nodes()
     build_portfolio_snapshot = nodes.build_portfolio_snapshot
+    build_open_order_snapshot = nodes.build_open_order_snapshot
+    build_execution_readiness = nodes.build_execution_readiness
     build_risk_context = nodes.build_risk_context
     strategist_node = nodes.strategist_node
     scanner_node = nodes.scanner_node
@@ -5665,6 +5681,8 @@ def _run_integrated_chain_impl(
     state, should_continue = build_integrated_chain_session_context(
         state,
         build_portfolio_snapshot_fn=build_portfolio_snapshot,
+        build_open_order_snapshot_fn=build_open_order_snapshot,
+        build_execution_readiness_fn=build_execution_readiness,
         build_risk_context_fn=build_risk_context,
         apply_portfolio_preflight_guard_fn=_apply_portfolio_preflight_guard,
         build_commander_decision_fn=_build_commander_decision,
@@ -5705,7 +5723,7 @@ def _run_integrated_chain_impl(
 
     use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
     if use_monitor_only:
-        return run_monitor_only_fast_path(
+        state = run_monitor_only_fast_path(
             state,
             shadow_runtime=shadow_runtime,
             fast_path_payload=fast_path_payload,
@@ -5725,6 +5743,26 @@ def _run_integrated_chain_impl(
             intent_from_monitor_state_fn=_intent_from_monitor_state,
             build_packet_from_state_fn=_build_packet_from_state,
         )
+        monitor_execution = (
+            state.get("execution") if isinstance(state.get("execution"), dict) else {}
+        )
+        monitor_action = str(
+            ((monitor_execution.get("order") or {}).get("action") or "")
+        ).strip().upper()
+        if monitor_action in {"BUY", "SELL"}:
+            return state
+        state["intents"] = []
+        state, controlled_executed = run_controlled_mock_lane_path(
+            state,
+            shadow_runtime=shadow_runtime,
+            decision_node_fn=decision_node,
+            execute_fn=execute_fn,
+            emit_trade_report_fn=_emit_intraday_trade_report,
+            update_state_after_execution_fn=update_state_after_execution,
+            intent_from_monitor_state_fn=_intent_from_monitor_state,
+            build_packet_from_state_fn=_build_packet_from_state,
+        )
+        return state
 
     state["commander_decision"] = _build_commander_decision(
         state,
@@ -5749,6 +5787,21 @@ def _run_integrated_chain_impl(
         record_absent_later_stage_llm_reviews_fn=_record_absent_later_stage_llm_reviews,
     )
     if pre_entry_exit_executed:
+        return state
+
+    state["intents"] = []
+    state, controlled_executed = run_controlled_mock_lane_path(
+        state,
+        shadow_runtime=shadow_runtime,
+        decision_node_fn=decision_node,
+        execute_fn=execute_fn,
+        emit_trade_report_fn=_emit_intraday_trade_report,
+        update_state_after_execution_fn=update_state_after_execution,
+        intent_from_monitor_state_fn=_intent_from_monitor_state,
+        build_packet_from_state_fn=_build_packet_from_state,
+    )
+    if controlled_executed:
+        state["path"] = "controlled_mock_lane_pre_strategist"
         return state
 
     reused_strategist_cache, cache_payload = resolve_strategist_cache_use(

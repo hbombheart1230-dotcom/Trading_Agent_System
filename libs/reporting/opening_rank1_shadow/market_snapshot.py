@@ -69,11 +69,25 @@ def select_market_snapshot(
     *,
     decision_epoch: int,
 ) -> dict[str, Any]:
+    ordered = sorted(
+        (
+            row
+            for row in timeline
+            if int(row.get("snapshot_epoch") or 0) > 0
+        ),
+        key=lambda row: int(row.get("snapshot_epoch") or 0),
+    )
     eligible = [
         row
-        for row in timeline
+        for row in ordered
         if 0 < int(row.get("snapshot_epoch") or 0) <= int(decision_epoch or 0)
     ]
+    future = [
+        row
+        for row in ordered
+        if int(row.get("snapshot_epoch") or 0) > int(decision_epoch or 0)
+    ]
+    next_epoch = int(future[0].get("snapshot_epoch") or 0) if future else 0
     if not eligible:
         return {
             "schema_version": "opening_rank1_market_snapshot.v1",
@@ -83,6 +97,16 @@ def select_market_snapshot(
             "snapshot_epoch": None,
             "snapshot_time_kst": "",
             "snapshot_age_sec": None,
+            "freshness_status": "MISSING",
+            "timeline_snapshot_count": len(ordered),
+            "eligible_snapshot_count": 0,
+            "next_snapshot_epoch": next_epoch or None,
+            "next_snapshot_delay_sec": (
+                max(0, next_epoch - int(decision_epoch or 0))
+                if next_epoch
+                else None
+            ),
+            "next_snapshot_usage": "POST_DECISION_OBSERVABILITY_ONLY",
             "source_path": "",
             "kospi_pct": None,
             "kosdaq_pct": None,
@@ -91,6 +115,7 @@ def select_market_snapshot(
         }
     selected = max(eligible, key=lambda row: int(row.get("snapshot_epoch") or 0))
     snapshot_epoch = int(selected.get("snapshot_epoch") or 0)
+    snapshot_age_sec = max(0, int(decision_epoch or 0) - snapshot_epoch)
     payload = selected.get("payload") if isinstance(selected.get("payload"), Mapping) else {}
     moves = payload.get("index_moves") if isinstance(payload.get("index_moves"), Mapping) else {}
     return {
@@ -100,7 +125,17 @@ def select_market_snapshot(
         "decision_epoch": int(decision_epoch or 0),
         "snapshot_epoch": snapshot_epoch,
         "snapshot_time_kst": datetime.fromtimestamp(snapshot_epoch, tz=KST).isoformat(timespec="seconds"),
-        "snapshot_age_sec": max(0, int(decision_epoch or 0) - snapshot_epoch),
+        "snapshot_age_sec": snapshot_age_sec,
+        "freshness_status": "FRESH" if snapshot_age_sec <= 300 else "STALE",
+        "timeline_snapshot_count": len(ordered),
+        "eligible_snapshot_count": len(eligible),
+        "next_snapshot_epoch": next_epoch or None,
+        "next_snapshot_delay_sec": (
+            max(0, next_epoch - int(decision_epoch or 0))
+            if next_epoch
+            else None
+        ),
+        "next_snapshot_usage": "POST_DECISION_OBSERVABILITY_ONLY",
         "source_path": str(selected.get("source_path") or ""),
         "kospi_pct": _number(moves.get("kospi_pct")),
         "kosdaq_pct": _number(moves.get("kosdaq_pct")),

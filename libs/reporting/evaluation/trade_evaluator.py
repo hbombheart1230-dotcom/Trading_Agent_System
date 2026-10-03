@@ -38,6 +38,9 @@ def evaluate_trade(model: dict[str, Any]) -> dict[str, Any]:
     broker_unresolved = "broker_closed_trade_unresolved" in defects
     partial_exit_duplicate = "broker_day_partial_exit_duplicate" in defects
     confirmed_runtime_defect = "confirmed_runtime_defect" in defects
+    exclusion = (model.get("integrity") or {}).get("evaluation_exclusion")
+    exclusion = exclusion if isinstance(exclusion, dict) else {}
+    exit_metric_excluded = bool(exclusion.get("exit_metric_excluded"))
     eligible = (
         integrity in {IntegrityStatus.PASS.value, IntegrityStatus.WATCH.value}
         and net_return is not None
@@ -53,12 +56,21 @@ def evaluate_trade(model: dict[str, Any]) -> dict[str, Any]:
         for key, value in checkpoints.items()
         if isinstance(value, dict) and str(value.get("status") or "") == "observed"
     }
-    horizon_alignment = evaluate_horizon_contract(
-        contract=model.get("horizon_contract") or {},
-        actual_hold_sec=holding_seconds,
-        exit_reason=exit_reason,
-        net_return_pct=net_return,
-        post_exit=post_exit,
+    horizon_alignment = (
+        {
+            "status": "excluded_runtime_incident",
+            "reason": exclusion.get("reason_code") or "exit_metric_excluded",
+            "strategy_horizon": (model.get("horizon_contract") or {}).get("strategy_horizon"),
+            "metric_eligible": False,
+        }
+        if exit_metric_excluded
+        else evaluate_horizon_contract(
+            contract=model.get("horizon_contract") or {},
+            actual_hold_sec=holding_seconds,
+            exit_reason=exit_reason,
+            net_return_pct=net_return,
+            post_exit=post_exit,
+        )
     )
     if horizon_alignment.get("horizon_violation_candidate"):
         watch_items.append("horizon_violation_candidate")
@@ -78,6 +90,7 @@ def evaluate_trade(model: dict[str, Any]) -> dict[str, Any]:
             "promotion_metric_eligible": eligible,
             "defects": defects,
             "watch_items": sorted(set(watch_items)),
+            "exit_metric_eligible": not exit_metric_excluded,
         },
         "realized_outcome": {
             "net_return_pct": net_return,
@@ -89,7 +102,11 @@ def evaluate_trade(model: dict[str, Any]) -> dict[str, Any]:
             "reason": (model.get("entry") or {}).get("reason"),
         },
         "exit_quality": {
-            "status": "observed" if observed_checkpoints else "diagnostic_only",
+            "status": (
+                "excluded_runtime_incident"
+                if exit_metric_excluded
+                else "observed" if observed_checkpoints else "diagnostic_only"
+            ),
             "reason": exit_reason,
             "label": "ambiguous",
             "post_exit_comparison": "available" if observed_checkpoints else "unavailable",

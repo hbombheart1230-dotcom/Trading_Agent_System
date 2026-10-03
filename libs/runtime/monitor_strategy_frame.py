@@ -10,6 +10,7 @@ from libs.runtime.position_horizon_revision import ensure_horizon_state
 from libs.runtime.strategy_horizon_feedback import (
     normalize_operational_commander_horizon_policy,
 )
+from libs.runtime.stage3_horizon_lineage import record_stage3_monitor_consumption
 from libs.strategies.contracts import coerce_strategist_output
 
 
@@ -179,6 +180,7 @@ def position_strategy_frame_for_symbol(
     out["stage4_carry_approved"] = bool(horizon_state.get("stage4_carry_approved"))
     out["last_stage3_decision"] = dict(horizon_state.get("last_stage3_decision") or {})
     out["last_stage4_decision"] = dict(horizon_state.get("last_stage4_decision") or {})
+    record_stage3_monitor_consumption(state, symbol=sym, strategy_frame=out)
     return out
 
 
@@ -704,6 +706,7 @@ def apply_exit_policy_strategy_frame(
     vwap_extension_take_profit_min_pct = _to_float(out.get("vwap_extension_take_profit_min_pct"))
     profit_time_stop_sec = _to_int(out.get("profit_time_stop_sec"))
     max_hold_sec = _to_int(out.get("max_hold_sec"))
+    time_stop_sec = _to_int(out.get("time_stop_sec"))
 
     strategy_horizon = str(
         commander_horizon_policy.get("strategy_horizon")
@@ -734,12 +737,14 @@ def apply_exit_policy_strategy_frame(
                 profit_time_stop_sec = window_target
             if window_max > 0:
                 max_hold_sec = window_max
+                time_stop_sec = window_max
             adjustments.append("strategy_horizon:scalp_exit_policy")
         elif strategy_horizon == "intraday":
             if window_target > 0:
                 profit_time_stop_sec = window_target
             if window_max > 0:
                 max_hold_sec = window_max
+                time_stop_sec = window_max
             adjustments.append("strategy_horizon:intraday_exit_policy")
         elif strategy_horizon in {"overnight_probe", "1_2day_swing"}:
             take_profit_pct *= 1.10 if strategy_horizon == "overnight_probe" else 1.18
@@ -748,6 +753,7 @@ def apply_exit_policy_strategy_frame(
                 profit_time_stop_sec = window_target
             if window_max > 0:
                 max_hold_sec = window_max
+                time_stop_sec = window_max
             out["allow_overnight_from_strategy_horizon"] = bool(behavior_translation.get("overnight_allowed"))
             adjustments.append(f"strategy_horizon:{strategy_horizon}_exit_policy")
 
@@ -859,6 +865,7 @@ def apply_exit_policy_strategy_frame(
             profit_time_stop_sec = window_target
         if window_max > 0:
             max_hold_sec = window_max
+            time_stop_sec = window_max
 
     out["hard_stop_pct"] = float(hard_stop_pct)
     out["stop_loss_pct"] = float(stop_loss_pct)
@@ -873,6 +880,8 @@ def apply_exit_policy_strategy_frame(
         out["profit_time_stop_sec"] = int(profit_time_stop_sec)
     if max_hold_sec > 0:
         out["max_hold_sec"] = int(max_hold_sec)
+    if time_stop_sec > 0:
+        out["time_stop_sec"] = int(time_stop_sec)
     if strategy_horizon:
         out["strategy_horizon"] = strategy_horizon
         out["source_strategy_horizon"] = str(commander_horizon_policy.get("source_strategy_horizon") or frame.get("source_strategy_horizon") or "")

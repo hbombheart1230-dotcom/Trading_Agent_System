@@ -60,17 +60,24 @@ class HttpClient:
         json_body: Optional[Dict[str, Any]] = None,
         data: Any = None,
         dry_run: bool = False,
+        retry_override: Optional[int] = None,
     ) -> Tuple[str, Optional[HttpResponse]]:
         """Perform an HTTP request.
         Returns (url, response).
         If dry_run=True, does not send the request and returns (url, None).
+
+        retry_override: when provided, use this retry count instead of
+        self.retry_max for this call only (e.g. broker mutation calls that
+        must not be silently resubmitted). Does not change the instance's
+        default retry policy for any other call.
         """
         url = self.build_url(path)
         if dry_run:
             return url, None
 
+        retry_max = self.retry_max if retry_override is None else max(0, int(retry_override))
         last_err: Optional[Exception] = None
-        for attempt in range(self.retry_max + 1):
+        for attempt in range(retry_max + 1):
             try:
                 r = self.session.request(
                     method=method.upper(),
@@ -88,7 +95,7 @@ class HttpClient:
                 )
             except Exception as e:
                 last_err = e
-                if attempt >= self.retry_max:
+                if attempt >= retry_max:
                     break
                 time.sleep(self.backoff_sec * (2 ** attempt))
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from libs.core.evidence_identity import stable_evidence_id
+
 
 def _dict(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
@@ -254,6 +256,7 @@ def build_memory_usage_trace(
     layer_decisions: Dict[str, Any] = {}
     for layer in ("daily", "weekly", "monthly", "symbol"):
         packet = _dict(memory_packets.get(layer_to_packet_key[layer]))
+        packet_id = stable_evidence_id("memory", packet) if packet else ""
         if layer == "symbol":
             used = (
                 bool(commander_policy.get("symbol_memory_override_enabled"))
@@ -272,6 +275,7 @@ def build_memory_usage_trace(
         )
         decision = {
             "status": _text(packet.get("status"), max_len=40) if packet else "unavailable",
+            "packet_id": packet_id,
             "active": bool(packet.get("active")) if packet else False,
             "visible": bool(packet),
             "used": bool(used),
@@ -393,9 +397,15 @@ def build_memory_usage_trace(
         )
     )
     context_layer_count = sum(1 for row in layer_decisions.values() if row.get("used"))
+    applied_packet_ids = [
+        str(row.get("packet_id") or "")
+        for row in layer_decisions.values()
+        if row.get("used") and row.get("packet_id")
+    ]
     application_summary = {
         "context_used": bool(context_layer_count),
         "context_layer_count": context_layer_count,
+        "applied_packet_ids": applied_packet_ids,
         "scanner_delta_applied": scanner_delta_applied,
         "monitor_delta_applied": monitor_delta_applied,
         "deterministic_delta_applied": deterministic_delta_applied,

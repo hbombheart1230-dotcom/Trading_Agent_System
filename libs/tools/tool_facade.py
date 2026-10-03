@@ -156,6 +156,26 @@ class ToolFacade:
                     "decision": decision_dict,
                     "note": "APPROVAL_MODE=auto but EXECUTION_ENABLED=false, so execution is blocked.",
                 }
+            if str(decision_dict.get("status") or "").lower() == "rejected":
+                return {
+                    "decision": decision_dict,
+                    "execution": {"ok": False, "broker_outcome": "NOT_SENT", "reason": "supervisor_rejected"},
+                }
+            # Step5C Fix4: this shortcut never goes through
+            # approve()'s own PENDING->APPROVED transition, so the
+            # canonical store would otherwise have no row at all for this
+            # intent_id when execute_owned_order's claim_execution runs --
+            # and a caller-supplied identity with no persisted, approved
+            # OrderIntent behind it is no longer auto-admitted (see
+            # ApprovalService.admit_pre_approved_intent). The risk-gate
+            # decision already made inside supervisor.create_intent(),
+            # combined with this call's own auto+enabled configuration, is
+            # what authorizes persisting it as approved here.
+            iid = str((intent or {}).get("intent_id") or "")
+            if iid:
+                admission_error = self.approvals.admit_pre_approved_intent(intent or {}, source="tool_facade_auto")
+                if admission_error:
+                    return {"decision": decision_dict, "execution": {"ok": False, "broker_outcome": "NOT_SENT", "reason": admission_error}}
             exec_res = self.order_execute(intent=intent or raw_intent)
             return {"decision": decision_dict, "execution": exec_res}
 
@@ -261,6 +281,18 @@ class ToolFacade:
             "qty": int(intent.get("qty") or 1),
             "order_type": intent.get("order_type") or "market",
             "price": intent.get("price"),
+            "trde_tp": "3" if str(intent.get("order_type") or "market").lower() in ("market", "mkt") else "0",
+            # Step5C Fix2 (HIGH2): this is the actual production dispatch
+            # path (scripts/approval_cli.py -> ToolFacade.approve_intent ->
+            # ApprovalService -> ToolFacade.order_execute -> this method) --
+            # it does not go through ExecutorAgent at all. Codex's audit
+            # observed the original approval intent_id (e.g. a uuid4 from
+            # TwoPhaseSupervisor.create_intent) being replaced by a brand
+            # new content-hash identity at this layer because this call
+            # never forwarded it. The approved OrderIntent's own identity,
+            # assigned once at creation, must survive unchanged all the way
+            # to the broker call and the terminal state record.
+            "intent_id": str(intent.get("intent_id") or ""),
         }
         out = self.runner.run(run_id=_new_run_id(), skill="order.place", args=skill_args)
         return asdict(out)

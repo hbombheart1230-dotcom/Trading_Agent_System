@@ -17,8 +17,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build read-only Q9 evaluation outputs.")
     parser.add_argument("--date", default=date.today().isoformat())
     parser.add_argument("--reports-root", default="reports")
+    parser.add_argument(
+        "--recover-forward",
+        action="store_true",
+        help="Fetch and persist closeout minute evidence before evaluation.",
+    )
     args = parser.parse_args(argv)
-    result = build_q9_evaluation(Path(args.reports_root), args.date)
+    result = build_q9_evaluation(
+        Path(args.reports_root),
+        args.date,
+        recover_forward=bool(args.recover_forward),
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

@@ -119,6 +119,14 @@ def classify_stage2_row(
         reason = "same_run_memory_or_target_evidence_missing"
 
     commander = mapping(q9_window.get("commander_final"))
+    memory_trace = mapping(strategist.get("memory_usage_trace"))
+    application_summary = mapping(memory_trace.get("application_summary"))
+    layer_decisions = mapping(memory_trace.get("layer_decisions"))
+    packet_ids = {
+        str(layer): str(mapping(decision).get("packet_id") or "")
+        for layer, decision in layer_decisions.items()
+        if mapping(decision).get("packet_id")
+    }
     memory_usage = mapping(stage2.get("memory_usage"))
     entry_delta = mapping(stage2.get("entry_policy_delta"))
     normalized_trades: list[dict[str, Any]] = []
@@ -149,6 +157,13 @@ def classify_stage2_row(
         "memory_claimed_status": str(memory_usage.get("status") or ""),
         "memory_claimed_effect": str(memory_usage.get("effect") or ""),
         "memory_claimed_reason": str(memory_usage.get("reason") or ""),
+        "memory_packet_ids": packet_ids,
+        "applied_memory_packet_ids": [
+            str(value)
+            for value in list(application_summary.get("applied_packet_ids") or [])
+            if str(value).strip()
+        ],
+        "memory_packet_provenance_available": bool(packet_ids),
         "entry_policy_delta": entry_delta,
         "entry_policy_tightened": bool(entry_delta.get("tighten_confidence_threshold")),
         "q9_linked": bool(q9_window),
@@ -196,6 +211,9 @@ def aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "memory_effect_counts": dict(
                 Counter(str(row.get("memory_claimed_effect") or "not_reported") for row in selected)
+            ),
+            "memory_packet_provenance_count": sum(
+                bool(row.get("memory_packet_provenance_available")) for row in selected
             ),
             "trusted_trade_count": len(trade_rows),
             "trade_win_rate": (

@@ -32,6 +32,9 @@ def test_m7_images_copy_only_observability_app_sources() -> None:
     assert "!apps/api/**" in api_ignore
     assert web_ignore.splitlines()[0] == "**"
     assert "!apps/web/**" in web_ignore
+    assert "apps/web/node_modules/" in web_ignore
+    assert "apps/web/dist/" in web_ignore
+    assert "apps/web/coverage/" in web_ignore
 
     forbidden = (".env", "graphs/", "libs/", "scripts/")
     assert all(value not in api for value in forbidden)
@@ -50,7 +53,8 @@ def test_m7_images_are_non_root_and_health_checked() -> None:
 
 
 def test_m7_api_is_private_and_web_is_localhost_only() -> None:
-    services = _compose()["services"]
+    compose = _compose()
+    services = compose["services"]
     api = services["api"]
     web = services["web"]
 
@@ -58,6 +62,10 @@ def test_m7_api_is_private_and_web_is_localhost_only() -> None:
     assert api["expose"] == ["8000"]
     assert web["ports"] == ["127.0.0.1:${OBSERVABILITY_WEB_PORT:-3000}:8080"]
     assert web["depends_on"]["api"]["condition"] == "service_healthy"
+    assert set(api["networks"]) == {"observability"}
+    assert set(web["networks"]) == {"observability", "edge"}
+    assert compose["networks"]["observability"]["internal"] is True
+    assert compose["networks"]["edge"] is None
 
 
 def test_m7_evidence_mounts_are_read_only() -> None:
@@ -69,6 +77,7 @@ def test_m7_evidence_mounts_are_read_only() -> None:
         "/data/runtime-logs",
         "/data/state",
         "/data/evidence",
+        "/data/docs/trading_agent_patch_notes_detailed_update",
     }
     assert all(row["type"] == "bind" for row in mounts.values())
     assert all(row["read_only"] is True for row in mounts.values())
@@ -97,6 +106,43 @@ def test_m7_public_override_changes_only_api_exposure_profile() -> None:
     assert public["services"]["api"] == {
         "environment": {"OBSERVABILITY_EXPOSURE_PROFILE": "public"}
     }
+
+
+def test_m7_cloudflare_overlay_exposes_only_the_web_gateway() -> None:
+    cloudflare = _compose("compose.cloudflare.yaml")
+
+    assert set(cloudflare) == {"services"}
+    tunnel = cloudflare["services"]["cloudflared"]
+    assert tunnel["image"].startswith("cloudflare/cloudflared:2026.8.2@sha256:")
+    assert tunnel["user"] == "65532:65532"
+    assert "ports" not in tunnel
+    assert tunnel["networks"] == ["edge"]
+    assert tunnel["depends_on"]["web"]["condition"] == "service_healthy"
+    assert tunnel["environment"]["TUNNEL_TOKEN"].startswith(
+        "${CLOUDFLARE_TUNNEL_TOKEN:?"
+    )
+    assert tunnel["read_only"] is True
+    assert tunnel["cap_drop"] == ["ALL"]
+    assert tunnel["security_opt"] == ["no-new-privileges:true"]
+    assert tunnel["healthcheck"]["test"][-1] == "ready"
+
+
+def test_m7_cloudflare_docs_require_access_before_connector_start() -> None:
+    docs = _read(COMPOSE_ROOT / "README.md")
+    contract = _read(
+        REPOSITORY_ROOT
+        / "docs"
+        / "web_observability"
+        / "m7_4_cloudflare_private_ingress_2026-08-29.md"
+    )
+
+    assert "https://agentra.win" in docs
+    assert "http://web:8080" in docs
+    assert "operator's email address" in docs
+    normalized_docs = " ".join(docs.lower().split())
+    assert "do not start the connector until the access policy is present" in normalized_docs
+    assert "The API has no host port" in contract
+    assert "Trading Runtime remains outside Docker" in contract
 
 
 def test_m7_web_gateway_is_get_only_and_proxies_api_privately() -> None:

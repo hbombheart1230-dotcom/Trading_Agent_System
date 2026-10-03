@@ -118,6 +118,8 @@ def test_m29_3_monitor_exit_uses_entry_sizing_stop_before_wider_policy_stop():
                     "stop_loss_pct": 0.01,
                     "stop_loss_source": "entry.metrics.vwap.reclaim_tolerance",
                     "invalidation_price": 99.0,
+                    "raw_structure_stop_loss_pct": 0.006,
+                    "min_structure_stop_loss_pct": 0.01,
                     "source": "buy_execution_sizing",
                 }
             }
@@ -137,6 +139,9 @@ def test_m29_3_monitor_exit_uses_entry_sizing_stop_before_wider_policy_stop():
     assert out["intents"][0]["meta"]["exit_reason"] == "stop_loss"
     assert out["monitor"]["position_entry_risk_applied"] is True
     assert out["monitor"]["position_entry_stop_loss_pct"] == 0.01
+    assert out["monitor"]["position_entry_stop_loss_source"] == "entry.metrics.vwap.reclaim_tolerance"
+    assert out["monitor"]["position_entry_raw_structure_stop_loss_pct"] == 0.006
+    assert out["monitor"]["position_entry_min_structure_stop_loss_pct"] == 0.01
     assert out["monitor"]["exit_effective_stop_loss_pct"] == 0.01
 
 
@@ -391,6 +396,18 @@ def test_m29_3_monitor_exit_policy_vwap_extension_take_profit_emits_sell_intent(
         },
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0, "hold_sec": 900}]},
         "market_snapshot": {"symbol": "AAA", "price": 101.3},
+        "minute_ohlcv_by_symbol": {
+            "AAA": [
+                {
+                    "open": 100.0,
+                    "high": 101.3,
+                    "low": 99.8,
+                    "close": 101.3,
+                    "vwap": 97.87,
+                    "volume": 1000,
+                }
+            ]
+        },
         "policy": {
             "use_exit_policy": True,
             "stop_loss_pct": 0.05,
@@ -415,7 +432,8 @@ def test_m29_3_monitor_exit_policy_vwap_extension_take_profit_emits_sell_intent(
     assert out["intents"][0]["side"] == "SELL"
     assert out["intents"][0]["meta"]["exit_reason"] == "vwap_extension_take_profit"
     assert out["monitor"]["exit_reason"] == "vwap_extension_take_profit"
-    assert out["monitor_exit"]["vwap_distance"] == 0.035
+    assert out["monitor_exit"]["vwap_distance"] == pytest.approx((101.3 - 97.87) / 97.87)
+    assert "current_session_minute_vwap" in out["monitor_exit"]["vwap_distance_source"]
 
 
 def test_m29_3_monitor_exit_policy_resistance_take_profit_emits_sell_intent():

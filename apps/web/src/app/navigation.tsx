@@ -7,18 +7,22 @@ import {
   ClipboardList,
   FileText,
   Gauge,
+  History,
   MessagesSquare,
+  Monitor,
   ShieldCheck,
 } from "lucide-react";
 
 export const NAV_ITEMS = [
   { id: "overview", label: "운영 요약", icon: Gauge, public: true },
+  { id: "operations", label: "운영 관제", icon: Monitor, public: false },
   { id: "performance", label: "성과", icon: ChartNoAxesCombined, public: true },
   { id: "trades", label: "거래", icon: ClipboardList, public: true },
   { id: "opportunities", label: "기회", icon: Binoculars, public: true },
   { id: "strategies", label: "전략", icon: BarChart3, public: true },
   { id: "market", label: "시장", icon: Activity, public: true },
   { id: "alerts", label: "운영 알림", icon: BellRing, public: true },
+  { id: "patch-notes", label: "패치 노트", icon: History, public: true },
   { id: "llm-operations", label: "LLM 운영", icon: MessagesSquare, public: false },
   { id: "reports", label: "리포트", icon: FileText, public: false },
   { id: "data-quality", label: "데이터 품질", icon: ShieldCheck, public: false },

@@ -37,6 +37,9 @@ from libs.runtime.monitor_entry_blockers import evaluate_entry_guard
 from libs.runtime.opening_rank1_controlled_probe import (
     evaluate_opening_rank1_controlled_probe,
     load_probe_submissions,
+    load_rank_observations,
+    record_probe_evaluation,
+    record_rank1_observation,
     record_probe_submission,
     session_clock as _opening_probe_session_clock,
 )
@@ -860,6 +863,7 @@ def _evaluate_monitor_entry_candidate(
 
     probe_day, _probe_minutes = _opening_probe_session_clock(now_epoch_for_entry)
     prior_probe_rows = load_probe_submissions(probe_day)
+    prior_rank_observations = load_rank_observations(probe_day)
     last_trade_day = (
         _opening_probe_session_clock(last_trade_epoch)[0]
         if last_trade_epoch > 0
@@ -874,8 +878,26 @@ def _evaluate_monitor_entry_candidate(
         state=state,
         selected=selected,
     )
+    observation_price = {"observed_price": None, "price_source": "unavailable"}
+    probe_selected = selected
+    if bool(allow_opening_rank1_controlled_probe) and 0 <= _probe_minutes <= 20:
+        from libs.runtime.opening_rank1_observation_price import resolve_observation_price
+
+        observation_price = resolve_observation_price(
+            selected=selected,
+            quote=quote_for_entry,
+            rows=entry_rows,
+            now_epoch=now_epoch_for_entry,
+        )
+        observed_price = _to_float(observation_price.get("observed_price"))
+        if observed_price > 0.0 and _to_float(selected.get("price")) <= 0.0:
+            probe_selected = dict(selected)
+            probe_selected["price"] = float(observed_price)
+            probe_selected["_monitor_price_source"] = str(
+                observation_price.get("price_source") or "opening_rank1_observation"
+            )
     opening_rank1_controlled_probe = evaluate_opening_rank1_controlled_probe(
-        selected=selected,
+        selected=probe_selected,
         entry_info=entry_info,
         original_wait_reason=original_wait_reason,
         base_entry_guard_blocked=base_entry_guard_blocked,
@@ -891,7 +913,24 @@ def _evaluate_monitor_entry_candidate(
         is_top_pick=bool(allow_opening_rank1_controlled_probe),
         same_symbol_reentry_detected=same_symbol_reentry_detected,
         broker_mode=str(os.getenv("KIWOOM_MODE") or ""),
+        prior_rank_observations=prior_rank_observations,
+        recent_minute_rows=entry_rows,
+        strategy_horizon=str(strategy_frame.get("strategy_horizon") or ""),
     )
+    if (
+        bool(allow_opening_rank1_controlled_probe)
+        and int(opening_rank1_controlled_probe.get("scanner_rank") or 0) == 1
+        and bool(opening_probe_selection_authority.get("evidence_available"))
+        and bool(opening_probe_selection_authority.get("aligned"))
+        and 0 <= _probe_minutes <= 20
+    ):
+        opening_rank1_controlled_probe["rank_observation"] = record_rank1_observation(
+            day=probe_day,
+            symbol=symbol,
+            observed_epoch=now_epoch_for_entry,
+            run_id=str(state.get("run_id") or ""),
+            **observation_price,
+        )
     if bool(opening_rank1_controlled_probe.get("applied")):
         reservation = record_probe_submission(
             opening_rank1_controlled_probe,
@@ -915,6 +954,12 @@ def _evaluate_monitor_entry_candidate(
             opening_rank1_controlled_probe["reason"] = str(
                 reservation.get("reason") or "probe_reservation_failed"
             )
+    if bool(allow_opening_rank1_controlled_probe) and 0 <= _probe_minutes <= 20:
+        opening_rank1_controlled_probe["evaluation_record"] = record_probe_evaluation(
+            opening_rank1_controlled_probe,
+            run_id=str(state.get("run_id") or ""),
+            recorded_at=str(state.get("ts") or now_epoch_for_entry),
+        )
     entry_info["opening_rank1_controlled_probe"] = dict(opening_rank1_controlled_probe)
     state["opening_rank1_controlled_probe"] = dict(opening_rank1_controlled_probe)
 
@@ -1992,6 +2037,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "asset_class_detected": str(decision.get("asset_class_detected") or ""),
                         "avg_price": avg_price if avg_price > 0.0 else None,
                         "price": price,
+                        "price_freshness": dict(decision.get("price_freshness") or {}),
                         "technical_price": decision.get("technical_price"),
                         "technical_price_source": str(decision.get("technical_price_source") or ""),
                         "effective_price": decision.get("effective_price"),
@@ -2091,6 +2137,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_technical_price_source": str(exit_info.get("technical_price_source") or ""),
         "exit_effective_price": exit_info.get("effective_price"),
         "exit_effective_price_source": str(exit_info.get("effective_price_source") or ""),
+        "exit_price_freshness": dict(exit_info.get("price_freshness") or {}),
+        "peak_update": (
+            dict(state["peak_update_events"][-1])
+            if isinstance(state.get("peak_update_events"), list)
+            and state.get("peak_update_events")
+            else {}
+        ),
         "exit_account_current_price": exit_info.get("account_current_price"),
         "exit_account_mark_price": exit_info.get("account_mark_price"),
         "exit_account_unrealized_pnl": exit_info.get("account_unrealized_pnl"),
@@ -2121,6 +2174,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_expected_exit_price": exit_info.get("expected_exit_price"),
         "exit_expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
         "exit_expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
+        "exit_expected_exit_quote_rejected": bool(exit_info.get("expected_exit_quote_rejected")),
+        "exit_expected_exit_quote_rejected_reason": str(
+            exit_info.get("expected_exit_quote_rejected_reason") or ""
+        ),
+        "exit_expected_exit_quote_age_sec": exit_info.get("expected_exit_quote_age_sec"),
+        "exit_expected_exit_quote_price_divergence_pct": exit_info.get(
+            "expected_exit_quote_price_divergence_pct"
+        ),
         "exit_expected_exit_slippage_buffer_pct": exit_info.get("expected_exit_slippage_buffer_pct"),
         "exit_expected_exit_pnl_ratio": exit_info.get("expected_exit_pnl_ratio"),
         "exit_expected_exit_net_pnl_ratio": exit_info.get("expected_exit_net_pnl_ratio"),
@@ -2456,6 +2517,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "expected_exit_price": exit_info.get("expected_exit_price"),
         "expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
         "expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
+        "expected_exit_quote_rejected": bool(exit_info.get("expected_exit_quote_rejected")),
+        "expected_exit_quote_rejected_reason": str(
+            exit_info.get("expected_exit_quote_rejected_reason") or ""
+        ),
+        "expected_exit_quote_age_sec": exit_info.get("expected_exit_quote_age_sec"),
+        "expected_exit_quote_price_divergence_pct": exit_info.get(
+            "expected_exit_quote_price_divergence_pct"
+        ),
         "expected_exit_slippage_buffer_pct": exit_info.get("expected_exit_slippage_buffer_pct"),
         "expected_exit_pnl_ratio": exit_info.get("expected_exit_pnl_ratio"),
         "expected_exit_net_pnl_ratio": exit_info.get("expected_exit_net_pnl_ratio"),
@@ -2561,6 +2630,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor"]["position_entry_stop_loss_pct"] = exit_info.get("position_entry_stop_loss_pct")
         state["monitor"]["position_entry_stop_loss_source"] = str(exit_info.get("position_entry_stop_loss_source") or "")
         state["monitor"]["position_entry_invalidation_price"] = exit_info.get("position_entry_invalidation_price")
+        state["monitor"]["position_entry_raw_structure_stop_loss_pct"] = exit_info.get(
+            "position_entry_raw_structure_stop_loss_pct"
+        )
+        state["monitor"]["position_entry_min_structure_stop_loss_pct"] = exit_info.get(
+            "position_entry_min_structure_stop_loss_pct"
+        )
     state["monitor_state_transition"] = {
         "previous_posture": previous_posture,
         "current_posture": current_posture,
@@ -2957,6 +3032,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "expected_exit_price": exit_info.get("expected_exit_price"),
         "expected_exit_price_source": str(exit_info.get("expected_exit_price_source") or ""),
         "expected_exit_price_fallback_used": bool(exit_info.get("expected_exit_price_fallback_used")),
+        "expected_exit_quote_rejected": bool(exit_info.get("expected_exit_quote_rejected")),
+        "expected_exit_quote_rejected_reason": str(
+            exit_info.get("expected_exit_quote_rejected_reason") or ""
+        ),
+        "expected_exit_quote_age_sec": exit_info.get("expected_exit_quote_age_sec"),
+        "expected_exit_quote_price_divergence_pct": exit_info.get(
+            "expected_exit_quote_price_divergence_pct"
+        ),
         "expected_exit_slippage_buffer_pct": exit_info.get("expected_exit_slippage_buffer_pct"),
         "expected_exit_pnl_ratio": exit_info.get("expected_exit_pnl_ratio"),
         "expected_exit_net_pnl_ratio": exit_info.get("expected_exit_net_pnl_ratio"),
@@ -2993,6 +3076,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "position_entry_stop_loss_pct": exit_info.get("position_entry_stop_loss_pct"),
         "position_entry_stop_loss_source": str(exit_info.get("position_entry_stop_loss_source") or ""),
         "position_entry_invalidation_price": exit_info.get("position_entry_invalidation_price"),
+        "position_entry_raw_structure_stop_loss_pct": exit_info.get("position_entry_raw_structure_stop_loss_pct"),
+        "position_entry_min_structure_stop_loss_pct": exit_info.get("position_entry_min_structure_stop_loss_pct"),
         "sell_submitted": bool(sell_submitted),
         "sell_skipped_reason": sell_skipped_reason,
         "final_reason": current_reason,
@@ -3094,6 +3179,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["position_entry_stop_loss_pct"] = exit_info.get("position_entry_stop_loss_pct")
         state["monitor_output"]["position_entry_stop_loss_source"] = str(exit_info.get("position_entry_stop_loss_source") or "")
         state["monitor_output"]["position_entry_invalidation_price"] = exit_info.get("position_entry_invalidation_price")
+        state["monitor_output"]["position_entry_raw_structure_stop_loss_pct"] = exit_info.get(
+            "position_entry_raw_structure_stop_loss_pct"
+        )
+        state["monitor_output"]["position_entry_min_structure_stop_loss_pct"] = exit_info.get(
+            "position_entry_min_structure_stop_loss_pct"
+        )
         state["monitor_output"]["received_policy"] = dict(entry_info.get("received_policy") or entry_received_policy or {})
         state["monitor_output"]["received_policy_source"] = str(entry_info.get("received_policy_source") or entry_policy_origin or "")
         state["monitor_output"]["policy_contract"] = dict(entry_info.get("policy_contract") or entry_policy_contract or {})
@@ -3265,6 +3356,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "intent_side": str((state.get("monitor_output") or {}).get("intent_side") or "NOOP"),
             "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
             "price_source": str(exit_info.get("price_source") or ""),
+            "peak_update": (
+                dict(state["peak_update_events"][-1])
+                if isinstance(state.get("peak_update_events"), list)
+                and state.get("peak_update_events")
+                else {}
+            ),
             "feature_source": str(exit_info.get("feature_source") or ""),
             "entry_evaluated": bool(entry_info.get("evaluated")),
             "entry_triggered": bool(entry_info.get("triggered")),

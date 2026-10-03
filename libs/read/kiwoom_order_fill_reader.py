@@ -274,6 +274,53 @@ class KiwoomOrderFillReader:
         )
         return normalize_broker_order_rows(_pick(payload, "acnt_ord_cntr_prst_array"))
 
+    def get_open_orders_now(
+        self,
+        *,
+        symbol: str = "",
+        side: str = "all",
+        market: str = "KRX",
+    ) -> List[Dict[str, Any]]:
+        """P0-A (real-readiness hardening, 2026-09-17): today's full order/
+        fill list via kt00009 (`qry_tp=0`, all -- kt00009's own catalog-
+        declared options are only 0=all/1=filled-only, verified directly;
+        no "unfilled-only" option exists on this API, unlike kt00007's
+        qry_tp=3). Callers filter to pending/open with
+        `graphs.nodes.skill_contracts.account_order_is_pending` --
+        `normalize_broker_order_rows`'s own output shape
+        (`order_qty`/`filled_qty`/`remaining_qty`/`status`/`side`) is
+        directly compatible with that contract function's field lookups,
+        so no duplicate pending-detection logic is written here.
+
+        Deliberately uses `KiwoomBrokerTruthClient` (this reader's own,
+        already-established broker-truth path, the same one
+        `KiwoomPortfolioReader` uses for position reconciliation) rather
+        than the generic skill-runner (`libs/skills/runner.py`) that
+        `hydrate_skill_results_node`/scanner_node's own soft pending-order
+        signal goes through -- `KiwoomBrokerTruthClient` resolves its own
+        executor via `get_executor()` independent of any caller-injected
+        `state['skill_runner']`, so this call cannot collide with a test's
+        deliberately narrow fake skill runner (the exact failure mode that
+        broke ~29 existing tests in the prior, reverted force-hydration
+        attempt at the execute_from_packet.py layer).
+        """
+        sell_tp_map = {"all": "0", "sell": "1", "buy": "2"}
+        sell_tp = sell_tp_map.get(str(side).strip().lower(), "0")
+        api_id = _require_api(self.catalog, "kt00009", "계좌별주문체결현황요청")
+        payload = self.client.call(
+            api_id,
+            {
+                "stk_bond_tp": "1",
+                "mrkt_tp": "0",
+                "sell_tp": sell_tp,
+                "qry_tp": "0",
+                "stk_cd": symbol or "",
+                "fr_ord_no": "",
+                "dmst_stex_tp": market,
+            },
+        )
+        return normalize_broker_order_rows(_pick(payload, "acnt_ord_cntr_prst_array"))
+
     def get_daily_reconciliation_report(
         self,
         *,

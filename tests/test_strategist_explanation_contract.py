@@ -119,7 +119,11 @@ def test_strategist_explanation_fields_capture_memory_and_role_boundary() -> Non
     assert fields["memory_usage_trace"]["layer_decisions"]["daily"]["effect"] == "primary_strategy_memory+scanner_delta+monitor_delta"
     assert fields["memory_usage_trace"]["layer_decisions"]["daily"]["use_kind"] == "context_and_deterministic_delta"
     assert fields["memory_usage_trace"]["layer_decisions"]["daily"]["deterministic_delta_applied"] is True
-    assert fields["memory_usage_trace"]["application_summary"] == {
+    application_summary = fields["memory_usage_trace"]["application_summary"]
+    assert application_summary["applied_packet_ids"] == [
+        fields["memory_usage_trace"]["layer_decisions"]["daily"]["packet_id"]
+    ]
+    assert {key: value for key, value in application_summary.items() if key != "applied_packet_ids"} == {
         "context_used": True,
         "context_layer_count": 1,
         "scanner_delta_applied": True,

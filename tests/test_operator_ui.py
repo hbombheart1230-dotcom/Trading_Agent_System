@@ -22,6 +22,32 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def test_operator_ui_reads_latest_evidence_without_materializing_full_ledger(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "evidence.jsonl"
+    _write_jsonl(
+        evidence,
+        [
+            {"run_id": "old", "timestamp": "2026-09-28T00:01:00+00:00", "agent": "strategist", "stage": "theme_selection", "llm_prompt": "old"},
+            {"run_id": "new", "timestamp": "2026-09-28T00:02:00+00:00", "agent": "strategist", "stage": "theme_selection", "llm_prompt": "new", "parsed_output": {"playbook": "pullback"}},
+        ],
+    )
+    config = OperatorUIConfig(
+        repo_root=tmp_path,
+        reports_root=tmp_path / "reports",
+        event_log_path=tmp_path / "events.jsonl",
+        evidence_log_path=evidence,
+        strategy_memory_path=tmp_path / "memory",
+        operator_ui_cache_path=tmp_path / "cache",
+    )
+
+    monkeypatch.setattr(data_access, "_iter_jsonl", lambda _path: (_ for _ in ()).throw(AssertionError("full ledger read")))
+
+    summary = data_access.load_latest_strategist_prompt_summary(config, "2026-09-28")
+
+    assert summary["run_id"] == "new"
+    assert summary["playbook"] == "pullback"
+
+
 class _FakeRouter:
     def __init__(self) -> None:
         self.client = object()

@@ -166,6 +166,21 @@ def test_candidate_quote_metrics_include_spread_bps_from_quote_snapshot():
     assert metrics["best_bid"] == 70500.0
     assert metrics["best_ask"] == 70550.0
     assert float(metrics["spread_bps"]) > 0.0
+    assert metrics["quote_payload_available"] is True
+    assert metrics["quote_source"] == "skill_quote"
+    assert metrics["bid_ask_evidence_status"] == "OBSERVED"
+
+
+def test_candidate_quote_metrics_explains_missing_bid_ask() -> None:
+    metrics = _candidate_quote_metrics(
+        "005930",
+        skill_quotes={"005930": {"price": 70500, "volume": 1000}},
+        state={},
+    )
+
+    assert metrics["quote_payload_available"] is True
+    assert metrics["quote_source"] == "skill_quote"
+    assert metrics["bid_ask_evidence_status"] == "QUOTE_PAYLOAD_WITHOUT_BID_ASK"
 
 
 def test_scanner_extract_guidance_prefers_strategy_policy_when_present():
@@ -302,8 +317,15 @@ def test_scanner_output_records_commander_context_consumption():
     assert (selection_reason.get("tactic_suitability") or {}).get("schema_version") == "tactic_suitability.v1"
 
 
-def test_scanner_applies_symbol_prior_deterministically():
+def test_scanner_applies_symbol_prior_deterministically(tmp_path):
+    # _load_symbol_priors short-circuits to {} (skipping build_symbol_read_model
+    # entirely, mocked or not) whenever reports_root/trades doesn't exist --
+    # so under pytest isolation (reports_root no longer accidentally resolves
+    # to the real, populated project reports/ tree) this test must create its
+    # own trades/ dir for the mock below to actually get exercised.
+    (tmp_path / "trades").mkdir(parents=True, exist_ok=True)
     state = {
+        "reports_root": str(tmp_path),
         "candidates": [
             {"symbol": "005930", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
             {"symbol": "000660", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},

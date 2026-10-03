@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -360,3 +361,97 @@ def test_inventory_excludes_post_session_and_non_krx_test_windows(
     assert decision["complete_pabc_window_count"] == 1
     assert decision["post_session_window_count"] == 1
     assert decision["synthetic_window_count"] == 1
+
+
+def test_inventory_does_not_treat_memory_packet_ids_as_symbols(tmp_path) -> None:
+    reports = tmp_path / "reports"
+    daily = reports / "operator_summary" / "daily" / "2026-08-27"
+    daily.mkdir(parents=True)
+    (daily / "q9_decision_windows.json").write_text(
+        """
+        {
+          "schema_version": "q9_decision_windows.v1",
+          "windows": [
+            {
+              "decision_id": "Q9_20260827_live",
+              "generated_at": "2026-08-27T00:05:00+00:00",
+              "scanner_pre_strategist_universe": {
+                "intrinsic_ranked_top20": [{"symbol": "005930"}]
+              },
+              "scanner_control": {"top1_symbol": "005930"},
+              "strategist_selection": {"selected_symbol": "005930"},
+              "strategist_provenance": {
+                "memory": {
+                  "layer_packet_ids": {
+                    "symbol": "memory_95807bfb862d7452b0ea"
+                  }
+                }
+              },
+              "commander_final": {"decision": "approve"}
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    inventory = build_artifact_inventory(reports, "2026-08-27")
+    decision = inventory["daily_artifacts"]["q9_decision_windows"]
+
+    assert decision["scanner_selection_window_count"] == 1
+    assert decision["complete_pabc_window_count"] == 1
+    assert decision["synthetic_window_count"] == 0
+
+
+def test_inventory_reuses_persisted_closeout_forward_recovery(tmp_path) -> None:
+    reports = tmp_path / "reports"
+    day = "2026-09-10"
+    daily = reports / "operator_summary" / "daily" / day
+    daily.mkdir(parents=True)
+    (daily / "q9_decision_windows.json").write_text(
+        json.dumps({"schema_version": "q9_decision_windows.v1", "windows": []}),
+        encoding="utf-8",
+    )
+    shadow = tmp_path / "data" / "logs" / "quant_shadow_candidates" / day
+    shadow.mkdir(parents=True)
+    base_epoch = 1789002000
+    (shadow / "0900.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-09-10T00:00:00+00:00",
+                "q9_decision_candidates": [
+                    {
+                        "q9_decision_role": "P_SCANNER_PRE_STRATEGIST_UNIVERSE",
+                        "symbol": "005930",
+                        "shadow_forward_base": {
+                            "baseline_epoch": base_epoch,
+                            "baseline_price": 100.0,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    recovery = reports / "evaluation" / "daily" / day / "q9_forward_recovery_candles.json"
+    recovery.parent.mkdir(parents=True)
+    recovery.write_text(
+        json.dumps(
+            {
+                "schema_version": "q9_forward_recovery_candles.v1",
+                "minute_rows_by_symbol": {
+                    "005930": [
+                        {"ts": base_epoch, "close": 100, "high": 100, "low": 100},
+                        {"ts": base_epoch + 180, "close": 101, "high": 102, "low": 99},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inventory = build_artifact_inventory(reports, day)
+    decision = inventory["daily_artifacts"]["q9_decision_windows"]
+
+    assert decision["forward_recovery_artifact_used"] is True
+    assert decision["forward_observed_candidate_count"] == 1

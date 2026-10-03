@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from libs.catalog.api_catalog import ApiCatalog
 from libs.core.settings import Settings
 from libs.read.kiwoom_broker_truth_common import KiwoomBrokerTruthClient, require_api
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 
 
 SNAPSHOT_ROOT = Path("data/logs/kiwoom_account_snapshots")
@@ -250,9 +251,21 @@ def save_kiwoom_account_snapshot(
     *,
     day: str,
     trigger: str = "report_generation",
-    root: Path = SNAPSHOT_ROOT,
+    root: Optional[Path] = None,
     collector: Optional[KiwoomAccountSnapshotCollector] = None,
 ) -> Dict[str, Any]:
+    # root's isolation check must happen here, at call time, not as a bare
+    # default parameter value -- default parameter expressions are evaluated
+    # once at module import (during pytest collection, before
+    # PYTEST_CURRENT_TEST is set), so isolate_canonical_path_for_pytest would
+    # always see running_under_pytest()==False and permanently bake in the
+    # real production path if it were used as the default itself.
+    if root is None:
+        root = isolate_canonical_path_for_pytest(
+            SNAPSHOT_ROOT,
+            canonical_path=SNAPSHOT_ROOT,
+            isolated_name="kiwoom_account_snapshots",
+        )
     generated_at = _utc_now()
     collector = collector or KiwoomAccountSnapshotCollector.from_env()
     snapshot = collector.collect(day=day, trigger=trigger)

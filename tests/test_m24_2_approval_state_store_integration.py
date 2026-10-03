@@ -13,6 +13,7 @@ from libs.supervisor.intent_state_store import (
     SQLiteIntentStateStore,
 )
 from libs.supervisor.intent_store import IntentStore
+from libs.execution.intent_identity import physical_order_fingerprint
 
 
 def _make_services(tmp_path: Path):
@@ -38,12 +39,29 @@ def _seed_intent(store: IntentStore, *, intent_id: str) -> None:
     )
 
 
+def _claiming_execute_fn(state: SQLiteIntentStateStore, intent_id: str, *, owner: str = "test-owner",
+                          broker_outcome: str = "ACCEPTED"):
+    """A minimal stand-in for the real ToolFacade/ExecutorAgent -> runner ->
+    execute_owned_order chain: performs the SAME canonical claim/finish
+    calls a real dispatch would, so ApprovalService's post-execute_fn state
+    read (the sole source of truth as of Step5C Fix2) reflects a genuine
+    claim rather than a bare, unchecked "it didn't raise" signal."""
+    def _fn(it):
+        fingerprint = physical_order_fingerprint({}, ApprovalService._execution_order(it))
+        claim = state.claim_execution(intent_id, fingerprint=fingerprint, owner=owner)
+        if not claim.get("claimed"):
+            return {"ok": False, "id": "ex-1", "reason": claim.get("reason")}
+        state.finish_execution(intent_id, owner=owner, execution={"broker_outcome": broker_outcome})
+        return {"ok": True, "id": "ex-1"}
+    return _fn
+
+
 def test_m24_2_approve_updates_sqlite_state_machine(tmp_path: Path):
     store, state, svc = _make_services(tmp_path)
     iid = "i-m24-2-a"
     _seed_intent(store, intent_id=iid)
 
-    out = svc.approve(intent_id=iid, execution_enabled=True, execute_fn=lambda it: {"ok": True, "id": "ex-1"})
+    out = svc.approve(intent_id=iid, execution_enabled=True, execute_fn=_claiming_execute_fn(state, iid))
     assert out["ok"] is True
     assert out["status"] == "executed"
 

@@ -10,6 +10,7 @@ import { StatusPill } from "../../shared/components/StatusPill";
 import { formatDateTime, isoDayOffset } from "../../shared/formatters/dates";
 import { formatNumber, formatPct, toneFor } from "../../shared/formatters/numbers";
 import { MarketChart } from "./MarketChart";
+import { MarketMetricTable } from "./MarketMetricTable";
 import type { MarketSeries, MarketSnapshot } from "./types";
 
 const SERIES_KEYS = ["kospi", "kosdaq", "kospi200", "krx_night_futures", "nasdaq", "sp500", "usdkrw", "dxy", "us_10y_yield"];
@@ -48,7 +49,7 @@ export function MarketPage() {
         </div>
       </Panel>
       <Panel title="전체 수집 지표" meta={`${metrics.length}개`} className="span-12">
-        <div className="data-table-wrap"><table className="data-table"><thead><tr><th>지표</th><th>구분</th><th>현재값</th><th>변동</th><th>역할</th><th>Source</th></tr></thead><tbody>{metrics.map((item) => <tr key={item.key}><td><strong>{item.label}</strong><div className="muted mono">{item.key}</div></td><td>{item.category}</td><td>{formatNumber(item.value, 4)} <span className="muted">{item.unit}</span></td><td className={toneFor(item.change_pct)}>{item.change_pct != null ? formatPct(item.change_pct, true) : formatNumber(item.change, 4)}</td><td>{item.role?.replaceAll("_", " ") ?? "-"}</td><td>{item.source ?? "-"}</td></tr>)}</tbody></table></div>
+        <MarketMetricTable metrics={metrics} />
       </Panel>
     </div>
   </>;

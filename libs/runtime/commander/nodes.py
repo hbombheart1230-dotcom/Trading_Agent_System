@@ -10,6 +10,8 @@ StateFn = Callable[[Dict[str, Any]], Dict[str, Any]]
 @dataclass(frozen=True)
 class IntegratedChainNodes:
     build_portfolio_snapshot: StateFn
+    build_open_order_snapshot: StateFn
+    build_execution_readiness: StateFn
     build_risk_context: StateFn
     strategist_node: StateFn
     scanner_node: StateFn
@@ -21,6 +23,8 @@ class IntegratedChainNodes:
 
 def load_integrated_chain_nodes() -> IntegratedChainNodes:
     from graphs.nodes.build_portfolio_snapshot import build_portfolio_snapshot
+    from graphs.nodes.build_open_order_snapshot import build_open_order_snapshot
+    from graphs.nodes.build_execution_readiness import build_execution_readiness
     from graphs.nodes.build_risk_context import build_risk_context
     from graphs.nodes.decision_node import decision_node
     from graphs.nodes.monitor_node import monitor_node
@@ -31,6 +35,8 @@ def load_integrated_chain_nodes() -> IntegratedChainNodes:
 
     return IntegratedChainNodes(
         build_portfolio_snapshot=build_portfolio_snapshot,
+        build_open_order_snapshot=build_open_order_snapshot,
+        build_execution_readiness=build_execution_readiness,
         build_risk_context=build_risk_context,
         strategist_node=strategist_node,
         scanner_node=scanner_node,

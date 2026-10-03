@@ -16,6 +16,7 @@ ROLE_LABELS = {
 }
 Q9_ROLES = tuple(key for key in ROLE_LABELS if key != "BASELINE_TOP1")
 PRIMARY_HORIZON = "+30m"
+Q9_COMPARABLE_HORIZONS = ("+5m", "+15m", "+30m", "+60m", "EOD")
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -120,7 +121,10 @@ def build_unified_comparison(forward_payload: Mapping[str, Any]) -> dict[str, An
             else None
         )
         commander = role_metrics["C_COMMANDER_FINAL"]
+        q9_horizon_supported = horizon in Q9_COMPARABLE_HORIZONS
         comparable_alpha = bool(
+            q9_horizon_supported
+            and
             int(commander.get("trade_count") or 0) > 0
             and int(baseline.get("trade_count") or 0) > 0
         )
@@ -140,6 +144,8 @@ def build_unified_comparison(forward_payload: Mapping[str, Any]) -> dict[str, An
                 "evidence_status": (
                     "COMPARABLE"
                     if comparable_alpha
+                    else "BASELINE_ONLY"
+                    if not q9_horizon_supported and int(baseline.get("trade_count") or 0) > 0
                     else "INSUFFICIENT_EVIDENCE"
                 ),
                 "performers": performers,
@@ -176,6 +182,7 @@ def build_unified_comparison(forward_payload: Mapping[str, Any]) -> dict[str, An
     all_comparable = all(
         row.get("evidence_status") == "COMPARABLE"
         for row in horizons
+        if row.get("horizon") in Q9_COMPARABLE_HORIZONS
     )
     return {
         "schema_version": "q9_baseline_unified_comparison.v1",

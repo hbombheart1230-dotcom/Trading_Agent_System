@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from libs.runtime.monitor_exit.numeric import to_float
+from libs.runtime.monitor_exit.session_vwap import rows_with_session_vwap
 
 
 def empty_vwap_breakdown_confirmation(source: str = "") -> Dict[str, Any]:
@@ -24,13 +25,13 @@ def calculate_vwap_breakdown_confirmation(
     volume_ratio_min: Any = None,
     low_break_pct: Any = None,
 ) -> Dict[str, Any]:
-    normalized_rows = [row for row in rows if isinstance(row, dict)]
+    normalized_rows, session_vwap_source = rows_with_session_vwap(rows)
     if not normalized_rows:
         return empty_vwap_breakdown_confirmation("minute_rows_empty")
 
     latest = normalized_rows[-1]
     prior = normalized_rows[-2] if len(normalized_rows) >= 2 and isinstance(normalized_rows[-2], dict) else {}
-    out = empty_vwap_breakdown_confirmation(source)
+    out = empty_vwap_breakdown_confirmation(f"{source}.{session_vwap_source}")
     out["vwap_breakdown_confirmation_available"] = True
 
     threshold_value = max(0.0, float(threshold or 0.0))
@@ -61,4 +62,3 @@ def calculate_vwap_breakdown_confirmation(
     elif latest_volume > 0.0 and prior_volume > 0.0 and latest_volume >= float(prior_volume * volume_ratio_threshold):
         out["vwap_breakdown_volume_confirmed"] = True
     return out
-

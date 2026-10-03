@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 from libs.core.symbols import normalize_symbol
 from libs.runtime.strategy_horizon_feedback import build_commander_horizon_policy
+from libs.runtime.stage3_horizon_lineage import record_stage3_application
 
 
 ALLOWED_HORIZONS = ("scalp", "intraday", "overnight_probe", "1_2day_swing")
@@ -300,23 +301,36 @@ def apply_strategist_horizon_revision(
         return state
     run_id = str(state.get("run_id") or "")
     applied: list[dict[str, Any]] = []
+    strategist_llm = _dict(state.get("strategist_llm"))
+    current_call_kind = str(strategist_llm.get("llm_call_kind") or "").strip().lower()
+    response_run_id = str(strategist_llm.get("run_id") or "").strip()
+    current_response = bool(run_id and response_run_id == run_id)
 
     stage3 = _dict(output.get("stale_intraday_hold_review"))
-    if stage3:
+    if stage3 and current_response and current_call_kind == "stale_intraday_hold_review":
         commander = _dict(state.get("commander_decision"))
         refresh = _dict(commander.get("strategist_refresh_context"))
         symbol = normalize_symbol(refresh.get("selected_symbol"))
         row = _dict(contexts.get(symbol))
         if symbol and row:
+            prior_horizon_state = ensure_horizon_state(row)
+            before_horizon_state = deepcopy(prior_horizon_state)
             horizon_state = _apply_stage3(
-                ensure_horizon_state(row), stage3, run_id=run_id, symbol=symbol, now_epoch=now_epoch
+                prior_horizon_state, stage3, run_id=run_id, symbol=symbol, now_epoch=now_epoch
             )
             row["horizon_state"] = horizon_state
             contexts[symbol] = row
+            record_stage3_application(
+                state,
+                symbol=symbol,
+                before=before_horizon_state,
+                after=horizon_state,
+                review=stage3,
+            )
             applied.append({"symbol": symbol, "stage": "stage3", "horizon_state": dict(horizon_state)})
 
     stage4 = _dict(output.get("end_of_day_carry_review"))
-    if stage4:
+    if stage4 and current_response and current_call_kind == "end_of_day_carry_review":
         portfolio_decision = str(stage4.get("portfolio_level_decision") or "flatten_all").strip().lower()
         carry_selected = False
         by_symbol = {

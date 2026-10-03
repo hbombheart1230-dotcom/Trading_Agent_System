@@ -2601,6 +2601,7 @@ def build_supervisor_output_artifact(
     artifact.update(
         {
             "invoked_agents": ["supervisor"],
+            "intent_id": str(order.get('intent_id') or ''),
             "command": str(order.get("action") or "").strip().upper(),
             "decision": "approve" if allowed else "block",
             "approval_result": bool(allowed),
@@ -2680,7 +2681,22 @@ def build_executor_output_artifact(
                 max_len=64,
             ),
             "execution_ok": execution_ok,
+            # Phase 1 Step 5B: additive BrokerOutcome provenance. `execution_ok`
+            # stays a plain bool for backward compatibility; `broker_outcome`
+            # lets downstream consumers tell UNKNOWN (broker acceptance
+            # unconfirmed, must not be treated as a firm reject) apart from a
+            # true NOT_SENT/REJECTED.
+            "broker_outcome": _clip(execution.get("broker_outcome"), max_len=32),
+            "intent_id": str(execution.get('intent_id') or order.get('intent_id') or ''),
+            "intent_claim": _dict(execution.get('intent_claim')),
+            "intent_state_persistence_error": str(execution.get('intent_state_persistence_error') or ''),
+            "submission_phase": _clip(execution.get("submission_phase"), max_len=64),
+            "submission_attempts": _safe_int(execution.get("submission_attempts")),
+            "exception_type": _clip(execution.get("exception_type"), max_len=120),
+            "reconciliation_required": bool(execution.get("reconciliation_required")),
+            "broker_reference_missing": bool(execution.get("broker_reference_missing")),
             "quote_snapshot": quote_snapshot,
+            "opening_alpha_execution_price_guard": _dict(execution.get("opening_alpha_execution_price_guard")),
             "best_bid": _safe_float(execution.get("best_bid") if execution.get("best_bid") not in (None, "") else quote_snapshot.get("best_bid")),
             "best_ask": _safe_float(execution.get("best_ask") if execution.get("best_ask") not in (None, "") else quote_snapshot.get("best_ask")),
             "spread_bps": _safe_float(execution.get("spread_bps") if execution.get("spread_bps") not in (None, "") else quote_snapshot.get("spread_bps")),

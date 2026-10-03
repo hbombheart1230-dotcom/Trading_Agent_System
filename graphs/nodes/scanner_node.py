@@ -25,6 +25,7 @@ from graphs.nodes.skill_contracts import (
     norm_symbol,
 )
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
+from libs.core.path_isolation import isolate_canonical_path_for_pytest
 from libs.runtime.asset_universe_policy import apply_asset_universe_filter
 from libs.runtime.canonical_artifacts import write_scanner_artifact
 from libs.runtime.commander_memory_application_trace import build_scanner_commander_memory_application_trace
@@ -85,6 +86,7 @@ from libs.runtime.scanner.output_payloads import (
     build_candidate_ranking_table_payload as _build_candidate_ranking_table_payload,
     build_candidate_selection_reason_payload as _build_candidate_selection_reason_payload,
 )
+from libs.runtime.scanner.control_eligibility import build_full_strategist_control_eligibility
 from libs.runtime.quant.suitability import score_candidate_tactic_suitability
 from libs.runtime.intraday_monitor_signals import evaluate_intraday_entry_signal, resolve_intraday_entry_policy
 from libs.runtime.feature_engine import build_feature_map
@@ -189,7 +191,7 @@ def _resolve_scanner_repeat_guard_policy(policy: Dict[str, Any]) -> Dict[str, An
 
 def _resolve_reports_root(state: Dict[str, Any]) -> Path:
     raw = str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports"
-    return Path(raw)
+    return isolate_canonical_path_for_pytest(raw, canonical_path="reports", isolated_name="reports")
 
 
 def _load_symbol_priors(state: Dict[str, Any], candidates: List[Any]) -> Dict[str, Dict[str, Any]]:
@@ -2256,6 +2258,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         candidates, live_symbol_meta = _filter_live_equity_candidates(list(candidates or []))
         pool_meta = dict(pool_meta)
         pool_meta.update(dict(live_symbol_meta))
+    full_strategist_control_eligibility = build_full_strategist_control_eligibility(pool_meta)
     state["scanner_source_universe_before_strategy_weighting"] = {
         "schema_version": "q9_scanner_source_universe.v1",
         "behavior_effect": "evaluation_only",
@@ -2280,6 +2283,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         ],
         "candidate_source": str(pool_meta.get("candidate_source") or ""),
         "scanner_candidate_source": str(pool_meta.get("scanner_candidate_source") or ""),
+        "full_strategist_control_eligibility": dict(full_strategist_control_eligibility),
         "limitation": (
             "Captured before Scanner asset/practical filters and score overlays; source inclusion "
             "may still reflect the current Strategist-provided source policy."
@@ -2992,6 +2996,11 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "quote_best_bid": _to_float(metrics.get("best_bid")),
                     "quote_best_ask": _to_float(metrics.get("best_ask")),
                     "quote_spread_bps": metrics.get("spread_bps"),
+                    "quote_payload_available": bool(metrics.get("quote_payload_available")),
+                    "quote_source": str(metrics.get("quote_source") or ""),
+                    "quote_evidence_status": str(
+                        metrics.get("bid_ask_evidence_status") or ""
+                    ),
                     "etf_deviation_pct": deviation_signal.get("etf_deviation_pct"),
                     "etf_deviation_source": str(deviation_signal.get("etf_deviation_source") or ""),
                     "etf_deviation_available": bool(deviation_signal.get("available")),
@@ -3576,6 +3585,23 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         ranked_symbols = [str((row or {}).get("symbol") or "") for row in list(scan_results_sorted) if isinstance(row, dict)]
         if selected_symbol in ranked_symbols:
             selected_rank = int(ranked_symbols.index(selected_symbol) + 1)
+    if isinstance(selected, dict) and selected_rank > 0:
+        # 2026-09-04 Scanner rank plumbing fix: propagate the same canonical
+        # rank that lands in scanner.json (via selected_rank above) onto the
+        # state["selected"] candidate dict itself -- `selected` and
+        # `state["selected"]` are the same object (state["selected"] =
+        # selected was assigned earlier, by reference), so this mutation is
+        # visible to every downstream reader of state["selected"], notably
+        # libs/runtime/opening_rank1_controlled_probe.py::selected_rank(),
+        # which checks a "scanner_rank" key with top priority. Purely
+        # additive (new dict keys only); does not touch scoring, ranking,
+        # or cascade logic.
+        # 2026-09-05: direct assignment, not setdefault -- this value IS the
+        # canonical truth freshly computed this cycle, so it must never be
+        # shadowed by a stale/contaminated "scanner_rank" the candidate dict
+        # happened to already carry (e.g. reused across cycles upstream).
+        selected["scanner_rank"] = int(selected_rank)
+        selected["scanner_rank_source"] = "canonical"
     selected_score_total = float(_to_float((selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0
     second_score_total = float(_to_float((scan_results_sorted[1] or {}).get("score_total") or (scan_results_sorted[1] or {}).get("score"))) if len(scan_results_sorted) > 1 and isinstance(scan_results_sorted[1], dict) else 0.0
     margin_vs_second = float(selected_score_total - second_score_total) if isinstance(selected, dict) else 0.0
@@ -3911,7 +3937,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
         },
     )
-    candidate_ranking_table_payload = _build_candidate_ranking_table_payload(ranking_table)
+    candidate_ranking_table_payload = _build_candidate_ranking_table_payload(
+        ranking_table,
+        full_strategist_control_eligibility=full_strategist_control_eligibility,
+    )
     state["scanner_candidate_ranking_table"] = dict(candidate_ranking_table_payload)
     state["scanner_output"]["scanner_intrinsic_control_top10"] = list(
         candidate_ranking_table_payload.get("scanner_intrinsic_control_top10") or []

@@ -12,8 +12,9 @@
 | M5 Web UI MVP | Complete | Nine-domain React/Vite operating console running locally |
 | M5.1 LLM Operations | Complete | OpenRouter role, model, stage, status, and bounded-latency surface |
 | M6 Public mode and anomaly surface | Complete | Explainable anomaly read model and server-enforced sanitized showcase profile |
-| M7 Docker Compose | Code complete; engine validation pending | Images, private/public Compose, isolation tests complete; WSL2 and Docker Desktop are not installed |
-| M8 Kubernetes local overlay | Not started | Begins only after M7 local Compose passes |
+| M7 Docker Compose | Complete | Linux Engine, hardened private/public profiles, browser smoke, read-only mounts, and shutdown isolation passed 2026-08-26 |
+| M7.1 Main runtime visibility | Complete | Existing heartbeat/watchdog/market artifacts exposed as one read-only logical-session status; no runtime control added |
+| M8 Kubernetes local overlay | Ready to start | M7 local Compose gate passed; preserve the same read-only and runtime-isolation boundary |
 | M9 Integrated audit | Not started | Final observability audit after M7-M8 |
 
 ## M1 Added Surface
@@ -370,8 +371,10 @@ were not restarted.
 ## M7 Weekend Gate
 
 The 2026-08-14 host audit confirmed Windows 11 Home 64-bit, 15.5 GB memory,
-220.2 GB free storage, and an active hypervisor. WSL, Docker Desktop, Docker
-CLI, and Docker Compose are not installed.
+220.2 GB free storage, and an active hypervisor. On 2026-08-26 Docker Desktop
+4.88.1, Docker CLI 29.7.2, Compose v5.4.0, and kubectl v1.36.1 were installed.
+The required restart completed on 2026-08-26 and WSL2/Linux Docker Engine are
+active.
 
 M7 source implementation was completed on 2026-08-18 without changing or
 restarting the Trading Runtime. It includes only Web and read-only API
@@ -388,7 +391,7 @@ Implemented:
 * private default and public sanitization override;
 * deterministic deployment-contract tests.
 
-Verified without Docker Engine:
+Pre-engine verification:
 
 ```text
 tests/apps/api + tests/deploy: 64 passed, 1 skipped
@@ -398,14 +401,32 @@ existing Web root: 200
 Trading Runtime restart: none
 ```
 
-Still pending after market close:
+Completed after the required Windows restart:
 
-* administrator WSL installation and Windows restart;
-* Docker Desktop Linux-container installation;
-* `docker compose config/build/up/ps`;
-* container health and read-only mount write-denial proof.
+* WSL2 status and Linux Docker Engine confirmation;
+* `docker compose build/up/ps`;
+* container health and read-only mount write-denial proof;
+* private/public profile and desktop/mobile browser smoke;
+* Compose down isolation proof.
 
 See `m7_prerequisites_and_weekend_plan_2026-08-14.md` for the fixed weekend
 work slices, external-access boundary, and future runtime migration gates.
 See `m7_docker_compose_implementation_2026-08-18.md` for the implemented file
-surface and remaining engine-validation gate.
+surface and completed engine-validation gate.
+See `m7_engine_gate_2026-08-26.md` for the installed versions, current
+post-restart results and final M7 evidence.
+## M7.2 Host Supervisor (2026-08-27)
+
+Completed:
+
+* five-minute Windows watchdog now detects stopped, stale-heartbeat,
+  duplicate-session, and lock-owner mismatch states;
+* recovery is limited to three attempts per day with a ten-minute cooldown;
+* watchdog decisions are stored as per-run history artifacts;
+* read-only runtime status and watchdog-history APIs expose policy state;
+* Overview shows current recovery usage and recent before/after checks;
+* no trading, scanner, strategist, monitor, order, or Docker runtime behavior
+  was changed.
+
+Verification: runtime/API regression `81 passed, 1 skipped`; strict TypeScript
+and production Docker image build passed.
